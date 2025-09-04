@@ -1,4 +1,4 @@
-use crate::tests::test_format::util::assert_format_stable;
+use crate::tests::test_format::util::assert_formatted;
 
 #[test]
 fn test_declaration() {
@@ -27,5 +27,5 @@ fn test_preserve() {
 
 pub fn assert_file_stable(file_name: &str) {
     let src = std::fs::read_to_string(format!("src/tests/test_format/{file_name}")).unwrap();
-    assert_format_stable(&src);
+    assert_formatted(&src);
 }

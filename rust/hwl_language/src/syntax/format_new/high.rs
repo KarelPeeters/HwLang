@@ -160,9 +160,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
 
             // preserve newlines
-            if !first_comment {
-                self.preserve_blank_lines(seq);
-            }
+            self.preserve_empty_lines(seq, !first_comment);
             first_comment = false;
 
             let _ = self.pop_token().unwrap();
@@ -194,7 +192,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
         self.collect_comments(prev_space, seq, |span| {
-            prev_end.is_none_or(|prev_end| span.end.line_0 == prev_end.line_0)
+            prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0)
         });
     }
 
@@ -208,7 +206,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         })
     }
 
-    fn preserve_blank_lines(&self, seq: &mut Vec<LNode<'s>>) {
+    fn preserve_empty_lines(&self, seq: &mut Vec<LNode<'s>>, allow_blank: bool) {
         if let Some(prev) = self.prev_token()
             && let Some(next) = self.peek_token()
         {
@@ -217,7 +215,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
             let delta = next_start.line_0 - prev_end.line_0;
 
-            if delta > 1 {
+            if delta > 1 && allow_blank {
                 seq.push(LNode::AlwaysBlankLine);
             } else if delta > 0 {
                 seq.push(LNode::AlwaysNewline);
@@ -337,13 +335,13 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 let next_token_is_comment = self.peek_token().is_some_and(|t| t.ty.category() == TC::Comment);
 
                 if !end || next_token_is_comment {
-                    self.preserve_blank_lines(&mut seq);
+                    self.preserve_empty_lines(&mut seq, true);
 
                     let len_before = seq.len();
                     self.collect_comments_all(prev_space, &mut seq);
 
                     if !end && seq.len() > len_before {
-                        self.preserve_blank_lines(&mut seq);
+                        self.preserve_empty_lines(&mut seq, true);
                     }
                 }
 

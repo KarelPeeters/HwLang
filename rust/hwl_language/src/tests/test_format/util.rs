@@ -3,7 +3,7 @@ use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::format;
 use crate::syntax::source::SourceDatabase;
 
-pub fn assert_format_stable(src: &str) {
+pub fn assert_formatted(src: &str) {
     assert_formats_to(src, src);
 }
 
