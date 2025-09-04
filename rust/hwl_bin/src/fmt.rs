@@ -30,7 +30,11 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
             // println!("Formatting result:");
             // println!("{result}");
 
-            std::fs::write("output.kh", result).unwrap();
+            std::fs::write("output.kh", &result).unwrap();
+
+            let file2 = source.add_file("output.kh".to_owned(), result);
+            let result2 = format(&diags, &mut source, &settings, file2).unwrap();
+            std::fs::write("output2.kh", result2).unwrap();
 
             ExitCode::SUCCESS
         }

@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::front::diagnostic::Diagnostics;
+use hwl_language::front::diagnostic::{Diagnostics, diags_to_debug_string};
 use hwl_language::syntax::format::FormatSettings;
 use hwl_language::syntax::format_new::format;
 use hwl_language::syntax::parse_file_content;
@@ -14,23 +14,31 @@ fn target(data: &str) {
         return;
     }
 
+    if std::env::var("FUZZ_SAVE").is_ok() {
+        std::fs::write("fuzz.kh", data).unwrap();
+    }
+
     let mut source = SourceDatabase::new();
     let file = source.add_file("dummy.kh".to_owned(), data.to_owned());
 
-    let ast = parse_file_content(file, &source[file].content);
+    let Ok(ast) = parse_file_content(file, &source[file].content) else {
+        return;
+    };
 
-    if ast.is_ok() {
-        // check that formatting works
-        let diags = Diagnostics::new();
-        let result =
-            format(&diags, &mut source, &FormatSettings::default(), file).expect("internal error during formatting");
+    // check that formatting works
+    let diags = Diagnostics::new();
+    let Ok(result) = format(&diags, &mut source, &FormatSettings::default(), file) else {
+        eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
+        panic!("internal error during formatting");
+    };
 
-        // check that formatting is idempotent
-        let file2 = source.add_file("dummy2.kh".to_owned(), result.clone());
-        let result2 = format(&diags, &mut source, &FormatSettings::default(), file2)
-            .expect("internal error during second formatting");
-        assert_eq!(result, result2, "formatting is not idempotent");
-    }
+    // check that formatting is idempotent
+    let file2 = source.add_file("dummy2.kh".to_owned(), result.clone());
+    let Ok(result2) = format(&diags, &mut source, &FormatSettings::default(), file2) else {
+        eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
+        panic!("internal error during second format");
+    };
+    assert_eq!(result, result2, "formatting is not idempotent");
 }
 
 fn is_simple_str(s: &str) -> bool {

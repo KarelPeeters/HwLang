@@ -91,10 +91,11 @@ fn format_single(
     // println!("LNode tree:");
     // println!("{}", root_node.debug_str());
 
-    println!("LNode tree simplified:");
     // TODO fuzz test whether this ever changes anything
     let root_node = root_node.simplify();
-    println!("{}", root_node.debug_str());
+
+    // println!("LNode tree simplified:");
+    // println!("{}", root_node.debug_str());
 
     let new_string = node_to_string(settings, old_string, &old_tokens, &root_node);
     Ok(FormatResult {

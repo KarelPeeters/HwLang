@@ -16,11 +16,3 @@ fn main() -> ExitCode {
         ArgsCommand::Fmt(args) => main_fmt(args),
     }
 }
-
-fn foo(
-    // the x value
-    x: usize,
-    y: bool, // the y value
-             // no z value
-) {
-}
