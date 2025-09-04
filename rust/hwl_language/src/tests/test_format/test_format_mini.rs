@@ -118,3 +118,9 @@ fn idempotent_block_comment_newlines() {
     let expected = "const {\n/* \n*/\n\n/*\n*/\n}\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn idempotent_block_comment_before_semi() {
+    let src = "const {\n    a = b\n        + c\n        /* test */\n    ;\n}\n";
+    assert_formatted(src);
+}

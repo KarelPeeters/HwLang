@@ -144,7 +144,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         let mut first_comment = true;
 
         while let Some(token) = self.peek_token() {
-            // check whether we should include this comment
+            // check whether we should include this token
             let is_line_comment = match token.ty {
                 TT::LineComment => true,
                 TT::BlockComment => false,
@@ -176,6 +176,10 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             } else if prev_space {
                 seq.push(LNode::Space);
             }
+        }
+
+        if !first_comment {
+            self.preserve_empty_lines(seq, false);
         }
     }
 
