@@ -1,4 +1,4 @@
-use crate::syntax::format_new::common::{SourceTokenIndex, swrite_indent};
+use crate::syntax::format_new::common::swrite_indent;
 use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
@@ -33,6 +33,9 @@ pub struct TokenMismatch {
     pub index: Option<SourceTokenIndex>,
     pub expected: TT,
 }
+
+#[derive(Debug, Copy, Clone)]
+pub struct SourceTokenIndex(pub usize);
 
 // TODO find a better name
 pub fn lower_nodes<'s>(

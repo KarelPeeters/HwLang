@@ -53,9 +53,9 @@ impl Context<'_> {
                 }
                 Item::ModuleExternal(decl) => {
                     let &ItemDefModuleExternal {
-                        span,
+                        span: _,
                         vis,
-                        span_ext,
+                        span_ext: _,
                         id,
                         ref params,
                         ref ports,
@@ -186,7 +186,6 @@ impl Context<'_> {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis, kind } = decl;
-                let node_vis = vis.token();
                 let node_kind = match kind {
                     CommonDeclarationNamedKind::Type(decl) => {
                         let &TypeDeclaration {
@@ -224,7 +223,7 @@ impl Context<'_> {
                         }
                         seq.push(HNode::Space);
                         seq.push(self.fmt_extra_list(SurroundKind::Curly, true, fields, &|field| {
-                            let &StructField { span, id, ty } = field;
+                            let &StructField { span: _, id, ty } = field;
                             HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))])
                         }));
                         seq.push(HNode::AlwaysNewline);
@@ -289,7 +288,7 @@ impl Context<'_> {
                     }
                 };
 
-                match node_vis {
+                match vis.token() {
                     None => node_kind,
                     Some(token_vis) => HNode::Sequence(vec![token(token_vis), HNode::Space, node_kind]),
                 }

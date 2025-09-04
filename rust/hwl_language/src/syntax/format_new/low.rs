@@ -1,7 +1,7 @@
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::common::swrite_indent;
 use crate::syntax::pos::LineOffsets;
-use crate::syntax::token::{Token, is_whitespace_or_empty};
+use crate::syntax::token::is_whitespace_or_empty;
 use crate::util::data::VecExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
@@ -57,10 +57,9 @@ pub enum LNode<'s> {
     Fill(Vec<LNode<'s>>),
 }
 
-pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens: &[Token], root: &LNode) -> String {
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNode) -> String {
     let mut ctx = StringBuilderContext {
         settings,
-        source_tokens,
         result: String::with_capacity(source_str.len() * 2),
         state: StringState {
             curr_line_start: 0,
@@ -81,8 +80,6 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, source_tokens
 
 struct StringBuilderContext<'a> {
     settings: &'a FormatSettings,
-
-    source_tokens: &'a [Token],
 
     result: String,
     state: StringState,

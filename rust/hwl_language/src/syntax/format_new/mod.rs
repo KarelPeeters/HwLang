@@ -97,7 +97,7 @@ fn format_single(
     // println!("LNode tree simplified:");
     // println!("{}", root_node.debug_str());
 
-    let new_string = node_to_string(settings, old_string, &old_tokens, &root_node);
+    let new_string = node_to_string(settings, old_string, &root_node);
     Ok(FormatResult {
         old_tokens,
         old_ast,
