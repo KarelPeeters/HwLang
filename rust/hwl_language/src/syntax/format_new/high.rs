@@ -4,9 +4,10 @@ use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
 use hwl_util::swriteln;
 
-// TODO doc
-// TODO rename "always" variants to just their base name, it's pretty verbose
-// TODO add special "preserve blank lines" node?
+/// High-level formatting nodes.
+///
+/// These mostly correspond to [LNode]s, except that the leaf nodes are tokens instead of strings,
+/// and that newlines and comments are not fully represented here yet, they will be inserted during lowering.
 #[must_use]
 #[derive(Debug)]
 pub enum HNode {
@@ -17,14 +18,11 @@ pub enum HNode {
     WrapNewline,
     AlwaysBlankLine,
     ForceWrap,
-    // TODO we don't really need a distinction between these wrapping nodes, right?
-    AlwaysIndent(Box<HNode>),
-    WrapIndent(Box<HNode>),
+    Indent(Box<HNode>),
     Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     Fill(Vec<HNode>),
-    // TODO should this be before or after the "alwaysnewline"?
     PreserveBlankLines { last: bool },
 }
 
@@ -37,7 +35,6 @@ pub struct TokenMismatch {
 #[derive(Debug, Copy, Clone)]
 pub struct SourceTokenIndex(pub usize);
 
-// TODO find a better name
 pub fn lower_nodes<'s>(
     source: &'s str,
     offsets: &LineOffsets,
@@ -77,12 +74,8 @@ impl HNode {
             HNode::AlwaysBlankLine => swriteln!(f, "BlankLine"),
             HNode::WrapNewline => swriteln!(f, "WrapNewline"),
             HNode::ForceWrap => swriteln!(f, "ForceWrap"),
-            HNode::AlwaysIndent(child) => {
-                swriteln!(f, "AlwaysIndent");
-                child.tree_string_impl(f, indent + 1);
-            }
-            HNode::WrapIndent(child) => {
-                swriteln!(f, "WrapIndent");
+            HNode::Indent(child) => {
+                swriteln!(f, "Indent");
                 child.tree_string_impl(f, indent + 1);
             }
             HNode::Dedent(child) => {
@@ -304,15 +297,10 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::Sequence(seq)
             }
             HNode::ForceWrap => LNode::ForceWrap,
-            HNode::AlwaysIndent(inner) => {
+            HNode::Indent(inner) => {
                 let mut seq = vec![self.map(prev_space, *inner)?];
                 self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
-                LNode::AlwaysIndent(Box::new(LNode::Sequence(seq)))
-            }
-            HNode::WrapIndent(inner) => {
-                let mut seq = vec![self.map(prev_space, *inner)?];
-                self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
-                LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
+                LNode::Indent(Box::new(LNode::Sequence(seq)))
             }
             HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, *inner)?)),
             HNode::Sequence(children) => {
@@ -364,8 +352,7 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         | LNode::WrapNewline
         | LNode::AlwaysBlankLine => Some(false),
         LNode::ForceWrap => None,
-        LNode::AlwaysIndent(inner) => node_ends_with_space(inner),
-        LNode::WrapIndent(inner) => node_ends_with_space(inner),
+        LNode::Indent(inner) => node_ends_with_space(inner),
         LNode::Dedent(inner) => node_ends_with_space(inner),
         LNode::Sequence(seq) => seq_ends_with_space(seq),
         LNode::Group(inner) => node_ends_with_space(inner),

@@ -1269,7 +1269,7 @@ fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> H
         (Some(left), Some(right)) => HNode::Group(Box::new(HNode::Sequence(vec![
             left,
             HNode::WrapNewline,
-            HNode::WrapIndent(Box::new(HNode::Sequence(vec![op, right]))),
+            HNode::Indent(Box::new(HNode::Sequence(vec![op, right]))),
         ]))),
         (left, right) => {
             let mut seq = vec![];
@@ -1286,12 +1286,12 @@ fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> H
 }
 
 fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
-    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+    HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(nodes)))))
 }
 
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
     let group_seq = vec![HNode::WrapNewline, inner, HNode::WrapNewline];
-    let group = HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(group_seq)))));
+    let group = HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(group_seq)))));
 
     // the before/after tokens should not be part of the group,
     //   since then trailing line comments after `after` would force the entire group to wrap

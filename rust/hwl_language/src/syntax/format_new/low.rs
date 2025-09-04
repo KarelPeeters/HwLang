@@ -30,9 +30,7 @@ pub enum LNode<'s> {
     ForceWrap,
 
     /// Indent the inner node.
-    AlwaysIndent(Box<LNode<'s>>),
-    /// Indent the inner node if the containing group is wrapping, if not just emit the inner node as-is.
-    WrapIndent(Box<LNode<'s>>),
+    Indent(Box<LNode<'s>>),
     /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
     /// Nodes that come after this node are indented normally again.
     Dedent(Box<LNode<'s>>),
@@ -157,12 +155,8 @@ impl<'s> LNode<'s> {
             LNode::WrapNewline => swriteln!(f, "WrapNewline"),
             LNode::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
             LNode::ForceWrap => swriteln!(f, "ForceWrap"),
-            LNode::AlwaysIndent(child) => {
-                swriteln!(f, "AlwaysIndent");
-                child.debug_str_impl(f, indent + 1);
-            }
-            LNode::WrapIndent(child) => {
-                swriteln!(f, "WrapIndent");
+            LNode::Indent(child) => {
+                swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
             }
             LNode::Dedent(child) => {
@@ -214,8 +208,7 @@ impl<'s> LNode<'s> {
                 result.single().unwrap_or_else(LNode::Sequence)
             }
             // simplify children
-            LNode::AlwaysIndent(child) => simplify_container(LNode::AlwaysIndent, child),
-            LNode::WrapIndent(child) => simplify_container(LNode::WrapIndent, child),
+            LNode::Indent(child) => simplify_container(LNode::Indent, child),
             LNode::Dedent(child) => simplify_container(LNode::Dedent, child),
             LNode::Group(child) => simplify_container(LNode::Group, child),
             LNode::Fill(children) => {
@@ -373,15 +366,8 @@ impl StringBuilderContext<'_> {
             LNode::ForceWrap => {
                 W::require_wrapping()?;
             }
-            LNode::AlwaysIndent(child) => {
+            LNode::Indent(child) => {
                 self.indent(|ctx| ctx.write_node::<W>(child))?;
-            }
-            LNode::WrapIndent(child) => {
-                if W::is_wrapping() {
-                    self.indent(|ctx| ctx.write_node::<W>(child))?;
-                } else {
-                    self.write_node::<W>(child)?;
-                }
             }
             LNode::Dedent(child) => {
                 self.dedent(|ctx| ctx.write_node::<W>(child))?;
