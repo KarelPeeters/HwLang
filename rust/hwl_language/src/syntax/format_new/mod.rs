@@ -13,7 +13,7 @@ use crate::syntax::ast::FileContent;
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::flatten::ast_to_node;
 use crate::syntax::format_new::high::{HNode, lower_nodes};
-use crate::syntax::format_new::low::{LNode, node_to_string};
+use crate::syntax::format_new::low::{LNode, StringsStats, node_to_string};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
@@ -29,6 +29,7 @@ pub struct FormatOutput<'s> {
     pub old_ast: FileContent,
     pub high_node: HNode,
     pub low_node: LNode<'s>,
+    pub stats: StringsStats,
     pub new_content: String,
 }
 
@@ -70,13 +71,14 @@ pub fn format<'s>(
     let low_node = low_node.simplify();
 
     // format the low-level nodes to a string
-    let new_content = node_to_string(settings, old_content, &low_node);
+    let string_output = node_to_string(settings, old_content, &low_node);
     Ok(FormatOutput {
         old_tokens,
         old_ast,
         high_node,
         low_node,
-        new_content,
+        stats: string_output.stats,
+        new_content: string_output.string,
     })
 }
 

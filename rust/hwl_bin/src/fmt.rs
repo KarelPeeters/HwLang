@@ -46,6 +46,7 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let result2 = format(&diags, &source, &settings, file2).unwrap();
 
     std::fs::write("output2.kh", &result2.debug_str()).unwrap();
+    println!("{:?}", result2.stats);
 
     ExitCode::SUCCESS
 }

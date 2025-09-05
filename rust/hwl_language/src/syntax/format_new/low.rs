@@ -55,7 +55,12 @@ pub enum LNode<'s> {
     Fill(Vec<LNode<'s>>),
 }
 
-pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNode) -> String {
+pub struct StringOutput {
+    pub stats: StringsStats,
+    pub string: String,
+}
+
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNode) -> StringOutput {
     let mut ctx = StringBuilderContext {
         settings,
         result: String::with_capacity(source_str.len() * 2),
@@ -73,7 +78,10 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNode)
     };
     ctx.write_node::<WrapYes>(root).remove_never();
 
-    ctx.result
+    StringOutput {
+        stats: ctx.stats,
+        string: ctx.result,
+    }
 }
 
 struct StringBuilderContext<'a> {
@@ -85,11 +93,11 @@ struct StringBuilderContext<'a> {
 }
 
 #[derive(Debug)]
-struct StringsStats {
-    checkpoint: usize,
-    restore: usize,
-    restore_chars: usize,
-    check_overflow: usize,
+pub struct StringsStats {
+    pub checkpoint: usize,
+    pub restore: usize,
+    pub restore_chars: usize,
+    pub check_overflow: usize,
 }
 
 #[derive(Debug, Copy, Clone)]
