@@ -39,7 +39,7 @@ pub fn lower_nodes<'s>(
     source: &'s str,
     offsets: &LineOffsets,
     source_tokens: &[Token],
-    node: HNode,
+    node: &HNode,
 ) -> Result<LNode<'s>, TokenMismatch> {
     let mut ctx = LowerContext {
         source,
@@ -53,17 +53,17 @@ pub fn lower_nodes<'s>(
 impl HNode {
     pub const EMPTY: HNode = HNode::Sequence(vec![]);
 
-    pub fn tree_string(&self) -> String {
+    pub fn debug_str(&self) -> String {
         let mut f = String::new();
-        self.tree_string_impl(&mut f, 0);
+        self.debug_str_impl(&mut f, 0);
         f
     }
 
-    fn tree_string_impl(&self, f: &mut String, indent: usize) {
+    fn debug_str_impl(&self, f: &mut String, indent: usize) {
         swrite_indent(f, indent);
         let swrite_children = |f: &mut String, cs: &[HNode]| {
             for c in cs {
-                c.tree_string_impl(f, indent + 1);
+                c.debug_str_impl(f, indent + 1);
             }
         };
         match self {
@@ -76,11 +76,11 @@ impl HNode {
             HNode::ForceWrap => swriteln!(f, "ForceWrap"),
             HNode::Indent(child) => {
                 swriteln!(f, "Indent");
-                child.tree_string_impl(f, indent + 1);
+                child.debug_str_impl(f, indent + 1);
             }
             HNode::Dedent(child) => {
                 swriteln!(f, "Dedent");
-                child.tree_string_impl(f, indent + 1);
+                child.debug_str_impl(f, indent + 1);
             }
             HNode::Sequence(children) => {
                 swriteln!(f, "Sequence");
@@ -88,7 +88,7 @@ impl HNode {
             }
             HNode::Group(child) => {
                 swriteln!(f, "Group");
-                child.tree_string_impl(f, indent + 1);
+                child.debug_str_impl(f, indent + 1);
             }
             HNode::Fill(children) => {
                 swriteln!(f, "Fill");
@@ -223,16 +223,16 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         }
     }
 
-    fn map_root(&mut self, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
+    fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let mut seq = vec![self.map(false, node)?];
         self.collect_comments_on_lines_before_real_token(false, &mut seq);
         Ok(LNode::Sequence(seq))
     }
 
-    fn map(&mut self, prev_space: bool, node: HNode) -> Result<LNode<'s>, TokenMismatch> {
+    fn map(&mut self, prev_space: bool, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let result = match node {
             HNode::Space => LNode::Space,
-            HNode::AlwaysToken(expected) => {
+            &HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
                 self.collect_comments_all(prev_space, &mut seq);
 
@@ -302,11 +302,11 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::ForceWrap => LNode::ForceWrap,
             HNode::Indent(inner) => {
-                let mut seq = vec![self.map(prev_space, *inner)?];
+                let mut seq = vec![self.map(prev_space, inner)?];
                 self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
                 LNode::Indent(Box::new(LNode::Sequence(seq)))
             }
-            HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, *inner)?)),
+            HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, inner)?)),
             HNode::Sequence(children) => {
                 let mut seq = vec![];
                 for child in children {
@@ -315,7 +315,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
                 LNode::Sequence(seq)
             }
-            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, *inner)?)),
+            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, inner)?)),
             HNode::Fill(children) => {
                 let mut mapped = vec![];
                 for child in children {

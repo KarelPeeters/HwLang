@@ -10,35 +10,35 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &str| target(data));
 
 fn target(data: &str) {
+    if std::env::var_os("FUZZ_DEBUG").is_some() {
+        std::fs::write("ignored/fuzz.kh", data).unwrap();
+    }
+
+    // discard invalid or non-parsable inputs
     if !is_simple_str(data) {
         return;
     }
-
-    if std::env::var("FUZZ_SAVE").is_ok() {
-        std::fs::write("fuzz.kh", data).unwrap();
-    }
-
     let mut source = SourceDatabase::new();
     let file = source.add_file("dummy.kh".to_owned(), data.to_owned());
-
-    let Ok(ast) = parse_file_content(file, &source[file].content) else {
+    if parse_file_content(file, &source[file].content).is_err() {
         return;
     };
 
     // check that formatting works
     let diags = Diagnostics::new();
-    let Ok(result) = format(&diags, &mut source, &FormatSettings::default(), file) else {
+    let Ok(result) = format(&diags, &source, &FormatSettings::default(), file) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("internal error during formatting");
     };
+    let new_content = result.new_content;
 
-    // check that formatting is idempotent
-    let file2 = source.add_file("dummy2.kh".to_owned(), result.clone());
-    let Ok(result2) = format(&diags, &mut source, &FormatSettings::default(), file2) else {
+    // check that formatting is stable
+    let file2 = source.add_file("dummy2.kh".to_owned(), new_content.clone());
+    let Ok(result2) = format(&diags, &source, &FormatSettings::default(), file2) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("internal error during second format");
     };
-    assert_eq!(result, result2, "formatting is not idempotent");
+    assert_eq!(new_content, result2.new_content, "formatting is not idempotent");
 }
 
 fn is_simple_str(s: &str) -> bool {

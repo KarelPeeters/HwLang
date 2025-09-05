@@ -2,7 +2,7 @@ use crate::args::ArgsFormat;
 use crate::util::print_diagnostics;
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::syntax::format::FormatSettings;
-use hwl_language::syntax::format_new::format;
+use hwl_language::syntax::format_new::{check_format_output_matches, format};
 
 use hwl_language::syntax::source::SourceDatabase;
 use std::process::ExitCode;
@@ -23,24 +23,29 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let settings = FormatSettings::default();
 
     let diags = Diagnostics::new();
-    let result = format(&diags, &mut source, &settings, file);
+    let Ok(result) = format(&diags, &source, &settings, file) else {
+        print_diagnostics(&source, diags);
+        return ExitCode::FAILURE;
+    };
 
-    match result {
-        Ok(result) => {
-            // println!("Formatting result:");
-            // println!("{result}");
+    std::fs::write("output.kh", result.debug_str()).unwrap();
 
-            std::fs::write("output.kh", &result).unwrap();
+    let Ok(()) = check_format_output_matches(
+        &diags,
+        &source,
+        file,
+        &result.old_tokens,
+        &result.old_ast,
+        &result.new_content,
+    ) else {
+        print_diagnostics(&source, diags);
+        return ExitCode::FAILURE;
+    };
 
-            let file2 = source.add_file("output.kh".to_owned(), result);
-            let result2 = format(&diags, &mut source, &settings, file2).unwrap();
-            std::fs::write("output2.kh", result2).unwrap();
+    let file2 = source.add_file("dummy2.kh".to_owned(), result.new_content);
+    let result2 = format(&diags, &source, &settings, file2).unwrap();
 
-            ExitCode::SUCCESS
-        }
-        Err(_) => {
-            print_diagnostics(&source, diags);
-            ExitCode::FAILURE
-        }
-    }
+    std::fs::write("output2.kh", &result2.debug_str()).unwrap();
+
+    ExitCode::SUCCESS
 }
