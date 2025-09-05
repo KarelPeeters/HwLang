@@ -5,12 +5,16 @@ use hwl_language::syntax::format::FormatSettings;
 use hwl_language::syntax::format_new::format;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::syntax::token::{TokenCategory, tokenize};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| target(data));
 
 fn target(data: &str) {
-    if std::env::var_os("FUZZ_DEBUG").is_some() {
+    let env_fuzz_debug = std::env::var_os("FUZZ_DEBUG").is_some();
+    let env_ban_comments = std::env::var_os("BAN_COMMENTS").is_some();
+
+    if env_fuzz_debug {
         std::fs::write("ignored/fuzz.kh", data).unwrap();
     }
 
@@ -23,6 +27,16 @@ fn target(data: &str) {
     if parse_file_content(file, &source[file].content).is_err() {
         return;
     };
+
+    // discard inputs with any comments
+    if env_ban_comments
+        && tokenize(file, &source[file].content, false)
+            .unwrap()
+            .iter()
+            .any(|t| t.ty.category() == TokenCategory::Comment)
+    {
+        return;
+    }
 
     // check that formatting works
     let diags = Diagnostics::new();
