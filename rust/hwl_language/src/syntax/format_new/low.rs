@@ -5,6 +5,7 @@ use crate::syntax::token::is_whitespace_or_empty;
 use crate::util::data::VecExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
+use itertools::Either;
 
 /// Low-level formatting nodes.
 /// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
@@ -132,7 +133,6 @@ impl WrapMaybe for WrapNo {
         Err(NeedsWrap)
     }
 }
-
 struct WrapYes {}
 impl WrapMaybe for WrapYes {
     type E = Never;
@@ -141,6 +141,36 @@ impl WrapMaybe for WrapYes {
     }
     fn require_wrapping() -> Result<(), Never> {
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ShouldWrapEarlier;
+
+trait EarlierBranchMaybe: Copy {
+    type E;
+    fn check_overflow(&self, ctx: &mut StringBuilderContext) -> Result<(), Self::E>;
+}
+
+#[derive(Copy, Clone)]
+struct EarlierBranchNo;
+impl EarlierBranchMaybe for EarlierBranchNo {
+    type E = Never;
+    fn check_overflow(&self, _: &mut StringBuilderContext) -> Result<(), Never> {
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone)]
+struct EarlierBranchYes(CheckPoint);
+impl EarlierBranchMaybe for EarlierBranchYes {
+    type E = ShouldWrapEarlier;
+    fn check_overflow(&self, ctx: &mut StringBuilderContext) -> Result<(), ShouldWrapEarlier> {
+        if ctx.line_overflows(self.0) {
+            Err(ShouldWrapEarlier)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -263,8 +293,9 @@ impl StringBuilderContext<'_> {
     fn line_overflows(&mut self, check: CheckPoint) -> bool {
         self.stats.check_overflow += 1;
 
-        let line_start = check.state.curr_line_start;
-        let rest = &self.result[line_start..];
+        // TODO only overflow if the length of the line larger than the indent, otherwise wrapping will never help
+        //   (that's only true if the result of wrapping wil cause extra indents, is that always true?)
+        let rest = &self.result[check.state.curr_line_start..];
         let line_len = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
         line_len > self.settings.max_line_length
     }
@@ -296,6 +327,9 @@ impl StringBuilderContext<'_> {
         }
 
         // emit indent if this is the first text on the line
+        // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
+        //   first abstractly push indent/str nodes, then later actually convert to a full string
+        //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
         let at_line_start = self.state.curr_line_start == self.result.len();
         if at_line_start && !is_whitespace_or_empty(s) {
             for _ in 0..self.state.indent {
@@ -333,10 +367,10 @@ impl StringBuilderContext<'_> {
             LNode::Space => {
                 self.state.emit_space = true;
             }
-            LNode::AlwaysStr(s) => {
+            &LNode::AlwaysStr(s) => {
                 self.write_str::<W>(s)?;
             }
-            LNode::WrapStr(s) => {
+            &LNode::WrapStr(s) => {
                 if W::is_wrapping() {
                     self.write_str::<W>(s)?;
                 }
@@ -395,7 +429,8 @@ impl StringBuilderContext<'_> {
     fn write_sequence<'s, W: WrapMaybe>(&mut self, children: &[LNode<'s>]) -> Result<(), W::E> {
         // flatten if necessary
         if children.iter().all(|c| !matches!(c, LNode::Sequence(_))) {
-            self.write_sequence_impl::<W>(children.iter())
+            self.write_sequence_flat::<W, _>(EarlierBranchNo, children.iter())
+                .map_err(remove_never_right)
         } else {
             fn f<'s, 'c>(flat: &mut Vec<&'c LNode<'s>>, node: &'c LNode<'s>) {
                 match node {
@@ -412,14 +447,16 @@ impl StringBuilderContext<'_> {
             for c in children {
                 f(&mut flat, c);
             }
-            self.write_sequence_impl::<W>(flat.iter().copied())
+            self.write_sequence_flat::<W, _>(EarlierBranchNo, flat.iter().copied())
+                .map_err(remove_never_right)
         }
     }
 
-    fn write_sequence_impl<'c, 's: 'c, W: WrapMaybe>(
+    fn write_sequence_flat<'c, 's: 'c, W: WrapMaybe, B: EarlierBranchMaybe>(
         &mut self,
+        last_branch: B,
         mut children: impl Iterator<Item = &'c LNode<'s>> + Clone,
-    ) -> Result<(), W::E> {
+    ) -> Result<(), Either<W::E, B::E>> {
         let (child, rest) = match children.next() {
             None => return Ok(()),
             Some(child) => (child, children),
@@ -429,14 +466,16 @@ impl StringBuilderContext<'_> {
         //   so we can take items that follow the group on the same line into account to check for line overflow
         match child {
             LNode::Group(child) => {
-                self.write_sequence_branch::<W>(
+                self.write_sequence_branch::<W, B>(
+                    last_branch,
                     rest,
                     |slf| slf.write_node::<WrapNo>(child),
                     |slf| slf.write_node::<WrapYes>(child).remove_never(),
                 )?;
             }
             LNode::Fill(children) => {
-                self.write_sequence_branch::<W>(
+                self.write_sequence_branch::<W, B>(
+                    last_branch,
                     rest,
                     |slf| {
                         for c in children {
@@ -470,20 +509,26 @@ impl StringBuilderContext<'_> {
             // simple nodes without a wrapping decision, just write them
             _ => {
                 let check = self.checkpoint();
-                self.write_node::<W>(child)?;
-                self.write_sequence_impl::<W>(rest)
+                self.write_node::<W>(child).map_err(Either::Left)?;
+
+                // if there was an earlier branching point and we've now overflowed it, bail immediately
+                //   this avoids terrible exponential backtracking behavior
+                last_branch.check_overflow(self).map_err(Either::Right)?;
+
+                self.write_sequence_flat::<W, _>(last_branch, rest)
                     .inspect_err(|_| self.restore(check))?;
             }
         }
         Ok(())
     }
 
-    fn write_sequence_branch<'c, 's: 'c, W: WrapMaybe>(
+    fn write_sequence_branch<'c, 's: 'c, W: WrapMaybe, B: EarlierBranchMaybe>(
         &mut self,
+        last_branch: B,
         rest: impl Iterator<Item = &'c LNode<'s>> + Clone,
         f_single: impl FnOnce(&mut Self) -> Result<(), NeedsWrap>,
         f_wrap: impl FnOnce(&mut Self),
-    ) -> Result<(), W::E> {
+    ) -> Result<(), Either<W::E, B::E>> {
         // try without wrapping
         let check = self.checkpoint();
         let result_no_wrap = f_single(self);
@@ -500,20 +545,31 @@ impl StringBuilderContext<'_> {
         }
 
         // if no wrapping is needed yet, try writing the rest of the list
-        // TODO this can also be optimized more, as soon as we overflow deeper we know that we should bail
         if !should_wrap {
-            self.write_sequence_impl::<W>(rest.clone())
-                .inspect_err(|_| self.restore(check))?;
+            let result_rest = self.write_sequence_flat::<W, _>(EarlierBranchYes(check), rest.clone());
+
+            match result_rest {
+                Ok(()) => {}
+                Err(Either::Left(e)) => {
+                    self.restore(check);
+                    return Err(Either::Left(e));
+                }
+                Err(Either::Right(ShouldWrapEarlier)) => {
+                    should_wrap = true;
+                }
+            }
+
             should_wrap |= self.line_overflows(check);
         }
 
         // if we need to wrap, roll back and re-write everything with wrapping
         if should_wrap {
             self.restore(check);
-            W::require_wrapping()?;
+            W::require_wrapping().map_err(Either::Left)?;
 
             f_wrap(self);
-            self.write_sequence_impl::<WrapYes>(rest).remove_never();
+            self.write_sequence_flat::<WrapYes, _>(last_branch, rest)
+                .map_err(|e| Either::Right(remove_never_left(e)))?;
         }
 
         Ok(())
@@ -523,4 +579,17 @@ impl StringBuilderContext<'_> {
 fn char_is_whitespace(c: char) -> bool {
     let mut buffer = [0; 4];
     is_whitespace_or_empty(c.encode_utf8(&mut buffer))
+}
+
+fn remove_never_left<T>(r: Either<Never, T>) -> T {
+    match r {
+        Either::Left(n) => n.unreachable(),
+        Either::Right(t) => t,
+    }
+}
+fn remove_never_right<T>(r: Either<T, Never>) -> T {
+    match r {
+        Either::Left(t) => t,
+        Either::Right(n) => n.unreachable(),
+    }
 }

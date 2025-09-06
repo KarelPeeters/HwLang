@@ -14,20 +14,21 @@ pub fn assert_formats_to(src: &str, expected: &str) {
 
     // first format
     let file = source.add_file("dummy.kh".to_owned(), src.to_owned());
-    let Ok(result) = format(&diags, &mut source, &settings, file) else {
+    let Ok(result) = format(&diags, &source, &settings, file) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("formatting failed");
     };
 
-    assert_eq!(result, expected);
+    let result_new_content = result.new_content;
+    assert_eq!(result_new_content, expected);
 
     // if relevant, check for idempotence
     if src != expected {
-        let file2 = source.add_file("dummy2.kh".to_owned(), result.clone());
-        let Ok(result2) = format(&diags, &mut source, &settings, file2) else {
+        let file2 = source.add_file("dummy2.kh".to_owned(), result_new_content.clone());
+        let Ok(result2) = format(&diags, &source, &settings, file2) else {
             eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
             panic!("formatting failed the second time");
         };
-        assert_eq!(result2, result);
+        assert_eq!(result2.new_content, result_new_content);
     }
 }
