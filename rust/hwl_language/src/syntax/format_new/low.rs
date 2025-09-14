@@ -3,13 +3,18 @@ use crate::syntax::format_new::common::swrite_indent;
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::is_whitespace_or_empty;
 use crate::util::data::VecExt;
+use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 use itertools::Either;
+use std::fmt::Debug;
+
+pub type LNode<'s> = LNodeImpl<'s, ()>;
+pub type LNodeSimple<'s> = LNodeImpl<'s, Never>;
 
 /// Low-level formatting nodes.
 /// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
-pub enum LNode<'s> {
+pub enum LNodeImpl<'s, E> {
     /// Emit a space if the previous and next characters on the same line exist and are not whitespace.
     Space,
 
@@ -31,29 +36,32 @@ pub enum LNode<'s> {
     ForceWrap,
 
     /// Indent the inner node.
-    Indent(Box<LNode<'s>>),
+    Indent(Box<LNodeImpl<'s, E>>),
     /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
     /// Nodes that come after this node are indented normally again.
-    Dedent(Box<LNode<'s>>),
+    Dedent(Box<LNodeImpl<'s, E>>),
 
     /// A sequence of nodes to be emitted in order.
     /// Children can each individually decide to wrap or not,
     /// based on whether their contants overflow the start or end line.
     /// Any child wrapping forces the parent groups to wrap too.
-    Sequence(Vec<LNode<'s>>),
+    Sequence(Vec<LNodeImpl<'s, E>>),
 
     /// Groups are the mechanism to control wrapping.
     /// A group either wraps or does not wrap, which recursively affects all child nodes.
     /// Groups can be nested, in which case inner groups can only wrap if the outer group is wrapping,
     ///   but inner groups are allowed to not wrap even if the outer group is wrapping.
-    Group(Box<LNode<'s>>),
+    Group(Box<LNodeImpl<'s, E>>),
 
     /// Similar to [LNode::Group], except that as many children as possible are placed on each line,
     /// instead of a single global wrapping decision for the entire group.
     ///
     /// There's an implicit [LNode::WrapNewLine] after each child
     /// and an implicit [LNode::Indent] around all children.
-    Fill(Vec<LNode<'s>>),
+    Fill(Vec<LNodeImpl<'s, E>>),
+
+    // TODO doc
+    EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
 }
 
 pub struct StringOutput {
@@ -61,7 +69,7 @@ pub struct StringOutput {
     pub string: String,
 }
 
-pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNode) -> StringOutput {
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
     let mut ctx = StringBuilderContext {
         settings,
         result: String::with_capacity(source_str.len() * 2),
@@ -174,9 +182,7 @@ impl EarlierBranchMaybe for EarlierBranchYes {
     }
 }
 
-impl<'s> LNode<'s> {
-    pub const EMPTY: LNode<'static> = LNode::Sequence(vec![]);
-
+impl<E: Debug> LNodeImpl<'_, E> {
     pub fn debug_str(&self) -> String {
         let mut f = String::new();
         self.debug_str_impl(&mut f, 0);
@@ -186,85 +192,133 @@ impl<'s> LNode<'s> {
     fn debug_str_impl(&self, f: &mut String, indent: usize) {
         swrite_indent(f, indent);
         match self {
-            LNode::Space => swriteln!(f, "Space"),
-            LNode::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
-            LNode::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
-            LNode::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
-            LNode::WrapNewline => swriteln!(f, "WrapNewline"),
-            LNode::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
-            LNode::ForceWrap => swriteln!(f, "ForceWrap"),
-            LNode::Indent(child) => {
+            LNodeImpl::Space => swriteln!(f, "Space"),
+            LNodeImpl::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
+            LNodeImpl::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
+            LNodeImpl::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
+            LNodeImpl::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNodeImpl::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
+            LNodeImpl::ForceWrap => swriteln!(f, "ForceWrap"),
+            LNodeImpl::Indent(child) => {
                 swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
             }
-            LNode::Dedent(child) => {
+            LNodeImpl::Dedent(child) => {
                 swriteln!(f, "Dedent");
                 child.debug_str_impl(f, indent + 1);
             }
-            LNode::Sequence(children) => {
+            LNodeImpl::Sequence(children) => {
                 swriteln!(f, "Sequence");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
-            LNode::Group(child) => {
+            LNodeImpl::Group(child) => {
                 swriteln!(f, "Group");
                 child.debug_str_impl(f, indent + 1);
             }
-            LNode::Fill(children) => {
+            LNodeImpl::Fill(children) => {
                 swriteln!(f, "Fill");
                 for child in children {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
+            LNodeImpl::EscapeGroupIfLast(e, child) => {
+                swriteln!(f, "EscapeGroup({e:?})");
+                child.debug_str_impl(f, indent + 1);
+            }
         }
+    }
+}
+
+impl<E> LNodeImpl<'static, E> {
+    pub const EMPTY: LNodeImpl<'static, E> = LNodeImpl::Sequence(vec![]);
+}
+
+impl<'s> LNode<'s> {
+    // TODO rename, this is no longer only simplification
+    pub fn simplify(&self) -> LNodeSimple<'s> {
+        self.simplify_impl(None)
     }
 
     // TODO instead of creating a messy tree and then simplifying it,
     //   avoid creating it in the first place by adding some convenient sequence builder
-    pub fn simplify(self) -> LNode<'s> {
-        fn simplify_container<'s>(f: impl FnOnce(Box<LNode<'s>>) -> LNode<'s>, mut child: Box<LNode<'s>>) -> LNode<'s> {
-            *child = child.simplify();
-            if let LNode::Sequence(inner) = &*child
-                && inner.is_empty()
-            {
-                return LNode::EMPTY;
-            }
-            f(child)
-        }
-
+    // TODO try moving newlines around here
+    fn simplify_impl(&self, mut escape_group: Option<&mut Vec<LNodeSimple<'s>>>) -> LNodeSimple<'s> {
         match self {
             // flatten sequences
             LNode::Sequence(children) => {
                 let mut result = Vec::with_capacity(children.len());
-                for c in children {
-                    match c.simplify() {
-                        LNode::Sequence(inner) => result.extend(inner),
+                for (child, last) in children.iter().with_last() {
+                    let child_escape_group = if last { escape_group.as_deref_mut() } else { None };
+                    match child.simplify_impl(child_escape_group) {
+                        LNodeSimple::Sequence(inner) => result.extend(inner),
                         c_simple => result.push(c_simple),
                     }
                 }
-                result.single().unwrap_or_else(LNode::Sequence)
+                result.single().unwrap_or_else(LNodeSimple::Sequence)
+            }
+            // TODO doc
+            LNodeImpl::EscapeGroupIfLast((), inner) => {
+                let inner = inner.simplify_impl(escape_group.as_deref_mut());
+                if let Some(escape_group) = escape_group.as_deref_mut() {
+                    escape_group.push(inner);
+                    LNodeSimple::EMPTY
+                } else {
+                    inner
+                }
             }
             // simplify children
-            LNode::Indent(child) => simplify_container(LNode::Indent, child),
-            LNode::Dedent(child) => simplify_container(LNode::Dedent, child),
-            LNode::Group(child) => simplify_container(LNode::Group, child),
+            LNode::Indent(child) => simplify_container(child, escape_group, LNodeSimple::Indent),
+            LNode::Dedent(child) => simplify_container(child, escape_group, LNodeSimple::Dedent),
+            LNode::Group(child) => {
+                let mut seq = vec![];
+
+                let escape_group = match escape_group.as_deref_mut() {
+                    Some(escape_group) => escape_group,
+                    None => &mut seq,
+                };
+                let result = simplify_container(child, Some(escape_group), LNodeSimple::Group);
+
+                if seq.is_empty() {
+                    result
+                } else {
+                    seq.insert(0, result);
+                    LNodeSimple::Sequence(seq)
+                }
+            }
             LNode::Fill(children) => {
                 if children.is_empty() {
-                    LNode::EMPTY
+                    LNodeSimple::EMPTY
                 } else {
-                    LNode::Fill(children.into_iter().map(LNode::simplify).collect())
+                    // there are implicit newline nodes after each child, so none of the children are the last
+                    LNodeSimple::Fill(children.into_iter().map(|c| c.simplify_impl(None)).collect())
                 }
             }
             // trivial cases
-            LNode::Space => LNode::Space,
-            LNode::AlwaysStr(s) => LNode::AlwaysStr(s),
-            LNode::WrapStr(s) => LNode::WrapStr(s),
-            LNode::AlwaysNewline => LNode::AlwaysNewline,
-            LNode::WrapNewline => LNode::WrapNewline,
-            LNode::AlwaysBlankLine => LNode::AlwaysBlankLine,
-            LNode::ForceWrap => LNode::ForceWrap,
+            LNode::Space => LNodeSimple::Space,
+            LNode::AlwaysStr(s) => LNodeSimple::AlwaysStr(s),
+            LNode::WrapStr(s) => LNodeSimple::WrapStr(s),
+            LNode::AlwaysNewline => LNodeSimple::AlwaysNewline,
+            LNode::WrapNewline => LNodeSimple::WrapNewline,
+            LNode::AlwaysBlankLine => LNodeSimple::AlwaysBlankLine,
+            LNode::ForceWrap => LNodeSimple::ForceWrap,
         }
+    }
+}
+
+fn simplify_container<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut Vec<LNodeSimple<'s>>>,
+    f: impl FnOnce(Box<LNodeSimple<'s>>) -> LNodeSimple<'s>,
+) -> LNodeSimple<'s> {
+    let child = child.simplify_impl(group_escape_slot);
+    if let LNodeImpl::Sequence(inner) = &child
+        && inner.is_empty()
+    {
+        LNodeSimple::EMPTY
+    } else {
+        f(Box::new(child))
     }
 }
 
@@ -362,20 +416,20 @@ impl StringBuilderContext<'_> {
         Ok(())
     }
 
-    fn write_node<W: WrapMaybe>(&mut self, node: &LNode) -> Result<(), W::E> {
+    fn write_node<W: WrapMaybe>(&mut self, node: &LNodeSimple) -> Result<(), W::E> {
         match node {
-            LNode::Space => {
+            LNodeSimple::Space => {
                 self.state.emit_space = true;
             }
-            &LNode::AlwaysStr(s) => {
+            &LNodeSimple::AlwaysStr(s) => {
                 self.write_str::<W>(s)?;
             }
-            &LNode::WrapStr(s) => {
+            &LNodeSimple::WrapStr(s) => {
                 if W::is_wrapping() {
                     self.write_str::<W>(s)?;
                 }
             }
-            LNode::AlwaysNewline => {
+            LNodeSimple::AlwaysNewline => {
                 W::require_wrapping()?;
 
                 // only add a newline if there isn't one already to avoid duplicates
@@ -383,13 +437,13 @@ impl StringBuilderContext<'_> {
                     self.write_newline::<W>()?;
                 }
             }
-            LNode::WrapNewline => {
+            LNodeSimple::WrapNewline => {
                 // only add a newline if wrapping and there isn't one already to avoid duplicates
                 if W::is_wrapping() && !self.result.ends_with(&self.settings.newline_str) {
                     self.write_newline::<W>()?;
                 }
             }
-            LNode::AlwaysBlankLine => {
+            LNodeSimple::AlwaysBlankLine => {
                 W::require_wrapping()?;
 
                 // count ending newlines
@@ -405,36 +459,37 @@ impl StringBuilderContext<'_> {
                     self.write_newline::<W>()?;
                 }
             }
-            LNode::ForceWrap => {
+            LNodeSimple::ForceWrap => {
                 W::require_wrapping()?;
             }
-            LNode::Indent(child) => {
+            LNodeSimple::Indent(child) => {
                 self.indent(|ctx| ctx.write_node::<W>(child))?;
             }
-            LNode::Dedent(child) => {
+            LNodeSimple::Dedent(child) => {
                 self.dedent(|ctx| ctx.write_node::<W>(child))?;
             }
-            LNode::Sequence(children) => {
+            LNodeSimple::Sequence(children) => {
                 self.write_sequence::<W>(children)?;
             }
-            LNode::Group(_) | LNode::Fill(_) => {
+            LNodeSimple::Group(_) | LNodeSimple::Fill(_) => {
                 // If we meet a top-level group we just pretend it's a single-item sequence
                 //   and delegate to the existing sequence logic for group wrapping.
                 self.write_sequence::<W>(std::slice::from_ref(node))?;
             }
+            LNodeImpl::EscapeGroupIfLast(never, _) => never.unreachable(),
         }
         Ok(())
     }
 
-    fn write_sequence<'s, W: WrapMaybe>(&mut self, children: &[LNode<'s>]) -> Result<(), W::E> {
+    fn write_sequence<'s, W: WrapMaybe>(&mut self, children: &[LNodeSimple<'s>]) -> Result<(), W::E> {
         // flatten if necessary
-        if children.iter().all(|c| !matches!(c, LNode::Sequence(_))) {
+        if children.iter().all(|c| !matches!(c, LNodeSimple::Sequence(_))) {
             self.write_sequence_flat::<W, _>(EarlierBranchNo, children.iter())
                 .map_err(remove_never_right)
         } else {
-            fn f<'s, 'c>(flat: &mut Vec<&'c LNode<'s>>, node: &'c LNode<'s>) {
+            fn f<'s, 'c>(flat: &mut Vec<&'c LNodeSimple<'s>>, node: &'c LNodeSimple<'s>) {
                 match node {
-                    LNode::Sequence(children) => {
+                    LNodeSimple::Sequence(children) => {
                         for child in children {
                             f(flat, child);
                         }
@@ -455,7 +510,7 @@ impl StringBuilderContext<'_> {
     fn write_sequence_flat<'c, 's: 'c, W: WrapMaybe, B: EarlierBranchMaybe>(
         &mut self,
         last_branch: B,
-        mut children: impl Iterator<Item = &'c LNode<'s>> + Clone,
+        mut children: impl Iterator<Item = &'c LNodeSimple<'s>> + Clone,
     ) -> Result<(), Either<W::E, B::E>> {
         let (child, rest) = match children.next() {
             None => return Ok(()),
@@ -465,7 +520,7 @@ impl StringBuilderContext<'_> {
         // wrapping logic is here instead of inside the group nodes,
         //   so we can take items that follow the group on the same line into account to check for line overflow
         match child {
-            LNode::Group(child) => {
+            LNodeSimple::Group(child) => {
                 self.write_sequence_branch::<W, B>(
                     last_branch,
                     rest,
@@ -473,7 +528,7 @@ impl StringBuilderContext<'_> {
                     |slf| slf.write_node::<WrapYes>(child).remove_never(),
                 )?;
             }
-            LNode::Fill(children) => {
+            LNodeSimple::Fill(children) => {
                 self.write_sequence_branch::<W, B>(
                     last_branch,
                     rest,
@@ -505,7 +560,7 @@ impl StringBuilderContext<'_> {
                 )?;
             }
             // nested sequences should have been flattened already
-            LNode::Sequence(_) => unreachable!(),
+            LNodeSimple::Sequence(_) => unreachable!(),
             // simple nodes without a wrapping decision, just write them
             _ => {
                 let check = self.checkpoint();
@@ -525,7 +580,7 @@ impl StringBuilderContext<'_> {
     fn write_sequence_branch<'c, 's: 'c, W: WrapMaybe, B: EarlierBranchMaybe>(
         &mut self,
         last_branch: B,
-        rest: impl Iterator<Item = &'c LNode<'s>> + Clone,
+        rest: impl Iterator<Item = &'c LNodeSimple<'s>> + Clone,
         f_single: impl FnOnce(&mut Self) -> Result<(), NeedsWrap>,
         f_wrap: impl FnOnce(&mut Self),
     ) -> Result<(), Either<W::E, B::E>> {

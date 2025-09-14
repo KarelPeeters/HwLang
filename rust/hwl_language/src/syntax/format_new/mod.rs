@@ -13,7 +13,7 @@ use crate::syntax::ast::FileContent;
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format_new::flatten::ast_to_node;
 use crate::syntax::format_new::high::{HNode, lower_nodes};
-use crate::syntax::format_new::low::{LNode, StringsStats, node_to_string};
+use crate::syntax::format_new::low::{LNode, LNodeSimple, StringsStats, node_to_string};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
@@ -27,8 +27,9 @@ mod low;
 pub struct FormatOutput<'s> {
     pub old_tokens: Vec<Token>,
     pub old_ast: FileContent,
-    pub high_node: HNode,
-    pub low_node: LNode<'s>,
+    pub node_high: HNode,
+    pub node_low: LNode<'s>,
+    pub node_simple: LNodeSimple<'s>,
     pub stats: StringsStats,
     pub new_content: String,
 }
@@ -49,10 +50,10 @@ pub fn format<'s>(
     let old_ast = parse_file_content(file, old_content).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
     // flatten the ast to high-level nodes
-    let high_node = ast_to_node(&old_ast);
+    let node_high = ast_to_node(&old_ast);
 
     // lower the high-level nodes to low-level nodes
-    let low_node = lower_nodes(old_content, old_offsets, &old_tokens, &high_node).map_err(|e| {
+    let node_low = lower_nodes(old_content, old_offsets, &old_tokens, &node_high).map_err(|e| {
         let msg_slot;
         let (span, msg_source) = match e.index {
             None => (Span::empty_at(source.full_span(file).end()), "reached end end of file"),
@@ -67,16 +68,17 @@ pub fn format<'s>(
         diags.report_internal_error(span, reason)
     })?;
 
-    // TODO fuzz test whether this ever changes anything
-    let low_node = low_node.simplify();
+    // simplify
+    let node_simple = node_low.simplify();
 
     // format the low-level nodes to a string
-    let string_output = node_to_string(settings, old_content, &low_node);
+    let string_output = node_to_string(settings, old_content, &node_simple);
     Ok(FormatOutput {
         old_tokens,
         old_ast,
-        high_node,
-        low_node,
+        node_high,
+        node_low,
+        node_simple,
         stats: string_output.stats,
         new_content: string_output.string,
     })
@@ -183,10 +185,11 @@ pub fn check_format_output_matches(
 impl FormatOutput<'_> {
     pub fn debug_str(&self) -> String {
         format!(
-            "{}\n\n{}\n\n{}",
+            "{}\n\nnode_high:\n{}\n\nnode_low:\n{}\n\nnode_simple:\n{}",
             self.new_content,
-            self.high_node.debug_str(),
-            self.low_node.debug_str()
+            self.node_high.debug_str(),
+            self.node_low.debug_str(),
+            self.node_simple.debug_str()
         )
     }
 }

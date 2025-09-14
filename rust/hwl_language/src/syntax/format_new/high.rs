@@ -172,7 +172,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
             // add a suffix if necessary
             if is_line_comment {
-                seq.push(LNode::AlwaysNewline);
+                seq_push_escape_if_last(seq, LNode::AlwaysNewline);
             } else if prev_space {
                 seq.push(LNode::Space);
             }
@@ -216,10 +216,10 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let delta = next_start.line_0 - prev_end.line_0;
 
             if delta > 1 && allow_blank {
-                seq.push(LNode::AlwaysBlankLine);
+                seq_push_escape_if_last(seq, LNode::AlwaysBlankLine);
             } else if delta > 0 {
-                seq.push(LNode::AlwaysNewline);
-            }
+                seq_push_escape_if_last(seq, LNode::AlwaysNewline);
+            };
         }
     }
 
@@ -347,6 +347,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     }
 }
 
+// TODO these should maybe be moved to `low`, we could add a space-capturing structure there
 fn node_ends_with_space(node: &LNode) -> Option<bool> {
     match node {
         LNode::Space => Some(true),
@@ -361,6 +362,7 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         LNode::Sequence(seq) => seq_ends_with_space(seq),
         LNode::Group(inner) => node_ends_with_space(inner),
         LNode::Fill(children) => fill_ends_with_space(children),
+        LNode::EscapeGroupIfLast(_, inner) => node_ends_with_space(inner),
     }
 }
 
@@ -371,4 +373,21 @@ fn seq_ends_with_space(seq: &[LNode]) -> Option<bool> {
 fn fill_ends_with_space(children: &[LNode]) -> Option<bool> {
     // there is an implicit [LNode::WrapNewLine] after each child, which counts as "not a space"
     if children.is_empty() { None } else { Some(false) }
+}
+
+// TODO this is not great, ideally
+fn seq_push_escape_if_last<'s>(seq: &mut Vec<LNode<'s>>, node: LNode<'s>) {
+    match seq.pop() {
+        Some(LNode::EscapeGroupIfLast((), mut inner)) => {
+            *inner = LNode::Sequence(vec![*inner, node]);
+            seq.push(LNode::EscapeGroupIfLast((), inner));
+        }
+        Some(inner) => {
+            seq.push(inner);
+            seq.push(LNode::EscapeGroupIfLast((), Box::new(node)));
+        }
+        None => {
+            seq.push(LNode::EscapeGroupIfLast((), Box::new(node)));
+        }
+    }
 }

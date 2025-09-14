@@ -124,3 +124,17 @@ fn idempotent_block_comment_before_semi() {
     let src = "const {\n    a = b\n        + c\n        /* test */\n    ;\n}\n";
     assert_formatted(src);
 }
+
+#[test]
+fn block_comment_in_binary_should_not_force_wrap() {
+    let src = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/ / bbbb;\n";
+    let expected = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/\n    / bbbb;\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn line_comment_in_binary_should_not_force_wrap() {
+    let src = "const a = b + c // test\n;\n";
+    let expected = "const a = b + c // test\n;\n";
+    assert_formats_to(src, expected);
+}

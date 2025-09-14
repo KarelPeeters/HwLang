@@ -20,7 +20,7 @@ pub fn assert_formats_to(src: &str, expected: &str) {
     };
 
     let result_new_content = result.new_content;
-    assert_eq!(result_new_content, expected);
+    assert_eq!(result_new_content, expected, "output differs from expected");
 
     // if relevant, check for idempotence
     if src != expected {
@@ -29,6 +29,6 @@ pub fn assert_formats_to(src: &str, expected: &str) {
             eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
             panic!("formatting failed the second time");
         };
-        assert_eq!(result2.new_content, result_new_content);
+        assert_eq!(result2.new_content, result_new_content, "output is not stable");
     }
 }
