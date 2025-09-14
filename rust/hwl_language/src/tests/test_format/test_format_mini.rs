@@ -151,10 +151,46 @@ fn combine_binary_ops_per_level() {
 
 #[test]
 fn format_binaries_mixed() {
-    let long = format!(
-        "const c\n    = {VERY_LONG};\n\nconst c = {LONG}\n        * {LONG}\n    + {LONG};\n\nconst c = {LONG}\n    + {LONG}\n        * {LONG};\n\nconst c = {LONG}\n    + {LONG}\n    + {LONG};\n"
+    let src = format!("const c = {LONG}\n    * {LONG}\n    + {LONG};\n");
+    assert_formatted(&src);
+}
+
+#[test]
+fn format_binary_correct_level() {
+    let src = format!("const c = [\n    {LONG}\n        + {LONG},\n];\n");
+    assert_formatted(&src);
+}
+
+#[test]
+fn format_binary_mix_cases() {
+    let src = format!(
+        "const c = long_long_long_long_long_long_long_long_long_long_long_long_long_long
+    * long_long_long_long_long_long_long_long_long_long_long_long_long_long
+    + long_long_long_long_long_long_long_long_long_long_long_long_long_long;
+
+const c = long_long_long_long_long_long_long_long_long_long_long_long_long_long
+    + long_long_long_long_long_long_long_long_long_long_long_long_long_long
+        * long_long_long_long_long_long_long_long_long_long_long_long_long_long;
+
+const c = [
+    long_long_long_long_long_long_long_long_long_long_long_long_long_long
+        + long_long_long_long_long_long_long_long_long_long_long_long_long_long,
+];
+
+const c = [
+    long_long_long_long_long_long_long_long_long_long_long_long_long_long
+        * long_long_long_long_long_long_long_long_long_long_long_long_long_long
+        + long_long_long_long_long_long_long_long_long_long_long_long_long_long,
+];
+
+const c = [
+    long_long_long_long_long_long_long_long_long_long_long_long_long_long
+        + long_long_long_long_long_long_long_long_long_long_long_long_long_long
+            * long_long_long_long_long_long_long_long_long_long_long_long_long_long,
+];
+"
     );
-    assert_formatted(&long);
+    assert_formatted(&src);
 }
 
 #[test]

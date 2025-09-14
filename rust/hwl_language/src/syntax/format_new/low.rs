@@ -35,8 +35,9 @@ pub enum LNodeImpl<'s, E> {
     /// Force the enclosing group to wrap, without emitting anything itself.
     ForceWrap,
 
-    /// Indent the inner node.
-    Indent(Box<LNodeImpl<'s, E>>),
+    /// If the enclosing group is wrapping, indent the inner node by one level.
+    WrapIndent(Box<LNodeImpl<'s, E>>),
+
     /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
     /// Nodes that come after this node are indented normally again.
     Dedent(Box<LNodeImpl<'s, E>>),
@@ -199,8 +200,8 @@ impl<E: Debug> LNodeImpl<'_, E> {
             LNodeImpl::WrapNewline => swriteln!(f, "WrapNewline"),
             LNodeImpl::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
             LNodeImpl::ForceWrap => swriteln!(f, "ForceWrap"),
-            LNodeImpl::Indent(child) => {
-                swriteln!(f, "Indent");
+            LNodeImpl::WrapIndent(child) => {
+                swriteln!(f, "WrapIndent");
                 child.debug_str_impl(f, indent + 1);
             }
             LNodeImpl::Dedent(child) => {
@@ -269,7 +270,7 @@ impl<'s> LNode<'s> {
                 }
             }
             // simplify children
-            LNode::Indent(child) => simplify_container(child, escape_group, LNodeSimple::Indent),
+            LNode::WrapIndent(child) => simplify_container(child, escape_group, LNodeSimple::WrapIndent),
             LNode::Dedent(child) => simplify_container(child, escape_group, LNodeSimple::Dedent),
             LNode::Group(child) => {
                 let mut seq = vec![];
@@ -369,6 +370,10 @@ impl StringBuilderContext<'_> {
         r
     }
 
+    fn at_line_start(&self) -> bool {
+        self.state.curr_line_start == self.result.len()
+    }
+
     fn write_newline<W: WrapMaybe>(&mut self) -> Result<(), W::E> {
         self.write_str::<W>(&self.settings.newline_str)
     }
@@ -384,8 +389,7 @@ impl StringBuilderContext<'_> {
         // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
         //   first abstractly push indent/str nodes, then later actually convert to a full string
         //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
-        let at_line_start = self.state.curr_line_start == self.result.len();
-        if at_line_start && !is_whitespace_or_empty(s) {
+        if self.at_line_start() && !is_whitespace_or_empty(s) {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
             }
@@ -393,7 +397,7 @@ impl StringBuilderContext<'_> {
 
         // emit space if asked and both the previous and next charactor are not whitespace
         if self.state.emit_space
-            && self.state.curr_line_start != self.result.len()
+            && !self.at_line_start()
             && let Some(prev_char) = self.result.chars().last()
             && !char_is_whitespace(prev_char)
             && let Some(next_char) = s.chars().next()
@@ -462,11 +466,15 @@ impl StringBuilderContext<'_> {
             LNodeSimple::ForceWrap => {
                 W::require_wrapping()?;
             }
-            LNodeSimple::Indent(child) => {
-                self.indent(|ctx| ctx.write_node::<W>(child))?;
+            LNodeSimple::WrapIndent(child) => {
+                if W::is_wrapping() {
+                    self.indent(|slf| slf.write_node::<W>(child))?;
+                } else {
+                    self.write_node::<W>(child)?;
+                }
             }
             LNodeSimple::Dedent(child) => {
-                self.dedent(|ctx| ctx.write_node::<W>(child))?;
+                self.dedent(|slf| slf.write_node::<W>(child))?;
             }
             LNodeSimple::Sequence(children) => {
                 self.write_sequence::<W>(children)?;

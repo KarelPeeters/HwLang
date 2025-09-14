@@ -1091,8 +1091,8 @@ impl Context<'_> {
             &ExpressionKind::UnaryOp(op, inner) => HNode::Sequence(vec![token(op.inner.token()), self.fmt_expr(inner)]),
             &ExpressionKind::BinaryOp(op, _, _) => {
                 let mut seq = vec![];
-                self.collect_binary_expr(&mut seq, op.inner.level(), expr);
-                group_indent_seq(seq)
+                let leftmost = self.collect_binary_expr::<LeftmostYes>(&mut seq, op.inner.level(), expr);
+                binary_indent_seq(leftmost, seq)
             }
             &ExpressionKind::ArrayType(ref lengths, base) => {
                 let node_lengths = fmt_comma_list(SurroundKind::Square, &lengths.inner, |&len| {
@@ -1165,14 +1165,18 @@ impl Context<'_> {
         }
     }
 
-    fn collect_binary_expr(&self, seq: &mut Vec<HNode>, level: BinaryOpLevel, expr: Expression) {
+    fn collect_binary_expr<L: LeftmostMaybe>(
+        &self,
+        seq: &mut Vec<HNode>,
+        level: BinaryOpLevel,
+        expr: Expression,
+    ) -> L::R {
         if let &ExpressionKind::BinaryOp(op, left, right) = &self.arena_expressions[expr.inner]
             && op.inner.level() == level
         {
-            self.collect_binary_expr(seq, level, left);
+            let leftmost = self.collect_binary_expr::<L>(seq, level, left);
 
             seq.push(HNode::WrapNewline);
-
             let op_node = token(op.inner.token());
             match op.inner {
                 BinaryOp::Pow => {
@@ -1185,9 +1189,12 @@ impl Context<'_> {
                 }
             };
 
-            self.collect_binary_expr(seq, level, right);
+            self.collect_binary_expr::<LeftmostNo>(seq, level, right);
+
+            leftmost
         } else {
-            seq.push(self.fmt_expr(expr));
+            let expr_node = self.fmt_expr(expr);
+            L::push_or_return(seq, expr_node)
         }
     }
 
@@ -1297,7 +1304,7 @@ fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> H
     match (left, right) {
         (Some(left), Some(right)) => {
             // both left and right hand side, provide some wrapping opportunities
-            group_indent_seq(vec![left, HNode::WrapNewline, op, right])
+            binary_indent_seq(left, vec![HNode::WrapNewline, op, right])
         }
         (left, right) => {
             // only an operator and one side, just flatten to a sequence without wrapping
@@ -1319,7 +1326,13 @@ fn group_seq(nodes: Vec<HNode>) -> HNode {
 }
 
 fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
-    HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(nodes)))))
+    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+}
+
+fn binary_indent_seq(leftmost: HNode, mut rest: Vec<HNode>) -> HNode {
+    // TODO if this works, get rid of leftmost again
+    // rest.insert(0, leftmost);
+    group_seq(vec![leftmost, HNode::WrapIndent(Box::new(HNode::Sequence(rest)))])
 }
 
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
@@ -1329,7 +1342,7 @@ fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
     group_seq(vec![
         token(before),
         HNode::WrapNewline,
-        HNode::Indent(Box::new(inner)),
+        HNode::WrapIndent(Box::new(inner)),
         HNode::WrapNewline,
         token(after),
     ])
@@ -1382,5 +1395,25 @@ struct HNodeAndComma {
 impl From<HNode> for HNodeAndComma {
     fn from(node: HNode) -> Self {
         Self { node, comma: true }
+    }
+}
+
+trait LeftmostMaybe {
+    type R;
+    fn push_or_return(seq: &mut Vec<HNode>, v: HNode) -> Self::R;
+}
+
+struct LeftmostYes;
+struct LeftmostNo;
+impl LeftmostMaybe for LeftmostYes {
+    type R = HNode;
+    fn push_or_return(_: &mut Vec<HNode>, v: HNode) -> Self::R {
+        v
+    }
+}
+impl LeftmostMaybe for LeftmostNo {
+    type R = ();
+    fn push_or_return(seq: &mut Vec<HNode>, v: HNode) -> Self::R {
+        seq.push(v);
     }
 }
