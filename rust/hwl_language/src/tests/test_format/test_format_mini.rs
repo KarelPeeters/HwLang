@@ -128,7 +128,7 @@ fn idempotent_block_comment_before_semi() {
 #[test]
 fn block_comment_in_binary_should_not_force_wrap() {
     let src = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/ / bbbb;\n";
-    let expected = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/\n    / bbbb;\n";
+    let expected = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/\n    / bbbb;\n";
     assert_formats_to(src, expected);
 }
 
@@ -137,4 +137,22 @@ fn line_comment_in_binary_should_not_force_wrap() {
     let src = "const a = b + c // test\n;\n";
     let expected = "const a = b + c // test\n;\n";
     assert_formats_to(src, expected);
+}
+
+const LONG: &str = "long_long_long_long_long_long_long_long_long_long_long_long_long_long";
+const VERY_LONG: &str = "long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long";
+
+#[test]
+fn combine_binary_ops_per_level() {
+    let src = format!("const c = a * {LONG} / {LONG};");
+    let expected = format!("const c = a\n    * {LONG}\n    / {LONG};\n");
+    assert_formats_to(&src, &expected);
+}
+
+#[test]
+fn format_binaries_mixed() {
+    let long = format!(
+        "const c\n    = {VERY_LONG};\n\nconst c = {LONG}\n        * {LONG}\n    + {LONG};\n\nconst c = {LONG}\n    + {LONG}\n        * {LONG};\n\nconst c = {LONG}\n    + {LONG}\n    + {LONG};\n"
+    );
+    assert_formatted(&long);
 }

@@ -860,6 +860,19 @@ pub enum BinaryOp {
     In,
 }
 
+// TODO add a test that checks that the parser matches these levels
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BinaryOpLevel {
+    Add,
+    Mul,
+    Pow,
+    Bit,
+    Bool,
+    Shift,
+    Cmp,
+    In,
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum AssignBinaryOp {
     Add,
@@ -1059,6 +1072,24 @@ impl BinaryOp {
             BinaryOp::CmpGt => TokenType::Gt,
             BinaryOp::CmpGte => TokenType::Gte,
             BinaryOp::In => TokenType::In,
+        }
+    }
+
+    pub fn level(self) -> BinaryOpLevel {
+        match self {
+            BinaryOp::Add | BinaryOp::Sub => BinaryOpLevel::Add,
+            BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => BinaryOpLevel::Mul,
+            BinaryOp::Pow => BinaryOpLevel::Pow,
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => BinaryOpLevel::Bit,
+            BinaryOp::BoolAnd | BinaryOp::BoolOr | BinaryOp::BoolXor => BinaryOpLevel::Bool,
+            BinaryOp::Shl | BinaryOp::Shr => BinaryOpLevel::Shift,
+            BinaryOp::CmpEq
+            | BinaryOp::CmpNeq
+            | BinaryOp::CmpLt
+            | BinaryOp::CmpLte
+            | BinaryOp::CmpGt
+            | BinaryOp::CmpGte => BinaryOpLevel::Cmp,
+            BinaryOp::In => BinaryOpLevel::In,
         }
     }
 }

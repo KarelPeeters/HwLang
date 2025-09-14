@@ -1,16 +1,17 @@
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp, Block,
-    BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock,
-    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind,
-    DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem, ExtraList, FileContent,
-    ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry,
-    ImportFinalKind, IntLiteral, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
-    ItemImport, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
-    ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind,
-    ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression,
-    PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece,
-    StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement,
-    WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
+    BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset,
+    CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
+    ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem,
+    ExtraList, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier, IfCondBlockPair,
+    IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceView, Item, ItemDefInterface,
+    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern, MatchStatement,
+    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration,
+    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain,
+    TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
+    WireDeclarationKind,
 };
 use crate::syntax::format_new::high::HNode;
 use crate::syntax::token::TokenType as TT;
@@ -1087,12 +1088,10 @@ impl Context<'_> {
                 surrounded_group_indent(SurroundKind::Square, HNode::Sequence(seq))
             }
             &ExpressionKind::UnaryOp(op, inner) => HNode::Sequence(vec![token(op.inner.token()), self.fmt_expr(inner)]),
-            &ExpressionKind::BinaryOp(op, left, right) => {
-                let node_op = match op.inner {
-                    BinaryOp::Pow => token(op.inner.token()),
-                    _ => HNode::Sequence(vec![HNode::Space, token(op.inner.token()), HNode::Space]),
-                };
-                wrapping_binary_op(node_op, Some(self.fmt_expr(left)), Some(self.fmt_expr(right)))
+            &ExpressionKind::BinaryOp(op, _, _) => {
+                let mut seq = vec![];
+                self.collect_binary_expr(&mut seq, op.inner.level(), expr);
+                group_indent_seq(seq)
             }
             &ExpressionKind::ArrayType(ref lengths, base) => {
                 let node_lengths = fmt_comma_list(SurroundKind::Square, &lengths.inner, |&len| {
@@ -1162,6 +1161,32 @@ impl Context<'_> {
                 } = expr;
                 fmt_call(token(TT::Reg), &[value, init], |&expr| self.fmt_expr(expr))
             }
+        }
+    }
+
+    fn collect_binary_expr(&self, seq: &mut Vec<HNode>, level: BinaryOpLevel, expr: Expression) {
+        if let &ExpressionKind::BinaryOp(op, left, right) = &self.arena_expressions[expr.inner]
+            && op.inner.level() == level
+        {
+            self.collect_binary_expr(seq, level, left);
+
+            seq.push(HNode::WrapNewline);
+
+            let op_node = token(op.inner.token());
+            match op.inner {
+                BinaryOp::Pow => {
+                    seq.push(op_node);
+                }
+                _ => {
+                    seq.push(HNode::Space);
+                    seq.push(op_node);
+                    seq.push(HNode::Space);
+                }
+            };
+
+            self.collect_binary_expr(seq, level, right);
+        } else {
+            seq.push(self.fmt_expr(expr));
         }
     }
 
@@ -1269,12 +1294,12 @@ fn wrapping_assign_op(op: TT, value: HNode) -> HNode {
 
 fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> HNode {
     match (left, right) {
-        (Some(left), Some(right)) => HNode::Group(Box::new(HNode::Sequence(vec![
-            left,
-            HNode::WrapNewline,
-            HNode::Indent(Box::new(HNode::Sequence(vec![op, right]))),
-        ]))),
+        (Some(left), Some(right)) => {
+            // both left and right hand side, provide some wrapping opportunities
+            group_indent_seq(vec![left, HNode::WrapNewline, op, right])
+        }
         (left, right) => {
+            // only an operator and one side, just flatten to a sequence without wrapping
             let mut seq = vec![];
             if let Some(left) = left {
                 seq.push(left);
