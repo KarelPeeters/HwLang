@@ -1313,18 +1313,25 @@ fn wrapping_binary_op(op: HNode, left: Option<HNode>, right: Option<HNode>) -> H
     }
 }
 
+fn group_seq(nodes: Vec<HNode>) -> HNode {
+    HNode::Group(Box::new(HNode::Sequence(nodes)))
+}
+
 fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
     HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(nodes)))))
 }
 
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
-    let group_seq = vec![HNode::WrapNewline, inner, HNode::WrapNewline];
-    let group = HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(group_seq)))));
-
     // the before/after tokens should not be part of the group,
     //   since then trailing line comments after `after` would force the entire group to wrap
     let (before, after) = surround.before_after();
-    HNode::Sequence(vec![token(before), group, token(after)])
+    group_seq(vec![
+        token(before),
+        HNode::WrapNewline,
+        HNode::Indent(Box::new(inner)),
+        HNode::WrapNewline,
+        token(after),
+    ])
 }
 
 fn token(tt: TT) -> HNode {
