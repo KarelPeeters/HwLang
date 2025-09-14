@@ -124,9 +124,9 @@ pub fn check_format_output_matches(
                     return Err(diags.report(diag));
                 }
                 Some(new_token) => {
+                    let old_token_str = &old_content[old_token.span.range_bytes()];
+                    let new_token_str = &new_content[new_token.span.range_bytes()];
                     if old_token.ty == new_token.ty {
-                        let old_token_str = &old_content[old_token.span.range_bytes()];
-                        let new_token_str = &new_content[new_token.span.range_bytes()];
                         if old_token_str == new_token_str {
                             // success
                             new_tokens_iter.next().unwrap();
@@ -149,15 +149,17 @@ pub fn check_format_output_matches(
                         new_tokens_iter.next().unwrap();
                         continue;
                     } else {
-                        let diag = Diagnostic::new_internal_error(format!(
-                            "formatting output token type mismatch, got `{}`",
-                            new_token.ty.diagnostic_string()
-                        ))
-                        .add_error(
-                            old_token.span,
-                            format!("expected `{}`", old_token.ty.diagnostic_string()),
-                        )
-                        .finish();
+                        let reason = format!(
+                            "formatting output token type mismatch, got `{}` with content `{}`",
+                            new_token.ty.diagnostic_string(),
+                            new_token_str
+                        );
+                        let diag = Diagnostic::new_internal_error(reason)
+                            .add_error(
+                                old_token.span,
+                                format!("expected `{}`", old_token.ty.diagnostic_string()),
+                            )
+                            .finish();
                         return Err(diags.report(diag));
                     }
                 }

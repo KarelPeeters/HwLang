@@ -546,6 +546,7 @@ impl Context<'_> {
                 let mut seq = vec![];
                 if let Some(vis) = vis.token() {
                     seq.push(token(vis));
+                    seq.push(HNode::Space);
                 }
 
                 seq.push(token(TT::Reg));

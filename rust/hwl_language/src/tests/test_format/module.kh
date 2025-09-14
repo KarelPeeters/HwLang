@@ -1,0 +1,28 @@
+module module_empty ports() {}
+
+module module_ports ports() {}
+
+module module_declarations ports() {
+    const c = false;
+    wire a = false;
+    reg b: bool = false;
+    pub reg b: bool = false;
+}
+
+module module_structures ports() {
+    {
+        wire a = false;
+    }
+
+    if (false) {
+        wire a = false;
+    } else if (true) {
+        wire b = false;
+    } else {
+        wire c = false;
+    }
+
+    for (i in 0..28) {
+        wire a = false;
+    }
+}

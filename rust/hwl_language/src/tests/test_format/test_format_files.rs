@@ -2,30 +2,32 @@ use crate::tests::test_format::util::assert_formatted;
 
 #[test]
 fn test_declaration() {
-    assert_file_stable("declaration.kh");
+    run_file_tests("declaration.kh");
 }
 
 #[test]
 fn test_expression() {
-    assert_file_stable("expression.kh");
+    run_file_tests("expression.kh");
 }
 
 #[test]
 fn test_module() {
-    assert_file_stable("module.kh");
+    run_file_tests("module.kh");
 }
 
 #[test]
 fn test_statement() {
-    assert_file_stable("statement.kh");
+    run_file_tests("statement.kh");
 }
 
 #[test]
 fn test_preserve() {
-    assert_file_stable("preserve.kh");
+    run_file_tests("preserve.kh");
 }
 
-pub fn assert_file_stable(file_name: &str) {
+pub fn run_file_tests(file_name: &str) {
     let src = std::fs::read_to_string(format!("src/tests/test_format/{file_name}")).unwrap();
     assert_formatted(&src);
+
+    // TODO try gradually reducing/increasing the width to find extra edge cases
 }

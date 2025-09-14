@@ -82,6 +82,7 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
 }
 
 // TODO remove print from this, only convert to string and leave the caller to do the print
+// TODO stop using this, just use diags_to_debug_string and print that
 pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
     let diags = diags.finish();
     let any_error = !diags.is_empty();

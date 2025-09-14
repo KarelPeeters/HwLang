@@ -23,3 +23,7 @@ interface both {
         y: in,
     }
 }
+
+fn foo(x: uint, y: uint) -> uint {
+    return x + y;
+}

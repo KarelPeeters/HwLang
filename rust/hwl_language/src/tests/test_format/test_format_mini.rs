@@ -156,3 +156,11 @@ fn format_binaries_mixed() {
     );
     assert_formatted(&long);
 }
+
+#[test]
+fn pub_wire_reg() {
+    let src_wire = "module foo ports() {\n    pub wire a = false;\n}\n";
+    assert_formatted(src_wire);
+    let src_reg = "module foo ports() {\n    pub reg a: bool = false;\n}\n";
+    assert_formatted(src_reg);
+}
