@@ -183,10 +183,6 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 seq.push(LNode::Space);
             }
         }
-
-        if !first_comment {
-            self.preserve_empty_lines(seq, false);
-        }
     }
 
     fn collect_comments_all(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {

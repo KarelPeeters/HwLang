@@ -121,7 +121,7 @@ fn idempotent_block_comment_newlines() {
 
 #[test]
 fn idempotent_block_comment_before_semi() {
-    let src = "const {\n    a = b\n        + c\n        /* test */\n    ;\n}\n";
+    let src = "const {\n    a = b + c /* test */;\n}\n";
     assert_formatted(src);
 }
 
@@ -240,5 +240,12 @@ fn comment_comma_interaction_unstable() {
 fn block_comment_line_chan() {
     let src = "struct u(\n    if (false) {/*\n    *//*\n    *//**/})\n{}\n";
     let expected = "struct u(\n    if (false) { /*\n    */ /*\n    */ /**/\n    }\n) {}\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn block_comment_before_assign() {
+    let src = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/ = a;";
+    let expected = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/\n    = a;\n";
     assert_formats_to(src, expected);
 }
