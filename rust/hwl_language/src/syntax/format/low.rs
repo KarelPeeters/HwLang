@@ -1,5 +1,5 @@
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::common::swrite_indent;
+use crate::syntax::format::common::swrite_indent;
 use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::is_whitespace_or_empty;
 use crate::util::data::VecExt;

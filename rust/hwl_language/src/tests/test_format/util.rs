@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{Diagnostics, diags_to_debug_string};
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::{check_format_output_matches, format};
+use crate::syntax::format::{check_format_output_matches, format};
 use crate::syntax::source::SourceDatabase;
 
 pub fn assert_formatted(src: &str) {

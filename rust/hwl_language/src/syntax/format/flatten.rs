@@ -13,7 +13,7 @@ use crate::syntax::ast::{
     TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
     WireDeclarationKind,
 };
-use crate::syntax::format_new::high::HNode;
+use crate::syntax::format::high::HNode;
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
 use itertools::Either;

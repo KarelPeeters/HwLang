@@ -10,10 +10,9 @@
 
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;
-use crate::syntax::format::FormatSettings;
-use crate::syntax::format_new::flatten::ast_to_node;
-use crate::syntax::format_new::high::{HNode, lower_nodes};
-use crate::syntax::format_new::low::{LNode, LNodeSimple, StringsStats, node_to_string};
+use crate::syntax::format::flatten::ast_to_node;
+use crate::syntax::format::high::{HNode, lower_nodes};
+use crate::syntax::format::low::{LNode, LNodeSimple, StringsStats, node_to_string};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
@@ -23,6 +22,31 @@ mod common;
 mod flatten;
 mod high;
 mod low;
+
+#[derive(Debug)]
+pub struct FormatSettings {
+    pub indent_str: String,
+    // TODO tab size is such a weird setting, it only matters if `indent_str` or literals contain tabs,
+    //   do we really want to support this?
+    // TODO assert settings validness somewhere, eg. indent_str should parse as a single whitespace token
+    pub tab_size: usize,
+    pub max_line_length: usize,
+    // TODO add option to sort imports, tricky because tokens won't match and we might lose even more comments
+    // pub sort_imports: bool,
+    // TODO use \r\n on Windows?
+    pub newline_str: String,
+}
+
+impl Default for FormatSettings {
+    fn default() -> Self {
+        Self {
+            indent_str: "    ".to_string(),
+            tab_size: 4,
+            max_line_length: 120,
+            newline_str: "\n".to_string(),
+        }
+    }
+}
 
 pub struct FormatOutput<'s> {
     pub old_tokens: Vec<Token>,

@@ -1,5 +1,5 @@
-use crate::syntax::format_new::common::swrite_indent;
-use crate::syntax::format_new::low::LNode;
+use crate::syntax::format::common::swrite_indent;
+use crate::syntax::format::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
 use hwl_util::swriteln;

@@ -2,7 +2,7 @@ use crate::args::ArgsFormat;
 use crate::util::print_diagnostics;
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::syntax::format::FormatSettings;
-use hwl_language::syntax::format_new::{check_format_output_matches, format};
+use hwl_language::syntax::format::{check_format_output_matches, format};
 
 use hwl_language::syntax::source::SourceDatabase;
 use std::process::ExitCode;

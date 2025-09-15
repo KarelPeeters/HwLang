@@ -2,7 +2,7 @@
 
 use hwl_language::front::diagnostic::{Diagnostics, diags_to_debug_string};
 use hwl_language::syntax::format::FormatSettings;
-use hwl_language::syntax::format_new::format;
+use hwl_language::syntax::format::format;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, tokenize};
