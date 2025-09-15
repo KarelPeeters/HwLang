@@ -289,10 +289,11 @@ impl Context<'_> {
                     }
                 };
 
-                match vis.token() {
-                    None => node_kind,
-                    Some(token_vis) => HNode::Sequence(vec![token(token_vis), HNode::Space, node_kind]),
-                }
+                let mut seq = vec![];
+                vis.to_seq(&mut seq);
+
+                seq.push(node_kind);
+                HNode::Sequence(seq)
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -316,11 +317,7 @@ impl Context<'_> {
         body: Option<&Block<ModuleStatement>>,
     ) -> HNode {
         let mut seq = vec![];
-
-        if let Some(vis) = vis.token() {
-            seq.push(token(vis));
-            seq.push(HNode::Space);
-        }
+        vis.to_seq(&mut seq);
 
         if external {
             seq.push(token(TT::External));
@@ -365,10 +362,7 @@ impl Context<'_> {
         } = decl;
 
         let mut seq = vec![];
-        if let Some(vis) = vis.token() {
-            seq.push(token(vis));
-            seq.push(HNode::Space);
-        }
+        vis.to_seq(&mut seq);
         seq.push(token(TT::Interface));
         seq.push(HNode::Space);
         seq.push(self.fmt_maybe_id(id));
@@ -544,10 +538,7 @@ impl Context<'_> {
                 } = decl;
 
                 let mut seq = vec![];
-                if let Some(vis) = vis.token() {
-                    seq.push(token(vis));
-                    seq.push(HNode::Space);
-                }
+                vis.to_seq(&mut seq);
 
                 seq.push(token(TT::Reg));
                 seq.push(HNode::Space);
@@ -576,10 +567,7 @@ impl Context<'_> {
                 } = decl;
 
                 let mut seq = vec![];
-                if let Some(vis) = vis.token() {
-                    seq.push(token(vis));
-                    seq.push(HNode::Space);
-                }
+                vis.to_seq(&mut seq);
 
                 seq.push(token(TT::Wire));
                 seq.push(HNode::Space);
@@ -1329,9 +1317,7 @@ fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
     HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
 }
 
-fn binary_indent_seq(leftmost: HNode, mut rest: Vec<HNode>) -> HNode {
-    // TODO if this works, get rid of leftmost again
-    // rest.insert(0, leftmost);
+fn binary_indent_seq(leftmost: HNode, rest: Vec<HNode>) -> HNode {
     group_seq(vec![leftmost, HNode::WrapIndent(Box::new(HNode::Sequence(rest)))])
 }
 
@@ -1369,21 +1355,26 @@ impl SurroundKind {
 }
 
 trait FormatVisibility: Copy {
-    fn token(self) -> Option<TT>;
+    fn to_seq(self, seq: &mut Vec<HNode>);
 }
 
 impl FormatVisibility for Visibility {
-    fn token(self) -> Option<TT> {
+    fn to_seq(self, seq: &mut Vec<HNode>) {
         match self {
-            Visibility::Private => None,
-            Visibility::Public { span: _ } => Some(TT::Pub),
+            Visibility::Public { span: _ } => {
+                seq.push(token(TT::Pub));
+                seq.push(HNode::Space);
+            }
+            Visibility::Private => {
+                // this is the default, do nothing
+            }
         }
     }
 }
 
 impl FormatVisibility for () {
-    fn token(self) -> Option<TT> {
-        None
+    fn to_seq(self, _: &mut Vec<HNode>) {
+        // do nothing
     }
 }
 
