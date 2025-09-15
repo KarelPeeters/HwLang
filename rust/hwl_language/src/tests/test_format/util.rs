@@ -8,12 +8,25 @@ pub fn assert_formatted(src: &str) {
 }
 
 pub fn assert_formats_to(src: &str, expected: &str) {
-    let diags = Diagnostics::new();
-    let mut source = SourceDatabase::new();
     let settings = FormatSettings::default();
 
     // first format
-    let file = source.add_file("dummy.kh".to_owned(), src.to_owned());
+    let result = assert_format_valid("dummy.kh", src, &settings);
+    assert_eq!(result, expected, "output differs from expected");
+
+    // second format, if necessary, to check for stability
+    if src != expected {
+        let result2 = assert_format_valid("dummy2.kh", &result, &settings);
+        assert_eq!(result2, result, "output is not stable");
+    }
+}
+
+pub fn assert_format_valid<'s>(name: &str, src: &'s str, settings: &FormatSettings) -> String {
+    let diags = Diagnostics::new();
+    let mut source = SourceDatabase::new();
+
+    let file = source.add_file(name.to_owned(), src.to_owned());
+
     let Ok(result) = format(&diags, &source, &settings, file) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("formatting failed");
@@ -31,16 +44,5 @@ pub fn assert_formats_to(src: &str, expected: &str) {
         panic!("formatting output does not match the original tokens/ast");
     };
 
-    let result_new_content = result.new_content;
-    assert_eq!(result_new_content, expected, "output differs from expected");
-
-    // if relevant, check for idempotence
-    if src != expected {
-        let file2 = source.add_file("dummy2.kh".to_owned(), result_new_content.clone());
-        let Ok(result2) = format(&diags, &source, &settings, file2) else {
-            eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
-            panic!("formatting failed the second time");
-        };
-        assert_eq!(result2.new_content, result_new_content, "output is not stable");
-    }
+    result.new_content
 }
