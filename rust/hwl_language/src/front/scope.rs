@@ -234,7 +234,7 @@ impl<'p> Scope<'p> {
         self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 
-    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound> {
+    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound<'_>> {
         self.find_impl(diags, id, None, self.span, false)
     }
 

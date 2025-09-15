@@ -1,7 +1,6 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
-use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -421,7 +420,7 @@ impl<'s> Tokenizer<'s> {
     }
 }
 
-pub fn apply_string_literal_escapes(raw: &str) -> Cow<str> {
+pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
     // TODO actually do escapes here, keep in sync with tokenizer state machine
     Cow::Borrowed(raw)
 }

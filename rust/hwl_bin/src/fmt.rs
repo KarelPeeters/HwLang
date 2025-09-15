@@ -8,7 +8,8 @@ use hwl_language::syntax::source::SourceDatabase;
 use std::process::ExitCode;
 
 pub fn main_fmt(args: ArgsFormat) -> ExitCode {
-    let ArgsFormat { manifest, file } = args;
+    let _ = args;
+    // let ArgsFormat { manifest, file } = args;
 
     // we always need a manifest to get formatting settings
     // let manifest = find_and_read_manifest(manifest);
@@ -45,7 +46,7 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let file2 = source.add_file("dummy2.kh".to_owned(), result.new_content);
     let result2 = format(&diags, &source, &settings, file2).unwrap();
 
-    std::fs::write("output2.kh", &result2.debug_str()).unwrap();
+    std::fs::write("output2.kh", result2.debug_str()).unwrap();
     println!("{:?}", result2.stats);
 
     ExitCode::SUCCESS
