@@ -200,3 +200,38 @@ fn pub_wire_reg() {
     let src_reg = "module foo ports() {\n    pub reg a: bool = false;\n}\n";
     assert_formatted(src_reg);
 }
+
+#[test]
+fn comment_comma_interaction_present_same() {
+    let src = "const c = [\n    a + b, // test\n];\n";
+    let expected = "const c = [\n    a + b, // test\n];\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_comma_interaction_missing_same() {
+    let src = "const c = [\n    a + b // test\n];\n";
+    let expected = "const c = [\n    a + b, // test\n];\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_comma_interaction_present_next() {
+    let src = "const c = [\n    a + b,\n    // test\n];\n";
+    let expected = "const c = [\n    a + b,\n    // test\n];\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_comma_interaction_missing_next() {
+    let src = "const c = [\n    a + b\n    // test\n];\n";
+    let expected = "const c = [\n    a + b,\n    // test\n];\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_comma_interaction_unstable() {
+    let src = "const c = [a + b\n/*test*//*\n*/];\n";
+    let expected = "const c = [\n    a + b,\n/*test*/ /*\n*/\n];\n";
+    assert_formats_to(src, expected);
+}

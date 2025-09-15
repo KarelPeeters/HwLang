@@ -3,6 +3,7 @@ use crate::syntax::format_new::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
 use hwl_util::swriteln;
+use itertools::enumerate;
 
 /// High-level formatting nodes.
 ///
@@ -224,12 +225,12 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     }
 
     fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
-        let mut seq = vec![self.map(false, node)?];
+        let mut seq = vec![self.map(false, false, node)?];
         self.collect_comments_on_lines_before_real_token(false, &mut seq);
         Ok(LNode::Sequence(seq))
     }
 
-    fn map(&mut self, prev_space: bool, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
+    fn map(&mut self, prev_space: bool, next_wrap_comma: bool, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let result = match node {
             HNode::Space => LNode::Space,
             &HNode::AlwaysToken(expected) => {
@@ -254,14 +255,14 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
 
-                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                if !next_wrap_comma {
+                    self.collect_comments_on_prev_line(prev_space, &mut seq);
+                }
 
                 LNode::Sequence(seq)
             }
             HNode::WrapComma => {
-                // TODO force wrap if there was a trailing comma in the source, like Black?
-
-                // if we will encounter a comma, collect comments before it
+                // TODO doc, especially comment handling
                 let mut seq = vec![];
                 if let Some(token) = self.find_next_non_comment_token()
                     && self.source_tokens[token.0].ty == TT::Comma
@@ -269,16 +270,17 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     self.collect_comments_all(prev_space, &mut seq);
                 }
 
-                // always add a comma token to the output
                 seq.push(LNode::WrapStr(","));
 
-                // if there is a comma, pop it and collect comments after it
+                // if there was a comma in the source, pop it
                 if let Some(token) = self.peek_token()
                     && token.ty == TT::Comma
                 {
+                    // TODO force wrap if there was a trailing comma in the source, like Black?
                     let _ = self.pop_token();
-                    self.collect_comments_on_prev_line(prev_space, &mut seq);
                 }
+
+                self.collect_comments_on_prev_line(prev_space, &mut seq);
 
                 LNode::Sequence(seq)
             }
@@ -302,25 +304,30 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
             HNode::ForceWrap => LNode::ForceWrap,
             HNode::WrapIndent(inner) => {
-                let mut seq = vec![self.map(prev_space, inner)?];
-                self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
+                let mut seq = vec![self.map(prev_space, next_wrap_comma, inner)?];
+                if !next_wrap_comma {
+                    self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
+                }
                 LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
             }
-            HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, inner)?)),
+            HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, next_wrap_comma, inner)?)),
             HNode::Sequence(children) => {
                 let mut seq = vec![];
-                for child in children {
+                for (child_i, child) in enumerate(children) {
                     let child_prev_space = seq_ends_with_space(&seq).unwrap_or(prev_space);
-                    seq.push(self.map(child_prev_space, child)?);
+                    let child_next_wrap_comma =
+                        seq_starts_with_wrap_comma(&children[child_i + 1..]).unwrap_or(next_wrap_comma);
+
+                    seq.push(self.map(child_prev_space, child_next_wrap_comma, child)?);
                 }
                 LNode::Sequence(seq)
             }
-            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, inner)?)),
+            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, next_wrap_comma, inner)?)),
             HNode::Fill(children) => {
                 let mut mapped = vec![];
                 for child in children {
                     let child_prev_space = fill_ends_with_space(&mapped).unwrap_or(prev_space);
-                    mapped.push(self.map(child_prev_space, child)?);
+                    mapped.push(self.map(child_prev_space, false, child)?);
                 }
                 LNode::Fill(mapped)
             }
@@ -373,6 +380,40 @@ fn seq_ends_with_space(seq: &[LNode]) -> Option<bool> {
 fn fill_ends_with_space(children: &[LNode]) -> Option<bool> {
     // there is an implicit [LNode::WrapNewLine] after each child, which counts as "not a space"
     if children.is_empty() { None } else { Some(false) }
+}
+
+fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
+    match node {
+        HNode::WrapComma => Some(true),
+        HNode::Space
+        | HNode::AlwaysToken(_)
+        | HNode::AlwaysNewline
+        | HNode::WrapNewline
+        | HNode::AlwaysBlankLine
+        | HNode::ForceWrap => Some(false),
+        HNode::WrapIndent(inner) => node_starts_with_wrap_comma(inner),
+        HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
+        HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
+        HNode::Group(inner) => node_starts_with_wrap_comma(inner),
+        HNode::Fill(children) => fill_starts_with_wrap_comma(children),
+        HNode::PreserveBlankLines { last: _ } => None,
+    }
+}
+
+fn seq_starts_with_wrap_comma(seq: &[HNode]) -> Option<bool> {
+    seq.iter().find_map(node_starts_with_wrap_comma)
+}
+
+fn fill_starts_with_wrap_comma(children: &[HNode]) -> Option<bool> {
+    if let Some(first) = children.first() {
+        if let Some(result) = node_starts_with_wrap_comma(first) {
+            Some(result)
+        } else {
+            Some(false)
+        }
+    } else {
+        None
+    }
 }
 
 // TODO this is not great, ideally
