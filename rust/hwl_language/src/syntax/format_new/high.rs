@@ -140,7 +140,12 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         None
     }
 
-    fn collect_comments(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>, filter: impl Fn(SpanFull) -> bool) {
+    fn collect_comments(
+        &mut self,
+        prev_space: bool,
+        seq: &mut Vec<LNode<'s>>,
+        mut filter: impl FnMut(SpanFull) -> bool,
+    ) {
         let prev_space = seq_ends_with_space(seq).unwrap_or(prev_space);
         let mut first_comment = true;
 
@@ -189,11 +194,13 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     }
 
     fn collect_comments_on_prev_line(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
-        let prev_end = self
+        let mut prev_end = self
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
         self.collect_comments(prev_space, seq, |span| {
-            prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0)
+            let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
+            prev_end = Some(span.end);
+            accept
         });
     }
 

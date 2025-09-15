@@ -235,3 +235,10 @@ fn comment_comma_interaction_unstable() {
     let expected = "const c = [\n    a + b,\n/*test*/ /*\n*/\n];\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn block_comment_line_chan() {
+    let src = "struct u(\n    if (false) {/*\n    *//*\n    *//**/})\n{}\n";
+    let expected = "struct u(\n    if (false) { /*\n    */ /*\n    */ /**/\n    }\n) {}\n";
+    assert_formats_to(src, expected);
+}
