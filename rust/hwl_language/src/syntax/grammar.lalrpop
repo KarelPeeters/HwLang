@@ -467,7 +467,7 @@ ModulePortInBlock: ModulePortInBlock = {
 ModulePortSingleKind: ModulePortSingleKind = {
     <direction:Spanned<PortDirection>> <kind:PortSingleKindInner>
         => ModulePortSingleKind::Port { direction, kind },
-    <span_keyword:Span<"interface">> <domain:Spanned<DomainKind>> <interface:Expr>
+    <domain:Spanned<DomainKind>> <span_keyword:Span<"interface">> <interface:Expr>
         => ModulePortSingleKind::Interface { span_keyword, domain, interface },
 }
 

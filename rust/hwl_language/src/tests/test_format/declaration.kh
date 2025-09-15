@@ -1,3 +1,31 @@
+import a.b.c;
+import a.b.c as d;
+import a.b.[c as d, e as f, g];
+
+type t = bool;
+type t(n: uint) = uint(n);
+
+pub type t = bool;
+
+struct Pair {
+    x: bool,
+    y: bool,
+}
+struct Pair(T: type) {
+    x: T,
+    y: T,
+}
+
+enum MaybeBool {
+    Some(bool),
+    None,
+}
+
+enum Either(L: type, R: type) {
+    Left(L),
+    Right(R),
+}
+
 interface empty {}
 
 interface only_views {
@@ -24,6 +52,27 @@ interface both {
     }
 }
 
+interface params(n: uint) {
+    if (n > 8) {
+        x: uint,
+    }
+}
+
 fn foo(x: uint, y: uint) -> uint {
     return x + y;
+}
+
+fn foo(
+    x: uint,
+    if (false) {
+        y: uint,
+    }
+    const a = false;
+) {}
+
+fn foo(x: bool = false, y: uint = 0) {}
+
+const {}
+const {
+    const c = false;
 }

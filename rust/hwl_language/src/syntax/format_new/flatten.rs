@@ -468,9 +468,9 @@ impl Context<'_> {
                         domain,
                         interface,
                     } => HNode::Sequence(vec![
-                        token(TT::Interface),
-                        HNode::Space,
                         self.fmt_domain(domain.inner),
+                        HNode::Space,
+                        token(TT::Interface),
                         HNode::Space,
                         self.fmt_expr(interface),
                     ]),
