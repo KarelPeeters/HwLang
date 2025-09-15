@@ -1168,6 +1168,7 @@ impl Context<'_> {
             let op_node = token(op.inner.token());
             match op.inner {
                 BinaryOp::Pow => {
+                    // TODO should this really be the one edge case?
                     seq.push(op_node);
                 }
                 _ => {

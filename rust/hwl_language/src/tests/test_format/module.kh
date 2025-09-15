@@ -13,6 +13,8 @@ module module_ports ports(
     derp: in sync(clk, rst) bool,
     derp: in sync(clk) bool,
 
+    cst: in const bool,
+
     axi_in: async interface axi.input(bool),
     axi_out: async interface axi.input(bool),
 
@@ -113,4 +115,9 @@ module module_blocks ports() {
     clocked(clk) {}
     clocked(clk, async rst) {}
     clocked(clk, sync rst) {}
+}
+
+module module_instance ports() {
+    instance foo ports(x=x, y, z=false);
+    instance f = foo ports();
 }

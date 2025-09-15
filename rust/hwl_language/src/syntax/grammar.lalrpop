@@ -1,5 +1,5 @@
-use crate::syntax::ast::*;
 use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::ast::*;
 use crate::syntax::LocationBuilder;
 use crate::syntax::token::{TokenType, TokenError};
 use crate::util::arena::Arena;
@@ -126,6 +126,7 @@ Item: Item = {
         => Item::CommonDeclaration(decl),
 
     <start:@L>
+        // TODO make ports optional
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
@@ -749,6 +750,7 @@ ExprLevelCall<allow_block>: ExpressionKind = {
     ExprLevelDot<allow_block>,
 }
 
+// TODO issue when trying to chain this with array indices, eg. a[0].b fails to parse
 ExprLevelDot<allow_block>: ExpressionKind = {
     <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:DotIndexKind>
         => ExpressionKind::DotIndex(target, index),
