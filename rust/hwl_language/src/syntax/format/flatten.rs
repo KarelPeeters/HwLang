@@ -1315,11 +1315,11 @@ fn group_seq(nodes: Vec<HNode>) -> HNode {
 }
 
 fn group_indent_seq(nodes: Vec<HNode>) -> HNode {
-    HNode::Group(Box::new(HNode::WrapIndent(Box::new(HNode::Sequence(nodes)))))
+    HNode::Group(Box::new(HNode::Indent(Box::new(HNode::Sequence(nodes)))))
 }
 
 fn binary_indent_seq(leftmost: HNode, rest: Vec<HNode>) -> HNode {
-    group_seq(vec![leftmost, HNode::WrapIndent(Box::new(HNode::Sequence(rest)))])
+    group_seq(vec![leftmost, HNode::Indent(Box::new(HNode::Sequence(rest)))])
 }
 
 fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
@@ -1329,7 +1329,7 @@ fn surrounded_group_indent(surround: SurroundKind, inner: HNode) -> HNode {
     group_seq(vec![
         token(before),
         HNode::WrapNewline,
-        HNode::WrapIndent(Box::new(inner)),
+        HNode::Indent(Box::new(inner)),
         HNode::WrapNewline,
         token(after),
     ])

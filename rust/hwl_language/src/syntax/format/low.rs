@@ -35,8 +35,9 @@ pub enum LNodeImpl<'s, E> {
     /// Force the enclosing group to wrap, without emitting anything itself.
     ForceWrap,
 
-    /// If the enclosing group is wrapping, indent the inner node by one level.
-    WrapIndent(Box<LNodeImpl<'s, E>>),
+    /// Indent the inner node by one level.
+    /// The indent only applies to new lines emitted by the inner node, the current line is not retroactively indented.
+    Indent(Box<LNodeImpl<'s, E>>),
 
     /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
     /// Nodes that come after this node are indented normally again.
@@ -200,8 +201,8 @@ impl<E: Debug> LNodeImpl<'_, E> {
             LNodeImpl::WrapNewline => swriteln!(f, "WrapNewline"),
             LNodeImpl::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
             LNodeImpl::ForceWrap => swriteln!(f, "ForceWrap"),
-            LNodeImpl::WrapIndent(child) => {
-                swriteln!(f, "WrapIndent");
+            LNodeImpl::Indent(child) => {
+                swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
             }
             LNodeImpl::Dedent(child) => {
@@ -270,7 +271,7 @@ impl<'s> LNode<'s> {
                 }
             }
             // simplify children
-            LNode::WrapIndent(child) => simplify_container(child, escape_group, LNodeSimple::WrapIndent),
+            LNode::Indent(child) => simplify_container(child, escape_group, LNodeSimple::Indent),
             LNode::Dedent(child) => simplify_container(child, escape_group, LNodeSimple::Dedent),
             LNode::Group(child) => {
                 let mut seq = vec![];
@@ -466,12 +467,8 @@ impl StringBuilderContext<'_> {
             LNodeSimple::ForceWrap => {
                 W::require_wrapping()?;
             }
-            LNodeSimple::WrapIndent(child) => {
-                if W::is_wrapping() {
-                    self.indent(|slf| slf.write_node::<W>(child))?;
-                } else {
-                    self.write_node::<W>(child)?;
-                }
+            LNodeSimple::Indent(child) => {
+                self.indent(|slf| slf.write_node::<W>(child))?;
             }
             LNodeSimple::Dedent(child) => {
                 self.dedent(|slf| slf.write_node::<W>(child))?;

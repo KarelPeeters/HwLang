@@ -17,7 +17,7 @@ pub fn assert_formats_to(src: &str, expected: &str) {
     // second format, if necessary, to check for stability
     if src != expected {
         let result2 = assert_format_valid("dummy2.kh", &result, &settings);
-        assert_eq!(result2, result, "output is not stable");
+        assert_eq!(result2, result, "formatting output is not stable");
     }
 }
 

@@ -19,7 +19,7 @@ pub enum HNode {
     WrapNewline,
     AlwaysBlankLine,
     ForceWrap,
-    WrapIndent(Box<HNode>),
+    Indent(Box<HNode>),
     Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
@@ -75,8 +75,8 @@ impl HNode {
             HNode::AlwaysBlankLine => swriteln!(f, "BlankLine"),
             HNode::WrapNewline => swriteln!(f, "WrapNewline"),
             HNode::ForceWrap => swriteln!(f, "ForceWrap"),
-            HNode::WrapIndent(child) => {
-                swriteln!(f, "WrapIndent");
+            HNode::Indent(child) => {
+                swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
             }
             HNode::Dedent(child) => {
@@ -177,11 +177,16 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
 
             // add a suffix if necessary
+            // TODO maybe make the entire comment escape the group?
             if is_line_comment {
                 seq_push_escape_if_last(seq, LNode::AlwaysNewline);
             } else if prev_space {
                 seq.push(LNode::Space);
             }
+        }
+
+        if !first_comment {
+            self.preserve_empty_lines(seq, false);
         }
     }
 
@@ -306,12 +311,12 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::Sequence(seq)
             }
             HNode::ForceWrap => LNode::ForceWrap,
-            HNode::WrapIndent(inner) => {
+            HNode::Indent(inner) => {
                 let mut seq = vec![self.map(prev_space, next_wrap_comma, inner)?];
                 if !next_wrap_comma {
                     self.collect_comments_on_lines_before_real_token(prev_space, &mut seq);
                 }
-                LNode::WrapIndent(Box::new(LNode::Sequence(seq)))
+                LNode::Indent(Box::new(LNode::Sequence(seq)))
             }
             HNode::Dedent(inner) => LNode::Dedent(Box::new(self.map(prev_space, next_wrap_comma, inner)?)),
             HNode::Sequence(children) => {
@@ -367,7 +372,7 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         | LNode::WrapNewline
         | LNode::AlwaysBlankLine => Some(false),
         LNode::ForceWrap => None,
-        LNode::WrapIndent(inner) => node_ends_with_space(inner),
+        LNode::Indent(inner) => node_ends_with_space(inner),
         LNode::Dedent(inner) => node_ends_with_space(inner),
         LNode::Sequence(seq) => seq_ends_with_space(seq),
         LNode::Group(inner) => node_ends_with_space(inner),
@@ -394,7 +399,7 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
         | HNode::WrapNewline
         | HNode::AlwaysBlankLine
         | HNode::ForceWrap => Some(false),
-        HNode::WrapIndent(inner) => node_starts_with_wrap_comma(inner),
+        HNode::Indent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
         HNode::Group(inner) => node_starts_with_wrap_comma(inner),

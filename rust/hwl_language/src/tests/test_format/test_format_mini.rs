@@ -244,8 +244,15 @@ fn block_comment_line_chan() {
 }
 
 #[test]
-fn block_comment_before_assign() {
+fn long_block_comment_before_assign() {
     let src = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/ = a;";
     let expected = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/\n    = a;\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn block_comment_after_assign() {
+    let src = "const a =\n/***/\nb;\n";
+    let expected = "const a\n    =\n/***/\nb;\n";
     assert_formats_to(src, expected);
 }
