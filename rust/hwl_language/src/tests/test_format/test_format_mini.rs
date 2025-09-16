@@ -140,7 +140,6 @@ fn line_comment_in_binary_should_not_force_wrap() {
 }
 
 const LONG: &str = "long_long_long_long_long_long_long_long_long_long_long_long_long_long";
-const VERY_LONG: &str = "long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long";
 
 #[test]
 fn combine_binary_ops_per_level() {
@@ -163,8 +162,7 @@ fn format_binary_correct_level() {
 
 #[test]
 fn format_binary_mix_cases() {
-    let src = format!(
-        "const c = long_long_long_long_long_long_long_long_long_long_long_long_long_long
+    let src = "const c = long_long_long_long_long_long_long_long_long_long_long_long_long_long
     * long_long_long_long_long_long_long_long_long_long_long_long_long_long
     + long_long_long_long_long_long_long_long_long_long_long_long_long_long;
 
@@ -188,8 +186,7 @@ const c = [
         + long_long_long_long_long_long_long_long_long_long_long_long_long_long
             * long_long_long_long_long_long_long_long_long_long_long_long_long_long,
 ];
-"
-    );
+";
     assert_formatted(&src);
 }
 
