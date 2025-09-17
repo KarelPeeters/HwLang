@@ -250,7 +250,7 @@ fn long_block_comment_before_assign() {
 #[test]
 fn block_comment_after_assign() {
     let src = "const a =\n/***/\nb;\n";
-    let expected = "const a\n    =\n/***/\nb;\n";
+    let expected = "const a =\n/***/\nb;\n";
     assert_formats_to(src, expected);
 }
 
@@ -272,5 +272,12 @@ fn block_comment_in_string_same_line() {
 fn block_comment_in_string_next_line() {
     let src = "const a = \"{\n    /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */ a}\";";
     let expected = "const a = \"{\n    /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */a\n}\";\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_after_dot() {
+    let src = "const\nn=l.g/*\np*//l;";
+    let expected = "const n = l.g /*\np*/\n    / l;\n";
     assert_formats_to(src, expected);
 }

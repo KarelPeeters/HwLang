@@ -147,6 +147,8 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         mut filter: impl FnMut(SpanFull) -> bool,
     ) {
         let prev_space = seq_ends_with_space(seq).unwrap_or(prev_space);
+        let mut seq_escaping = vec![];
+
         let mut first_comment = true;
 
         while let Some(token) = self.peek_token() {
@@ -162,7 +164,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
 
             // preserve newlines
-            self.preserve_empty_lines(seq, !first_comment);
+            self.preserve_empty_lines(&mut seq_escaping, !first_comment);
             first_comment = false;
 
             let _ = self.pop_token().unwrap();
@@ -171,22 +173,26 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let comment_str = &self.source[token.span.range_bytes()];
             let node_comment = LNode::Sequence(vec![LNode::Space, LNode::AlwaysStr(comment_str)]);
             if token_span.start.col_0 == 0 {
-                seq.push(LNode::Dedent(Box::new(node_comment)))
+                seq_escaping.push(LNode::Dedent(Box::new(node_comment)))
             } else {
-                seq.push(node_comment);
+                seq_escaping.push(node_comment);
             }
 
             // add a suffix if necessary
             // TODO maybe make the entire comment escape the group?
             if is_line_comment {
-                seq_push_escape_if_last(seq, LNode::AlwaysNewline);
+                seq_escaping.push(LNode::AlwaysNewline);
             } else if prev_space {
-                seq.push(LNode::Space);
+                seq_escaping.push(LNode::Space);
             }
         }
 
         if !first_comment {
-            self.preserve_empty_lines(seq, false);
+            self.preserve_empty_lines(&mut seq_escaping, false);
+        }
+
+        if !seq_escaping.is_empty() {
+            seq.push(LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq_escaping))));
         }
     }
 
@@ -215,6 +221,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         })
     }
 
+    // TODO rename back
     fn preserve_empty_lines(&self, seq: &mut Vec<LNode<'s>>, allow_blank: bool) {
         if let Some(prev) = self.prev_token()
             && let Some(next) = self.peek_token()
@@ -225,9 +232,9 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let delta = next_start.line_0 - prev_end.line_0;
 
             if delta > 1 && allow_blank {
-                seq_push_escape_if_last(seq, LNode::AlwaysBlankLine);
+                seq.push(LNode::AlwaysBlankLine);
             } else if delta > 0 {
-                seq_push_escape_if_last(seq, LNode::AlwaysNewline);
+                seq.push(LNode::AlwaysNewline);
             };
         }
     }
@@ -354,22 +361,26 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 LNode::Fill(mapped)
             }
             HNode::PreserveBlankLines { last: end } => {
-                let mut seq = vec![];
+                let mut seq_escaping = vec![];
 
                 let next_token_is_comment = self.peek_token().is_some_and(|t| t.ty.category() == TC::Comment);
 
                 if !end || next_token_is_comment {
-                    self.preserve_empty_lines(&mut seq, true);
+                    self.preserve_empty_lines(&mut seq_escaping, true);
 
-                    let len_before = seq.len();
-                    self.collect_comments_all(prev_space, &mut seq);
+                    let len_before = seq_escaping.len();
+                    self.collect_comments_all(prev_space, &mut seq_escaping);
 
-                    if !end && seq.len() > len_before {
-                        self.preserve_empty_lines(&mut seq, true);
+                    if !end && seq_escaping.len() > len_before {
+                        self.preserve_empty_lines(&mut seq_escaping, true);
                     }
                 }
 
-                LNode::Sequence(seq)
+                if seq_escaping.is_empty() {
+                    LNode::EMPTY
+                } else {
+                    LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq_escaping)))
+                }
             }
         };
         Ok(result)
@@ -435,22 +446,5 @@ fn fill_starts_with_wrap_comma(children: &[HNode]) -> Option<bool> {
         }
     } else {
         None
-    }
-}
-
-// TODO this is not great, ideally
-fn seq_push_escape_if_last<'s>(seq: &mut Vec<LNode<'s>>, node: LNode<'s>) {
-    match seq.pop() {
-        Some(LNode::EscapeGroupIfLast((), mut inner)) => {
-            *inner = LNode::Sequence(vec![*inner, node]);
-            seq.push(LNode::EscapeGroupIfLast((), inner));
-        }
-        Some(inner) => {
-            seq.push(inner);
-            seq.push(LNode::EscapeGroupIfLast((), Box::new(node)));
-        }
-        None => {
-            seq.push(LNode::EscapeGroupIfLast((), Box::new(node)));
-        }
     }
 }
