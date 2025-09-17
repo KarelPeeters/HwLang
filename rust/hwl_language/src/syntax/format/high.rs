@@ -234,7 +234,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
     fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let mut seq = vec![self.map(false, false, node)?];
-        self.collect_comments_on_lines_before_real_token(false, &mut seq);
+        self.collect_comments_all(false, &mut seq);
         Ok(LNode::Sequence(seq))
     }
 
@@ -263,7 +263,21 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
 
-                if !next_wrap_comma {
+                let capture_trailing_comments = if next_wrap_comma {
+                    false
+                } else {
+                    // capture comments after the current token only if there is no next real token on the same line
+                    //   if there is one, prefer to capture comments as prefixes to that token
+                    match self.find_next_non_comment_token() {
+                        None => true,
+                        Some(next) => {
+                            let token_end = self.offsets.expand_pos(token.span.end());
+                            let next_start = self.offsets.expand_pos(self.source_tokens[next.0].span.start());
+                            token_end.line_0 == next_start.line_0
+                        }
+                    }
+                };
+                if capture_trailing_comments {
                     self.collect_comments_on_prev_line(prev_space, &mut seq);
                 }
 

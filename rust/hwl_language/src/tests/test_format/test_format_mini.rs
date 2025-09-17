@@ -260,3 +260,17 @@ fn block_comment_in_fill() {
     let expected = "import a.[\n    b, /*\n*/\n];\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn block_comment_in_string_same_line() {
+    let src = "const a = \"{ /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */ a}\";";
+    let expected = "const a\n    = \"{ /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */\n    a\n}\";\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn block_comment_in_string_next_line() {
+    let src = "const a = \"{\n    /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */ a}\";";
+    let expected = "const a = \"{\n    /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */a\n}\";\n";
+    assert_formats_to(src, expected);
+}
