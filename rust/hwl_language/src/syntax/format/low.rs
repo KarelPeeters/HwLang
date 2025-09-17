@@ -375,8 +375,24 @@ impl StringBuilderContext<'_> {
         self.state.curr_line_start == self.result.len()
     }
 
-    fn write_newline<W: WrapMaybe>(&mut self) -> Result<(), W::E> {
-        self.write_str::<W>(&self.settings.newline_str)
+    /// Ensure the buffer ends in at least `n` newlines.
+    /// This is used to avoid duplicate newlines being emitted where not necessary.
+    fn write_newlines<W: WrapMaybe>(&mut self, n: usize) -> Result<(), W::E> {
+        // count current ending newlines
+        let mut curr_count = 0;
+        let mut curr = self.result.as_str();
+        while curr_count < n
+            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
+        {
+            curr_count += 1;
+            curr = before;
+        }
+
+        // add newlines if necessary
+        for _ in curr_count..n {
+            self.write_str::<W>(&self.settings.newline_str)?;
+        }
+        Ok(())
     }
 
     fn write_str<W: WrapMaybe>(&mut self, s: &str) -> Result<(), W::E> {
@@ -435,34 +451,15 @@ impl StringBuilderContext<'_> {
                 }
             }
             LNodeSimple::AlwaysNewline => {
-                W::require_wrapping()?;
-
-                // only add a newline if there isn't one already to avoid duplicates
-                if !self.result.ends_with(&self.settings.newline_str) {
-                    self.write_newline::<W>()?;
-                }
+                self.write_newlines::<W>(1)?;
             }
             LNodeSimple::WrapNewline => {
-                // only add a newline if wrapping and there isn't one already to avoid duplicates
-                if W::is_wrapping() && !self.result.ends_with(&self.settings.newline_str) {
-                    self.write_newline::<W>()?;
+                if W::is_wrapping() {
+                    self.write_newlines::<W>(1)?;
                 }
             }
             LNodeSimple::AlwaysBlankLine => {
-                W::require_wrapping()?;
-
-                // count ending newlines
-                let mut left: &str = &self.result;
-                let mut newline_count = 0;
-                while let Some(before) = left.strip_suffix(&self.settings.newline_str) {
-                    newline_count += 1;
-                    left = before;
-                }
-
-                // ensure at least two newlines
-                for _ in newline_count..2 {
-                    self.write_newline::<W>()?;
-                }
+                self.write_newlines::<W>(2)?;
             }
             LNodeSimple::ForceWrap => {
                 W::require_wrapping()?;
@@ -545,14 +542,14 @@ impl StringBuilderContext<'_> {
                     },
                     |slf| {
                         slf.indent(|slf| {
-                            slf.write_newline::<WrapYes>().remove_never();
+                            slf.write_newlines::<WrapYes>(1).remove_never();
                             let mut first_after_break = true;
                             for c in children {
                                 let check = slf.checkpoint();
                                 slf.write_node::<WrapYes>(c).remove_never();
                                 if slf.line_overflows(check) && !first_after_break {
                                     slf.restore(check);
-                                    slf.write_newline::<WrapYes>().remove_never();
+                                    slf.write_newlines::<WrapYes>(1).remove_never();
                                     slf.write_node::<WrapYes>(c).remove_never();
                                     first_after_break = true;
                                 } else {
@@ -560,7 +557,7 @@ impl StringBuilderContext<'_> {
                                 }
                             }
                         });
-                        slf.write_newline::<WrapYes>().remove_never();
+                        slf.write_newlines::<WrapYes>(1).remove_never();
                     },
                 )?;
             }

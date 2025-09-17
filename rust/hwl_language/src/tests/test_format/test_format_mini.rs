@@ -253,3 +253,10 @@ fn block_comment_after_assign() {
     let expected = "const a\n    =\n/***/\nb;\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn block_comment_in_fill() {
+    let src = "import a.[b/*\n*/];\n";
+    let expected = "import a.[\n    b, /*\n*/\n];\n";
+    assert_formats_to(src, expected);
+}
