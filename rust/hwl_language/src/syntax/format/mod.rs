@@ -1,12 +1,34 @@
-//! Sketch of the formatter implementation:
-//! * convert the AST to a tree of FNodes, which are just tokens with some extra structure
-//! * cross-reference emitted formatting tokens with the original tokens to get span info
-//! * bottom-up traverse the format tree to figure out which branches need to wrap due to line comments
-//! * top-down traverse the format tree, printing the tokens to the final buffer
-//!    * if any line overflows and we can still make additional wrapping choices, roll back and try
-//!    * if blank lines between items: insert matching blank line
-//! TODO add debug mode that slowly decreases the line width and saves every time the output changes
-//! TODO document all of this
+//! Formatter for the language.
+//!
+//! Formatting turns out to be a surprisingly hard problem, especially if we want to do line wrapping
+//! and preserve comments and (some) newlines.
+//!
+//! The current implementation works as follows:
+//! * Parse the source code to tokens and an AST.
+//! * Convert the AST to an [HNode] tree. The leaf nodes of this tree are token types, not the actual tokens.
+//!   This step reduces the formatting problem from a heterogeneous AST into a small set of formatting primitives.
+//! * Convert the [HNode] tree to an [LNode] tree.
+//!   This steps maps token types in the [HNode] tree to the actual token strings,
+//!   and re-inserts comments and newlines where applicable.
+//! * Simplify the [LNode] tree to an [LNodeSimple] tree.
+//!   This flattens nested sequences and pulls escaping newlines out of their groups.
+//!   "Simplify" is a bit of a misnomer, this step is necessary for the correctness of the output.
+//! * Finally the [LNodeSimple] tree is formatted to a string, respecting the given [FormatSettings].
+//!   At this point we actually make line-breaking decisions.
+//!
+//! Some resources that were helpful during development:
+//! * https://prettier.io/docs/technical-details, https://github.com/prettier/prettier/blob/main/commands.md
+//! * https://journal.stuffwithstuff.com/2015/09/08/the-hardest-program-ive-ever-written/
+//! * https://yorickpeterse.com/articles/how-to-write-a-code-formatter/
+//! * https://github.com/rust-lang/rustfmt/blob/master/Contributing.md
+//! * [A prettier printer - Philip Wadler](https://homepages.inf.ed.ac.uk/wadler/papers/prettier/prettier.pdf)
+//! * [A New Approach to Optimal Code Formatting - Phillip M. Yelland](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/44667.pdf)
+//! * [PRETTY PRINTING - Derek C. Oppen - 1979](http://i.stanford.edu/pub/cstr/reports/cs/tr/79/770/CS-TR-79-770.pdf)
+//! * [Strictly Pretty - Christian Lindig - 2000](https://lindig.github.io/papers/strictly-pretty-2000.pdf)
+//!
+//! The current implementation nodes are very similar to the prettier command set.
+//! For the line breaking algorithm we don't yet use any fancy dynamic programming,
+//! in practise the current "try and see if it fits" approach seems to be fast enough.
 
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;
