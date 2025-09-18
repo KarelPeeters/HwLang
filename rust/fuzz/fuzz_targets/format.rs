@@ -38,9 +38,11 @@ fn target(data: &str) {
         return;
     }
 
-    // check that formatting works
     let diags = Diagnostics::new();
-    let Ok(result) = format(&diags, &source, &FormatSettings::default(), file) else {
+    let settings = FormatSettings::default();
+
+    // check that formatting works
+    let Ok(result) = format(&diags, &source, &settings, file) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("internal error during formatting");
     };
@@ -48,7 +50,7 @@ fn target(data: &str) {
 
     // check that formatting is stable
     let file2 = source.add_file("dummy2.kh".to_owned(), new_content.clone());
-    let Ok(result2) = format(&diags, &source, &FormatSettings::default(), file2) else {
+    let Ok(result2) = format(&diags, &source, &settings, file2) else {
         eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
         panic!("internal error during second format");
     };

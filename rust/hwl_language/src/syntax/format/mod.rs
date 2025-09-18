@@ -97,6 +97,10 @@ pub fn format<'s>(
 
     // format the low-level nodes to a string
     let string_output = node_to_string(settings, old_content, &node_simple);
+
+    // check that the output matches the input, as an extra precaution against formatter bugs
+    check_format_output_matches(diags, source, file, &old_tokens, &old_ast, &string_output.string)?;
+
     Ok(FormatOutput {
         old_tokens,
         old_ast,
@@ -115,7 +119,7 @@ pub fn format<'s>(
 /// * the sequence of token types is the same, ignoring commas that might have been added or removed
 /// * the content of each token is the same
 /// * the number of expressions in the AST is the same
-pub fn check_format_output_matches(
+fn check_format_output_matches(
     diags: &Diagnostics,
     source: &SourceDatabase,
     old_file: FileId,
