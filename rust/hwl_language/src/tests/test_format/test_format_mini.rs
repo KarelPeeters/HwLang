@@ -281,3 +281,11 @@ fn comment_after_dot() {
     let expected = "const n = l.g /*\np*/\n    / l;\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn long_comment_with_newline_causing_wrapping() {
+    let long = "long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment";
+    let src = format!("const a = (b * c/* {long}\n*/,);");
+    let expected = format!("const a = (\n    b\n        * c /* {long}\n*/,\n);\n");
+    assert_formats_to(&src, &expected);
+}

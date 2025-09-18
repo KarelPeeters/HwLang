@@ -147,9 +147,15 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         mut filter: impl FnMut(SpanFull) -> bool,
     ) {
         let prev_space = seq_ends_with_space(seq).unwrap_or(prev_space);
-        let mut seq_escaping = vec![];
 
-        let mut first_comment = true;
+        let mut next_is_first_comment = true;
+        let mut escape_index = None;
+
+        let mut report_newline = |index: usize| {
+            if escape_index.is_none() {
+                escape_index = Some(index);
+            }
+        };
 
         while let Some(token) = self.peek_token() {
             // check whether we should include this token
@@ -163,35 +169,59 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 break;
             }
 
-            // preserve newlines
-            self.preserve_empty_lines(&mut seq_escaping, !first_comment);
-            first_comment = false;
+            let is_first_comment = next_is_first_comment;
+            next_is_first_comment = false;
 
+            // preserve newlines
+            let len_before = seq.len();
+            if self.preserve_empty_lines(seq, !is_first_comment) {
+                report_newline(len_before);
+            }
+
+            // pop the comment token itself
             let _ = self.pop_token().unwrap();
 
             // add the comment nodes, de-dented if necessary
-            let comment_str = &self.source[token.span.range_bytes()];
-            let node_comment = LNode::Sequence(vec![LNode::Space, LNode::AlwaysStr(comment_str)]);
-            if token_span.start.col_0 == 0 {
-                seq_escaping.push(LNode::Dedent(Box::new(node_comment)))
+            // TODO start escaping if there is a newline in the comment
+            let comment_str_all = &self.source[token.span.range_bytes()];
+            let (comment_str_first, comment_str_rest) = match comment_str_all.find(LineOffsets::LINE_ENDING_CHARS) {
+                None => (comment_str_all, None),
+                Some(pos) => (&comment_str_all[..pos], Some(&comment_str_all[pos..])),
+            };
+
+            let node_comment = LNode::Sequence(vec![LNode::Space, LNode::AlwaysStr(comment_str_first)]);
+            let node_comment = if token_span.start.col_0 == 0 {
+                LNode::Dedent(Box::new(node_comment))
             } else {
-                seq_escaping.push(node_comment);
+                node_comment
+            };
+            seq.push(node_comment);
+
+            if let Some(comment_str_rest) = comment_str_rest {
+                report_newline(seq.len());
+                seq.push(LNode::Dedent(Box::new(LNode::AlwaysStr(comment_str_rest))));
             }
 
             // add a suffix if necessary
-            // TODO maybe make the entire comment escape the group?
             if is_line_comment {
-                seq_escaping.push(LNode::AlwaysNewline);
+                report_newline(seq.len());
+                seq.push(LNode::AlwaysNewline);
             } else if prev_space {
-                seq_escaping.push(LNode::Space);
+                seq.push(LNode::Space);
             }
         }
 
-        if !first_comment {
-            self.preserve_empty_lines(&mut seq_escaping, false);
+        // preserve newlines between comments
+        if !next_is_first_comment {
+            let len_before = seq.len();
+            if self.preserve_empty_lines(seq, false) {
+                report_newline(len_before);
+            }
         }
 
-        if !seq_escaping.is_empty() {
+        // move escaping nodes into an escape node
+        if let Some(escape_index) = escape_index {
+            let seq_escaping = seq.split_off(escape_index);
             seq.push(LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq_escaping))));
         }
     }
@@ -221,8 +251,9 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         })
     }
 
-    // TODO rename back
-    fn preserve_empty_lines(&self, seq: &mut Vec<LNode<'s>>, allow_blank: bool) {
+    fn preserve_empty_lines(&self, seq: &mut Vec<LNode<'s>>, allow_blank: bool) -> bool {
+        let mut any_newlines = false;
+
         if let Some(prev) = self.prev_token()
             && let Some(next) = self.peek_token()
         {
@@ -232,11 +263,15 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let delta = next_start.line_0 - prev_end.line_0;
 
             if delta > 1 && allow_blank {
+                any_newlines = true;
                 seq.push(LNode::AlwaysBlankLine);
             } else if delta > 0 {
+                any_newlines = true;
                 seq.push(LNode::AlwaysNewline);
-            };
+            }
         }
+
+        any_newlines
     }
 
     fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
