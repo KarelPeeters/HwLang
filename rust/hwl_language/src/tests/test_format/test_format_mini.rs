@@ -289,3 +289,10 @@ fn long_comment_with_newline_causing_wrapping() {
     let expected = format!("const a = (\n    b\n        * c /* {long}\n*/,\n);\n");
     assert_formats_to(&src, &expected);
 }
+
+#[test]
+fn long_comment_maybe_followed_by_expression() {
+    let src = "const c = a % b\n.sr /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment\n*/ - d;\n";
+    let expected = "const c = a\n    % b\n        .sr /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment\n*/\n    - d;\n";
+    assert_formats_to(src, expected);
+}
