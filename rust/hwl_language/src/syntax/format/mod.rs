@@ -158,6 +158,7 @@ fn check_format_output_matches(
         .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-tokenize formatter output: {e:?}")))?;
     new_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
 
+    // check that each old token has a matching new token (ignored removed or added commas)
     let mut new_tokens_iter = new_tokens.iter().peekable();
     for old_token in old_tokens {
         loop {
@@ -215,6 +216,24 @@ fn check_format_output_matches(
                 }
             }
         }
+    }
+
+    // check that there is no leftover new tokens (except commas)
+    for new_token in new_tokens_iter {
+        if new_token.ty == TokenType::Comma {
+            continue;
+        }
+
+        let new_token_str = &new_content[new_token.span.range_bytes()];
+        let reason = format!(
+            "formatting added unexpected output token of type `{}` with content `{}`",
+            new_token.ty.diagnostic_string(),
+            new_token_str
+        );
+        let diag = Diagnostic::new_internal_error(reason)
+            .add_error(Span::empty_at(old_span.end()), "old file ended here")
+            .finish();
+        return Err(diags.report(diag));
     }
 
     // check that parsing still works and yields at least plausible results
