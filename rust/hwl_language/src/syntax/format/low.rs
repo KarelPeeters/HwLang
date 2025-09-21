@@ -58,8 +58,8 @@ pub enum LNodeImpl<'s, E> {
     /// Similar to [LNode::Group], except that as many children as possible are placed on each line,
     /// instead of a single global wrapping decision for the entire group.
     ///
-    /// There's an implicit [LNode::WrapNewLine] after each child
-    /// and an implicit [LNode::Indent] around all children.
+    /// There's an implicit [LNode::WrapNewLine] after each child and an implicit [LNode::Indent] around all children.
+    /// If the parent group is wrapping, the fill node is also forced to wrap.
     Fill(Vec<LNodeImpl<'s, E>>),
 
     // TODO doc
@@ -531,10 +531,15 @@ impl StringBuilderContext<'_> {
                 )?;
             }
             LNodeSimple::Fill(children) => {
+                let parent_wrapping = W::is_wrapping();
+
                 self.write_sequence_branch::<W, B>(
                     last_branch,
                     rest,
                     |slf| {
+                        if parent_wrapping {
+                            return Err(NeedsWrap);
+                        }
                         for c in children {
                             slf.write_node::<WrapNo>(c)?;
                         }

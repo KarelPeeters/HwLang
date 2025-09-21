@@ -310,3 +310,10 @@ fn comment_newline_stays_after() {
     let expected = "fn foo( /*a*/\n    x: long_long_long_long_long_long_long_long_long_long,\n    y: long_long_long_long_long_long_long_long_long_long,\n    z: long_long_long_long_long_long_long_long_long_long,\n) {}\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn comment_around_wrapping_comma() {
+    let src = "import a.[b,/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];";
+    let expected = "import a.[\n    b,\n/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];\n";
+    assert_formats_to(src, expected);
+}

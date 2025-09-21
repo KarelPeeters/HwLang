@@ -101,7 +101,9 @@ impl Context<'_> {
                 nodes.push(self.fmt_import_entry(entry));
             }
             ImportFinalKind::Multi(entries) => {
-                nodes.push(token(TT::OpenS));
+                let mut group = vec![];
+
+                group.push(token(TT::OpenS));
 
                 let mut nodes_fill = vec![];
                 for (entry, last) in entries.iter().with_last() {
@@ -110,8 +112,10 @@ impl Context<'_> {
                     nodes_fill.push(HNode::Sequence(seq));
                 }
 
-                nodes.push(HNode::Fill(nodes_fill));
-                nodes.push(token(TT::CloseS));
+                group.push(HNode::Fill(nodes_fill));
+                group.push(token(TT::CloseS));
+
+                nodes.push(HNode::Group(Box::new(HNode::Sequence(group))));
             }
         }
 
