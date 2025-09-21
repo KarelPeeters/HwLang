@@ -12,12 +12,12 @@ pub fn assert_formats_to(src: &str, expected: &str) {
 
     // first format
     let result = assert_format_valid("dummy.kh", src, &settings);
-    assert_eq!(expected, result, "output differs from expected");
+    assert_eq!(result, expected, "output differs from expected");
 
     // second format, if necessary, to check for stability
     if src != result {
         let result2 = assert_format_valid("dummy2.kh", &result, &settings);
-        assert_eq!(result, result2, "formatting output is not stable");
+        assert_eq!(result2, result, "formatting output is not stable");
     }
 }
 

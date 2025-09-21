@@ -43,11 +43,17 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
 
     std::fs::write("output.kh", result.debug_str()).unwrap();
 
-    let file2 = source.add_file("dummy2.kh".to_owned(), result.new_content);
+    let result_content = result.new_content;
+    let file2 = source.add_file("dummy2.kh".to_owned(), result_content.clone());
     let result2 = format(&diags, &source, &settings, file2).unwrap();
 
     std::fs::write("output2.kh", result2.debug_str()).unwrap();
     println!("{:?}", result2.stats);
+
+    if result_content != result2.new_content {
+        eprintln!("Error: formatting is not stable!");
+        return ExitCode::FAILURE;
+    }
 
     ExitCode::SUCCESS
 }

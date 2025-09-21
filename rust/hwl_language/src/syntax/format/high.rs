@@ -230,15 +230,36 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         self.collect_comments(prev_space, seq, |_| true);
     }
 
-    fn collect_comments_on_prev_line(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
+    fn collect_comments_on_prev_line(&mut self, prev_space: bool, next_wrap_comma: bool, seq: &mut Vec<LNode<'s>>) {
         let mut prev_end = self
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
-        self.collect_comments(prev_space, seq, |span| {
-            let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
-            prev_end = Some(span.end);
-            accept
-        });
+
+        // capture comments after the current token only if there is no next real token on the same line
+        //   if there is one, we'll later capture comments as a prefix of that token, which is usually better
+        //   for the final formatter output
+        let collect = if next_wrap_comma {
+            false
+        } else {
+            match self.find_next_non_comment_token() {
+                None => true,
+                Some(next) => match prev_end {
+                    None => true,
+                    Some(prev_end) => {
+                        let real_start = self.offsets.expand_pos(self.source_tokens[next.0].span.start());
+                        prev_end.line_0 != real_start.line_0
+                    }
+                },
+            }
+        };
+
+        if collect {
+            self.collect_comments(prev_space, seq, |span| {
+                let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
+                prev_end = Some(span.end);
+                accept
+            });
+        }
     }
 
     fn collect_comments_on_lines_before_real_token(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
@@ -305,24 +326,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
 
-                let capture_trailing_comments = if next_wrap_comma || token.ty == TT::StringSubStart {
-                    false
-                } else {
-                    // capture comments after the current token only if there is no next real token on the same line
-                    //   if there is one, prefer to capture comments as prefixes to that token
-                    let real_token_on_same_line = match self.find_next_non_comment_token() {
-                        None => false,
-                        Some(next) => {
-                            let token_end = self.offsets.expand_pos(token.span.end());
-                            let real_start = self.offsets.expand_pos(self.source_tokens[next.0].span.start());
-                            token_end.line_0 == real_start.line_0
-                        }
-                    };
-                    !real_token_on_same_line
-                };
-                if capture_trailing_comments {
-                    self.collect_comments_on_prev_line(prev_space, &mut seq);
-                }
+                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
 
                 LNode::Sequence(seq)
             }
@@ -345,25 +349,25 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     let _ = self.pop_token();
                 }
 
-                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
 
                 LNode::Sequence(seq)
             }
             HNode::AlwaysNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
                 seq.push(LNode::AlwaysNewline);
                 LNode::Sequence(seq)
             }
             HNode::WrapNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
                 seq.push(LNode::WrapNewline);
                 LNode::Sequence(seq)
             }
             HNode::AlwaysBlankLine => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, &mut seq);
+                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
                 seq.push(LNode::AlwaysBlankLine);
                 LNode::Sequence(seq)
             }
