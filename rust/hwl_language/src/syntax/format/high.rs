@@ -230,7 +230,24 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         self.collect_comments(prev_space, seq, |_| true);
     }
 
-    fn collect_comments_on_prev_line(&mut self, prev_space: bool, next_wrap_comma: bool, seq: &mut Vec<LNode<'s>>) {
+    fn collect_comments_on_prev_line_force(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
+        let mut prev_end = self
+            .prev_token()
+            .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
+
+        self.collect_comments(prev_space, seq, |span| {
+            let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
+            prev_end = Some(span.end);
+            accept
+        });
+    }
+
+    fn collect_comments_on_prev_line_maybe(
+        &mut self,
+        prev_space: bool,
+        next_wrap_comma: bool,
+        seq: &mut Vec<LNode<'s>>,
+    ) {
         let mut prev_end = self
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
@@ -326,7 +343,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
 
-                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
+                self.collect_comments_on_prev_line_maybe(prev_space, next_wrap_comma, &mut seq);
 
                 LNode::Sequence(seq)
             }
@@ -349,25 +366,25 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     let _ = self.pop_token();
                 }
 
-                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
+                self.collect_comments_on_prev_line_maybe(prev_space, next_wrap_comma, &mut seq);
 
                 LNode::Sequence(seq)
             }
             HNode::AlwaysNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
+                self.collect_comments_on_prev_line_force(prev_space, &mut seq);
                 seq.push(LNode::AlwaysNewline);
                 LNode::Sequence(seq)
             }
             HNode::WrapNewline => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
+                self.collect_comments_on_prev_line_force(prev_space, &mut seq);
                 seq.push(LNode::WrapNewline);
                 LNode::Sequence(seq)
             }
             HNode::AlwaysBlankLine => {
                 let mut seq = vec![];
-                self.collect_comments_on_prev_line(prev_space, next_wrap_comma, &mut seq);
+                self.collect_comments_on_prev_line_force(prev_space, &mut seq);
                 seq.push(LNode::AlwaysBlankLine);
                 LNode::Sequence(seq)
             }

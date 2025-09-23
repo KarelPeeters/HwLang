@@ -1011,13 +1011,13 @@ impl Context<'_> {
                             seq.push(HNode::Dedent(Box::new(token(TT::StringMiddle))));
                         }
                         &StringPiece::Substitute(expr) => {
-                            seq.push(HNode::Dedent(Box::new(token(TT::StringSubStart))));
-                            seq.push(group_indent_seq(vec![
+                            seq.push(group_seq(vec![
+                                HNode::Dedent(Box::new(token(TT::StringSubStart))),
                                 HNode::WrapNewline,
-                                self.fmt_expr(expr),
+                                HNode::Indent(Box::new(self.fmt_expr(expr))),
                                 HNode::WrapNewline,
+                                token(TT::StringSubEnd),
                             ]));
-                            seq.push(token(TT::StringSubEnd));
                         }
                     }
                 }

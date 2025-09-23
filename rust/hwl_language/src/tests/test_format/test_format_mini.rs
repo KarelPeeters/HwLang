@@ -128,7 +128,7 @@ fn idempotent_block_comment_before_semi() {
 #[test]
 fn block_comment_in_binary_should_not_force_wrap() {
     let src = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/ / bbbb;\n";
-    let expected = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    /*j*/ / bbbb;\n";
+    let expected = "const a = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    * bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /*j*/\n    / bbbb;\n";
     assert_formats_to(src, expected);
 }
 
@@ -243,7 +243,7 @@ fn block_comment_line_chan() {
 #[test]
 fn long_block_comment_before_assign() {
     let src = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/ = a;";
-    let expected = "const c\n    /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/ = a;\n";
+    let expected = "const c /*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*/\n    = a;\n";
     assert_formats_to(src, expected);
 }
 
@@ -264,7 +264,7 @@ fn block_comment_in_fill() {
 #[test]
 fn block_comment_in_string_same_line() {
     let src = "const a = \"{ /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */ a}\";";
-    let expected = "const a = \"{\n    /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */a\n}\";\n";
+    let expected = "const a\n    = \"{ /* long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment_long_comment */\n    a\n}\";\n";
     assert_formats_to(src, expected);
 }
 
@@ -315,5 +315,12 @@ fn comment_newline_stays_after() {
 fn comment_around_wrapping_comma() {
     let src = "import a.[b,/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];";
     let expected = "import a.[\n    b,\n/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn comment_in_long_string() {
+    let src = "const c = \"sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss{r/*.*/}\";";
+    let expected = "const c = \"sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss{\n    r /*.*/\n}\";\n";
     assert_formats_to(src, expected);
 }
