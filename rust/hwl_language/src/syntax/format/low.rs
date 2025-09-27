@@ -110,7 +110,7 @@ pub struct StringsStats {
     pub time_line: Duration,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Line {
     start: usize,
 }
@@ -510,14 +510,12 @@ fn new_loop(state: &mut NewState) {
         // check for line overflow
         let curr_line = state.line();
         if state.line_overflows(curr_line) {
-            // TODO avoid repeated finding here by discarding stack items once they're inactive and on previous lines?
-            // TODO O(n**2)
             let info = enumerate(&state.group_no_wrap_stack)
                 .rev()
+                .take_while(|(_, info)| info.line() >= curr_line)
                 .find(|(_, info)| info.line() == curr_line);
             if let Some((info_pos, _)) = info {
                 state.restore_and_wrap(info_pos);
-                // TODO do we need this continue?
                 continue;
             }
         }
