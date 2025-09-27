@@ -669,6 +669,8 @@ fn new_loop(state: &mut NewState) {
                 state.try_group_without_wrap(child);
                 if force_wrap { state.force_wrap_now() } else { Ok(()) }
             }
+
+            LNodeSimple::ForceWrap(never) => never.unreachable(),
             LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         };
 

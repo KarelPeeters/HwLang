@@ -384,7 +384,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 seq.push(LNode::AlwaysBlankLine);
                 LNode::Sequence(seq)
             }
-            HNode::ForceWrap => LNode::ForceWrap,
+            HNode::ForceWrap => LNode::ForceWrap(()),
             HNode::Indent(inner) => {
                 let mut seq = vec![self.map(prev_space, next_wrap_comma, inner)?];
                 if !next_wrap_comma {
@@ -404,7 +404,10 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
                 LNode::Sequence(seq)
             }
-            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, next_wrap_comma, inner)?)),
+            HNode::Group(inner) => LNode::Group {
+                force_wrap: false,
+                child: Box::new(self.map(prev_space, next_wrap_comma, inner)?),
+            },
             HNode::PreserveBlankLines { last: end } => {
                 let mut seq_escaping = vec![];
 
@@ -441,12 +444,12 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         | LNode::AlwaysNewline
         | LNode::WrapNewline
         | LNode::AlwaysBlankLine => Some(false),
-        LNode::ForceWrap => None,
-        LNode::Indent(inner) => node_ends_with_space(inner),
-        LNode::Dedent(inner) => node_ends_with_space(inner),
+        LNode::ForceWrap(()) => None,
+        LNode::Indent(child) => node_ends_with_space(child),
+        LNode::Dedent(child) => node_ends_with_space(child),
         LNode::Sequence(seq) => seq_ends_with_space(seq),
-        LNode::Group(inner) => node_ends_with_space(inner),
-        LNode::EscapeGroupIfLast(_, inner) => node_ends_with_space(inner),
+        LNode::Group { force_wrap: _, child } => node_ends_with_space(child),
+        LNode::EscapeGroupIfLast(_, child) => node_ends_with_space(child),
     }
 }
 
