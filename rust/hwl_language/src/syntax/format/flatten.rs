@@ -101,21 +101,36 @@ impl Context<'_> {
                 nodes.push(self.fmt_import_entry(entry));
             }
             ImportFinalKind::Multi(entries) => {
-                let mut group = vec![];
+                // let mut group = vec![];
+                //
+                // group.push(token(TT::OpenS));
+                //
+                // let mut nodes_fill = vec![];
+                // for (entry, last) in entries.iter().with_last() {
+                //     let mut seq = vec![self.fmt_import_entry(entry)];
+                //     seq.push(comma_nodes(last));
+                //     nodes_fill.push(HNode::Sequence(seq));
+                // }
+                //
+                // group.push(HNode::Fill(nodes_fill));
+                // group.push(token(TT::CloseS));
+                //
+                // nodes.push(HNode::Group(Box::new(HNode::Sequence(group))));
 
-                group.push(token(TT::OpenS));
+                let mut seq = vec![];
 
-                let mut nodes_fill = vec![];
                 for (entry, last) in entries.iter().with_last() {
-                    let mut seq = vec![self.fmt_import_entry(entry)];
+                    seq.push(self.fmt_import_entry(entry));
                     seq.push(comma_nodes(last));
-                    nodes_fill.push(HNode::Sequence(seq));
+
+                    // We want to express a "fill" construct, where after each item we can independently decide to wrap.
+                    //   This can be built by adding a mini-group around each WrapNewLine.
+                    if !last {
+                        seq.push(HNode::Group(Box::new(HNode::WrapNewline)));
+                    }
                 }
 
-                group.push(HNode::Fill(nodes_fill));
-                group.push(token(TT::CloseS));
-
-                nodes.push(HNode::Group(Box::new(HNode::Sequence(group))));
+                nodes.push(surrounded_group_indent(SurroundKind::Square, HNode::Sequence(seq)));
             }
         }
 

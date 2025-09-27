@@ -29,6 +29,8 @@ pub trait VecExt<T> {
     fn single(self) -> Result<T, Vec<T>>;
 
     fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
+
+    fn insert_iter(&mut self, index: usize, iter: impl IntoIterator<Item = T>);
 }
 
 impl<T> VecExt<T> for Vec<T> {
@@ -45,6 +47,10 @@ impl<T> VecExt<T> for Vec<T> {
         let result = f(self);
         assert!(self.pop().is_some());
         result
+    }
+
+    fn insert_iter(&mut self, index: usize, iter: impl IntoIterator<Item = T>) {
+        drop(self.splice(index..index, iter));
     }
 }
 
