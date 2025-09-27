@@ -51,6 +51,22 @@ pub trait VecExt<T>: Sized {
         let slf = self.as_vec_mut();
         drop(slf.splice(index..index, iter));
     }
+
+    fn retain_from(&mut self, start: usize, mut f: impl FnMut(&T) -> bool) {
+        let slf = self.as_vec_mut();
+
+        let mut write = start;
+
+        for read in start..slf.len() {
+            let retain = f(&slf[read]);
+            if retain {
+                slf.swap(read, write);
+                write += 1;
+            }
+        }
+
+        slf.truncate(write);
+    }
 }
 
 impl<T> VecExt<T> for Vec<T> {

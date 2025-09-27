@@ -477,22 +477,10 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // restore queue
         // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
         self.queue_next = queue_next;
-
-        // print!("retain pattern: ");
-        // TODO O(n**2)
         let start = Instant::now();
-        let mut next_i = 0;
-        self.queue.retain(|cmd| {
-            let i = next_i;
-            next_i += 1;
-
-            if i < queue_next {
-                return true;
-            }
-            cmd.stack_group_no_wrap_len <= first_active
-        });
+        self.queue
+            .retain_from(queue_next, |cmd| cmd.stack_group_no_wrap_len <= first_active);
         self.stats.time_retain += start.elapsed();
-
         assert_eq!(self.queue.len(), queue_len);
 
         self.push(CommandKind::Node(group_inner));
