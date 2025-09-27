@@ -35,7 +35,7 @@ pub enum LNodeImpl<'s, E> {
     AlwaysBlankLine,
 
     /// Force the enclosing group to wrap, without emitting anything itself.
-    ForceWrap,
+    ForceWrap(E),
 
     /// Indent the inner node by one level.
     /// The indent only applies to new lines emitted by the inner node, the current line is not retroactively indented.
@@ -55,7 +55,10 @@ pub enum LNodeImpl<'s, E> {
     /// A group either wraps or does not wrap, which recursively affects all child nodes.
     /// Groups can be nested, in which case inner groups can only wrap if the outer group is wrapping,
     ///   but inner groups are allowed to not wrap even if the outer group is wrapping.
-    Group(Box<LNodeImpl<'s, E>>),
+    Group {
+        force_wrap: bool,
+        child: Box<LNodeImpl<'s, E>>,
+    },
 
     // TODO doc
     EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
@@ -104,6 +107,9 @@ pub struct StringsStats {
     pub loop_commands: usize,
     pub loop_nodes: usize,
 
+    pub retain_calls: usize,
+    pub retain_count: usize,
+
     pub time_retain: Duration,
     pub time_active: Duration,
     pub time_active2: Duration,
@@ -138,7 +144,7 @@ impl<E: Debug> LNodeImpl<'_, E> {
             LNodeImpl::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
             LNodeImpl::WrapNewline => swriteln!(f, "WrapNewline"),
             LNodeImpl::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
-            LNodeImpl::ForceWrap => swriteln!(f, "ForceWrap"),
+            LNodeImpl::ForceWrap(e) => swriteln!(f, "ForceWrap({e:?})"),
             LNodeImpl::Indent(child) => {
                 swriteln!(f, "Indent");
                 child.debug_str_impl(f, indent + 1);
@@ -153,8 +159,8 @@ impl<E: Debug> LNodeImpl<'_, E> {
                     child.debug_str_impl(f, indent + 1);
                 }
             }
-            LNodeImpl::Group(child) => {
-                swriteln!(f, "Group");
+            LNodeImpl::Group { force_wrap, child } => {
+                swriteln!(f, "Group(force_wrap={force_wrap})");
                 child.debug_str_impl(f, indent + 1);
             }
             LNodeImpl::EscapeGroupIfLast(e, child) => {
@@ -169,35 +175,50 @@ impl<E> LNodeImpl<'static, E> {
     pub const EMPTY: LNodeImpl<'static, E> = LNodeImpl::Sequence(vec![]);
 }
 
+struct SimplifyResult<'s> {
+    node: LNodeSimple<'s>,
+    force_wrap: bool,
+}
+
 impl<'s> LNode<'s> {
-    // TODO rename, this is no longer only simplification
     pub fn simplify(&self) -> LNodeSimple<'s> {
-        self.simplify_impl(None)
+        self.simplify_impl(None).node
     }
 
     // TODO instead of creating a messy tree and then simplifying it,
     //   avoid creating it in the first place by adding some convenient sequence builder
     // TODO try moving newlines around here
-    fn simplify_impl(&self, mut escape_group: Option<&mut Vec<LNodeSimple<'s>>>) -> LNodeSimple<'s> {
+    // TODO doc what this actually does
+    fn simplify_impl(&self, mut escape_group: Option<&mut (Vec<LNodeSimple<'s>>, bool)>) -> SimplifyResult<'s> {
         match self {
             // flatten sequences
             LNode::Sequence(children) => {
                 let mut result = Vec::with_capacity(children.len());
+                let mut force_wrap = false;
                 for (child, last) in children.iter().with_last() {
                     let child_escape_group = if last { escape_group.as_deref_mut() } else { None };
-                    match child.simplify_impl(child_escape_group) {
+                    let child_simple = child.simplify_impl(child_escape_group);
+                    match child_simple.node {
                         LNodeSimple::Sequence(inner) => result.extend(inner),
                         c_simple => result.push(c_simple),
                     }
+                    force_wrap |= child_simple.force_wrap;
                 }
-                result.single().unwrap_or_else(LNodeSimple::Sequence)
+                SimplifyResult {
+                    node: result.single().unwrap_or_else(LNodeSimple::Sequence),
+                    force_wrap,
+                }
             }
             // TODO doc
             LNodeImpl::EscapeGroupIfLast((), inner) => {
                 let inner = inner.simplify_impl(escape_group.as_deref_mut());
                 if let Some(escape_group) = escape_group.as_deref_mut() {
-                    escape_group.push(inner);
-                    LNodeSimple::EMPTY
+                    escape_group.0.push(inner.node);
+                    escape_group.1 |= inner.force_wrap;
+                    SimplifyResult {
+                        node: LNodeSimple::EMPTY,
+                        force_wrap: false,
+                    }
                 } else {
                     inner
                 }
@@ -205,46 +226,95 @@ impl<'s> LNode<'s> {
             // simplify children
             LNode::Indent(child) => simplify_container(child, escape_group, LNodeSimple::Indent),
             LNode::Dedent(child) => simplify_container(child, escape_group, LNodeSimple::Dedent),
-            LNode::Group(child) => {
-                let mut seq = vec![];
+            LNode::Group { force_wrap, child } => {
+                let mut result = match escape_group {
+                    None => {
+                        let mut escape_group = (vec![], false);
+                        let mut result = simplify_group(child, Some(&mut escape_group));
 
-                let escape_group = match escape_group.as_deref_mut() {
-                    Some(escape_group) => escape_group,
-                    None => &mut seq,
+                        result.force_wrap |= escape_group.1;
+                        if !escape_group.0.is_empty() {
+                            escape_group.0.insert(0, result.node);
+                            result.node = LNodeSimple::Sequence(escape_group.0);
+                        }
+
+                        result
+                    }
+                    Some(escape_group) => simplify_group(child, Some(escape_group)),
                 };
-                let result = simplify_container(child, Some(escape_group), LNodeSimple::Group);
 
-                if seq.is_empty() {
-                    result
-                } else {
-                    seq.insert(0, result);
-                    LNodeSimple::Sequence(seq)
-                }
+                result.force_wrap |= *force_wrap;
+                result
             }
             // trivial cases
-            LNode::Space => LNodeSimple::Space,
-            LNode::AlwaysStr(s) => LNodeSimple::AlwaysStr(s),
-            LNode::WrapStr(s) => LNodeSimple::WrapStr(s),
-            LNode::AlwaysNewline => LNodeSimple::AlwaysNewline,
-            LNode::WrapNewline => LNodeSimple::WrapNewline,
-            LNode::AlwaysBlankLine => LNodeSimple::AlwaysBlankLine,
-            LNode::ForceWrap => LNodeSimple::ForceWrap,
+            LNode::Space => SimplifyResult {
+                node: LNodeSimple::Space,
+                force_wrap: false,
+            },
+            LNode::AlwaysStr(s) => SimplifyResult {
+                node: LNodeSimple::AlwaysStr(s),
+                force_wrap: s.contains(LineOffsets::LINE_ENDING_CHARS),
+            },
+            LNode::WrapStr(s) => SimplifyResult {
+                node: LNodeSimple::WrapStr(s),
+                force_wrap: false,
+            },
+            LNode::AlwaysNewline => SimplifyResult {
+                node: LNodeSimple::AlwaysNewline,
+                force_wrap: true,
+            },
+            LNode::WrapNewline => SimplifyResult {
+                node: LNodeSimple::WrapNewline,
+                force_wrap: false,
+            },
+            LNode::AlwaysBlankLine => SimplifyResult {
+                node: LNodeSimple::AlwaysBlankLine,
+                force_wrap: true,
+            },
+            LNode::ForceWrap(()) => SimplifyResult {
+                node: LNodeSimple::EMPTY,
+                force_wrap: true,
+            },
         }
     }
 }
 
 fn simplify_container<'s>(
     child: &LNode<'s>,
-    group_escape_slot: Option<&mut Vec<LNodeSimple<'s>>>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
     f: impl FnOnce(Box<LNodeSimple<'s>>) -> LNodeSimple<'s>,
-) -> LNodeSimple<'s> {
+) -> SimplifyResult<'s> {
+    simplify_container_impl(child, group_escape_slot, |child, _| f(child))
+}
+
+fn simplify_group<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
+) -> SimplifyResult<'s> {
+    simplify_container_impl(child, group_escape_slot, |child, force_wrap| LNodeImpl::Group {
+        force_wrap,
+        child,
+    })
+}
+
+fn simplify_container_impl<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
+    f: impl FnOnce(Box<LNodeSimple<'s>>, bool) -> LNodeSimple<'s>,
+) -> SimplifyResult<'s> {
     let child = child.simplify_impl(group_escape_slot);
-    if let LNodeImpl::Sequence(inner) = &child
+
+    let node = if let LNodeImpl::Sequence(inner) = &child.node
         && inner.is_empty()
     {
         LNodeSimple::EMPTY
     } else {
-        f(Box::new(child))
+        f(Box::new(child.node), child.force_wrap)
+    };
+
+    SimplifyResult {
+        node,
+        force_wrap: child.force_wrap,
     }
 }
 
@@ -476,10 +546,19 @@ impl<'n, 's> NewState<'n, 's, '_> {
 
         // restore queue
         // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
+        // TODO also remember how many items were at the end of the queue, we know we don't have to discard those
+        //   but then the mem move will still cause O(n**2) issues, no? what we really need is a fancier vec index pattern that allows more linear clearing
         self.queue_next = queue_next;
         let start = Instant::now();
-        self.queue
-            .retain_from(queue_next, |cmd| cmd.stack_group_no_wrap_len <= first_active);
+        // print!("retain pattern: ");
+        self.queue.retain_range(queue_next..self.queue.len(), |cmd| {
+            self.stats.retain_count += 1;
+            let r = cmd.stack_group_no_wrap_len <= first_active;
+            // print!("{}", if r { 'r' } else { 'd' });
+            r
+        });
+        // println!();
+        self.stats.retain_calls += 1;
         self.stats.time_retain += start.elapsed();
         assert_eq!(self.queue.len(), queue_len);
 
@@ -545,6 +624,7 @@ fn new_loop(state: &mut NewState) {
         state.stats.loop_nodes += 1;
 
         // TODO extract function?
+        // TODO discard this whole branching idea again and do something more similar to prettier?
         let res = match next {
             LNodeSimple::Space => {
                 state.state.emit_space = true;
@@ -567,17 +647,16 @@ fn new_loop(state: &mut NewState) {
                 }
             }
             LNodeSimple::AlwaysBlankLine => state.ensure_newlines(2),
-            LNodeSimple::ForceWrap => state.force_wrap_now(),
-            LNodeSimple::Indent(inner) => {
+            LNodeSimple::Indent(child) => {
                 let indent = state.state.indent;
                 state.state.indent += 1;
-                state.push_iter([CommandKind::Node(inner), CommandKind::RestoreIndent { indent }]);
+                state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
-            LNodeSimple::Dedent(inner) => {
+            LNodeSimple::Dedent(child) => {
                 let indent = state.state.indent;
                 state.state.indent = 0;
-                state.push_iter([CommandKind::Node(inner), CommandKind::RestoreIndent { indent }]);
+                state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
             LNodeSimple::Sequence(seq) => {
@@ -585,10 +664,10 @@ fn new_loop(state: &mut NewState) {
                 state.push_iter(seq.iter().map(CommandKind::Node));
                 Ok(())
             }
-            LNodeSimple::Group(inner) => {
+            &LNodeSimple::Group { force_wrap, ref child } => {
                 // TODO maybe we can implement group escaping here, removing the "simplify" step entirely
-                state.try_group_without_wrap(inner);
-                Ok(())
+                state.try_group_without_wrap(child);
+                if force_wrap { state.force_wrap_now() } else { Ok(()) }
             }
             LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         };

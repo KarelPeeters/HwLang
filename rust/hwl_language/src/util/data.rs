@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use std::hash::Hash;
+use std::ops::Range;
 
 pub trait IndexMapExt<K, V> {
     // The same as [IndexMap::insert], but asserts that the key is not already present.
@@ -52,12 +53,12 @@ pub trait VecExt<T>: Sized {
         drop(slf.splice(index..index, iter));
     }
 
-    fn retain_from(&mut self, start: usize, mut f: impl FnMut(&T) -> bool) {
+    fn retain_range(&mut self, range: Range<usize>, mut f: impl FnMut(&T) -> bool) {
         let slf = self.as_vec_mut();
+        let Range { start, end } = range;
 
         let mut write = start;
-
-        for read in start..slf.len() {
+        for read in start..end {
             let retain = f(&slf[read]);
             if retain {
                 slf.swap(read, write);
@@ -65,7 +66,7 @@ pub trait VecExt<T>: Sized {
             }
         }
 
-        slf.truncate(write);
+        drop(slf.drain(write..end));
     }
 }
 
