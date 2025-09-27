@@ -568,7 +568,11 @@ fn new_loop(state: &mut NewState) {
                 info.active = false;
                 state.group_no_wrap_active_count -= 1;
                 if state.group_no_wrap_first_active == Some(group_index) {
-                    state.group_no_wrap_first_active = state.group_no_wrap_stack.iter().position(|i| i.active);
+                    let start = group_index + 1;
+                    state.group_no_wrap_first_active = state.group_no_wrap_stack[start..]
+                        .iter()
+                        .position(|i| i.active)
+                        .map(|i| start + i);
                 }
 
                 continue;
