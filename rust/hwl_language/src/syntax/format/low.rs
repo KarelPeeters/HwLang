@@ -86,7 +86,7 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
         stack_group_no_wrap: vec![],
     };
 
-    state.push_iter(std::iter::once(Command::Node(root)));
+    state.push_iter(std::iter::once(CommandKind::Node(root)));
     new_loop(&mut state);
 
     StringOutput {
@@ -256,38 +256,38 @@ struct NewState<'n, 's, 'f> {
 }
 
 #[derive(Debug, Copy, Clone)]
-enum Command<'n, 's> {
+struct Command<'n, 's> {
+    stack_group_no_wrap_len: usize,
+    kind: CommandKind<'n, 's>,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum CommandKind<'n, 's> {
     Node(&'n LNodeSimple<'s>),
     EndGroupNoWrap { group_index: usize },
     RestoreIndent { indent: usize },
 }
 
+// TODO document all of this
 #[derive(Debug)]
 struct CheckGroupNoWrap<'n, 's> {
     result_len: usize,
-    state: StringState,
+    string_state: StringState,
 
-    // TODO this fundamentally doesn't work if the next group is expanded before the current one is
-    //   maybe instead of this we can add some sort of depth (no) or time (maybe?) value and filter based on those
     queue_next: usize,
-    // queue_after: usize,
-
-    // TODO avoid storing this entirely, find some clever delta-encoding idea maybe with age or depth prefixes
-    //   or with a BTree
-    queue: Vec<Command<'n, 's>>,
+    queue_len: usize,
 
     first_active: usize,
 
     group_inner: &'n LNodeSimple<'s>,
 
-    // TODO remove from this struct, this should only be present in the stack?
     active: bool,
 }
 
 impl<'n, 's> CheckGroupNoWrap<'n, 's> {
     pub fn line(&self) -> Line {
         Line {
-            start: self.state.curr_line_start,
+            start: self.string_state.curr_line_start,
         }
     }
 }
@@ -296,12 +296,19 @@ struct CausedWrap;
 
 // TODO reorder functions
 impl<'n, 's> NewState<'n, 's, '_> {
-    fn push(&mut self, cmd: Command<'n, 's>) {
-        self.queue.insert(self.queue_next, cmd);
+    fn push(&mut self, cmd: CommandKind<'n, 's>) {
+        self.push_iter(std::iter::once(cmd));
     }
 
-    fn push_iter(&mut self, iter: impl IntoIterator<Item = Command<'n, 's>>) {
-        self.queue.insert_iter(self.queue_next, iter);
+    fn push_iter(&mut self, iter: impl IntoIterator<Item = CommandKind<'n, 's>>) {
+        let stack_group_no_wrap_len = self.stack_group_no_wrap.len();
+        self.queue.insert_iter(
+            self.queue_next,
+            iter.into_iter().map(|cmd| Command {
+                stack_group_no_wrap_len,
+                kind: cmd,
+            }),
+        );
     }
 
     fn at_line_start(&self) -> bool {
@@ -418,10 +425,11 @@ impl<'n, 's> NewState<'n, 's, '_> {
         let check = CheckGroupNoWrap {
             // TODO match field order
             result_len: self.result.len(),
-            state: self.state,
+            string_state: self.state,
             queue_next: self.queue_next,
+            queue_len: self.queue.len(),
             // queue_after: self.queue.len() - self.queue_next,
-            queue: self.queue.clone(),
+            // queue: self.queue.clone(),
             first_active,
             group_inner: inner,
             active: true,
@@ -430,7 +438,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // println!("{:?}", check);
 
         self.stack_group_no_wrap.push(check);
-        self.push_iter([Command::Node(inner), Command::EndGroupNoWrap { group_index }]);
+        self.push_iter([CommandKind::Node(inner), CommandKind::EndGroupNoWrap { group_index }]);
 
         self.stats.checkpoint += 1;
     }
@@ -448,9 +456,9 @@ impl<'n, 's> NewState<'n, 's, '_> {
 
         let CheckGroupNoWrap {
             result_len,
-            state,
-            queue,
+            string_state: state,
             queue_next,
+            queue_len,
             first_active,
             group_inner,
             active: _,
@@ -474,8 +482,12 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
         self.queue_next = queue_next;
         // drop(self.queue.drain(queue_next..(self.queue.len() - queue_after)));
-        self.queue = queue;
-        self.push(Command::Node(group_inner));
+
+        // TODO only start draining after queue_next
+        self.queue.retain(|cmd| cmd.stack_group_no_wrap_len <= first_active);
+        assert_eq!(self.queue.len(), queue_len);
+
+        self.push(CommandKind::Node(group_inner));
     }
 }
 
@@ -514,18 +526,19 @@ fn new_loop(state: &mut NewState) {
         let Some(next) = state.queue.get(state.queue_next) else {
             break;
         };
+        let next = &next.kind;
         state.queue_next += 1;
 
         let next = match *next {
-            Command::Node(next) => next,
-            Command::EndGroupNoWrap { group_index } => {
+            CommandKind::Node(next) => next,
+            CommandKind::EndGroupNoWrap { group_index } => {
                 // TODO discard items on the stack that are no longer active and end on a previous line
                 let info = &mut state.stack_group_no_wrap[group_index];
                 assert!(info.active);
                 info.active = false;
                 continue;
             }
-            Command::RestoreIndent { indent } => {
+            CommandKind::RestoreIndent { indent } => {
                 state.state.indent = indent;
                 continue;
             }
@@ -559,18 +572,18 @@ fn new_loop(state: &mut NewState) {
             LNodeSimple::Indent(inner) => {
                 let indent = state.state.indent;
                 state.state.indent += 1;
-                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
+                state.push_iter([CommandKind::Node(inner), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
             LNodeSimple::Dedent(inner) => {
                 let indent = state.state.indent;
                 state.state.indent = 0;
-                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
+                state.push_iter([CommandKind::Node(inner), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
             LNodeSimple::Sequence(seq) => {
                 // TODO we flatten here, so maybe we can remove simplify
-                state.push_iter(seq.iter().map(Command::Node));
+                state.push_iter(seq.iter().map(CommandKind::Node));
                 Ok(())
             }
             LNodeSimple::Group(inner) => {
