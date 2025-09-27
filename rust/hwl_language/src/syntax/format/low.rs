@@ -83,7 +83,8 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
         },
         queue: vec![],
         queue_next: 0,
-        stack_group_no_wrap: vec![],
+        group_no_wrap_stack: vec![],
+        group_no_wrap_active_count: 0,
     };
 
     state.push_iter(std::iter::once(CommandKind::Node(root)));
@@ -249,7 +250,8 @@ struct NewState<'n, 's, 'f> {
 
     queue: Vec<Command<'n, 's>>,
     queue_next: usize,
-    stack_group_no_wrap: Vec<CheckGroupNoWrap<'n, 's>>,
+    group_no_wrap_stack: Vec<CheckGroupNoWrap<'n, 's>>,
+    group_no_wrap_active_count: usize,
 
     state: StringState,
     result: String,
@@ -301,7 +303,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
     }
 
     fn push_iter(&mut self, iter: impl IntoIterator<Item = CommandKind<'n, 's>>) {
-        let stack_group_no_wrap_len = self.stack_group_no_wrap.len();
+        let stack_group_no_wrap_len = self.group_no_wrap_stack.len();
         self.queue.insert_iter(
             self.queue_next,
             iter.into_iter().map(|cmd| Command {
@@ -398,26 +400,25 @@ impl<'n, 's> NewState<'n, 's, '_> {
     }
 
     fn can_wrap(&self) -> bool {
-        // TODO update this incrementally
-        !self.stack_group_no_wrap.iter().any(|info| info.active)
+        self.group_no_wrap_active_count == 0
     }
 
     fn force_wrap_now(&mut self) -> Result<(), CausedWrap> {
-        let first_active_wrap = self.stack_group_no_wrap.iter().position(|info| info.active);
-        if let Some(pos) = first_active_wrap {
-            self.restore_and_wrap(pos);
-            Err(CausedWrap)
-        } else {
+        if self.can_wrap() {
             Ok(())
+        } else {
+            let first_active_wrap = self.group_no_wrap_stack.iter().position(|info| info.active).unwrap();
+            self.restore_and_wrap(first_active_wrap);
+            Err(CausedWrap)
         }
     }
 
     fn try_group_without_wrap(&mut self, inner: &'n LNodeSimple<'s>) {
-        let group_index = self.stack_group_no_wrap.len();
+        let group_index = self.group_no_wrap_stack.len();
         // println!("event try_no_wrap {group_index}");
 
         let first_active = self
-            .stack_group_no_wrap
+            .group_no_wrap_stack
             .iter()
             .position(|info| info.active)
             .unwrap_or(group_index);
@@ -437,7 +438,9 @@ impl<'n, 's> NewState<'n, 's, '_> {
 
         // println!("{:?}", check);
 
-        self.stack_group_no_wrap.push(check);
+        self.group_no_wrap_stack.push(check);
+        self.group_no_wrap_active_count += 1;
+
         self.push_iter([CommandKind::Node(inner), CommandKind::EndGroupNoWrap { group_index }]);
 
         self.stats.checkpoint += 1;
@@ -448,7 +451,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
     // TODO make some utility that automatically wraps and _currently active_ groups instead of taking in an index
     fn restore_and_wrap(&mut self, group_index: usize) {
         // get first active group, this is the outermost group which (also) needs to wrap
-        let first_active = self.stack_group_no_wrap[group_index].first_active;
+        let first_active = self.group_no_wrap_stack[group_index].first_active;
 
         // println!("event force_wrap {group_index}, {first_active}");
 
@@ -462,16 +465,17 @@ impl<'n, 's> NewState<'n, 's, '_> {
             first_active,
             group_inner,
             active: _,
-        } = self.stack_group_no_wrap.swap_remove(first_active);
+        } = self.group_no_wrap_stack.swap_remove(first_active);
 
         self.stats.restore += 1;
 
         // restore stack
-        self.stack_group_no_wrap.truncate(first_active);
+        self.group_no_wrap_stack.truncate(first_active);
         // TODO disable in non-debug mode?
         for i in 0..first_active {
-            assert!(!self.stack_group_no_wrap[i].active);
+            assert!(!self.group_no_wrap_stack[i].active);
         }
+        self.group_no_wrap_active_count = 0;
 
         // restore string
         self.stats.restore_chars += self.result.len() - result_len;
@@ -512,7 +516,8 @@ fn new_loop(state: &mut NewState) {
         // check for line overflow
         let curr_line = state.line();
         if state.line_overflows(curr_line) {
-            let info = enumerate(&state.stack_group_no_wrap)
+            // TODO avoid repeated finding here by discarding stack items once they're inactive and on previous lines?
+            let info = enumerate(&state.group_no_wrap_stack)
                 .rev()
                 .find(|(_, info)| info.line() == curr_line);
             if let Some((info_pos, _)) = info {
@@ -533,9 +538,10 @@ fn new_loop(state: &mut NewState) {
             CommandKind::Node(next) => next,
             CommandKind::EndGroupNoWrap { group_index } => {
                 // TODO discard items on the stack that are no longer active and end on a previous line
-                let info = &mut state.stack_group_no_wrap[group_index];
+                let info = &mut state.group_no_wrap_stack[group_index];
                 assert!(info.active);
                 info.active = false;
+                state.group_no_wrap_active_count -= 1;
                 continue;
             }
             CommandKind::RestoreIndent { indent } => {
