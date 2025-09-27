@@ -8,6 +8,7 @@ use crate::util::iter::IterExt;
 use hwl_util::swriteln;
 use itertools::enumerate;
 use std::fmt::Debug;
+use std::time::{Duration, Instant};
 
 pub type LNode<'s> = LNodeImpl<'s, ()>;
 pub type LNodeSimple<'s> = LNodeImpl<'s, Never>;
@@ -75,16 +76,12 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
             indent: 0,
             emit_space: false,
         },
-        stats: StringsStats {
-            checkpoint: 0,
-            restore: 0,
-            restore_chars: 0,
-            check_overflow: 0,
-        },
+        stats: StringsStats::default(),
         queue: vec![],
         queue_next: 0,
         group_no_wrap_stack: vec![],
         group_no_wrap_active_count: 0,
+        group_no_wrap_first_active: None,
     };
 
     state.push_iter(std::iter::once(CommandKind::Node(root)));
@@ -96,13 +93,22 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct StringsStats {
-    // TODO update these
+    // TODO update/rename/reduce these
     pub checkpoint: usize,
     pub restore: usize,
     pub restore_chars: usize,
     pub check_overflow: usize,
+
+    pub loop_iterations: usize,
+    pub loop_commands: usize,
+    pub loop_nodes: usize,
+
+    pub time_retain: Duration,
+    pub time_active: Duration,
+    pub time_active2: Duration,
+    pub time_line: Duration,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -250,8 +256,11 @@ struct NewState<'n, 's, 'f> {
 
     queue: Vec<Command<'n, 's>>,
     queue_next: usize,
+
+    // TODO maybe active groups can be a separate VecDeque or maybe even linked list?
     group_no_wrap_stack: Vec<CheckGroupNoWrap<'n, 's>>,
     group_no_wrap_active_count: usize,
+    group_no_wrap_first_active: Option<usize>,
 
     state: StringState,
     result: String,
@@ -407,8 +416,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
         if self.can_wrap() {
             Ok(())
         } else {
-            let first_active_wrap = self.group_no_wrap_stack.iter().position(|info| info.active).unwrap();
-            self.restore_and_wrap(first_active_wrap);
+            self.restore_and_wrap(self.group_no_wrap_first_active.unwrap());
             Err(CausedWrap)
         }
     }
@@ -417,11 +425,10 @@ impl<'n, 's> NewState<'n, 's, '_> {
         let group_index = self.group_no_wrap_stack.len();
         // println!("event try_no_wrap {group_index}");
 
-        let first_active = self
-            .group_no_wrap_stack
-            .iter()
-            .position(|info| info.active)
-            .unwrap_or(group_index);
+        // TODO O(n**2)
+        let start = Instant::now();
+        let first_active = self.group_no_wrap_first_active.unwrap_or(group_index);
+        self.stats.time_active2 += start.elapsed();
 
         let check = CheckGroupNoWrap {
             // TODO match field order
@@ -440,6 +447,9 @@ impl<'n, 's> NewState<'n, 's, '_> {
 
         self.group_no_wrap_stack.push(check);
         self.group_no_wrap_active_count += 1;
+        if self.group_no_wrap_first_active.is_none() {
+            self.group_no_wrap_first_active = Some(group_index);
+        }
 
         self.push_iter([CommandKind::Node(inner), CommandKind::EndGroupNoWrap { group_index }]);
 
@@ -472,10 +482,8 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // restore stack
         self.group_no_wrap_stack.truncate(first_active);
         // TODO disable in non-debug mode?
-        for i in 0..first_active {
-            assert!(!self.group_no_wrap_stack[i].active);
-        }
         self.group_no_wrap_active_count = 0;
+        self.group_no_wrap_first_active = None;
 
         // restore string
         self.stats.restore_chars += self.result.len() - result_len;
@@ -485,10 +493,22 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // restore queue
         // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
         self.queue_next = queue_next;
-        // drop(self.queue.drain(queue_next..(self.queue.len() - queue_after)));
 
-        // TODO only start draining after queue_next
-        self.queue.retain(|cmd| cmd.stack_group_no_wrap_len <= first_active);
+        // print!("retain pattern: ");
+        // TODO O(n**2)
+        let start = Instant::now();
+        let mut next_i = 0;
+        self.queue.retain(|cmd| {
+            let i = next_i;
+            next_i += 1;
+
+            if i < queue_next {
+                return true;
+            }
+            cmd.stack_group_no_wrap_len <= first_active
+        });
+        self.stats.time_retain += start.elapsed();
+
         assert_eq!(self.queue.len(), queue_len);
 
         self.push(CommandKind::Node(group_inner));
@@ -513,10 +533,13 @@ fn new_loop(state: &mut NewState) {
         // }
         // println!("  output\n    {:?}", state.str_ctx.result);
 
+        state.stats.loop_iterations += 1;
+
         // check for line overflow
         let curr_line = state.line();
         if state.line_overflows(curr_line) {
             // TODO avoid repeated finding here by discarding stack items once they're inactive and on previous lines?
+            // TODO O(n**2)
             let info = enumerate(&state.group_no_wrap_stack)
                 .rev()
                 .find(|(_, info)| info.line() == curr_line);
@@ -534,6 +557,8 @@ fn new_loop(state: &mut NewState) {
         let next = &next.kind;
         state.queue_next += 1;
 
+        state.stats.loop_commands += 1;
+
         let next = match *next {
             CommandKind::Node(next) => next,
             CommandKind::EndGroupNoWrap { group_index } => {
@@ -542,6 +567,10 @@ fn new_loop(state: &mut NewState) {
                 assert!(info.active);
                 info.active = false;
                 state.group_no_wrap_active_count -= 1;
+                if state.group_no_wrap_first_active == Some(group_index) {
+                    state.group_no_wrap_first_active = state.group_no_wrap_stack.iter().position(|i| i.active);
+                }
+
                 continue;
             }
             CommandKind::RestoreIndent { indent } => {
@@ -551,6 +580,8 @@ fn new_loop(state: &mut NewState) {
         };
 
         // handle the next node
+        state.stats.loop_nodes += 1;
+
         // TODO extract function?
         let res = match next {
             LNodeSimple::Space => {
