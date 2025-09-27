@@ -454,11 +454,6 @@ fn seq_ends_with_space(seq: &[LNode]) -> Option<bool> {
     seq.iter().rev().find_map(node_ends_with_space)
 }
 
-fn fill_ends_with_space(children: &[LNode]) -> Option<bool> {
-    // there is an implicit [LNode::WrapNewLine] after each child, which counts as "not a space"
-    if children.is_empty() { None } else { Some(false) }
-}
-
 fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
     match node {
         HNode::WrapComma => Some(true),
@@ -478,16 +473,4 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
 
 fn seq_starts_with_wrap_comma(seq: &[HNode]) -> Option<bool> {
     seq.iter().find_map(node_starts_with_wrap_comma)
-}
-
-fn fill_starts_with_wrap_comma(children: &[HNode]) -> Option<bool> {
-    if let Some(first) = children.first() {
-        if let Some(result) = node_starts_with_wrap_comma(first) {
-            Some(result)
-        } else {
-            Some(false)
-        }
-    } else {
-        None
-    }
 }
