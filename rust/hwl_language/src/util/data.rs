@@ -25,32 +25,41 @@ where
     }
 }
 
-pub trait VecExt<T> {
-    fn single(self) -> Result<T, Vec<T>>;
+pub trait VecExt<T>: Sized {
+    fn into_vec(self) -> Vec<T>;
+    fn as_vec_mut(&mut self) -> &mut Vec<T>;
 
-    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
-
-    fn insert_iter(&mut self, index: usize, iter: impl IntoIterator<Item = T>);
-}
-
-impl<T> VecExt<T> for Vec<T> {
-    fn single(mut self) -> Result<T, Vec<T>> {
-        if self.len() == 1 {
-            Ok(self.pop().unwrap())
+    fn single(self) -> Result<T, Vec<T>> {
+        let mut slf = self.into_vec();
+        if slf.len() == 1 {
+            Ok(slf.pop().unwrap())
         } else {
-            Err(self)
+            Err(slf)
         }
     }
 
-    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.push(v);
-        let result = f(self);
-        assert!(self.pop().is_some());
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Vec<T>) -> R) -> R {
+        let slf = self.as_vec_mut();
+
+        slf.push(v);
+        let result = f(slf);
+        assert!(slf.pop().is_some());
         result
     }
 
     fn insert_iter(&mut self, index: usize, iter: impl IntoIterator<Item = T>) {
-        drop(self.splice(index..index, iter));
+        let slf = self.as_vec_mut();
+        drop(slf.splice(index..index, iter));
+    }
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn into_vec(self) -> Vec<T> {
+        self
+    }
+
+    fn as_vec_mut(&mut self) -> &mut Vec<T> {
+        self
     }
 }
 
