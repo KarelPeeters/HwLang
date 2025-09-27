@@ -6,7 +6,7 @@ use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use hwl_util::swriteln;
-use itertools::{Itertools, enumerate};
+use itertools::enumerate;
 use std::fmt::Debug;
 
 pub type LNode<'s> = LNodeImpl<'s, ()>;
@@ -114,36 +114,6 @@ struct StringState {
     curr_line_start: usize,
     indent: usize,
     emit_space: bool,
-}
-
-#[derive(Debug)]
-struct NeedsWrap;
-
-trait WrapMaybe {
-    type E;
-    fn is_wrapping() -> bool;
-    fn require_wrapping() -> Result<(), Self::E>;
-}
-
-struct WrapNo {}
-impl WrapMaybe for WrapNo {
-    type E = NeedsWrap;
-    fn is_wrapping() -> bool {
-        false
-    }
-    fn require_wrapping() -> Result<(), NeedsWrap> {
-        Err(NeedsWrap)
-    }
-}
-struct WrapYes {}
-impl WrapMaybe for WrapYes {
-    type E = Never;
-    fn is_wrapping() -> bool {
-        true
-    }
-    fn require_wrapping() -> Result<(), Never> {
-        Ok(())
-    }
 }
 
 impl<E: Debug> LNodeImpl<'_, E> {
