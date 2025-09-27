@@ -425,7 +425,7 @@ pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
     Cow::Borrowed(raw)
 }
 
-fn is_single_token(s: &str, ty: TokenType) -> bool {
+fn str_is_single_token(s: &str, ty: TokenType) -> bool {
     let tokenizer = Tokenizer::new(FileId::dummy(), s, false);
     match tokenizer.into_iter().single() {
         Some(Ok(token)) => token.ty == ty,
@@ -433,12 +433,18 @@ fn is_single_token(s: &str, ty: TokenType) -> bool {
     }
 }
 
-pub fn is_valid_identifier(s: &str) -> bool {
-    is_single_token(s, TokenType::Identifier)
+pub fn str_is_valid_identifier(s: &str) -> bool {
+    str_is_single_token(s, TokenType::Identifier)
 }
 
-pub fn is_whitespace_or_empty(s: &str) -> bool {
-    s.is_empty() || is_single_token(s, TokenType::WhiteSpace)
+pub fn str_is_whitespace_or_empty(s: &str) -> bool {
+    s.is_empty() || str_is_single_token(s, TokenType::WhiteSpace)
+}
+
+pub fn char_is_whitespace(c: char) -> bool {
+    let mut buffer = [0; 4];
+    let s = c.encode_utf8(&mut buffer);
+    str_is_whitespace_or_empty(s)
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {

@@ -184,7 +184,7 @@ fn check_format_output_matches(
                             break;
                         } else {
                             let reason = format!(
-                                "formatting output token content mismatch for token type `{}`, got {new_token_str}",
+                                "formatting output token content mismatch for token type `{}`, got `{new_token_str}`",
                                 old_token.ty.diagnostic_string()
                             );
                             let diag = Diagnostic::new_internal_error(reason)

@@ -1,10 +1,10 @@
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format::common::swrite_indent;
 use crate::syntax::pos::LineOffsets;
-use crate::syntax::token::is_whitespace_or_empty;
+use crate::syntax::token::{char_is_whitespace, str_is_whitespace_or_empty};
+use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
-use crate::util::{Never, ResultNeverExt};
 use hwl_util::swriteln;
 use itertools::{Itertools, enumerate};
 use std::fmt::Debug;
@@ -66,10 +66,10 @@ pub struct StringOutput {
 }
 
 pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
-    // TODO clean up construction
-    let ctx = StringBuilderContext {
+    // TODO match field order
+    let mut state = NewState {
         settings,
-        result: String::with_capacity(source_str.len() * 2),
+        result: String::with_capacity(2 * source_str.len()),
         state: StringState {
             curr_line_start: 0,
             indent: 0,
@@ -81,10 +81,6 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
             restore_chars: 0,
             check_overflow: 0,
         },
-    };
-
-    let mut state = NewState {
-        str_ctx: ctx,
         queue: vec![],
         queue_next: 0,
         stack_group_no_wrap: vec![],
@@ -94,21 +90,14 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
     new_loop(&mut state);
 
     StringOutput {
-        stats: state.str_ctx.stats,
-        string: state.str_ctx.result,
+        stats: state.stats,
+        string: state.result,
     }
-}
-
-struct StringBuilderContext<'f> {
-    settings: &'f FormatSettings,
-
-    result: String,
-    state: StringState,
-    stats: StringsStats,
 }
 
 #[derive(Debug)]
 pub struct StringsStats {
+    // TODO update these
     pub checkpoint: usize,
     pub restore: usize,
     pub restore_chars: usize,
@@ -118,20 +107,6 @@ pub struct StringsStats {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 struct Line {
     start: usize,
-}
-
-#[derive(Debug, Copy, Clone)]
-struct CheckPoint {
-    result_len: usize,
-    state: StringState,
-}
-
-impl CheckPoint {
-    fn line(&self) -> Line {
-        Line {
-            start: self.state.curr_line_start,
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -168,36 +143,6 @@ impl WrapMaybe for WrapYes {
     }
     fn require_wrapping() -> Result<(), Never> {
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct ShouldWrapEarlier;
-
-trait EarlierBranchMaybe: Copy {
-    type E;
-    fn check_overflow(&self, ctx: &mut StringBuilderContext) -> Result<(), Self::E>;
-}
-
-#[derive(Copy, Clone)]
-struct EarlierBranchNo;
-impl EarlierBranchMaybe for EarlierBranchNo {
-    type E = Never;
-    fn check_overflow(&self, _: &mut StringBuilderContext) -> Result<(), Never> {
-        Ok(())
-    }
-}
-
-#[derive(Copy, Clone)]
-struct EarlierBranchYes(Line);
-impl EarlierBranchMaybe for EarlierBranchYes {
-    type E = ShouldWrapEarlier;
-    fn check_overflow(&self, ctx: &mut StringBuilderContext) -> Result<(), ShouldWrapEarlier> {
-        if ctx.line_overflows(self.0) {
-            Err(ShouldWrapEarlier)
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -329,12 +274,15 @@ fn simplify_container<'s>(
 
 // TODO rename (and merge?)
 struct NewState<'n, 's, 'f> {
-    str_ctx: StringBuilderContext<'f>,
+    settings: &'f FormatSettings,
+    stats: StringsStats,
 
     queue: Vec<Command<'n, 's>>,
     queue_next: usize,
-
     stack_group_no_wrap: Vec<CheckGroupNoWrap<'n, 's>>,
+
+    state: StringState,
+    result: String,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -346,7 +294,8 @@ enum Command<'n, 's> {
 
 #[derive(Debug)]
 struct CheckGroupNoWrap<'n, 's> {
-    check: CheckPoint,
+    result_len: usize,
+    state: StringState,
 
     // TODO this fundamentally doesn't work if the next group is expanded before the current one is
     //   maybe instead of this we can add some sort of depth (no) or time (maybe?) value and filter based on those
@@ -365,8 +314,17 @@ struct CheckGroupNoWrap<'n, 's> {
     active: bool,
 }
 
+impl<'n, 's> CheckGroupNoWrap<'n, 's> {
+    pub fn line(&self) -> Line {
+        Line {
+            start: self.state.curr_line_start,
+        }
+    }
+}
+
 struct CausedWrap;
 
+// TODO reorder functions
 impl<'n, 's> NewState<'n, 's, '_> {
     fn push(&mut self, cmd: Command<'n, 's>) {
         self.queue.insert(self.queue_next, cmd);
@@ -376,243 +334,14 @@ impl<'n, 's> NewState<'n, 's, '_> {
         self.queue.insert_iter(self.queue_next, iter);
     }
 
-    fn write_str(&mut self, s: &str) -> Result<(), CausedWrap> {
-        // TODO inline and simplify this
-        if self.can_wrap() {
-            self.str_ctx.write_str::<WrapYes>(s).remove_never();
-            Ok(())
-        } else {
-            match self.str_ctx.write_str::<WrapNo>(s) {
-                Ok(()) => Ok(()),
-                Err(NeedsWrap) => self.force_wrap_now(),
-            }
-        }
+    fn at_line_start(&self) -> bool {
+        self.state.curr_line_start == self.result.len()
     }
 
-    fn ensure_newlines(&mut self, n: usize) -> Result<(), CausedWrap> {
-        // TODO inline and simplify this
-        if n > 0 {
-            // TODO only force wrap if there are not enough previous newlines yet?
-            self.force_wrap_now()?;
-            self.str_ctx.write_newlines::<WrapYes>(n).remove_never();
-        }
-        Ok(())
-    }
-
-    fn can_wrap(&self) -> bool {
-        // TODO update this incrementally
-        !self.stack_group_no_wrap.iter().any(|info| info.active)
-    }
-
-    fn force_wrap_now(&mut self) -> Result<(), CausedWrap> {
-        let first_active_wrap = self.stack_group_no_wrap.iter().position(|info| info.active);
-        if let Some(pos) = first_active_wrap {
-            self.restore_and_wrap(pos);
-            Err(CausedWrap)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn try_group_without_wrap(&mut self, inner: &'n LNodeSimple<'s>) {
-        let group_index = self.stack_group_no_wrap.len();
-        // println!("event try_no_wrap {group_index}");
-
-        let first_active = self
-            .stack_group_no_wrap
-            .iter()
-            .position(|info| info.active)
-            .unwrap_or(group_index);
-
-        let check = CheckGroupNoWrap {
-            check: self.str_ctx.checkpoint(),
-            queue_next: self.queue_next,
-            // queue_after: self.queue.len() - self.queue_next,
-            queue: self.queue.clone(),
-            first_active,
-            group_inner: inner,
-            active: true,
-        };
-
-        // println!("{:?}", check);
-
-        self.stack_group_no_wrap.push(check);
-        self.push_iter([Command::Node(inner), Command::EndGroupNoWrap { group_index }]);
-    }
-
-    // TODO make this more type-safe, without bare usize index
-    // TODO create variant of this that automatically finds the containing group
-    // TODO make some utility that automatically wraps and _currently active_ groups instead of taking in an index
-    fn restore_and_wrap(&mut self, group_index: usize) {
-        // get first active group, this is the outermost group which (also) needs to wrap
-        let first_active = self.stack_group_no_wrap[group_index].first_active;
-
-        // println!("event force_wrap {group_index}, {first_active}");
-
-        // println!("{:?}", self.stack_group_no_wrap[first_active]);
-
-        let CheckGroupNoWrap {
-            check,
-            queue,
-            queue_next,
-            first_active,
-            group_inner,
-            active: _,
-        } = self.stack_group_no_wrap.swap_remove(first_active);
-
-        // restore stack
-        self.stack_group_no_wrap.truncate(first_active);
-        // TODO disable in non-debug mode?
-        for i in 0..first_active {
-            assert!(!self.stack_group_no_wrap[i].active);
-        }
-
-        // restore string
-        self.str_ctx.restore(check);
-
-        // restore queue
-        // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
-        self.queue_next = queue_next;
-        // drop(self.queue.drain(queue_next..(self.queue.len() - queue_after)));
-        self.queue = queue;
-        self.push(Command::Node(group_inner));
-    }
-}
-
-// TODO if everything is a single method, we don't need this context "class" any more
-// TODO document all of this a bit more
-fn new_loop(state: &mut NewState) {
-    loop {
-        // println!("iter");
-        // println!("  queue:");
-        // for (i, item) in enumerate(&state.queue) {
-        //     print!("   {i:4}");
-        //
-        //     if i < state.queue_next {
-        //         print!(" [X] ");
-        //     } else {
-        //         print!(" [ ] ");
-        //     }
-        //     println!("{item:?}");
-        // }
-        // println!("  output\n    {:?}", state.str_ctx.result);
-
-        // check for line overflow
-        let curr_line = state.str_ctx.line();
-        if state.str_ctx.line_overflows(curr_line) {
-            let info = enumerate(&state.stack_group_no_wrap)
-                .rev()
-                .find(|(_, info)| info.check.line() == curr_line);
-            if let Some((info_pos, _)) = info {
-                state.restore_and_wrap(info_pos);
-                // TODO do we need this continue?
-                continue;
-            }
-        }
-
-        // pop the next command
-        let Some(next) = state.queue.get(state.queue_next) else {
-            break;
-        };
-        state.queue_next += 1;
-
-        let next = match *next {
-            Command::Node(next) => next,
-            Command::EndGroupNoWrap { group_index } => {
-                // TODO discard items on the stack that are no longer active and end on a previous line
-                let info = &mut state.stack_group_no_wrap[group_index];
-                assert!(info.active);
-                info.active = false;
-                continue;
-            }
-            Command::RestoreIndent { indent } => {
-                state.str_ctx.state.indent = indent;
-                continue;
-            }
-        };
-
-        // handle the next node
-        // TODO extract function?
-        let res = match next {
-            LNodeSimple::Space => {
-                state.str_ctx.state.emit_space = true;
-                Ok(())
-            }
-            LNodeSimple::AlwaysStr(s) => state.write_str(s),
-            LNodeSimple::WrapStr(s) => {
-                if state.can_wrap() {
-                    state.write_str(s)
-                } else {
-                    Ok(())
-                }
-            }
-            LNodeSimple::AlwaysNewline => state.ensure_newlines(1),
-            LNodeSimple::WrapNewline => {
-                if state.can_wrap() {
-                    state.ensure_newlines(1)
-                } else {
-                    Ok(())
-                }
-            }
-            LNodeSimple::AlwaysBlankLine => state.ensure_newlines(2),
-            LNodeSimple::ForceWrap => state.force_wrap_now(),
-            LNodeSimple::Indent(inner) => {
-                let indent = state.str_ctx.state.indent;
-                state.str_ctx.state.indent += 1;
-                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
-                Ok(())
-            }
-            LNodeSimple::Dedent(inner) => {
-                let indent = state.str_ctx.state.indent;
-                state.str_ctx.state.indent = 0;
-                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
-                Ok(())
-            }
-            LNodeSimple::Sequence(seq) => {
-                // TODO we flatten here, so maybe we can remove simplify
-                state.push_iter(seq.iter().map(Command::Node));
-                Ok(())
-            }
-            LNodeSimple::Group(inner) => {
-                // TODO maybe we can implement group escaping here, removing the "simplify" step entirely
-                state.try_group_without_wrap(inner);
-                Ok(())
-            }
-            LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
-        };
-
-        // both cases are correctly handled by continuing the loop:
-        // * If Ok, we succeeded in writing the node and we can move on to the next one.
-        // * If Err, a wrap happened which restored an earlier state, and the next iteration will re-try with wrapping.
-        let _: Result<(), CausedWrap> = res;
-    }
-}
-
-impl StringBuilderContext<'_> {
     fn line(&self) -> Line {
         Line {
             start: self.state.curr_line_start,
         }
-    }
-
-    /// Save the current state into a checkpoint that can later be used to roll back to the current state.
-    fn checkpoint(&mut self) -> CheckPoint {
-        self.stats.checkpoint += 1;
-        CheckPoint {
-            result_len: self.result.len(),
-            state: self.state,
-        }
-    }
-
-    /// Roll back the state to a previous checkpoint.
-    fn restore(&mut self, check: CheckPoint) {
-        assert!(self.result.len() >= check.result_len);
-
-        self.stats.restore += 1;
-        self.stats.restore_chars += self.result.len() - check.result_len;
-
-        self.result.truncate(check.result_len);
-        self.state = check.state;
     }
 
     /// Check if the line at which the checkpoint was taken overflows the max line length.
@@ -626,58 +355,18 @@ impl StringBuilderContext<'_> {
         line_len > self.settings.max_line_length
     }
 
-    fn indent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.state.indent += 1;
-        let r = f(self);
-        self.state.indent -= 1;
-        r
-    }
-
-    fn dedent<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let prev_indent = self.state.indent;
-        self.state.indent = 0;
-        let r = f(self);
-        self.state.indent = prev_indent;
-        r
-    }
-
-    fn at_line_start(&self) -> bool {
-        self.state.curr_line_start == self.result.len()
-    }
-
-    /// Ensure the buffer ends in at least `n` newlines.
-    /// This is used to avoid duplicate newlines being emitted where not necessary.
-    /// TODO rename to `ensure_newlines`
-    fn write_newlines<W: WrapMaybe>(&mut self, n: usize) -> Result<(), W::E> {
-        // count current ending newlines
-        let mut curr_count = 0;
-        let mut curr = self.result.as_str();
-        while curr_count < n
-            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
-        {
-            curr_count += 1;
-            curr = before;
-        }
-
-        // add newlines if necessary
-        for _ in curr_count..n {
-            self.write_str::<W>(&self.settings.newline_str)?;
-        }
-        Ok(())
-    }
-
-    fn write_str<W: WrapMaybe>(&mut self, s: &str) -> Result<(), W::E> {
+    fn write_str(&mut self, s: &str) -> Result<(), CausedWrap> {
         // strings containing newlines need the parent to wrap
         let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
         if last_line_end.is_some() {
-            W::require_wrapping()?;
+            self.force_wrap_now()?;
         }
 
         // emit indent if this is the first text on the line
         // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
         //   first abstractly push indent/str nodes, then later actually convert to a full string
         //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
-        if self.at_line_start() && !is_whitespace_or_empty(s) {
+        if self.at_line_start() && !str_is_whitespace_or_empty(s) {
             for _ in 0..self.state.indent {
                 self.result.push_str(&self.settings.indent_str);
             }
@@ -707,9 +396,224 @@ impl StringBuilderContext<'_> {
 
         Ok(())
     }
+
+    /// Ensure the buffer ends in at least `n` newlines.
+    /// This is used to avoid duplicate newlines being emitted where not necessary.
+    fn ensure_newlines(&mut self, n: usize) -> Result<(), CausedWrap> {
+        // TODO should we always force wrap, even if we don't emit any new newlines here?
+
+        // count current ending newlines
+        let mut curr_count = 0;
+        let mut curr = self.result.as_str();
+        while curr_count < n
+            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
+        {
+            curr_count += 1;
+            curr = before;
+        }
+
+        // add newlines if necessary
+        for _ in curr_count..n {
+            self.write_str(&self.settings.newline_str)?;
+        }
+
+        Ok(())
+    }
+
+    fn can_wrap(&self) -> bool {
+        // TODO update this incrementally
+        !self.stack_group_no_wrap.iter().any(|info| info.active)
+    }
+
+    fn force_wrap_now(&mut self) -> Result<(), CausedWrap> {
+        let first_active_wrap = self.stack_group_no_wrap.iter().position(|info| info.active);
+        if let Some(pos) = first_active_wrap {
+            self.restore_and_wrap(pos);
+            Err(CausedWrap)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn try_group_without_wrap(&mut self, inner: &'n LNodeSimple<'s>) {
+        let group_index = self.stack_group_no_wrap.len();
+        // println!("event try_no_wrap {group_index}");
+
+        let first_active = self
+            .stack_group_no_wrap
+            .iter()
+            .position(|info| info.active)
+            .unwrap_or(group_index);
+
+        let check = CheckGroupNoWrap {
+            // TODO match field order
+            result_len: self.result.len(),
+            state: self.state,
+            queue_next: self.queue_next,
+            // queue_after: self.queue.len() - self.queue_next,
+            queue: self.queue.clone(),
+            first_active,
+            group_inner: inner,
+            active: true,
+        };
+
+        // println!("{:?}", check);
+
+        self.stack_group_no_wrap.push(check);
+        self.push_iter([Command::Node(inner), Command::EndGroupNoWrap { group_index }]);
+
+        self.stats.checkpoint += 1;
+    }
+
+    // TODO make this more type-safe, without bare usize index
+    // TODO create variant of this that automatically finds the containing group
+    // TODO make some utility that automatically wraps and _currently active_ groups instead of taking in an index
+    fn restore_and_wrap(&mut self, group_index: usize) {
+        // get first active group, this is the outermost group which (also) needs to wrap
+        let first_active = self.stack_group_no_wrap[group_index].first_active;
+
+        // println!("event force_wrap {group_index}, {first_active}");
+
+        // println!("{:?}", self.stack_group_no_wrap[first_active]);
+
+        let CheckGroupNoWrap {
+            result_len,
+            state,
+            queue,
+            queue_next,
+            first_active,
+            group_inner,
+            active: _,
+        } = self.stack_group_no_wrap.swap_remove(first_active);
+
+        self.stats.restore += 1;
+
+        // restore stack
+        self.stack_group_no_wrap.truncate(first_active);
+        // TODO disable in non-debug mode?
+        for i in 0..first_active {
+            assert!(!self.stack_group_no_wrap[i].active);
+        }
+
+        // restore string
+        self.stats.restore_chars += self.result.len() - result_len;
+        self.result.truncate(result_len);
+        self.state = state;
+
+        // restore queue
+        // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
+        self.queue_next = queue_next;
+        // drop(self.queue.drain(queue_next..(self.queue.len() - queue_after)));
+        self.queue = queue;
+        self.push(Command::Node(group_inner));
+    }
 }
 
-fn char_is_whitespace(c: char) -> bool {
-    let mut buffer = [0; 4];
-    is_whitespace_or_empty(c.encode_utf8(&mut buffer))
+// TODO if everything is a single method, we don't need this context "class" any more
+// TODO document all of this a bit more
+fn new_loop(state: &mut NewState) {
+    loop {
+        // println!("iter");
+        // println!("  queue:");
+        // for (i, item) in enumerate(&state.queue) {
+        //     print!("   {i:4}");
+        //
+        //     if i < state.queue_next {
+        //         print!(" [X] ");
+        //     } else {
+        //         print!(" [ ] ");
+        //     }
+        //     println!("{item:?}");
+        // }
+        // println!("  output\n    {:?}", state.str_ctx.result);
+
+        // check for line overflow
+        let curr_line = state.line();
+        if state.line_overflows(curr_line) {
+            let info = enumerate(&state.stack_group_no_wrap)
+                .rev()
+                .find(|(_, info)| info.line() == curr_line);
+            if let Some((info_pos, _)) = info {
+                state.restore_and_wrap(info_pos);
+                // TODO do we need this continue?
+                continue;
+            }
+        }
+
+        // pop the next command
+        let Some(next) = state.queue.get(state.queue_next) else {
+            break;
+        };
+        state.queue_next += 1;
+
+        let next = match *next {
+            Command::Node(next) => next,
+            Command::EndGroupNoWrap { group_index } => {
+                // TODO discard items on the stack that are no longer active and end on a previous line
+                let info = &mut state.stack_group_no_wrap[group_index];
+                assert!(info.active);
+                info.active = false;
+                continue;
+            }
+            Command::RestoreIndent { indent } => {
+                state.state.indent = indent;
+                continue;
+            }
+        };
+
+        // handle the next node
+        // TODO extract function?
+        let res = match next {
+            LNodeSimple::Space => {
+                state.state.emit_space = true;
+                Ok(())
+            }
+            LNodeSimple::AlwaysStr(s) => state.write_str(s),
+            LNodeSimple::WrapStr(s) => {
+                if state.can_wrap() {
+                    state.write_str(s)
+                } else {
+                    Ok(())
+                }
+            }
+            LNodeSimple::AlwaysNewline => state.ensure_newlines(1),
+            LNodeSimple::WrapNewline => {
+                if state.can_wrap() {
+                    state.ensure_newlines(1)
+                } else {
+                    Ok(())
+                }
+            }
+            LNodeSimple::AlwaysBlankLine => state.ensure_newlines(2),
+            LNodeSimple::ForceWrap => state.force_wrap_now(),
+            LNodeSimple::Indent(inner) => {
+                let indent = state.state.indent;
+                state.state.indent += 1;
+                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
+                Ok(())
+            }
+            LNodeSimple::Dedent(inner) => {
+                let indent = state.state.indent;
+                state.state.indent = 0;
+                state.push_iter([Command::Node(inner), Command::RestoreIndent { indent }]);
+                Ok(())
+            }
+            LNodeSimple::Sequence(seq) => {
+                // TODO we flatten here, so maybe we can remove simplify
+                state.push_iter(seq.iter().map(Command::Node));
+                Ok(())
+            }
+            LNodeSimple::Group(inner) => {
+                // TODO maybe we can implement group escaping here, removing the "simplify" step entirely
+                state.try_group_without_wrap(inner);
+                Ok(())
+            }
+            LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
+        };
+
+        // both cases are correctly handled by continuing the loop:
+        // * If Ok, we succeeded in writing the node and we can move on to the next one.
+        // * If Err, a wrap happened which restored an earlier state, and the next iteration will re-try with wrapping.
+        let _: Result<(), CausedWrap> = res;
+    }
 }
