@@ -93,7 +93,7 @@ impl FormatError {
     }
 }
 
-pub fn format<'s>(
+pub fn format_file<'s>(
     diags: &Diagnostics,
     source: &'s SourceDatabase,
     settings: &FormatSettings,

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use hwl_util::constants::HWL_VERSION;
+use hwl_util::hwl_manifest_file_name_macro;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -16,18 +17,18 @@ pub enum ArgsCommand {
     Fmt(ArgsFormat),
 }
 
+// TODO add positional command to only check certain items
+// TODO allow separately selecting which items to elaborate
+// TODO allow specifying output verilog and cpp files
+
+/// Build a project.
 #[derive(Parser, Debug)]
 pub struct ArgsBuild {
-    // input
-    #[arg(long)]
+    #[arg(long, help=MANIFEST_DOC)]
     pub manifest: Option<PathBuf>,
 
-    // TODO add positional command to only check certain items
-    // TODO allow separately selecting which items to elaborate
-    // TODO allow specifying output verilog and cpp files
-
-    // performance
     // TODO maybe make this a common option?
+    /// The number of threads to use, defaults to the number of hardware threads.
     #[arg(long, short = 'j')]
     pub thread_count: Option<NonZeroUsize>,
 
@@ -47,9 +48,34 @@ pub struct ArgsBuild {
     pub keep_main_stack: bool,
 }
 
+/// Format source files.
 #[derive(Parser, Debug)]
 pub struct ArgsFormat {
-    #[arg(long)]
+    #[arg(long, help=MANIFEST_DOC)]
     pub manifest: Option<PathBuf>,
-    pub file: Option<PathBuf>,
+
+    /// Check if files are formatted correctly without making any changes,
+    /// exiting with a non-zero code if any files would be changed by formatting.
+    #[arg(long)]
+    pub check: bool,
+
+    #[arg(long, short)]
+    pub verbose: bool,
+
+    /// File or directory to format. If not provided all files in the project manifest will be formatted.
+    #[arg(conflicts_with = "manifest")]
+    pub path: Option<PathBuf>,
+}
+
+const MANIFEST_DOC: &str = concat!(
+    "Path to the project manifest file.",
+    "If not provided, the current directory and its parents will be searched for a file named `",
+    hwl_manifest_file_name_macro!(),
+    "`.",
+);
+
+#[test]
+fn args() {
+    use clap::CommandFactory;
+    Args::command().debug_assert();
 }

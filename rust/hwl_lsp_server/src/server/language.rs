@@ -4,7 +4,7 @@ use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use crate::server::util::uri_to_path;
 use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_string};
-use hwl_language::syntax::format::{FormatError, FormatSettings, format};
+use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{LineOffsets, Span};
 use hwl_language::syntax::resolve::{FindDefinition, find_definition};
@@ -151,7 +151,7 @@ impl RequestHandler<Formatting> for ServerState {
         let diags = Diagnostics::new();
         let mut source = SourceDatabase::new();
         let file = source.add_file("dummy.kh".to_owned(), src.to_owned());
-        let result = format(&diags, &source, &FormatSettings::default(), file);
+        let result = format_file(&diags, &source, &FormatSettings::default(), file);
 
         match result {
             Ok(result) => {

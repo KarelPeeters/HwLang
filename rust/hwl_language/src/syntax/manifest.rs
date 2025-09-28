@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 // TODO maybe add default elaboration root(s)
 // TODO allow manifests to refer to other manifests
 // TODO add external verilog filelist, at some point we can parse it to avoid manual "external" declarations
+// TODO allow marking certain files as "external", meaning that eg. format should not format them
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {

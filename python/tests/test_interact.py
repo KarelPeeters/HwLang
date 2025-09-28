@@ -27,4 +27,4 @@ def test_compile_manifest():
 def test_format():
     src = "const c = a+b;"
     expected = "const c = a + b;\n"
-    assert hwl.format_source(src) == expected
+    assert hwl.format_file(src) == expected

@@ -58,7 +58,7 @@ impl Vfs {
             return Ok(self.files.get(path).unwrap());
         }
 
-        let content = std::fs::read(path).map_err(|e| e.with_path(path.to_owned()))?;
+        let content = std::fs::read(path).map_err(|e| e.with_path(path))?;
 
         let slot = self.files.entry(path.to_owned()).or_default();
         *slot = content;

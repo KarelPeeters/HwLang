@@ -44,11 +44,14 @@ pub struct IoErrorWithPath {
 }
 
 pub trait IoErrorExt {
-    fn with_path(self, path: PathBuf) -> IoErrorWithPath;
+    fn with_path(self, path: impl Into<PathBuf>) -> IoErrorWithPath;
 }
 
 impl IoErrorExt for io::Error {
-    fn with_path(self, path: PathBuf) -> IoErrorWithPath {
-        IoErrorWithPath { error: self, path }
+    fn with_path(self, path: impl Into<PathBuf>) -> IoErrorWithPath {
+        IoErrorWithPath {
+            error: self,
+            path: path.into(),
+        }
     }
 }

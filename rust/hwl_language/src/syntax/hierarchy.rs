@@ -7,7 +7,7 @@ use indexmap::{IndexMap, IndexSet};
 #[derive(Debug)]
 pub struct SourceHierarchy {
     pub root: HierarchyNode,
-    pub files: IndexSet<FileId>,
+    files: IndexSet<FileId>,
 }
 
 // TODO cross-platform ordering guarantees?

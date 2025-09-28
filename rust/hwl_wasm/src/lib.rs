@@ -3,7 +3,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::print::CollectPrintHandler;
-use hwl_language::syntax::format::{FormatError, FormatSettings, format};
+use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
@@ -78,7 +78,7 @@ pub fn run_all(top_src: String) -> RunAllResult {
     // format
     let diags_format = Diagnostics::new();
     let formatted = hierarchy_file.as_ref_ok().and_then(|&(_, top_file)| {
-        format(&diags_format, &source, &FormatSettings::default(), top_file).map_err(FormatError::to_diag_error)
+        format_file(&diags_format, &source, &FormatSettings::default(), top_file).map_err(FormatError::to_diag_error)
     });
 
     // package results
@@ -105,7 +105,7 @@ pub fn format_source(source: String) -> Option<String> {
     let diags = Diagnostics::new();
     let mut src_db = SourceDatabase::new();
     let file = src_db.add_file("dummy.kh".to_owned(), source);
-    match format(&diags, &src_db, &FormatSettings::default(), file) {
+    match format_file(&diags, &src_db, &FormatSettings::default(), file) {
         Ok(result) => Some(result.new_content),
         Err(_) => None,
     }

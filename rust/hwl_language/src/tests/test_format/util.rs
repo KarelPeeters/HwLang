@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{Diagnostics, diags_to_string};
 use crate::syntax::format::FormatSettings;
-use crate::syntax::format::format;
+use crate::syntax::format::format_file;
 use crate::syntax::source::SourceDatabase;
 
 pub fn assert_formatted(src: &str) {
@@ -27,7 +27,7 @@ pub fn assert_format_valid(name: &str, src: &str, settings: &FormatSettings) -> 
 
     let file = source.add_file(name.to_owned(), src.to_owned());
 
-    let Ok(result) = format(&diags, &source, settings, file) else {
+    let Ok(result) = format_file(&diags, &source, settings, file) else {
         eprintln!("{}", diags_to_string(&source, diags.finish(), true));
         panic!("formatting failed");
     };
