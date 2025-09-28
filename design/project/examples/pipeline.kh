@@ -2,16 +2,16 @@ import std.types.[bool, int, uint, str, any];
 import std.util.print;
 
 // TODO expand this into an axi pipeline module, with real backpressure and valid so the undef resets don't leak out
-pub module pipeline(N: uint, T:[N+1]type, F: [N]any) ports(
+pub module pipeline(N: uint, T: [N + 1]type, F: [N]any) ports(
     clk: in clock,
     x: in sync(clk) T[0],
-    y: out sync(clk) T[N-1],
+    y: out sync(clk) T[N - 1],
 ) {
     wire v_0: T[0] = x;
 
     for (i in 0..N) {
         const id_prev = "v_{i}";
-        const id_next = "v_{i+1}";
+        const id_next = "v_{i + 1}";
 
         pub reg id_from_str(id_next): T[i] = undef;
 

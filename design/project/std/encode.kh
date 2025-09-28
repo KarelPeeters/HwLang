@@ -24,23 +24,31 @@ const {
         match (a) {
             .None => {
                 match (b) {
-                    .None => { return true; }
-                    .Some(_) => { return false; }
+                    .None => {
+                        return true;
+                    }
+                    .Some(_) => {
+                        return false;
+                    }
                 }
             }
             .Some(val a) => {
                 match (b) {
-                    .None => { return false; }
-                    .Some(val b) => { return a == b; }
+                    .None => {
+                        return false;
+                    }
+                    .Some(val b) => {
+                        return a == b;
+                    }
                 }
             }
         }
     }
 
-    const N  = 4;
+    const N = 4;
     type T = int(0..N);
     for (i in 0..N) {
         assert(option_eq(T, index_of_first_set_bit(N, index_to_one_hot(N, i)), Option(T).Some(i)));
     }
-    assert(option_eq(T, index_of_first_set_bit(N, [false]*N), Option(T).None));
+    assert(option_eq(T, index_of_first_set_bit(N, [false] * N), Option(T).None));
 }
