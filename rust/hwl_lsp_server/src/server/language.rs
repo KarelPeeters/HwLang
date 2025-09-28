@@ -3,7 +3,7 @@ use crate::server::dispatch::RequestHandler;
 use crate::server::settings::PositionEncoding;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use crate::server::util::uri_to_path;
-use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_debug_string};
+use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_string};
 use hwl_language::syntax::format::{FormatError, FormatSettings, format};
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{LineOffsets, Span};
@@ -174,7 +174,7 @@ impl RequestHandler<Formatting> for ServerState {
             }
             Err(FormatError::Internal(e)) => {
                 let _: DiagError = e;
-                let diags = diags_to_debug_string(&source, diags.finish());
+                let diags = diags_to_string(&source, diags.finish(), false);
                 Err(RequestError::Internal(format!("formatter internal error: {diags}")))
             }
         }

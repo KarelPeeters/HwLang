@@ -1,4 +1,4 @@
-use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::diagnostic::{Diagnostics, diags_to_string};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::IoErrorExt;
@@ -81,16 +81,12 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
     }
 }
 
-// TODO remove print from this, only convert to string and leave the caller to do the print
-// TODO stop using this, just use diags_to_debug_string and print that
 pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
     let diags = diags.finish();
     let any_error = !diags.is_empty();
 
-    for diag in diags {
-        let s = diag.to_string(source, DiagnosticStringSettings::default());
-        eprintln!("{s}\n");
-    }
+    let result = diags_to_string(source, diags, true);
+    eprintln!("{result}");
 
     any_error
 }

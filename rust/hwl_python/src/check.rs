@@ -1,20 +1,19 @@
 use crate::DiagnosticException;
-use hwl_language::front::diagnostic::DiagResult;
+use hwl_language::front::diagnostic::{DiagResult, diags_to_string};
 use hwl_language::util::Never;
 use hwl_language::{
-    front::diagnostic::{DiagError, DiagnosticStringSettings, Diagnostics},
+    front::diagnostic::{DiagError, Diagnostics},
     syntax::source::SourceDatabase as RustSourceDatabase,
 };
-use itertools::Itertools;
 use pyo3::prelude::*;
 
 pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
     if diags.len() == 0 {
         Ok(())
     } else {
-        let diags = diags.clone().finish();
-        let settings = DiagnosticStringSettings::default();
-        let msg = diags.into_iter().map(|d| d.to_string(source, settings)).join("\n");
+        // TODO should we include ansi colors in python exceptions?
+        //   if it works it looks nice, but we don't know where it will be displayed
+        let msg = diags_to_string(source, diags.clone().finish(), true);
         Err(DiagnosticException::new_err(msg))
     }
 }

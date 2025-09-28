@@ -1,7 +1,7 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
-use hwl_language::front::diagnostic::{DiagResult, DiagnosticStringSettings, Diagnostics};
+use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
@@ -69,14 +69,8 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         .as_ref_ok()
         .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
 
-    // TODO lower directly to html?
-    let diag_settings = DiagnosticStringSettings::default();
-    let diagnostics_ansi = diags
-        .finish()
-        .into_iter()
-        .map(|d| d.to_string(&source, diag_settings))
-        .join("\n\n");
-
+    // TODO lower diagnostics directly to html instead of through ansi first?
+    let diagnostics_ansi = diags_to_string(&source, diags.finish(), true);
     let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.source);
     let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
 
