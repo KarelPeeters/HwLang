@@ -61,7 +61,7 @@ impl Settings {
             }
         }
 
-        // TODO for all of these, first check that the server supports them
+        // TODO for all of these, first check that the client supports them?
         let server_capabilities = ServerCapabilities {
             position_encoding: Some(position_encoding.to_lsp()),
             // TODO support incremental (and maybe even will_save-type notifications)
@@ -77,6 +77,7 @@ impl Settings {
                 },
             )),
             definition_provider: Some(OneOf::Left(true)),
+            document_formatting_provider: Some(OneOf::Left(true)),
             ..Default::default()
         };
 

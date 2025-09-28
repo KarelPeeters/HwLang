@@ -28,7 +28,7 @@
 //!
 //! The current [LNode]s and the low-level line breaking implementation are very similar to prettier.
 
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;
 use crate::syntax::format::flatten::ast_to_node;
 use crate::syntax::format::high::{HNode, lower_nodes};
@@ -78,18 +78,26 @@ pub struct FormatOutput<'s> {
     pub new_content: String,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum FormatError {
+    Syntax(DiagError),
+    Internal(DiagError),
+}
+
 pub fn format<'s>(
     diags: &Diagnostics,
     source: &'s SourceDatabase,
     settings: &FormatSettings,
     file: FileId,
-) -> DiagResult<FormatOutput<'s>> {
+) -> Result<FormatOutput<'s>, FormatError> {
     // tokenize and parse
     let old_info = &source[file];
     let old_content = &old_info.content;
     let old_offsets = &old_info.offsets;
-    let old_tokens = tokenize(file, old_content, false).map_err(|e| diags.report(e.to_diagnostic()))?;
-    let old_ast = parse_file_content(file, old_content).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
+    let old_tokens =
+        tokenize(file, old_content, false).map_err(|e| FormatError::Syntax(diags.report(e.to_diagnostic())))?;
+    let old_ast = parse_file_content(file, old_content)
+        .map_err(|e| FormatError::Syntax(diags.report(parse_error_to_diagnostic(e))))?;
 
     // flatten the ast to high-level nodes
     let node_high = ast_to_node(&old_ast);
@@ -107,7 +115,7 @@ pub fn format<'s>(
         };
         let expected_str = e.expected.diagnostic_string();
         let reason = format!("formatter token mismatch: source {msg_source} but formatter emitted `{expected_str}`");
-        diags.report_internal_error(span, reason)
+        FormatError::Internal(diags.report_internal_error(span, reason))
     })?;
 
     // simplify
@@ -117,7 +125,8 @@ pub fn format<'s>(
     let string_output = node_to_string(settings, old_content, &node_simple);
 
     // check that the output matches the input, as an extra precaution against formatter bugs
-    check_format_output_matches(diags, source, file, &old_tokens, &old_ast, &string_output.string)?;
+    check_format_output_matches(diags, source, file, &old_tokens, &old_ast, &string_output.string)
+        .map_err(FormatError::Internal)?;
 
     Ok(FormatOutput {
         old_tokens,
