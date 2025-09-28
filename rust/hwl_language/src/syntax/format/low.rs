@@ -6,7 +6,7 @@ use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use hwl_util::swriteln;
-use itertools::enumerate;
+use itertools::{Itertools, enumerate};
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
@@ -361,6 +361,12 @@ impl StringBuilderCheckpoint {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+enum MaybeNewline {
+    No,
+    Yes,
+}
+
 impl StringBuilder<'_> {
     pub fn line(&self) -> Line {
         Line {
@@ -385,13 +391,14 @@ impl StringBuilder<'_> {
         self.state.curr_line_start == self.buffer.len()
     }
 
-    fn line_length(&mut self, line: Line) -> usize {
+    fn line_overflows(&mut self, line: Line) -> bool {
         let rest = &self.buffer[line.start..];
-        rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len())
+        let line_length = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
+        line_length > self.settings.max_line_length
     }
 
     #[must_use]
-    fn write_str(&mut self, s: &str) -> bool {
+    fn write_str(&mut self, s: &str) -> MaybeNewline {
         // strings containing newlines need the parent to wrap
         let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
 
@@ -427,7 +434,11 @@ impl StringBuilder<'_> {
             self.state.curr_line_start = self.buffer.len() - s.len() + last_line_end + 1;
         }
 
-        last_line_end.is_some()
+        if last_line_end.is_some() {
+            MaybeNewline::Yes
+        } else {
+            MaybeNewline::No
+        }
     }
 
     /// Ensure the buffer ends in at least `n` newlines.
@@ -445,7 +456,7 @@ impl StringBuilder<'_> {
 
         // add newlines if necessary
         for _ in curr_count..n {
-            let _ = self.write_str(&self.settings.newline_str);
+            let _: MaybeNewline = self.write_str(&self.settings.newline_str);
         }
     }
 }
@@ -485,6 +496,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
     }
 
     fn push_iter(&mut self, iter: impl IntoIterator<Item = CommandKind<'n, 's>>) {
+        // TODO change queue order to be backwards, so we don't need to shift stuff around
         let stack_group_no_wrap_len = self.group_no_wrap_stack.len();
         self.queue.insert_iter(
             self.queue_next,
@@ -499,8 +511,9 @@ impl<'n, 's> NewState<'n, 's, '_> {
         self.group_no_wrap_active.is_empty()
     }
 
-    fn force_wrap_now(&mut self) -> Result<(), CausedWrap> {
+    fn force_wrap_now(&mut self, allowed: bool) -> Result<(), CausedWrap> {
         if let Some(&first) = self.group_no_wrap_active.first() {
+            assert!(allowed);
             self.restore_and_wrap(first);
             Err(CausedWrap)
         } else {
@@ -605,7 +618,7 @@ fn new_loop(state: &mut NewState) {
 
         // check for line overflow
         let curr_line = state.builder.line();
-        if state.builder.line_length(curr_line) > state.builder.settings.max_line_length {
+        if state.builder.line_overflows(curr_line) {
             let info = enumerate(&state.group_no_wrap_stack)
                 .rev()
                 .take_while(|(_, info)| info.check.line() >= curr_line)
@@ -647,21 +660,18 @@ fn new_loop(state: &mut NewState) {
                 state.builder.state.emit_space = true;
                 Ok(())
             }
-            LNodeSimple::AlwaysStr(s) => {
-                if state.builder.write_str(s) {
-                    state.force_wrap_now()
-                } else {
-                    Ok(())
-                }
-            }
+            LNodeSimple::AlwaysStr(s) => match state.builder.write_str(s) {
+                MaybeNewline::No => Ok(()),
+                MaybeNewline::Yes => state.force_wrap_now(false),
+            },
             LNodeSimple::WrapStr(s) => {
                 if state.can_wrap() {
-                    let _ = state.builder.write_str(s);
+                    let _: MaybeNewline = state.builder.write_str(s);
                 }
                 Ok(())
             }
             LNodeSimple::AlwaysNewline => {
-                let res = state.force_wrap_now();
+                let res = state.force_wrap_now(false);
                 if res.is_ok() {
                     state.builder.ensure_newlines(1);
                 }
@@ -674,7 +684,7 @@ fn new_loop(state: &mut NewState) {
                 Ok(())
             }
             LNodeSimple::AlwaysBlankLine => {
-                let res = state.force_wrap_now();
+                let res = state.force_wrap_now(false);
                 if res.is_ok() {
                     state.builder.ensure_newlines(2);
                 }
@@ -698,13 +708,19 @@ fn new_loop(state: &mut NewState) {
                 Ok(())
             }
             &LNodeSimple::Group { force_wrap, ref child } => {
-                // TODO maybe we can implement group escaping here, removing the "simplify" step entirely
                 state.try_group_without_wrap(child);
-                if force_wrap { state.force_wrap_now() } else { Ok(()) }
+
+                let group_wrap = force_wrap
+                    || !fits(
+                        &mut state.builder,
+                        state.group_no_wrap_active.len(),
+                        &state.queue[state.queue_next..],
+                    );
+
+                if group_wrap { state.force_wrap_now(true) } else { Ok(()) }
             }
 
-            LNodeSimple::ForceWrap(never) => never.unreachable(),
-            LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
+            LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         };
 
         // both cases are correctly handled by continuing the loop:
@@ -712,4 +728,103 @@ fn new_loop(state: &mut NewState) {
         // * If Err, a wrap happened which restored an earlier state, and the next iteration will re-try with wrapping.
         let _: Result<(), CausedWrap> = res;
     }
+}
+
+// TODO turn asserts into errors?
+fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]) -> bool {
+    let check = builder.checkpoint();
+
+    let mut queue = queue.iter().map(|cmd| cmd.kind).rev().collect_vec();
+
+    loop {
+        // stop once we've overflown the line
+        if builder.line_overflows(check.line()) {
+            break;
+        }
+
+        // process the next command
+        let Some(cmd) = queue.pop() else { break };
+        let node = match cmd {
+            CommandKind::Node(node) => node,
+            CommandKind::EndGroupNoWrap => {
+                no_wrap_count -= 1;
+                continue;
+            }
+            CommandKind::RestoreIndent { indent } => {
+                builder.state.indent = indent;
+                continue;
+            }
+        };
+
+        // process the next node
+        // we encounter a newline, we can stop since future commands can't influence the current line anymore
+        let wrap = no_wrap_count == 0;
+        match node {
+            LNodeSimple::Space => {
+                builder.state.emit_space = true;
+            }
+            LNodeSimple::AlwaysStr(s) => match builder.write_str(s) {
+                MaybeNewline::No => {}
+                MaybeNewline::Yes => {
+                    assert!(wrap);
+                    break;
+                }
+            },
+            LNodeSimple::WrapStr(s) => {
+                if wrap {
+                    match builder.write_str(s) {
+                        MaybeNewline::No => {}
+                        MaybeNewline::Yes => {
+                            assert!(wrap);
+                            break;
+                        }
+                    }
+                }
+            }
+            LNodeSimple::AlwaysNewline => {
+                assert!(wrap);
+                break;
+            }
+            LNodeSimple::WrapNewline => {
+                if wrap {
+                    break;
+                }
+            }
+            LNodeSimple::AlwaysBlankLine => {
+                assert!(wrap);
+                break;
+            }
+            LNodeSimple::Indent(child) => {
+                let indent = builder.state.indent;
+                builder.state.indent += 1;
+
+                queue.push(CommandKind::RestoreIndent { indent });
+                queue.push(CommandKind::Node(child));
+            }
+            LNodeSimple::Dedent(child) => {
+                let indent = builder.state.indent;
+                builder.state.indent = 0;
+
+                queue.push(CommandKind::RestoreIndent { indent });
+                queue.push(CommandKind::Node(child));
+            }
+            LNodeSimple::Sequence(children) => {
+                queue.extend(children.iter().rev().map(CommandKind::Node));
+            }
+            &LNodeSimple::Group { force_wrap, ref child } => {
+                if force_wrap {
+                    assert!(wrap);
+                }
+
+                // assume wrapping if allowed by the parent, this just requires _not_ incrementing no_wrap_count
+                queue.push(CommandKind::Node(child));
+            }
+            LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
+        };
+    }
+
+    // check for final overflow and restore the builder
+    let fits = !builder.line_overflows(check.line());
+    builder.restore(check);
+    fits
 }
