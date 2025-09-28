@@ -78,9 +78,7 @@ pub fn run_all(top_src: String) -> RunAllResult {
     // format
     let diags_format = Diagnostics::new();
     let formatted = hierarchy_file.as_ref_ok().and_then(|&(_, top_file)| {
-        format(&diags_format, &source, &FormatSettings::default(), top_file).map_err(|e| match e {
-            FormatError::Syntax(e) | FormatError::Internal(e) => e,
-        })
+        format(&diags_format, &source, &FormatSettings::default(), top_file).map_err(FormatError::to_diag_error)
     });
 
     // package results

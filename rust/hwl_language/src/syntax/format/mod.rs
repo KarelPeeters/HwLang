@@ -84,6 +84,15 @@ pub enum FormatError {
     Internal(DiagError),
 }
 
+impl FormatError {
+    pub fn to_diag_error(self) -> DiagError {
+        match self {
+            FormatError::Syntax(e) => e,
+            FormatError::Internal(e) => e,
+        }
+    }
+}
+
 pub fn format<'s>(
     diags: &Diagnostics,
     source: &'s SourceDatabase,

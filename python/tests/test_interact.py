@@ -22,3 +22,9 @@ def test_compile_manifest():
     s = hwl.Source.new_from_manifest_path(str(manifest_path))
     c = s.compile()
     assert isinstance(c.resolve("top.top"), hwl.Module)
+
+
+def test_format():
+    src = "const c = a+b;"
+    expected = "const c = a + b;\n"
+    assert hwl.format_source(src) == expected

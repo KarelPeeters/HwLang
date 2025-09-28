@@ -18,6 +18,7 @@ use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
 };
+use hwl_language::syntax::format::{FormatError, FormatSettings, format};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
@@ -138,6 +139,7 @@ create_exception!(hwl, VerilationException, HwlException);
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(format_source, m)?)?;
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
@@ -159,6 +161,16 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("GenerateVerilogException", py.get_type::<GenerateVerilogException>())?;
     m.add("VerilationException", py.get_type::<VerilationException>())?;
     Ok(())
+}
+
+#[pyfunction]
+fn format_source(src: String) -> PyResult<String> {
+    let diags = Diagnostics::new();
+    let mut source = RustSourceDatabase::new();
+    let file = source.add_file("dummy.kh".to_owned(), src);
+    let result = format(&diags, &source, &FormatSettings::default(), file);
+    let result = map_diag_error(&diags, &source, result.map_err(FormatError::to_diag_error))?;
+    Ok(result.new_content)
 }
 
 const DUMMY_SOURCE: &str = "// dummy file, representing the python caller";
