@@ -457,8 +457,44 @@ fn new_loop(state: &mut NewState) {
         state.stats.iter_loop += 1;
 
         // handle the next command
-        let next = match next {
-            Command::Node(next) => next,
+        match next {
+            Command::Node(node) => {
+                let wrapping = state.group_no_wrap_count == 0;
+                match visit_node(&mut state.builder, &mut state.queue, wrapping, node) {
+                    VisitResult::Group { force_wrap, child } => {
+                        // check whether we need to wrap this group by checking whether everything would fit if we don't
+                        let group_wrap = force_wrap || {
+                            state.group_no_wrap_count += 1;
+                            state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
+
+                            let group_fits = fits(
+                                &mut state.builder,
+                                state.group_no_wrap_count,
+                                &state.queue,
+                                &mut state.queue_fill,
+                            );
+
+                            state.group_no_wrap_count -= 1;
+                            state.queue.pop().unwrap();
+                            state.queue.pop().unwrap();
+
+                            !group_fits
+                        };
+
+                        // push the right commands based on the wrapping decision
+                        if group_wrap {
+                            state.push(Command::Node(child));
+                        } else {
+                            state.group_no_wrap_count += 1;
+                            state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
+                        }
+                    }
+                    VisitResult::Other(new_line) => {
+                        // nothing to do here any more, all decisions have already been made
+                        let _ = new_line;
+                    }
+                }
+            }
             Command::EndGroupNoWrap => {
                 assert!(state.group_no_wrap_count > 0);
                 state.group_no_wrap_count -= 1;
@@ -468,88 +504,10 @@ fn new_loop(state: &mut NewState) {
                 state.builder.state.indent = indent;
                 continue;
             }
-        };
-
-        // handle the next node
-        // TODO fix code duplication with fits
-        let can_wrap = state.group_no_wrap_count == 0;
-        match next {
-            LNodeSimple::Space => {
-                state.builder.state.emit_space = true;
-            }
-            LNodeSimple::AlwaysStr(s) => match state.builder.write_str(s) {
-                MaybeNewline::No => {}
-                MaybeNewline::Yes => {
-                    assert!(can_wrap);
-                }
-            },
-            LNodeSimple::WrapStr(s) => {
-                if can_wrap {
-                    let _: MaybeNewline = state.builder.write_str(s);
-                }
-            }
-            LNodeSimple::AlwaysNewline => {
-                assert!(can_wrap);
-                state.builder.ensure_newlines(1);
-            }
-            LNodeSimple::WrapNewline => {
-                if can_wrap {
-                    state.builder.ensure_newlines(1);
-                }
-            }
-            LNodeSimple::AlwaysBlankLine => {
-                assert!(can_wrap);
-                state.builder.ensure_newlines(2);
-            }
-            LNodeSimple::Indent(child) => {
-                let indent = state.builder.state.indent;
-                state.builder.state.indent += 1;
-                state.push_iter([Command::Node(child), Command::RestoreIndent { indent }]);
-            }
-            LNodeSimple::Dedent(child) => {
-                let indent = state.builder.state.indent;
-                state.builder.state.indent = 0;
-                state.push_iter([Command::Node(child), Command::RestoreIndent { indent }]);
-            }
-            LNodeSimple::Sequence(seq) => {
-                // TODO we flatten here, so maybe we can remove simplify
-                state.push_iter(seq.iter().map(Command::Node));
-            }
-            &LNodeSimple::Group { force_wrap, ref child } => {
-                let group_wrap = force_wrap || {
-                    state.group_no_wrap_count += 1;
-                    state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
-
-                    let group_fits = fits(
-                        &mut state.builder,
-                        state.group_no_wrap_count,
-                        &state.queue,
-                        &mut state.queue_fill,
-                    );
-
-                    state.group_no_wrap_count -= 1;
-                    state.queue.pop().unwrap();
-                    state.queue.pop().unwrap();
-
-                    !group_fits
-                };
-
-                if group_wrap {
-                    state.push(Command::Node(child));
-                } else {
-                    state.group_no_wrap_count += 1;
-                    state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
-                }
-            }
-
-            LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         }
     }
 }
 
-// TODO turn asserts into errors?
-// TODO re-use fits-queue vec to avoid redundant allocations
-// TODO reduce code duplication with the main loop
 fn fits<'n, 's>(
     builder: &mut StringBuilder,
     mut no_wrap_count: usize,
@@ -579,8 +537,26 @@ fn fits<'n, 's>(
         };
 
         // process the next command
-        let node = match cmd {
-            Command::Node(node) => node,
+        match cmd {
+            Command::Node(node) => {
+                let wrapping = no_wrap_count == 0;
+                let visit_result = visit_node(builder, queue, wrapping, node);
+
+                match visit_result {
+                    VisitResult::Group { force_wrap, child } => {
+                        // assume wrapping for all future groups, we just want to know if everything _can_ fit
+                        queue.push(Command::Node(child));
+                    }
+                    VisitResult::Other(new_line) => match new_line {
+                        MaybeNewline::No => {}
+                        MaybeNewline::Yes => {
+                            // we've encountered a newline,
+                            //   we can stop since future commands can't influence the current line anymore
+                            break;
+                        }
+                    },
+                }
+            }
             Command::EndGroupNoWrap => {
                 no_wrap_count -= 1;
                 continue;
@@ -590,72 +566,6 @@ fn fits<'n, 's>(
                 continue;
             }
         };
-
-        // process the next node
-        // we encounter a newline, we can stop since future commands can't influence the current line anymore
-        let can_wrap = no_wrap_count == 0;
-        match node {
-            LNodeSimple::Space => {
-                builder.state.emit_space = true;
-            }
-            LNodeSimple::AlwaysStr(s) => match builder.write_str(s) {
-                MaybeNewline::No => {}
-                MaybeNewline::Yes => {
-                    assert!(can_wrap);
-                    break;
-                }
-            },
-            LNodeSimple::WrapStr(s) => {
-                if can_wrap {
-                    match builder.write_str(s) {
-                        MaybeNewline::No => {}
-                        MaybeNewline::Yes => {
-                            assert!(can_wrap);
-                            break;
-                        }
-                    }
-                }
-            }
-            LNodeSimple::AlwaysNewline => {
-                assert!(can_wrap);
-                break;
-            }
-            LNodeSimple::WrapNewline => {
-                if can_wrap {
-                    break;
-                }
-            }
-            LNodeSimple::AlwaysBlankLine => {
-                assert!(can_wrap);
-                break;
-            }
-            LNodeSimple::Indent(child) => {
-                let indent = builder.state.indent;
-                builder.state.indent += 1;
-
-                queue.push(Command::RestoreIndent { indent });
-                queue.push(Command::Node(child));
-            }
-            LNodeSimple::Dedent(child) => {
-                let indent = builder.state.indent;
-                builder.state.indent = 0;
-
-                queue.push(Command::RestoreIndent { indent });
-                queue.push(Command::Node(child));
-            }
-            LNodeSimple::Sequence(children) => {
-                queue.extend(children.iter().rev().map(Command::Node));
-            }
-            &LNodeSimple::Group { force_wrap, ref child } => {
-                if force_wrap {
-                    assert!(can_wrap);
-                }
-
-                // assume wrapping if allowed by the parent, this just requires _not_ incrementing no_wrap_count
-                queue.push(Command::Node(child));
-            }
-            LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
-        };
     }
 
     queue.clear();
@@ -664,4 +574,82 @@ fn fits<'n, 's>(
     let fits = !builder.line_overflows(check.line());
     builder.restore(check);
     fits
+}
+
+enum VisitResult<'n, 's> {
+    Group {
+        force_wrap: bool,
+        child: &'n LNodeSimple<'s>,
+    },
+    Other(MaybeNewline),
+}
+
+fn visit_node<'n, 's>(
+    builder: &mut StringBuilder,
+    queue: &mut Vec<Command<'n, 's>>,
+    wrapping: bool,
+    node: &'n LNodeSimple<'s>,
+) -> VisitResult<'n, 's> {
+    let result = match node {
+        LNodeSimple::Space => {
+            builder.state.emit_space = true;
+            MaybeNewline::No
+        }
+        LNodeSimple::AlwaysStr(s) => builder.write_str(s),
+        LNodeSimple::WrapStr(s) => {
+            if wrapping {
+                builder.write_str(s)
+            } else {
+                MaybeNewline::No
+            }
+        }
+        LNodeSimple::AlwaysNewline => {
+            builder.ensure_newlines(1);
+            MaybeNewline::Yes
+        }
+        LNodeSimple::WrapNewline => {
+            if wrapping {
+                builder.ensure_newlines(1);
+                MaybeNewline::Yes
+            } else {
+                MaybeNewline::No
+            }
+        }
+        LNodeSimple::AlwaysBlankLine => {
+            builder.ensure_newlines(2);
+            MaybeNewline::Yes
+        }
+        LNodeSimple::Indent(child) => {
+            let indent = builder.state.indent;
+            builder.state.indent += 1;
+            queue.push(Command::RestoreIndent { indent });
+            queue.push(Command::Node(child));
+            MaybeNewline::No
+        }
+        LNodeSimple::Dedent(child) => {
+            let indent = builder.state.indent;
+            builder.state.indent = 0;
+            queue.push(Command::RestoreIndent { indent });
+            queue.push(Command::Node(child));
+            MaybeNewline::No
+        }
+        LNodeSimple::Sequence(children) => {
+            queue.extend(children.iter().rev().map(Command::Node));
+            MaybeNewline::No
+        }
+        &LNodeSimple::Group { force_wrap, ref child } => {
+            if force_wrap {
+                assert!(wrapping);
+            }
+            return VisitResult::Group { force_wrap, child };
+        }
+        LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
+    };
+
+    match result {
+        MaybeNewline::Yes => assert!(wrapping),
+        MaybeNewline::No => {}
+    }
+
+    VisitResult::Other(result)
 }
