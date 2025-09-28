@@ -1,11 +1,6 @@
-# Project config
+# Commandline
 
-* add hwl.toml config file
-  * contains file search paths including which import paths that map to (std as a default)
-  * contains misc settings for formatter, lsp, codegen, ...
-  * _maybe_ contains default top?
-  * commandline tool and lsp look for this file and base their view of the project on it
-  * this also allows multiple projects in a single lsp instance
+* allow selecting a top-level to elaborate, cpp to generate, ... from the commandline compiler
 
 # Frontend features
 
@@ -22,6 +17,11 @@
   * non-static (with self param)
   * with `inout`/`ref` self param, to mutate it in-place
 
+* track drivers by masks instead of the current binary thing we're doing
+  * applications:
+    * allow multiple blocks/instances to drive different bits of the same signal/reg
+    * make combinatorial loop checking easier(?) or at least more correct
+
 * for utilities, we need something more more convenient than a module and more powerful then an interface + functions
   * or is the "reg" trick inside functions enough?
 
@@ -35,16 +35,21 @@
 
 * fix verilog backend
   * array/tuple indexing, bit widths, signedness, zero-width signals, ...
+* fuzz testing for expressions?
+
 * proper Python/Rust/C++ simulation setup
 * proper Python/Rust/Verilator simulation setup
 
-* fuzz testing for expressions?
+* "optimize" the IR a bit, eg. remove unused variables, remove empty blocks, ...
+  * mostly to make the output a bit more compact and nicer to look at, obviously not to actually optimize anything
 
 # LSP
 
-* autocomplete
+* find usages
+* rename
 * auto-import
-* auto formatter (not only LSP, also CLI)
+* autocomplete
+  * requires parser error recovery
 
 # Performance
 
