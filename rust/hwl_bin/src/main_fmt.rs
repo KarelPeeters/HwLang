@@ -22,8 +22,9 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let ArgsFormat {
         manifest,
         check,
-        verbose,
         path,
+        verbose,
+        debug,
     } = args;
 
     // figure out which files to format
@@ -103,6 +104,10 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     for ((&file, file_path), result) in zip_eq(&files, &results) {
         let msg = match result {
             Ok(result) => {
+                if debug {
+                    eprintln!("{}", result.debug_str());
+                }
+
                 if result.new_content == source[file].content {
                     count_unchanged += 1;
                     None

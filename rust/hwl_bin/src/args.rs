@@ -59,12 +59,14 @@ pub struct ArgsFormat {
     #[arg(long)]
     pub check: bool,
 
-    #[arg(long, short)]
-    pub verbose: bool,
-
     /// File or directory to format. If not provided all files in the project manifest will be formatted.
     #[arg(conflicts_with = "manifest")]
     pub path: Option<PathBuf>,
+
+    #[arg(long, short)]
+    pub verbose: bool,
+    #[arg(long, short)]
+    pub debug: bool,
 }
 
 const MANIFEST_DOC: &str = concat!(
