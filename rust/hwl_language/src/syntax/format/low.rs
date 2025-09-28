@@ -6,7 +6,6 @@ use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use hwl_util::swriteln;
-use itertools::Itertools;
 use std::fmt::Debug;
 
 pub type LNode<'s> = LNodeImpl<'s, ()>;
@@ -364,9 +363,12 @@ impl StringBuilder<'_> {
     }
 
     fn line_overflows(&mut self, line: Line) -> bool {
-        let rest = &self.buffer[line.start..];
-        let line_length = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
-        line_length > self.settings.max_line_length
+        let end = line.start + self.settings.max_line_length + 1;
+        if end <= self.buffer.len() {
+            !self.buffer[line.start..end].contains(LineOffsets::LINE_ENDING_CHARS)
+        } else {
+            false
+        }
     }
 
     #[must_use]
