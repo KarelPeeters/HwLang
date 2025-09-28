@@ -138,14 +138,18 @@ pub struct DiagnosticStringSettings {
 
     /// Whether to include a backtrace in todo and internal compiler error diagnostics.
     backtrace: bool,
+
+    /// Whether to use ANSI color codes in the output.
+    ansi_color: bool,
 }
 
-impl Default for DiagnosticStringSettings {
-    fn default() -> Self {
+impl DiagnosticStringSettings {
+    pub fn default(ansi_color: bool) -> Self {
         DiagnosticStringSettings {
             snippet_context_lines: 2,
             snippet_merge_max_distance: Some(3),
             backtrace: false,
+            ansi_color,
         }
     }
 }
@@ -299,15 +303,19 @@ impl Diagnostic {
             message = message.footer(level.title(footer));
         }
 
-        if let Some(backtrace) = &backtrace {
-            if settings.backtrace {
-                message = message.footer(Level::Info.title(backtrace));
-            }
+        if let Some(backtrace) = &backtrace
+            && settings.backtrace
+        {
+            message = message.footer(Level::Info.title(backtrace));
         }
 
         // format into string
-        let renderer =
-            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))));
+        let renderer = if settings.ansi_color {
+            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))))
+        } else {
+            Renderer::plain()
+        };
+
         let render = renderer.render(message);
         render.to_string()
     }
@@ -402,11 +410,13 @@ pub fn compare_level(left: Level, right: Level) -> Ordering {
     (left as u8).cmp(&(right as u8)).reverse()
 }
 
-pub fn diags_to_debug_string(source: &SourceDatabase, diags: Vec<Diagnostic>) -> String {
+pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> String {
+    let settings = DiagnosticStringSettings::default(ansi_color);
+
     let mut s = String::new();
-    let settings = DiagnosticStringSettings::default();
     for diag in diags {
         s.push_str(&diag.to_string(source, settings));
+        s.push('\n');
         s.push('\n');
     }
     s

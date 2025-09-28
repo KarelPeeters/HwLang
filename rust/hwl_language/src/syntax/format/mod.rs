@@ -26,11 +26,9 @@
 //! * [PRETTY PRINTING - Derek C. Oppen - 1979](http://i.stanford.edu/pub/cstr/reports/cs/tr/79/770/CS-TR-79-770.pdf)
 //! * [Strictly Pretty - Christian Lindig - 2000](https://lindig.github.io/papers/strictly-pretty-2000.pdf)
 //!
-//! The current implementation nodes are very similar to the prettier command set.
-//! For the line breaking algorithm we don't yet use any fancy dynamic programming,
-//! in practise the current "try and see if it fits" approach seems to be fast enough.
+//! The current [LNode]s and the low-level line breaking implementation are very similar to prettier.
 
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;
 use crate::syntax::format::flatten::ast_to_node;
 use crate::syntax::format::high::{HNode, lower_nodes};
@@ -80,20 +78,35 @@ pub struct FormatOutput<'s> {
     pub new_content: String,
 }
 
-pub fn format<'s>(
+#[derive(Debug, Copy, Clone)]
+pub enum FormatError {
+    Syntax(DiagError),
+    Internal(DiagError),
+}
+
+impl FormatError {
+    pub fn to_diag_error(self) -> DiagError {
+        match self {
+            FormatError::Syntax(e) => e,
+            FormatError::Internal(e) => e,
+        }
+    }
+}
+
+pub fn format_file<'s>(
     diags: &Diagnostics,
     source: &'s SourceDatabase,
     settings: &FormatSettings,
     file: FileId,
-) -> DiagResult<FormatOutput<'s>> {
+) -> Result<FormatOutput<'s>, FormatError> {
     // tokenize and parse
     let old_info = &source[file];
     let old_content = &old_info.content;
     let old_offsets = &old_info.offsets;
-    let mut old_tokens = tokenize(file, old_content, false).map_err(|e| diags.report(e.to_diagnostic()))?;
-    // TODO remove whitespace tokens, everyone just filters them out anyway, we can always recover whitespace as "stuff between other tokens" if we really want to
-    old_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
-    let old_ast = parse_file_content(file, old_content).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
+    let old_tokens =
+        tokenize(file, old_content, false).map_err(|e| FormatError::Syntax(diags.report(e.to_diagnostic())))?;
+    let old_ast = parse_file_content(file, old_content)
+        .map_err(|e| FormatError::Syntax(diags.report(parse_error_to_diagnostic(e))))?;
 
     // flatten the ast to high-level nodes
     let node_high = ast_to_node(&old_ast);
@@ -111,7 +124,7 @@ pub fn format<'s>(
         };
         let expected_str = e.expected.diagnostic_string();
         let reason = format!("formatter token mismatch: source {msg_source} but formatter emitted `{expected_str}`");
-        diags.report_internal_error(span, reason)
+        FormatError::Internal(diags.report_internal_error(span, reason))
     })?;
 
     // simplify
@@ -121,7 +134,8 @@ pub fn format<'s>(
     let string_output = node_to_string(settings, old_content, &node_simple);
 
     // check that the output matches the input, as an extra precaution against formatter bugs
-    check_format_output_matches(diags, source, file, &old_tokens, &old_ast, &string_output.string)?;
+    check_format_output_matches(diags, source, file, &old_tokens, &old_ast, &string_output.string)
+        .map_err(FormatError::Internal)?;
 
     Ok(FormatOutput {
         old_tokens,
@@ -153,10 +167,10 @@ fn check_format_output_matches(
     let old_span = source.full_span(old_file);
 
     // re-tokenize the output
+    // TODO don't allocate a full vector for tokens, just use the internal iterator
     let dummy_file = FileId::dummy();
-    let mut new_tokens = tokenize(dummy_file, new_content, false)
+    let new_tokens = tokenize(dummy_file, new_content, false)
         .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-tokenize formatter output: {e:?}")))?;
-    new_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
 
     // check that each old token has a matching new token (ignored removed or added commas)
     let mut new_tokens_iter = new_tokens.iter().peekable();
@@ -184,7 +198,7 @@ fn check_format_output_matches(
                             break;
                         } else {
                             let reason = format!(
-                                "formatting output token content mismatch for token type `{}`, got {new_token_str}",
+                                "formatting output token content mismatch for token type `{}`, got `{new_token_str}`",
                                 old_token.ty.diagnostic_string()
                             );
                             let diag = Diagnostic::new_internal_error(reason)

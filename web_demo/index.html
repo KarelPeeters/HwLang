@@ -10,9 +10,18 @@
 <body>
 
 <script>
-    function show_verilog(show_verilog) {
-        document.getElementById("div-editor-output-verilog").style.display = show_verilog ? "block" : "none";
-        document.getElementById("div-editor-output-cpp").style.display = show_verilog ? "none" : "block";
+    function show_output_tab(tab) {
+        function set_element_display(id, filter) {
+            const element = document.getElementById(id);
+            element.style.display = filter.includes(tab) ? 'block' : 'none';
+        }
+
+        set_element_display("div-diags-compile", ["verilog", "cpp"])
+        set_element_display("div-editor-output-verilog", ["verilog"])
+        set_element_display("div-editor-output-cpp", ["cpp"])
+
+        set_element_display("div-diags-format", ["format"])
+        set_element_display("div-editor-output-format", ["format"])
     }
 </script>
 
@@ -27,14 +36,23 @@
         <div id="div-editor-input"></div>
     </div>
     <div style="width: 50%">
-        <img alt="Show lowered Verilog" id="svg-verilog" onclick="show_verilog(true)" src="res/logo-verilog.svg" style="cursor: pointer"
+        <img alt="Show lowered Verilog" id="svg-verilog" onclick="show_output_tab('verilog')" src="res/logo-verilog.svg"
+             style="cursor: pointer"
              width="20px">
-        <img alt="Show lowered C++" id="svg-cpp" onclick="show_verilog(false)" src="res/logo-cpp.svg" style="cursor: pointer"
+        <img alt="Show lowered C++" id="svg-cpp" onclick="show_output_tab('cpp')" src="res/logo-cpp.svg"
+             style="cursor: pointer"
+             width="20px">
+        <img alt="Show format debug info" id="svg-format" onclick="show_output_tab('format')" src="res/logo-format.svg"
+             style="cursor: pointer"
              width="20px">
 
-        <div id="div-messages" style="font-family: monospace, monospace; white-space: nowrap;"></div>
+        <div id="div-diags-compile" style="font-family: monospace, monospace; white-space: nowrap;"></div>
         <div id="div-editor-output-verilog"></div>
+
         <div id="div-editor-output-cpp" style="display: none"></div>
+
+        <div id="div-diags-format" style="font-family: monospace, monospace; white-space: nowrap; display: none"></div>
+        <div id="div-editor-output-format" style="display: none"></div>
     </div>
 </div>
 

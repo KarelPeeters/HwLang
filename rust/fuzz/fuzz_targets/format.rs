@@ -1,8 +1,8 @@
 #![no_main]
 
-use hwl_language::front::diagnostic::{Diagnostics, diags_to_debug_string};
+use hwl_language::front::diagnostic::{Diagnostics, diags_to_string};
 use hwl_language::syntax::format::FormatSettings;
-use hwl_language::syntax::format::format;
+use hwl_language::syntax::format::format_file;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, tokenize};
@@ -42,16 +42,16 @@ fn target(data: &str) {
     let settings = FormatSettings::default();
 
     // check that formatting works
-    let Ok(result) = format(&diags, &source, &settings, file) else {
-        eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
+    let Ok(result) = format_file(&diags, &source, &settings, file) else {
+        eprintln!("{}", diags_to_string(&source, diags.finish(), true));
         panic!("internal error during formatting");
     };
     let new_content = result.new_content;
 
     // check that formatting is stable
     let file2 = source.add_file("dummy2.kh".to_owned(), new_content.clone());
-    let Ok(result2) = format(&diags, &source, &settings, file2) else {
-        eprintln!("{}", diags_to_debug_string(&source, diags.finish()));
+    let Ok(result2) = format_file(&diags, &source, &settings, file2) else {
+        eprintln!("{}", diags_to_string(&source, diags.finish(), true));
         panic!("internal error during second format");
     };
     assert_eq!(new_content, result2.new_content, "formatting is not idempotent");

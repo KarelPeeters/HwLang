@@ -62,6 +62,13 @@ macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='
 #[rustfmt::skip]
 macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
 
+#[derive(Debug, Copy, Clone)]
+enum NextInnerResult {
+    Ty(TokenType),
+    Whitespace,
+    Eof,
+}
+
 impl<'s> Tokenizer<'s> {
     // TODO is there ever really a reason to set emit_incomplete_token to false?
     pub fn new(file: FileId, source: &'s str, emit_incomplete_token: bool) -> Self {
@@ -123,7 +130,7 @@ impl<'s> Tokenizer<'s> {
 
     // TODO automatically generate most of this match logic
     // TODO try memchr where it applies, see if it's actually faster
-    fn next_inner_ty(&mut self) -> Result<Option<TokenType>, TokenError> {
+    fn next_inner_ty(&mut self) -> Result<NextInnerResult, TokenError> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
@@ -136,7 +143,7 @@ impl<'s> Tokenizer<'s> {
                 if self.peek() == Some('}') {
                     self.skip(1);
                     self.mode = Mode::StringMiddle { str_start, subs: true };
-                    return Ok(Some(TokenType::StringSubEnd));
+                    return Ok(NextInnerResult::Ty(TokenType::StringSubEnd));
                 } else {
                     // fallthrough
                 }
@@ -176,7 +183,7 @@ impl<'s> Tokenizer<'s> {
                 };
 
                 self.mode = next_mode;
-                return Ok(Some(ty));
+                return Ok(NextInnerResult::Ty(ty));
             }
         };
 
@@ -186,14 +193,14 @@ impl<'s> Tokenizer<'s> {
             let first = match iter.next() {
                 Some(first) => first,
                 None => {
-                    // end of file, valid if we're not still in a string literal
+                    // end of file, valid iff we're not still in a string literal
                     return if let Some((start, _)) = self.mode_stack.last() {
                         Err(TokenError::StringLiteralMissingEnd {
                             start: *start,
                             eof: self.curr_pos(),
                         })
                     } else {
-                        Ok(None)
+                        Ok(NextInnerResult::Eof)
                     };
                 }
             };
@@ -210,7 +217,7 @@ impl<'s> Tokenizer<'s> {
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
-                TokenType::WhiteSpace
+                return Ok(NextInnerResult::Whitespace);
             }
 
             ['"', _, _] => {
@@ -380,14 +387,18 @@ impl<'s> Tokenizer<'s> {
 
             _ => return Err(TokenError::InvalidToken { pos: start }),
         };
-        Ok(Some(ty))
+        Ok(NextInnerResult::Ty(ty))
     }
 
     fn next_inner(&mut self) -> Result<Option<Token>, TokenError> {
-        let start_byte = self.curr_byte;
-
-        let Some(ty) = self.next_inner_ty()? else {
-            return Ok(None);
+        // TODO try moving this whitespace loop into the inner function, maybe that's faster
+        let (start_byte, ty) = loop {
+            let start_byte = self.curr_byte;
+            match self.next_inner_ty()? {
+                NextInnerResult::Ty(ty) => break (start_byte, ty),
+                NextInnerResult::Whitespace => continue,
+                NextInnerResult::Eof => return Ok(None),
+            };
         };
 
         let span = Span::new(self.file, start_byte, self.curr_byte);
@@ -425,7 +436,7 @@ pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
     Cow::Borrowed(raw)
 }
 
-fn is_single_token(s: &str, ty: TokenType) -> bool {
+fn str_is_single_token(s: &str, ty: TokenType) -> bool {
     let tokenizer = Tokenizer::new(FileId::dummy(), s, false);
     match tokenizer.into_iter().single() {
         Some(Ok(token)) => token.ty == ty,
@@ -433,12 +444,16 @@ fn is_single_token(s: &str, ty: TokenType) -> bool {
     }
 }
 
-pub fn is_valid_identifier(s: &str) -> bool {
-    is_single_token(s, TokenType::Identifier)
+pub fn str_is_valid_identifier(s: &str) -> bool {
+    str_is_single_token(s, TokenType::Identifier)
 }
 
-pub fn is_whitespace_or_empty(s: &str) -> bool {
-    s.is_empty() || is_single_token(s, TokenType::WhiteSpace)
+pub fn str_is_whitespace_or_empty(s: &str) -> bool {
+    s.chars().all(|c| matches!(c, pattern_whitespace!()))
+}
+
+pub fn char_is_whitespace(c: char) -> bool {
+    matches!(c, pattern_whitespace!())
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {
@@ -517,7 +532,6 @@ macro_rules! declare_tokens {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, strum::Display)]
 pub enum TokenCategory {
-    WhiteSpace,
     Comment,
     Identifier,
     IntegerLiteral,
@@ -539,8 +553,6 @@ pub const TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN: &str = "unsafe_value_with_domain";
 // TODO rename tokens to match the literal string better
 declare_tokens! {
     custom {
-        // ignored
-        WhiteSpace(TC::WhiteSpace),
         BlockComment(TC::Comment),
         LineComment(TC::Comment),
 
@@ -727,16 +739,21 @@ mod test {
     #[test]
     fn basic_tokenize() {
         let file = FileId::dummy();
-
         assert_eq!(Ok(vec![]), tokenize(file, "", false));
+        assert_eq!(Ok(vec![]), tokenize(file, "\n", false));
+        assert!(tokenize(file, "test foo function \"foo\"", false).is_ok());
+    }
+
+    #[test]
+    fn count_whitespace() {
+        let file = FileId::dummy();
         assert_eq!(
             Ok(vec![Token {
-                ty: TokenType::WhiteSpace,
-                span: Span::new(file, 0, 1)
+                ty: TokenType::Identifier,
+                span: Span::new(file, 1, 1 + 5)
             }]),
-            tokenize(file, "\n", false)
+            tokenize(file, " hello", false)
         );
-        assert!(tokenize(file, "test foo function \"foo\"", false).is_ok());
     }
 
     #[test]

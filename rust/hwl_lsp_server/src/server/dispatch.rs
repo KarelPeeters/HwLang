@@ -34,7 +34,12 @@ impl ServerState {
             request::GotoDefinition::METHOD => {
                 handle_request!(self, params, request::GotoDefinition)
             }
-            request::Shutdown::METHOD => handle_request!(self, params, request::Shutdown),
+            request::Formatting::METHOD => {
+                handle_request!(self, params, request::Formatting)
+            }
+            request::Shutdown::METHOD => {
+                handle_request!(self, params, request::Shutdown)
+            }
             _ => Err(RequestError::MethodNotImplemented(method.to_owned())),
         }
     }

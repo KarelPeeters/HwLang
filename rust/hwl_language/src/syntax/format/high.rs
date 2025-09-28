@@ -23,7 +23,6 @@ pub enum HNode {
     Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
-    Fill(Vec<HNode>),
     PreserveBlankLines { last: bool },
 }
 
@@ -90,10 +89,6 @@ impl HNode {
             HNode::Group(child) => {
                 swriteln!(f, "Group");
                 child.debug_str_impl(f, indent + 1);
-            }
-            HNode::Fill(children) => {
-                swriteln!(f, "Fill");
-                swrite_children(f, children);
             }
             HNode::PreserveBlankLines { last: end } => swriteln!(f, "PreserveBlankLines(end={end})"),
         }
@@ -173,8 +168,9 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             next_is_first_comment = false;
 
             // preserve newlines
+            // TODO allow blanks before comments too?
             let len_before = seq.len();
-            if self.preserve_empty_lines(seq, !is_first_comment) {
+            if self.preserve_newlines(seq, true, !is_first_comment) {
                 report_newline(len_before);
             }
 
@@ -214,7 +210,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         // preserve newlines between comments
         if !next_is_first_comment {
             let len_before = seq.len();
-            if self.preserve_empty_lines(seq, false) {
+            if self.preserve_newlines(seq, true, true) {
                 report_newline(len_before);
             }
         }
@@ -289,7 +285,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         })
     }
 
-    fn preserve_empty_lines(&self, seq: &mut Vec<LNode<'s>>, allow_blank: bool) -> bool {
+    fn preserve_newlines(&self, seq: &mut Vec<LNode<'s>>, allow_single: bool, allow_blank: bool) -> bool {
         let mut any_newlines = false;
 
         if let Some(prev) = self.prev_token()
@@ -303,7 +299,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             if delta > 1 && allow_blank {
                 any_newlines = true;
                 seq.push(LNode::AlwaysBlankLine);
-            } else if delta > 0 {
+            } else if delta > 0 && allow_single {
                 any_newlines = true;
                 seq.push(LNode::AlwaysNewline);
             }
@@ -388,7 +384,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 seq.push(LNode::AlwaysBlankLine);
                 LNode::Sequence(seq)
             }
-            HNode::ForceWrap => LNode::ForceWrap,
+            HNode::ForceWrap => LNode::ForceWrap(()),
             HNode::Indent(inner) => {
                 let mut seq = vec![self.map(prev_space, next_wrap_comma, inner)?];
                 if !next_wrap_comma {
@@ -408,28 +404,23 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
                 LNode::Sequence(seq)
             }
-            HNode::Group(inner) => LNode::Group(Box::new(self.map(prev_space, next_wrap_comma, inner)?)),
-            HNode::Fill(children) => {
-                let mut mapped = vec![];
-                for child in children {
-                    let child_prev_space = fill_ends_with_space(&mapped).unwrap_or(prev_space);
-                    mapped.push(self.map(child_prev_space, false, child)?);
-                }
-                LNode::Fill(mapped)
-            }
+            HNode::Group(inner) => LNode::Group {
+                force_wrap: false,
+                child: Box::new(self.map(prev_space, next_wrap_comma, inner)?),
+            },
             HNode::PreserveBlankLines { last: end } => {
                 let mut seq_escaping = vec![];
 
                 let next_token_is_comment = self.peek_token().is_some_and(|t| t.ty.category() == TC::Comment);
 
                 if !end || next_token_is_comment {
-                    self.preserve_empty_lines(&mut seq_escaping, true);
+                    self.preserve_newlines(&mut seq_escaping, false, true);
 
                     let len_before = seq_escaping.len();
                     self.collect_comments_all(prev_space, &mut seq_escaping);
 
                     if !end && seq_escaping.len() > len_before {
-                        self.preserve_empty_lines(&mut seq_escaping, true);
+                        self.preserve_newlines(&mut seq_escaping, false, true);
                     }
                 }
 
@@ -453,23 +444,17 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         | LNode::AlwaysNewline
         | LNode::WrapNewline
         | LNode::AlwaysBlankLine => Some(false),
-        LNode::ForceWrap => None,
-        LNode::Indent(inner) => node_ends_with_space(inner),
-        LNode::Dedent(inner) => node_ends_with_space(inner),
+        LNode::ForceWrap(()) => None,
+        LNode::Indent(child) => node_ends_with_space(child),
+        LNode::Dedent(child) => node_ends_with_space(child),
         LNode::Sequence(seq) => seq_ends_with_space(seq),
-        LNode::Group(inner) => node_ends_with_space(inner),
-        LNode::Fill(children) => fill_ends_with_space(children),
-        LNode::EscapeGroupIfLast(_, inner) => node_ends_with_space(inner),
+        LNode::Group { force_wrap: _, child } => node_ends_with_space(child),
+        LNode::EscapeGroupIfLast(_, child) => node_ends_with_space(child),
     }
 }
 
 fn seq_ends_with_space(seq: &[LNode]) -> Option<bool> {
     seq.iter().rev().find_map(node_ends_with_space)
-}
-
-fn fill_ends_with_space(children: &[LNode]) -> Option<bool> {
-    // there is an implicit [LNode::WrapNewLine] after each child, which counts as "not a space"
-    if children.is_empty() { None } else { Some(false) }
 }
 
 fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
@@ -485,23 +470,10 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
         HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
         HNode::Group(inner) => node_starts_with_wrap_comma(inner),
-        HNode::Fill(children) => fill_starts_with_wrap_comma(children),
         HNode::PreserveBlankLines { last: _ } => None,
     }
 }
 
 fn seq_starts_with_wrap_comma(seq: &[HNode]) -> Option<bool> {
     seq.iter().find_map(node_starts_with_wrap_comma)
-}
-
-fn fill_starts_with_wrap_comma(children: &[HNode]) -> Option<bool> {
-    if let Some(first) = children.first() {
-        if let Some(result) = node_starts_with_wrap_comma(first) {
-            Some(result)
-        } else {
-            Some(false)
-        }
-    } else {
-        None
-    }
 }

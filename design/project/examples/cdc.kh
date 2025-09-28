@@ -1,7 +1,6 @@
-    // Implementations based on:
+// Implementations based on:
 // * https://zipcpu.com/blog/2017/10/20/cdc.html
 // * https://zipcpu.com/blog/2020/10/03/tfrvalue.html
-
 
 // TODO try to decrease LSP token highlighting latency
 // TODO write/generate textmate grammar, at least for tokenization
@@ -39,20 +38,21 @@ module cdc_async_reset(N: int(2..) = 2) ports(
 ) {
     // TODO allow using expressions in ports
     wire w_true = true;
-    instance cdc_sync_ff(N) ports(
-        in_data=w_true,
-        out_clk=out_clk,
-        out_rst=in_reset,
-        out_data=out_reset,
-    );
+    instance cdc_sync_ff(N) ports(in_data=w_true, out_clk=out_clk, out_rst=in_reset, out_data=out_reset);
 }
 
 interface axi_stream(T: type) {
     data: Option(T),
     ready: bool,
 
-    interface input { data: in, ready: out }
-    interface output { data: out, ready: in }
+    interface input {
+        data: in,
+        ready: out,
+    }
+    interface output {
+        data: out,
+        ready: in,
+    }
 }
 
 module cdc_handshake(T: type, N: int(2..) = 2) ports(

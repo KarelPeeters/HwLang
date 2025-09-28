@@ -1,20 +1,65 @@
-use hwl_language::front::diagnostic::{DiagnosticStringSettings, Diagnostics};
-use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_string};
+use hwl_language::syntax::manifest::Manifest;
+use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::IoErrorExt;
 use path_clean::PathClean;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-pub struct FoundManifest {
-    pub manifest_path: PathBuf,
-    pub manifest_parent: PathBuf,
-    pub manifest_source: String,
+/// Error type indicating that all necessary errors have been printed,
+/// and the program should now just exit with [ExitCode::FAILURE].
+#[derive(Debug)]
+pub struct ErrorExit;
+
+#[derive(Debug)]
+pub struct ParsedManifest {
+    pub path: PathBuf,
+    pub path_parent: PathBuf,
+    pub file: FileId,
+    pub parsed: Manifest,
 }
 
-pub struct FindManifestError(pub String);
+pub fn manifest_find_read_parse(
+    source: &mut SourceDatabase,
+    manifest: Option<PathBuf>,
+) -> Result<ParsedManifest, ErrorExit> {
+    let found = match manifest_find_read(manifest) {
+        Ok(m) => m,
+        Err(FindManifestError(msg)) => {
+            eprintln!("{msg}");
+            return Err(ErrorExit);
+        }
+    };
+    let manifest_file = source.add_file(found.path.to_string_lossy().into_owned(), found.source);
 
-pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundManifest, FindManifestError> {
+    let diags = Diagnostics::new();
+    let manifest = match Manifest::parse_toml(&diags, source, manifest_file) {
+        Ok(m) => m,
+        Err(e) => {
+            let _: DiagError = e;
+            print_diagnostics(source, diags);
+            return Err(ErrorExit);
+        }
+    };
+
+    Ok(ParsedManifest {
+        path: found.path,
+        path_parent: found.path_parent,
+        file: manifest_file,
+        parsed: manifest,
+    })
+}
+
+struct FindManifestError(pub String);
+
+struct FoundManifest {
+    path: PathBuf,
+    path_parent: PathBuf,
+    source: String,
+}
+
+fn manifest_find_read(manifest_path: Option<PathBuf>) -> Result<FoundManifest, FindManifestError> {
     let cwd = std::env::current_dir()
         .map_err(|e| FindManifestError(format!("Failed to get current working directory: {e:?}")))?;
     let cwd = std::path::absolute(&cwd).map_err(|e| {
@@ -29,7 +74,7 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
             // directly read the manifest file
             let manifest_path = cwd.join(manifest_path).clean();
             match std::fs::read_to_string(&manifest_path) {
-                Ok(s) => {
+                Ok(source) => {
                     let manifest_parent = manifest_path
                         .parent()
                         .ok_or_else(|| {
@@ -39,9 +84,9 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
                         })?
                         .to_owned();
                     Ok(FoundManifest {
-                        manifest_path,
-                        manifest_parent,
-                        manifest_source: s,
+                        path: manifest_path,
+                        path_parent: manifest_parent,
+                        source,
                     })
                 }
                 Err(e) => Err(FindManifestError(format!(
@@ -55,11 +100,11 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
             for ancestor in cwd.ancestors() {
                 let cand_manifest_path = ancestor.join(HWL_MANIFEST_FILE_NAME);
                 match std::fs::read_to_string(&cand_manifest_path) {
-                    Ok(s) => {
+                    Ok(source) => {
                         return Ok(FoundManifest {
-                            manifest_path: cand_manifest_path,
-                            manifest_parent: ancestor.to_owned(),
-                            manifest_source: s,
+                            path: cand_manifest_path,
+                            path_parent: ancestor.to_owned(),
+                            source,
                         });
                     }
                     Err(e) => match e.kind() {
@@ -81,16 +126,12 @@ pub fn find_and_read_manifest(manifest_path: Option<PathBuf>) -> Result<FoundMan
     }
 }
 
-// TODO remove print from this, only convert to string and leave the caller to do the print
-// TODO stop using this, just use diags_to_debug_string and print that
 pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
     let diags = diags.finish();
     let any_error = !diags.is_empty();
 
-    for diag in diags {
-        let s = diag.to_string(source, DiagnosticStringSettings::default());
-        eprintln!("{s}\n");
-    }
+    let result = diags_to_string(source, diags, true);
+    eprintln!("{result}");
 
     any_error
 }

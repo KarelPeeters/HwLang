@@ -7,10 +7,7 @@ struct Generator(L: natural) {
     generator_1: [L]bool,
 }
 
-pub module convcode_encoder(
-    length: natural,
-    generator: Generator(length),
-) ports (
+pub module convcode_encoder(length: natural, generator: Generator(length)) ports(
     clk: in clock,
     rst: in async bool,
 
@@ -20,7 +17,7 @@ pub module convcode_encoder(
 
         output_data_0: out bool,
         output_data_1: out bool,
-        output_valid: out bool
+        output_valid: out bool,
     }
 ) {
     reg delay_line: sync(clk, rst) [length - 1]bool = [false] * (length - 1);
@@ -47,12 +44,7 @@ pub module convcode_encoder(
     }
 }
 
-pub module convcode_decoder(
-    length: natural,
-    generator: Generator(length),
-    analog_bits: natural,
-    depth: natural,
-) ports (
+pub module convcode_decoder(length: natural, generator: Generator(length), analog_bits: natural, depth: natural) ports(
     clk: in clock,
     rst: in async bool,
 
@@ -76,17 +68,18 @@ pub module convcode_decoder(
                 output[1] ^= code[j] & generator.generator_1[length - 1 - j];
             }
             output
-        } for i in 0..num_states
+        }
+        for i in 0..num_states
     ];
 
-    type t_half_probs = [num_states/2]uint(prob_bits);
+    type t_half_probs = [num_states / 2]uint(prob_bits);
     type t_probs = [num_states]uint(prob_bits);
-    type t_half_paths = [num_states/2, depth]bool;
+    type t_half_paths = [num_states / 2, depth]bool;
     type t_paths = [num_states, depth]bool;
 
-    const half_paths_reset = [[false] * depth] * (num_states/2);
+    const half_paths_reset = [[false] * depth] * (num_states / 2);
 
-    reg half_probs: t_half_probs = [0] * (num_states/2);
+    reg half_probs: t_half_probs = [0] * (num_states / 2);
     reg half_paths: t_half_paths = half_paths_reset;
     reg out output_data = false;
     reg out output_valid = false;
@@ -95,18 +88,18 @@ pub module convcode_decoder(
         if (input_valid) {
             // calculate output
             var out_probs_max: t_half_probs = half_probs;
-            var outputs_max: [num_states/2]bool = [half_paths[i, 0] for i in 0..num_states/2];
+            var outputs_max: [num_states / 2]bool = [half_paths[i, 0] for i in 0..num_states / 2];
             for (j_rev in 0..(length - 1)) {
                 val j = length - 2 - j_rev;
                 for (i in 0..2**j) {
                     // TODO this condition is probably wrong
-                    val delta = out_probs_max[2*i + 0] - out_probs_max[2*i + 1];
+                    val delta = out_probs_max[2 * i + 0] - out_probs_max[2 * i + 1];
                     if (delta < 2**prob_bits - 1) {
-                        out_probs_max[i] = out_probs_max[2*i + 0];
-                        outputs_max[i] = outputs_max[2*i + 0];
+                        out_probs_max[i] = out_probs_max[2 * i + 0];
+                        outputs_max[i] = outputs_max[2 * i + 0];
                     } else {
-                        out_probs_max[i] = out_probs_max[2*i + 1];
-                        outputs_max[i] = outputs_max[2*i + 1];
+                        out_probs_max[i] = out_probs_max[2 * i + 1];
+                        outputs_max[i] = outputs_max[2 * i + 1];
                     }
                 }
             }
@@ -127,13 +120,13 @@ pub module convcode_decoder(
             }
 
             // update probabilities and paths
-            val half_probs_0: t_half_probs = [probs_new[2*i+0] for i in 0..num_states/2];
-            val half_probs_1: t_half_probs = [probs_new[2*i+1] for i in 0..num_states/2];
-            val half_paths_0: t_half_paths = [[*paths_new[2*i+0, 1..], false] for i in 0..num_states/2];
-            val half_paths_1: t_half_paths = [[*paths_new[2*i+1, 1..], true] for i in 0..num_states/2];
+            val half_probs_0: t_half_probs = [probs_new[2 * i + 0] for i in 0..num_states / 2];
+            val half_probs_1: t_half_probs = [probs_new[2 * i + 1] for i in 0..num_states / 2];
+            val half_paths_0: t_half_paths = [[*paths_new[2 * i + 0, 1..], false] for i in 0..num_states / 2];
+            val half_paths_1: t_half_paths = [[*paths_new[2 * i + 1, 1..], true] for i in 0..num_states / 2];
 
             // select best probabilities and paths
-            for (i in 0..num_states/2) {
+            for (i in 0..num_states / 2) {
                 val delta = half_probs_0[i] - half_probs_1[i];
                 // TODO this condition is probably wrong
                 if (delta < 2**prob_bits - 1) {
@@ -161,16 +154,16 @@ const {
     const example_length = 3;
     const example_generator = Generator(example_length).new(
         generator_0=[true, true, true],
-        generator_1=[true, false, true]
+        generator_1=[true, false, true],
     );
     const example_analog_bits = 8;
     const example_depth = 4;
 
-    convcode_encoder(
-        length=example_length, generator=example_generator
-    );
+    convcode_encoder(length=example_length, generator=example_generator);
     convcode_decoder(
-        length=example_length, generator=example_generator,
-        analog_bits=example_analog_bits, depth=example_depth
+        length=example_length,
+        generator=example_generator,
+        analog_bits=example_analog_bits,
+        depth=example_depth,
     );
 }

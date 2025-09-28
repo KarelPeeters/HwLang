@@ -1,5 +1,5 @@
 use crate::args::ArgsBuild;
-use crate::util::{FindManifestError, find_and_read_manifest, print_diagnostics};
+use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{COMPILE_THREAD_STACK_SIZE, ElaborationSet, compile};
@@ -57,37 +57,23 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     let start_all = Instant::now();
     let start_source = Instant::now();
 
-    // find and parse manifest file
-    let diags = Diagnostics::new();
+    // find and parse manifest
     let mut source = SourceDatabase::new();
-    let found_manifest = match find_and_read_manifest(manifest) {
+    let manifest = match manifest_find_read_parse(&mut source, manifest) {
         Ok(m) => m,
-        Err(FindManifestError(msg)) => {
-            eprintln!("{msg}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let manifest_file = source.add_file(
-        found_manifest.manifest_path.to_string_lossy().into_owned(),
-        found_manifest.manifest_source,
-    );
-    let manifest = match Manifest::parse_toml(&diags, &source, manifest_file) {
-        Ok(m) => m,
-        Err(_) => {
-            print_diagnostics(&source, diags);
-            return ExitCode::FAILURE;
-        }
+        Err(ErrorExit) => return ExitCode::FAILURE,
     };
     let Manifest {
         source: manifest_source,
-    } = manifest;
+    } = manifest.parsed;
 
     // collect source
-    let hierarchy = match collect_source_from_manifest(
+    let diags = Diagnostics::new();
+    let (hierarchy, _) = match collect_source_from_manifest(
         &diags,
         &mut source,
-        manifest_file,
-        &found_manifest.manifest_parent,
+        manifest.file,
+        &manifest.path_parent,
         &manifest_source,
     ) {
         Ok(s) => s,
@@ -139,7 +125,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         &mut StdoutPrintHandler,
         &|| should_stop.load(Ordering::Relaxed),
         thread_count,
-        source.full_span(manifest_file),
+        source.full_span(manifest.file),
     );
     let time_compile = start_compile.elapsed();
 

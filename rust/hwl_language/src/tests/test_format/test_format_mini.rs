@@ -187,7 +187,7 @@ const c = [
             * long_long_long_long_long_long_long_long_long_long_long_long_long_long,
 ];
 ";
-    assert_formatted(&src);
+    assert_formatted(src);
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn comment_newline_stays_after() {
 #[test]
 fn comment_around_wrapping_comma() {
     let src = "import a.[b,/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];";
-    let expected = "import a.[\n    b,\n/* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */];\n";
+    let expected = "import a.[\n    b, /* long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long_long */\n];\n";
     assert_formats_to(src, expected);
 }
 
@@ -322,5 +322,19 @@ fn comment_around_wrapping_comma() {
 fn comment_in_long_string() {
     let src = "const c = \"sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss{r/*.*/}\";";
     let expected = "const c = \"sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss{\n    r /*.*/\n}\";\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn two_comments_in_expression() {
+    let src = "const c = a % /* ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss */ b.c /* sssssssssssssssssssssss */ - d;";
+    let expected = "const c = a\n    % /* ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss */ b\n        .c /* sssssssssssssssssssssss */\n    - d;\n";
+    assert_formats_to(src, expected);
+}
+
+#[test]
+fn newlines_not_preserved_between_commas() {
+    let src = "const c: (\n    a,\n    b,\n) = false;\n";
+    let expected = "const c: (a, b) = false;\n";
     assert_formats_to(src, expected);
 }

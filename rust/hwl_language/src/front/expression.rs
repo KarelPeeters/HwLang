@@ -940,11 +940,11 @@ impl<'a> CompileItemContext<'a, '_> {
         }
 
         // struct new
-        if let &Value::Compile(CompileValue::Type(Type::Struct(elab))) = &base_eval {
-            if index_str == "new" {
-                let result = Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)));
-                return Ok(ValueInner::Value(result));
-            }
+        if let &Value::Compile(CompileValue::Type(Type::Struct(elab))) = &base_eval
+            && index_str == "new"
+        {
+            let result = Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)));
+            return Ok(ValueInner::Value(result));
         }
 
         let base_item_function = match &base_eval {
@@ -954,12 +954,12 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             _ => None,
         };
-        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function {
-            if index_str == "new" {
-                let func = FunctionValue::StructNewInfer(unique);
-                let result = Value::Compile(CompileValue::Function(func));
-                return Ok(ValueInner::Value(result));
-            }
+        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
+            && index_str == "new"
+        {
+            let func = FunctionValue::StructNewInfer(unique);
+            let result = Value::Compile(CompileValue::Function(func));
+            return Ok(ValueInner::Value(result));
         }
 
         // enum variants
@@ -1486,8 +1486,8 @@ impl<'a> CompileItemContext<'a, '_> {
         let build_err =
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {actual}"));
 
-        let result = match self.refs.get_expr(expr) {
-            &ExpressionKind::Id(id) => {
+        let result = match *self.refs.get_expr(expr) {
+            ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
@@ -1519,7 +1519,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 }
             }
-            &ExpressionKind::ArrayIndex(inner_target, ref indices) => {
+            ExpressionKind::ArrayIndex(inner_target, ref indices) => {
                 let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
                 let array_steps = indices
                     .inner
@@ -1543,7 +1543,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     array_steps,
                 }
             }
-            &ExpressionKind::DotIndex(base, index) => {
+            ExpressionKind::DotIndex(base, index) => {
                 match index {
                     DotIndexKind::Id(index) => {
                         match self.refs.get_expr(base) {
@@ -1985,10 +1985,10 @@ impl Iterator for ForIterator {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             ForIterator::Int { next, end_inc } => {
-                if let Some(end_inc) = end_inc {
-                    if next > end_inc {
-                        return None;
-                    }
+                if let Some(end_inc) = end_inc
+                    && next > end_inc
+                {
+                    return None;
                 }
 
                 let curr = Value::Compile(CompileValue::Int(next.clone()));

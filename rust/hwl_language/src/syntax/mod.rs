@@ -49,7 +49,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
     let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
         .filter(|token| match token {
-            Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),
+            Ok(token) => !matches!(token.ty.category(), TokenCategory::Comment),
             Err(_) => true,
         })
         .map(|token| token.map(|token| (token.span.start_byte, token.ty, token.span.end_byte)));

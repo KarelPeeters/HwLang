@@ -15,8 +15,8 @@ module module_ports ports(
 
     cst: in const bool,
 
-    axi_in: async interface axi.input(bool),
-    axi_out: async interface axi.input(bool),
+    axi_in: interface async axi.input(bool),
+    axi_out: interface async axi.input(bool),
 
     sync(clk) {
         x: in bool,

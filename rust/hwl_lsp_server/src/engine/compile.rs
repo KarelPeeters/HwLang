@@ -273,7 +273,7 @@ fn collect_partial_manifest(
             &mut hierarchy,
             manifest_span,
             steps,
-            files,
+            &files,
             // TODO this is sketchy
             |file_path| match vfs.read_str_maybe_from_disk(file_path) {
                 Ok(s) => Ok(s.to_owned()),

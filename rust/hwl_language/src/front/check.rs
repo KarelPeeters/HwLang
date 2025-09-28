@@ -413,26 +413,25 @@ pub fn check_type_is_bool_array(
     value: Spanned<Value>,
     expected_len: Option<&BigUint>,
 ) -> DiagResult<Value<Vec<bool>, HardwareValue<BigUint>>> {
-    if let Type::Array(ty_inner, ty_len) = value.inner.ty() {
-        if expected_len.is_none_or(|expected_len| expected_len == &ty_len) {
-            if let Type::Bool = *ty_inner {
-                return match value.inner {
-                    Value::Compile(c) => {
-                        let c = unwrap_match!(c, CompileValue::Array(c) => c);
-                        let result = c
-                            .iter()
-                            .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
-                            .collect_vec();
-                        Ok(Value::Compile(result))
-                    }
-                    Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
-                        ty: ty_len,
-                        domain: c.domain,
-                        expr: c.expr,
-                    })),
-                };
+    if let Type::Array(ty_inner, ty_len) = value.inner.ty()
+        && expected_len.is_none_or(|expected_len| expected_len == &ty_len)
+        && let Type::Bool = *ty_inner
+    {
+        return match value.inner {
+            Value::Compile(c) => {
+                let c = unwrap_match!(c, CompileValue::Array(c) => c);
+                let result = c
+                    .iter()
+                    .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
+                    .collect_vec();
+                Ok(Value::Compile(result))
             }
-        }
+            Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
+                ty: ty_len,
+                domain: c.domain,
+                expr: c.expr,
+            })),
+        };
     }
 
     let expected_ty_str = match expected_len {
