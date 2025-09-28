@@ -1,0 +1,12 @@
+// Run fuzzing
+cargo +nightly fuzz run fuzz_format --release -j 28 -- -only_ascii=1
+
+// find minimal case
+cargo +nightly fuzz tmin -O fuzz_format <FILE>
+
+// save fuzz file
+FUZZ_DEBUG=1 cargo +nightly fuzz run --release fuzz_format <FILE>
+
+// Collect and show coverage
+cargo +nightly fuzz coverage fuzz_format
+cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/fuzz_format --format=html -instr-profile=fuzz/coverage/fuzz_format/coverage.profdata --ignore-filename-regex=".*(registry|tool).*" > index.html

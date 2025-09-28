@@ -1,0 +1,3 @@
+#!/bin/bash -ue
+
+FUZZ_DEBUG=1 cargo +nightly fuzz run --release fuzz_format "$@"
