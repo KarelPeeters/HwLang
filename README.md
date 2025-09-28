@@ -54,7 +54,7 @@ versions properly supported everywhere.
 [//]: # (TODO make some remark about this leading to low productivity for HW dev compared to SW dev?)
 
 This project takes a different approach: we implement a compiler that compiles a newly designed, modern HDL with the
-important features we want, and compiles it to a lowest common denominator subset of Verilog. This effectively solves
+important features we want, and compiles it to a lowest common denominator subset of Verilog. This effectively
 decouples language development from tooling development. Improvements to the language, compiler and surrounding
 infrastructure can be made without having to wait on all the different EDA vendors to follow. EDA vendors in turn can
 focus on improving the core functionality of the tools instead of all doing the duplicate work of keeping up with
@@ -134,10 +134,12 @@ existing RTL languages, prefixed by _SV_ or _VHDL_.
       needed. This also completely eliminates any name collision issues.
     * There is a full module hierarchy, allowing code to be organized nicely.
   * Developers are free to choose th order of items in a file, the compiler does not simply read files top-down.
-    * _SV_ doesn't have a library or import system at all, the user is responsible for compiling all files in the right
-      order, and names always resolve to the last definition with a matching name.
-    * _VHDL_ does a little better, allowing code to organized in libraries. This is still much weaker than a full module
-      system through, and the user is till responsible for compiling all files in the right order.
+      * _SV_ doesn't have a library or import system at all, the user is responsible for compiling all files in the
+        right
+        order, and names always resolve to the last definition with a matching name.
+      * _VHDL_ does a little better, allowing code to organized in libraries. This is still much weaker than a full
+        module
+        system through, and the user is till responsible for compiling all files in the right order.
 
 ### Modern compiler features
 
@@ -222,12 +224,15 @@ TODO document:
 
 There are some projects that use general-purpose programming language as a host, and then allow developers to build the
 hardware within that language. This has the major benefit of immediately making the features and ecosystem from the host
-language available for parametrization and code reuse. The downside is that
+language available for parametrization and code reuse. One major downside is that this heavily constraints the syntax
+and semantics to those of the host language.
 
 * [Chisel](https://www.chisel-lang.org/): Uses Scala as a host language.
 * [MyHDL](https://www.myhdl.org/): Uses Python as a host language.
 
-There is also [CIRCT](https://circt.llvm.org/) which uses MLIR to define a common intermediate representation for
-hardware. This is similar (but
-much more feature complete) than the one defined in this project, at some point it might make sense to switch to CIRCT
-for better interoperability with other tools.
+[Veryl](https://veryl-lang.org/) is a deviated hardware description language, which is more similar to the approach
+taken here.
+
+[CIRCT](https://circt.llvm.org/) which uses MLIR to define a common intermediate representation for
+hardware. This is similar (but much more feature complete) to the IR defined in this project, at some point it might
+make sense to switch to CIRCT for better interoperability with other tools.
