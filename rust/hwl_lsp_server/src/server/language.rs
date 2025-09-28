@@ -168,7 +168,6 @@ fn to_semantic_token(
 // TODO get supported tokens from client capabilities
 pub fn semantic_token_map(category: TokenCategory) -> Option<SemanticTokenType> {
     match category {
-        TokenCategory::WhiteSpace => None,
         TokenCategory::Comment => Some(SemanticTokenType::COMMENT),
         // TODO better categorization of ids?
         TokenCategory::Identifier => None,

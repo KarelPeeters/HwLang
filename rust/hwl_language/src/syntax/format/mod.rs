@@ -90,9 +90,7 @@ pub fn format<'s>(
     let old_info = &source[file];
     let old_content = &old_info.content;
     let old_offsets = &old_info.offsets;
-    let mut old_tokens = tokenize(file, old_content, false).map_err(|e| diags.report(e.to_diagnostic()))?;
-    // TODO remove whitespace tokens, everyone just filters them out anyway, we can always recover whitespace as "stuff between other tokens" if we really want to
-    old_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
+    let old_tokens = tokenize(file, old_content, false).map_err(|e| diags.report(e.to_diagnostic()))?;
     let old_ast = parse_file_content(file, old_content).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
 
     // flatten the ast to high-level nodes
@@ -153,10 +151,10 @@ fn check_format_output_matches(
     let old_span = source.full_span(old_file);
 
     // re-tokenize the output
+    // TODO don't allocate a full vector for tokens, just use the internal iterator
     let dummy_file = FileId::dummy();
-    let mut new_tokens = tokenize(dummy_file, new_content, false)
+    let new_tokens = tokenize(dummy_file, new_content, false)
         .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-tokenize formatter output: {e:?}")))?;
-    new_tokens.retain(|t| t.ty != TokenType::WhiteSpace);
 
     // check that each old token has a matching new token (ignored removed or added commas)
     let mut new_tokens_iter = new_tokens.iter().peekable();

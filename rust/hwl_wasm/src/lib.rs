@@ -174,7 +174,6 @@ pub fn codemirror_node_types() -> Vec<String> {
 /// This is implemented on the Rust side to check at compile time whether all categories are covered.
 fn token_category_to_tag(tc: TokenCategory) -> Option<&'static str> {
     match tc {
-        TokenCategory::WhiteSpace => None,
         TokenCategory::Comment => Some("comment"),
         TokenCategory::Identifier => Some("name"),
         TokenCategory::IntegerLiteral => Some("number"),

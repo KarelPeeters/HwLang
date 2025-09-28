@@ -12,7 +12,6 @@ extern {
     type Error = TokenError;
 
     enum TokenType {
-        TokenWhiteSpace => TokenType::WhiteSpace,
         TokenBlockComment => TokenType::BlockComment,
         TokenLineComment => TokenType::LineComment,
         TokenIdentifier => TokenType::Identifier,
