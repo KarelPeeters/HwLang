@@ -547,10 +547,10 @@ fn new_loop(state: &mut NewState) {
 // TODO turn asserts into errors?
 // TODO re-use fits-queue vec to avoid redundant allocations
 // TODO reduce code duplication with the main loop
-fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]) -> bool {
+fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, mut queue_outer: &[Command]) -> bool {
     let check = builder.checkpoint();
 
-    let mut queue = queue.iter().copied().collect_vec();
+    let mut queue = vec![];
 
     loop {
         // stop once we've overflown the line
@@ -558,8 +558,20 @@ fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]
             break;
         }
 
+        // find the next command
+        // (to avoid fully copying the outer queue, we instead use it as a separate second level of the stack)
+        let cmd = match queue.pop() {
+            Some(cmd) => cmd,
+            None => match queue_outer.split_last() {
+                Some((&cmd, rest)) => {
+                    queue_outer = rest;
+                    cmd
+                }
+                None => break,
+            },
+        };
+
         // process the next command
-        let Some(cmd) = queue.pop() else { break };
         let node = match cmd {
             Command::Node(node) => node,
             Command::EndGroupNoWrap => {
