@@ -81,6 +81,7 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
         },
         stats: StringsStats::default(),
         queue: vec![],
+        queue_fill: vec![],
         group_no_wrap_count: 0,
     };
 
@@ -301,6 +302,7 @@ fn simplify_container_impl<'s>(
 struct NewState<'n, 's, 'f> {
     stats: StringsStats,
     queue: Vec<Command<'n, 's>>,
+    queue_fill: Vec<Command<'n, 's>>,
     group_no_wrap_count: usize,
     builder: StringBuilder<'f>,
 }
@@ -339,12 +341,6 @@ enum MaybeNewline {
 }
 
 impl StringBuilder<'_> {
-    pub fn line(&self) -> Line {
-        Line {
-            start: self.state.curr_line_start,
-        }
-    }
-
     pub fn checkpoint(&self) -> StringBuilderCheckpoint {
         StringBuilderCheckpoint {
             result_len: self.buffer.len(),
@@ -524,7 +520,12 @@ fn new_loop(state: &mut NewState) {
                     state.group_no_wrap_count += 1;
                     state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
 
-                    let group_fits = fits(&mut state.builder, state.group_no_wrap_count, &state.queue);
+                    let group_fits = fits(
+                        &mut state.builder,
+                        state.group_no_wrap_count,
+                        &state.queue,
+                        &mut state.queue_fill,
+                    );
 
                     state.group_no_wrap_count -= 1;
                     state.queue.pop().unwrap();
@@ -549,10 +550,14 @@ fn new_loop(state: &mut NewState) {
 // TODO turn asserts into errors?
 // TODO re-use fits-queue vec to avoid redundant allocations
 // TODO reduce code duplication with the main loop
-fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, mut queue_outer: &[Command]) -> bool {
+fn fits<'n, 's>(
+    builder: &mut StringBuilder,
+    mut no_wrap_count: usize,
+    mut queue_outer: &[Command<'n, 's>],
+    queue: &mut Vec<Command<'n, 's>>,
+) -> bool {
     let check = builder.checkpoint();
-
-    let mut queue = vec![];
+    queue.clear();
 
     loop {
         // stop once we've overflown the line
@@ -652,6 +657,8 @@ fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, mut queue_outer: 
             LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         };
     }
+
+    queue.clear();
 
     // check for final overflow and restore the builder
     let fits = !builder.line_overflows(check.line());
