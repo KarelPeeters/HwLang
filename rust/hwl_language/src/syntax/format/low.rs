@@ -6,9 +6,8 @@ use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use hwl_util::swriteln;
-use itertools::{Itertools, enumerate};
+use itertools::Itertools;
 use std::fmt::Debug;
-use std::time::{Duration, Instant};
 
 pub type LNode<'s> = LNodeImpl<'s, ()>;
 pub type LNodeSimple<'s> = LNodeImpl<'s, Never>;
@@ -83,12 +82,10 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
         },
         stats: StringsStats::default(),
         queue: vec![],
-        queue_next: 0,
-        group_no_wrap_stack: vec![],
-        group_no_wrap_active: vec![],
+        group_no_wrap_count: 0,
     };
 
-    state.push_iter(std::iter::once(CommandKind::Node(root)));
+    state.push_iter(std::iter::once(Command::Node(root)));
     new_loop(&mut state);
 
     StringOutput {
@@ -105,29 +102,13 @@ pub struct StringsStats {
     pub restore_chars: usize,
     pub check_overflow: usize,
 
-    pub loop_iterations: usize,
-    pub loop_commands: usize,
-    pub loop_nodes: usize,
-
-    pub retain_calls: usize,
-    pub retain_count: usize,
-
-    pub time_retain: Duration,
-    pub time_active: Duration,
-    pub time_active2: Duration,
-    pub time_line: Duration,
+    pub iter_loop: usize,
+    pub iter_fits: usize,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Line {
     start: usize,
-}
-
-#[derive(Debug, Copy, Clone)]
-struct StringState {
-    curr_line_start: usize,
-    indent: usize,
-    emit_space: bool,
 }
 
 impl<E: Debug> LNodeImpl<'_, E> {
@@ -187,10 +168,7 @@ impl<'s> LNode<'s> {
         self.simplify_impl(None).node
     }
 
-    // TODO instead of creating a messy tree and then simplifying it,
-    //   avoid creating it in the first place by adding some convenient sequence builder
-    // TODO try moving newlines around here
-    // TODO doc what this actually does
+    // TODO doc
     fn simplify_impl(&self, mut escape_group: Option<&mut (Vec<LNodeSimple<'s>>, bool)>) -> SimplifyResult<'s> {
         match self {
             // flatten sequences
@@ -320,17 +298,11 @@ fn simplify_container_impl<'s>(
     }
 }
 
-// TODO rename (and merge?)
+// TODO rename
 struct NewState<'n, 's, 'f> {
     stats: StringsStats,
-
     queue: Vec<Command<'n, 's>>,
-    queue_next: usize,
-
-    // TODO maybe active groups can be a separate VecDeque or maybe even linked list?
-    group_no_wrap_stack: Vec<CheckGroupNoWrap<'n, 's>>,
-    group_no_wrap_active: Vec<usize>,
-
+    group_no_wrap_count: usize,
     builder: StringBuilder<'f>,
 }
 
@@ -403,9 +375,6 @@ impl StringBuilder<'_> {
         let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
 
         // emit indent if this is the first text on the line
-        // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
-        //   first abstractly push indent/str nodes, then later actually convert to a full string
-        //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
         if self.at_line_start() && !str_is_whitespace_or_empty(s) {
             for _ in 0..self.state.indent {
                 self.buffer.push_str(&self.settings.indent_str);
@@ -462,137 +431,23 @@ impl StringBuilder<'_> {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct Command<'n, 's> {
-    stack_group_no_wrap_len: usize,
-    kind: CommandKind<'n, 's>,
-}
-
-#[derive(Debug, Copy, Clone)]
-enum CommandKind<'n, 's> {
+enum Command<'n, 's> {
     Node(&'n LNodeSimple<'s>),
     EndGroupNoWrap,
     RestoreIndent { indent: usize },
 }
 
-// TODO document all of this
-#[derive(Debug)]
-struct CheckGroupNoWrap<'n, 's> {
-    check: StringBuilderCheckpoint,
-
-    queue_next: usize,
-    queue_len: usize,
-
-    first_active: usize,
-
-    group_inner: &'n LNodeSimple<'s>,
-}
-
-struct CausedWrap;
-
 // TODO reorder functions
 impl<'n, 's> NewState<'n, 's, '_> {
-    fn push(&mut self, cmd: CommandKind<'n, 's>) {
+    fn push(&mut self, cmd: Command<'n, 's>) {
         self.push_iter(std::iter::once(cmd));
     }
 
-    fn push_iter(&mut self, iter: impl IntoIterator<Item = CommandKind<'n, 's>>) {
-        // TODO change queue order to be backwards, so we don't need to shift stuff around
-        let stack_group_no_wrap_len = self.group_no_wrap_stack.len();
-        self.queue.insert_iter(
-            self.queue_next,
-            iter.into_iter().map(|cmd| Command {
-                stack_group_no_wrap_len,
-                kind: cmd,
-            }),
-        );
-    }
-
-    fn can_wrap(&self) -> bool {
-        self.group_no_wrap_active.is_empty()
-    }
-
-    fn force_wrap_now(&mut self, allowed: bool) -> Result<(), CausedWrap> {
-        if let Some(&first) = self.group_no_wrap_active.first() {
-            assert!(allowed);
-            self.restore_and_wrap(first);
-            Err(CausedWrap)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn try_group_without_wrap(&mut self, inner: &'n LNodeSimple<'s>) {
-        let group_index = self.group_no_wrap_stack.len();
-        let first_active = self.group_no_wrap_active.first().copied().unwrap_or(group_index);
-
-        let check = CheckGroupNoWrap {
-            // TODO match field order
-            check: self.builder.checkpoint(),
-            queue_next: self.queue_next,
-            queue_len: self.queue.len(),
-            // queue_after: self.queue.len() - self.queue_next,
-            // queue: self.queue.clone(),
-            first_active,
-            group_inner: inner,
-        };
-
-        // println!("{:?}", check);
-
-        self.group_no_wrap_stack.push(check);
-        self.group_no_wrap_active.push(group_index);
-
-        self.push_iter([CommandKind::Node(inner), CommandKind::EndGroupNoWrap]);
-
-        self.stats.checkpoint += 1;
-    }
-
-    // TODO make this more type-safe, without bare usize index
-    // TODO create variant of this that automatically finds the containing group
-    // TODO make some utility that automatically wraps and _currently active_ groups instead of taking in an index
-    fn restore_and_wrap(&mut self, group_index: usize) {
-        // get first active group, this is the outermost group which (also) needs to wrap
-        let first_active = self.group_no_wrap_stack[group_index].first_active;
-
-        // println!("event force_wrap {group_index}, {first_active}");
-
-        // println!("{:?}", self.stack_group_no_wrap[first_active]);
-
-        let CheckGroupNoWrap {
-            check,
-            queue_next,
-            queue_len,
-            first_active,
-            group_inner,
-        } = self.group_no_wrap_stack.swap_remove(first_active);
-
-        self.stats.restore += 1;
-
-        // restore stack
-        self.group_no_wrap_stack.truncate(first_active);
-        self.group_no_wrap_active.clear();
-
-        // restore string
-        self.builder.restore(check);
-
-        // restore queue
-        // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
-        // TODO also remember how many items were at the end of the queue, we know we don't have to discard those
-        //   but then the mem move will still cause O(n**2) issues, no? what we really need is a fancier vec index pattern that allows more linear clearing
-        self.queue_next = queue_next;
-        let start = Instant::now();
-        // print!("retain pattern: ");
-        self.queue.retain_range(queue_next..self.queue.len(), |cmd| {
-            self.stats.retain_count += 1;
-            let r = cmd.stack_group_no_wrap_len <= first_active;
-            // print!("{}", if r { 'r' } else { 'd' });
-            r
-        });
-        // println!();
-        self.stats.retain_calls += 1;
-        self.stats.time_retain += start.elapsed();
-        assert_eq!(self.queue.len(), queue_len);
-
-        self.push(CommandKind::Node(group_inner));
+    fn push_iter<I: IntoIterator<Item = Command<'n, 's>>>(&mut self, iter: I)
+    where
+        I::IntoIter: DoubleEndedIterator,
+    {
+        self.queue.extend(iter.into_iter().rev())
     }
 }
 
@@ -600,141 +455,102 @@ impl<'n, 's> NewState<'n, 's, '_> {
 // TODO document all of this a bit more
 fn new_loop(state: &mut NewState) {
     loop {
-        // println!("iter");
-        // println!("  queue:");
-        // for (i, item) in enumerate(&state.queue) {
-        //     print!("   {i:4}");
-        //
-        //     if i < state.queue_next {
-        //         print!(" [X] ");
-        //     } else {
-        //         print!(" [ ] ");
-        //     }
-        //     println!("{item:?}");
-        // }
-        // println!("  output\n    {:?}", state.str_ctx.result);
+        let Some(next) = state.queue.pop() else { break };
+        state.stats.iter_loop += 1;
 
-        state.stats.loop_iterations += 1;
-
-        // check for line overflow
-        let curr_line = state.builder.line();
-        if state.builder.line_overflows(curr_line) {
-            let info = enumerate(&state.group_no_wrap_stack)
-                .rev()
-                .take_while(|(_, info)| info.check.line() >= curr_line)
-                .find(|(_, info)| info.check.line() == curr_line);
-            if let Some((info_pos, _)) = info {
-                state.restore_and_wrap(info_pos);
+        // handle the next command
+        let next = match next {
+            Command::Node(next) => next,
+            Command::EndGroupNoWrap => {
+                assert!(state.group_no_wrap_count > 0);
+                state.group_no_wrap_count -= 1;
                 continue;
             }
-        }
-
-        // pop the next command
-        let Some(next) = state.queue.get(state.queue_next) else {
-            break;
-        };
-        let next = &next.kind;
-        state.queue_next += 1;
-
-        state.stats.loop_commands += 1;
-
-        let next = match *next {
-            CommandKind::Node(next) => next,
-            CommandKind::EndGroupNoWrap => {
-                state.group_no_wrap_active.pop().unwrap();
-                continue;
-            }
-            CommandKind::RestoreIndent { indent } => {
+            Command::RestoreIndent { indent } => {
                 state.builder.state.indent = indent;
                 continue;
             }
         };
 
         // handle the next node
-        state.stats.loop_nodes += 1;
-
-        // TODO extract function?
-        // TODO discard this whole branching idea again and do something more similar to prettier?
-        let res = match next {
+        // TODO fix code duplication with fits
+        let can_wrap = state.group_no_wrap_count == 0;
+        match next {
             LNodeSimple::Space => {
                 state.builder.state.emit_space = true;
-                Ok(())
             }
             LNodeSimple::AlwaysStr(s) => match state.builder.write_str(s) {
-                MaybeNewline::No => Ok(()),
-                MaybeNewline::Yes => state.force_wrap_now(false),
+                MaybeNewline::No => {}
+                MaybeNewline::Yes => {
+                    assert!(can_wrap);
+                }
             },
             LNodeSimple::WrapStr(s) => {
-                if state.can_wrap() {
+                if can_wrap {
                     let _: MaybeNewline = state.builder.write_str(s);
                 }
-                Ok(())
             }
             LNodeSimple::AlwaysNewline => {
-                let res = state.force_wrap_now(false);
-                if res.is_ok() {
-                    state.builder.ensure_newlines(1);
-                }
-                res
+                assert!(can_wrap);
+                state.builder.ensure_newlines(1);
             }
             LNodeSimple::WrapNewline => {
-                if state.can_wrap() {
+                if can_wrap {
                     state.builder.ensure_newlines(1);
                 }
-                Ok(())
             }
             LNodeSimple::AlwaysBlankLine => {
-                let res = state.force_wrap_now(false);
-                if res.is_ok() {
-                    state.builder.ensure_newlines(2);
-                }
-                res
+                assert!(can_wrap);
+                state.builder.ensure_newlines(2);
             }
             LNodeSimple::Indent(child) => {
                 let indent = state.builder.state.indent;
                 state.builder.state.indent += 1;
-                state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
-                Ok(())
+                state.push_iter([Command::Node(child), Command::RestoreIndent { indent }]);
             }
             LNodeSimple::Dedent(child) => {
                 let indent = state.builder.state.indent;
                 state.builder.state.indent = 0;
-                state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
-                Ok(())
+                state.push_iter([Command::Node(child), Command::RestoreIndent { indent }]);
             }
             LNodeSimple::Sequence(seq) => {
                 // TODO we flatten here, so maybe we can remove simplify
-                state.push_iter(seq.iter().map(CommandKind::Node));
-                Ok(())
+                state.push_iter(seq.iter().map(Command::Node));
             }
             &LNodeSimple::Group { force_wrap, ref child } => {
-                state.try_group_without_wrap(child);
+                let group_wrap = force_wrap || {
+                    state.group_no_wrap_count += 1;
+                    state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
 
-                let group_wrap = force_wrap
-                    || !fits(
-                        &mut state.builder,
-                        state.group_no_wrap_active.len(),
-                        &state.queue[state.queue_next..],
-                    );
+                    let group_fits = fits(&mut state.builder, state.group_no_wrap_count, &state.queue);
 
-                if group_wrap { state.force_wrap_now(true) } else { Ok(()) }
+                    state.group_no_wrap_count -= 1;
+                    state.queue.pop().unwrap();
+                    state.queue.pop().unwrap();
+
+                    !group_fits
+                };
+
+                if group_wrap {
+                    state.push(Command::Node(child));
+                } else {
+                    state.group_no_wrap_count += 1;
+                    state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
+                }
             }
 
             LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
-        };
-
-        // both cases are correctly handled by continuing the loop:
-        // * If Ok, we succeeded in writing the node and we can move on to the next one.
-        // * If Err, a wrap happened which restored an earlier state, and the next iteration will re-try with wrapping.
-        let _: Result<(), CausedWrap> = res;
+        }
     }
 }
 
 // TODO turn asserts into errors?
+// TODO re-use fits-queue vec to avoid redundant allocations
+// TODO reduce code duplication with the main loop
 fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]) -> bool {
     let check = builder.checkpoint();
 
-    let mut queue = queue.iter().map(|cmd| cmd.kind).rev().collect_vec();
+    let mut queue = queue.iter().copied().collect_vec();
 
     loop {
         // stop once we've overflown the line
@@ -745,12 +561,12 @@ fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]
         // process the next command
         let Some(cmd) = queue.pop() else { break };
         let node = match cmd {
-            CommandKind::Node(node) => node,
-            CommandKind::EndGroupNoWrap => {
+            Command::Node(node) => node,
+            Command::EndGroupNoWrap => {
                 no_wrap_count -= 1;
                 continue;
             }
-            CommandKind::RestoreIndent { indent } => {
+            Command::RestoreIndent { indent } => {
                 builder.state.indent = indent;
                 continue;
             }
@@ -758,7 +574,7 @@ fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]
 
         // process the next node
         // we encounter a newline, we can stop since future commands can't influence the current line anymore
-        let wrap = no_wrap_count == 0;
+        let can_wrap = no_wrap_count == 0;
         match node {
             LNodeSimple::Space => {
                 builder.state.emit_space = true;
@@ -766,58 +582,58 @@ fn fits(builder: &mut StringBuilder, mut no_wrap_count: usize, queue: &[Command]
             LNodeSimple::AlwaysStr(s) => match builder.write_str(s) {
                 MaybeNewline::No => {}
                 MaybeNewline::Yes => {
-                    assert!(wrap);
+                    assert!(can_wrap);
                     break;
                 }
             },
             LNodeSimple::WrapStr(s) => {
-                if wrap {
+                if can_wrap {
                     match builder.write_str(s) {
                         MaybeNewline::No => {}
                         MaybeNewline::Yes => {
-                            assert!(wrap);
+                            assert!(can_wrap);
                             break;
                         }
                     }
                 }
             }
             LNodeSimple::AlwaysNewline => {
-                assert!(wrap);
+                assert!(can_wrap);
                 break;
             }
             LNodeSimple::WrapNewline => {
-                if wrap {
+                if can_wrap {
                     break;
                 }
             }
             LNodeSimple::AlwaysBlankLine => {
-                assert!(wrap);
+                assert!(can_wrap);
                 break;
             }
             LNodeSimple::Indent(child) => {
                 let indent = builder.state.indent;
                 builder.state.indent += 1;
 
-                queue.push(CommandKind::RestoreIndent { indent });
-                queue.push(CommandKind::Node(child));
+                queue.push(Command::RestoreIndent { indent });
+                queue.push(Command::Node(child));
             }
             LNodeSimple::Dedent(child) => {
                 let indent = builder.state.indent;
                 builder.state.indent = 0;
 
-                queue.push(CommandKind::RestoreIndent { indent });
-                queue.push(CommandKind::Node(child));
+                queue.push(Command::RestoreIndent { indent });
+                queue.push(Command::Node(child));
             }
             LNodeSimple::Sequence(children) => {
-                queue.extend(children.iter().rev().map(CommandKind::Node));
+                queue.extend(children.iter().rev().map(Command::Node));
             }
             &LNodeSimple::Group { force_wrap, ref child } => {
                 if force_wrap {
-                    assert!(wrap);
+                    assert!(can_wrap);
                 }
 
                 // assume wrapping if allowed by the parent, this just requires _not_ incrementing no_wrap_count
-                queue.push(CommandKind::Node(child));
+                queue.push(Command::Node(child));
             }
             LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
         };
