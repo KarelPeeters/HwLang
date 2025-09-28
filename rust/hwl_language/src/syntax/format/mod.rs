@@ -26,9 +26,7 @@
 //! * [PRETTY PRINTING - Derek C. Oppen - 1979](http://i.stanford.edu/pub/cstr/reports/cs/tr/79/770/CS-TR-79-770.pdf)
 //! * [Strictly Pretty - Christian Lindig - 2000](https://lindig.github.io/papers/strictly-pretty-2000.pdf)
 //!
-//! The current implementation nodes are very similar to the prettier command set.
-//! For the line breaking algorithm we don't yet use any fancy dynamic programming,
-//! in practise the current "try and see if it fits" approach seems to be fast enough.
+//! The current [LNode]s and the low-level line breaking implementation are very similar to prettier.
 
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;

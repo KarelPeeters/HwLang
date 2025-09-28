@@ -58,25 +58,14 @@ pub enum LNodeImpl<'s, E> {
         child: Box<LNodeImpl<'s, E>>,
     },
 
-    // TODO doc
+    /// If this is the last child of a group, acts as if it was actually a sibling outside of the group.
+    /// This also works recursively through multiple nested groups.
     EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
 }
 
 pub struct StringOutput {
     pub stats: StringsStats,
     pub string: String,
-}
-
-#[derive(Debug, Default)]
-pub struct StringsStats {
-    // TODO update/rename/reduce these
-    pub checkpoint: usize,
-    pub restore: usize,
-    pub restore_chars: usize,
-    pub check_overflow: usize,
-
-    pub iter_loop: usize,
-    pub iter_fits: usize,
 }
 
 impl<E: Debug> LNodeImpl<'_, E> {
@@ -136,7 +125,6 @@ impl<'s> LNode<'s> {
         self.simplify_impl(None).node
     }
 
-    // TODO doc
     fn simplify_impl(&self, mut escape_group: Option<&mut (Vec<LNodeSimple<'s>>, bool)>) -> SimplifyResult<'s> {
         match self {
             // flatten sequences
@@ -157,7 +145,6 @@ impl<'s> LNode<'s> {
                     force_wrap,
                 }
             }
-            // TODO doc
             LNodeImpl::EscapeGroupIfLast((), inner) => {
                 let inner = inner.simplify_impl(escape_group.as_deref_mut());
                 if let Some(escape_group) = escape_group.as_deref_mut() {
@@ -266,7 +253,14 @@ fn simplify_container_impl<'s>(
     }
 }
 
-// TODO move simplify and string builder to separate module
+#[derive(Debug, Default)]
+pub struct StringsStats {
+    pub main_commands: usize,
+    pub fits_commands: usize,
+    pub fits_calls: usize,
+    pub restore_chars: usize,
+}
+
 struct StringBuilder<'f> {
     settings: &'f FormatSettings,
     buffer: String,
@@ -325,8 +319,9 @@ impl<'f> StringBuilder<'f> {
         }
     }
 
-    pub fn restore(&mut self, checkpoint: StringBuilderCheckpoint) {
+    pub fn restore(&mut self, stats: &mut StringsStats, checkpoint: StringBuilderCheckpoint) {
         assert!(self.buffer.len() >= checkpoint.result_len);
+        stats.restore_chars += self.buffer.len() - checkpoint.result_len;
         self.buffer.truncate(checkpoint.result_len);
         self.state = checkpoint.state;
     }
@@ -421,7 +416,7 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
     let mut group_no_wrap_count: usize = 0;
 
     while let Some(cmd) = cmd_stack.pop() {
-        stats.iter_loop += 1;
+        stats.main_commands += 1;
 
         match cmd {
             Command::Node(node) => {
@@ -434,7 +429,13 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
                             cmd_stack.push(Command::EndGroupNoWrap);
                             cmd_stack.push(Command::Node(child));
 
-                            let group_fits = fits(&mut builder, group_no_wrap_count, &cmd_stack, &mut cmd_stack_fits);
+                            let group_fits = fits(
+                                &mut builder,
+                                &mut stats,
+                                group_no_wrap_count,
+                                &cmd_stack,
+                                &mut cmd_stack_fits,
+                            );
 
                             group_no_wrap_count -= 1;
                             cmd_stack.pop().unwrap();
@@ -478,13 +479,14 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
 
 fn fits<'n, 's>(
     builder: &mut StringBuilder,
+    stats: &mut StringsStats,
     no_wrap_count: usize,
     cmd_stack_outer: &[Command<'n, 's>],
     cmd_stack: &mut Vec<Command<'n, 's>>,
 ) -> bool {
     assert!(cmd_stack.is_empty());
-
     let check = builder.checkpoint();
+    stats.fits_calls += 1;
 
     let mut no_wrap_count = no_wrap_count;
     let mut cmd_stack_outer = cmd_stack_outer;
@@ -509,6 +511,7 @@ fn fits<'n, 's>(
         };
 
         // process the next command
+        stats.fits_commands += 1;
         match cmd {
             Command::Node(node) => {
                 let wrapping = no_wrap_count == 0;
@@ -544,7 +547,7 @@ fn fits<'n, 's>(
 
     // check for final overflow and restore the builder
     let fits = !builder.line_overflows(check.line());
-    builder.restore(check);
+    builder.restore(stats, check);
     fits
 }
 
