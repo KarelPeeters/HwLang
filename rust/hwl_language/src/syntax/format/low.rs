@@ -67,33 +67,6 @@ pub struct StringOutput {
     pub string: String,
 }
 
-pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
-    // TODO match field order
-    let mut state = NewState {
-        builder: StringBuilder {
-            settings,
-            buffer: String::with_capacity(2 * source_str.len()),
-            state: StringBuilderState {
-                curr_line_start: 0,
-                indent: 0,
-                emit_space: false,
-            },
-        },
-        stats: StringsStats::default(),
-        queue: vec![],
-        queue_fill: vec![],
-        group_no_wrap_count: 0,
-    };
-
-    state.push_iter(std::iter::once(Command::Node(root)));
-    new_loop(&mut state);
-
-    StringOutput {
-        stats: state.stats,
-        string: state.builder.buffer,
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct StringsStats {
     // TODO update/rename/reduce these
@@ -104,11 +77,6 @@ pub struct StringsStats {
 
     pub iter_loop: usize,
     pub iter_fits: usize,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct Line {
-    start: usize,
 }
 
 impl<E: Debug> LNodeImpl<'_, E> {
@@ -298,15 +266,7 @@ fn simplify_container_impl<'s>(
     }
 }
 
-// TODO rename
-struct NewState<'n, 's, 'f> {
-    stats: StringsStats,
-    queue: Vec<Command<'n, 's>>,
-    queue_fill: Vec<Command<'n, 's>>,
-    group_no_wrap_count: usize,
-    builder: StringBuilder<'f>,
-}
-
+// TODO move simplify and string builder to separate module
 struct StringBuilder<'f> {
     settings: &'f FormatSettings,
     buffer: String,
@@ -326,6 +286,11 @@ struct StringBuilderCheckpoint {
     state: StringBuilderState,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct Line {
+    start: usize,
+}
+
 impl StringBuilderCheckpoint {
     pub fn line(&self) -> Line {
         Line {
@@ -340,7 +305,19 @@ enum MaybeNewline {
     Yes,
 }
 
-impl StringBuilder<'_> {
+impl<'f> StringBuilder<'f> {
+    pub fn new(settings: &'f FormatSettings, capacity: usize) -> Self {
+        StringBuilder {
+            settings,
+            buffer: String::with_capacity(capacity),
+            state: StringBuilderState {
+                curr_line_start: 0,
+                indent: 0,
+                emit_space: false,
+            },
+        }
+    }
+
     pub fn checkpoint(&self) -> StringBuilderCheckpoint {
         StringBuilderCheckpoint {
             result_len: self.buffer.len(),
@@ -435,58 +412,44 @@ enum Command<'n, 's> {
     RestoreIndent { indent: usize },
 }
 
-// TODO reorder functions
-impl<'n, 's> NewState<'n, 's, '_> {
-    fn push(&mut self, cmd: Command<'n, 's>) {
-        self.push_iter(std::iter::once(cmd));
-    }
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
+    let mut builder = StringBuilder::new(settings, source_str.len() * 2);
+    let mut stats = StringsStats::default();
 
-    fn push_iter<I: IntoIterator<Item = Command<'n, 's>>>(&mut self, iter: I)
-    where
-        I::IntoIter: DoubleEndedIterator,
-    {
-        self.queue.extend(iter.into_iter().rev())
-    }
-}
+    let mut queue = vec![Command::Node(root)];
+    let mut queue_fill = vec![];
+    let mut group_no_wrap_count: usize = 0;
 
-// TODO if everything is a single method, we don't need this context "class" any more
-// TODO document all of this a bit more
-fn new_loop(state: &mut NewState) {
-    loop {
-        let Some(next) = state.queue.pop() else { break };
-        state.stats.iter_loop += 1;
+    while let Some(cmd) = queue.pop() {
+        stats.iter_loop += 1;
 
-        // handle the next command
-        match next {
+        match cmd {
             Command::Node(node) => {
-                let wrapping = state.group_no_wrap_count == 0;
-                match visit_node(&mut state.builder, &mut state.queue, wrapping, node) {
+                let wrapping = group_no_wrap_count == 0;
+                match visit_node(&mut builder, &mut queue, wrapping, node) {
                     VisitResult::Group { force_wrap, child } => {
                         // check whether we need to wrap this group by checking whether everything would fit if we don't
                         let group_wrap = force_wrap || {
-                            state.group_no_wrap_count += 1;
-                            state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
+                            group_no_wrap_count += 1;
+                            queue.push(Command::EndGroupNoWrap);
+                            queue.push(Command::Node(child));
 
-                            let group_fits = fits(
-                                &mut state.builder,
-                                state.group_no_wrap_count,
-                                &state.queue,
-                                &mut state.queue_fill,
-                            );
+                            let group_fits = fits(&mut builder, group_no_wrap_count, &queue, &mut queue_fill);
 
-                            state.group_no_wrap_count -= 1;
-                            state.queue.pop().unwrap();
-                            state.queue.pop().unwrap();
+                            group_no_wrap_count -= 1;
+                            queue.pop().unwrap();
+                            queue.pop().unwrap();
 
                             !group_fits
                         };
 
                         // push the right commands based on the wrapping decision
                         if group_wrap {
-                            state.push(Command::Node(child));
+                            queue.push(Command::Node(child));
                         } else {
-                            state.group_no_wrap_count += 1;
-                            state.push_iter([Command::Node(child), Command::EndGroupNoWrap]);
+                            group_no_wrap_count += 1;
+                            queue.push(Command::EndGroupNoWrap);
+                            queue.push(Command::Node(child));
                         }
                     }
                     VisitResult::Other(new_line) => {
@@ -496,15 +459,20 @@ fn new_loop(state: &mut NewState) {
                 }
             }
             Command::EndGroupNoWrap => {
-                assert!(state.group_no_wrap_count > 0);
-                state.group_no_wrap_count -= 1;
+                assert!(group_no_wrap_count > 0);
+                group_no_wrap_count -= 1;
                 continue;
             }
             Command::RestoreIndent { indent } => {
-                state.builder.state.indent = indent;
+                builder.state.indent = indent;
                 continue;
             }
         }
+    }
+
+    StringOutput {
+        stats,
+        string: builder.buffer,
     }
 }
 
@@ -543,7 +511,7 @@ fn fits<'n, 's>(
                 let visit_result = visit_node(builder, queue, wrapping, node);
 
                 match visit_result {
-                    VisitResult::Group { force_wrap, child } => {
+                    VisitResult::Group { force_wrap: _, child } => {
                         // assume wrapping for all future groups, we just want to know if everything _can_ fit
                         queue.push(Command::Node(child));
                     }
