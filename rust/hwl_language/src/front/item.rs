@@ -1,4 +1,4 @@
-use crate::front::check::{check_type_contains_compile_value, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{Flow, FlowCompile, FlowRoot};
@@ -12,20 +12,20 @@ use crate::front::value::{CompileValue, Value};
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
     EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModuleExternal,
-    ItemDefModuleInternal, Parameters, Spanned, StructDeclaration, StructField, TypeDeclaration,
+    ItemDefModuleInternal, Parameters, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::sync::ComputeOnceMap;
-use crate::util::ResultExt;
-use indexmap::map::Entry;
 use indexmap::IndexMap;
+use indexmap::map::Entry;
 use itertools::Itertools;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum ElaboratedModule<I = ElaboratedModuleInternal, E = ElaboratedModuleExternal> {
@@ -581,7 +581,7 @@ impl CompileItemContext<'_, '_> {
                                                 return Err(diags.report_todo(
                                                     ast.params.as_ref().map_or(ast.span, |p| p.span),
                                                     "external module generic parameters that are not bool or int",
-                                                ))
+                                                ));
                                             }
                                         };
 

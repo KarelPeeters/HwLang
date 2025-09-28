@@ -1,6 +1,6 @@
 use crate::syntax::parse_file_content;
 use crate::syntax::source::FileId;
-use hwl_util::io::{recurse_for_each_file, IoErrorWithPath};
+use hwl_util::io::{IoErrorWithPath, recurse_for_each_file};
 use std::path::Path;
 
 fn test_parse(path: impl AsRef<Path>) {

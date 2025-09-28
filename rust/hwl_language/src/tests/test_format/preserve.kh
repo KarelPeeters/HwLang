@@ -1,0 +1,16 @@
+// TODO tests for preserving comments and whitespace
+// TODO maybe do before/after for this one?, to check that it actually does things?
+
+// test
+
+interface foo {} // test
+
+// test
+interface foo {}
+
+interface foo {}
+// test
+
+interface foo {}
+
+// test

@@ -1,3 +1,4 @@
+use crate::front::value::Value;
 use crate::syntax::source::FileId;
 use crate::util::arena::IndexType;
 use std::cmp::{max, min};
@@ -39,6 +40,17 @@ pub struct SpanFull {
     pub start: PosFull,
     /// exclusive
     pub end: PosFull,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct Spanned<T> {
+    pub span: Span,
+    pub inner: T,
+}
+
+// TODO we can probably remove HasSpan again, but maybe it's fine for it to exist
+pub trait HasSpan {
+    fn span(&self) -> Span;
 }
 
 impl Span {
@@ -218,6 +230,7 @@ impl LineOffsets {
     // This set of line endings was chosen because it matches what the LSP protocol wants,
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
+    pub const LINE_ENDING_CHARS: &'static [char] = &['\r', '\n'];
 
     // TODO switch to memchr, benchmark the difference
     pub fn new(src: &str) -> Self {
@@ -353,5 +366,88 @@ impl LineOffsets {
             };
             Some(span)
         })
+    }
+}
+
+impl<T> Spanned<T> {
+    pub fn new(span: Span, inner: T) -> Spanned<T> {
+        Spanned { span, inner }
+    }
+
+    pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
+        Spanned {
+            span: self.span,
+            inner: f(self.inner),
+        }
+    }
+
+    pub fn as_ref(&self) -> Spanned<&T> {
+        Spanned {
+            span: self.span,
+            inner: &self.inner,
+        }
+    }
+}
+
+impl<T> Spanned<&T> {
+    pub fn cloned(&self) -> Spanned<T>
+    where
+        T: Clone,
+    {
+        Spanned {
+            span: self.span,
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T, E> Spanned<Result<T, E>> {
+    pub fn transpose(self) -> Result<Spanned<T>, E> {
+        self.inner.map(|inner| Spanned { span: self.span, inner })
+    }
+}
+
+impl<T> Spanned<Option<T>> {
+    pub fn transpose(self) -> Option<Spanned<T>> {
+        self.inner.map(|inner| Spanned { span: self.span, inner })
+    }
+}
+
+impl<T, C> Spanned<Value<T, C>> {
+    pub fn transpose(self) -> Value<Spanned<T>, Spanned<C>> {
+        match self.inner {
+            Value::Compile(value) => Value::Compile(Spanned {
+                span: self.span,
+                inner: value,
+            }),
+            Value::Hardware(value) => Value::Hardware(Spanned {
+                span: self.span,
+                inner: value,
+            }),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! impl_has_span {
+    ($ty:ty) => {
+        impl $crate::syntax::pos::HasSpan for $ty {
+            fn span(&self) -> $crate::syntax::pos::Span {
+                self.span
+            }
+        }
+    };
+}
+
+impl<T> HasSpan for Spanned<T> {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl<A: HasSpan, B: HasSpan> HasSpan for (A, B) {
+    fn span(&self) -> Span {
+        let (a, b) = self;
+        a.span().join(b.span())
     }
 }

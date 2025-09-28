@@ -1,0 +1,62 @@
+const {
+    _;
+    undef;
+    type;
+    fn;
+    __builtin;
+
+    (false);
+    {
+        print("test");
+        false
+    };
+
+    name;
+    id_from_str("hello there");
+
+    17;
+    0b101;
+    0x14;
+    false;
+    true;
+
+    "test";
+    "test {hey + 4} later {1}{1}";
+    "{4}";
+    "";
+
+    [0, 1, 2, 3];
+    [0, 1, *[4, 5]];
+    ();
+    (1,);
+    (0, 1, 2, 3);
+
+    0..4;
+    0..;
+    ..4;
+    0..=4;
+    0+..4;
+
+    [i for i in 0..8];
+    -8;
+    a + b;
+    a**b;
+    [4]bool;
+
+    a.b;
+    a.0.b;
+
+    foo(a=false, b=true);
+
+    unsafe_value_with_domain(a, sync(clk, rst));
+    reg(a, false);
+    reg(a, undef);
+}
+
+// force dummy variants of identifiers
+type _ = bool;
+
+module foo ports() {
+    reg _: bool = undef;
+    reg id_from_str("derp"): bool = undef;
+}

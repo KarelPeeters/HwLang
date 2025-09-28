@@ -1,5 +1,6 @@
+use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::ast::*;
-use crate::syntax::{Span, LocationBuilder};
+use crate::syntax::LocationBuilder;
 use crate::syntax::token::{TokenType, TokenError};
 use crate::util::arena::Arena;
 
@@ -11,7 +12,6 @@ extern {
     type Error = TokenError;
 
     enum TokenType {
-        TokenWhiteSpace => TokenType::WhiteSpace,
         TokenBlockComment => TokenType::BlockComment,
         TokenLineComment => TokenType::LineComment,
         TokenIdentifier => TokenType::Identifier,
@@ -31,8 +31,8 @@ extern {
         "module" => TokenType::Module,
         "interface" => TokenType::Interface,
         "instance" => TokenType::Instance,
-        "fn" => TokenType::Function,
-        "comb" => TokenType::Combinatorial,
+        "fn" => TokenType::Fn,
+        "comb" => TokenType::Comb,
         "clock" => TokenType::Clock,
         "clocked" => TokenType::Clocked,
         "const" => TokenType::Const,
@@ -49,14 +49,14 @@ extern {
         "continue" => TokenType::Continue,
         "true" => TokenType::True,
         "false" => TokenType::False,
-        "undef" => TokenType::Undefined,
+        "undef" => TokenType::Undef,
         "if" => TokenType::If,
         "else" => TokenType::Else,
         "loop" => TokenType::Loop,
         "match" => TokenType::Match,
         "for" => TokenType::For,
         "while" => TokenType::While,
-        "pub" => TokenType::Public,
+        "pub" => TokenType::Pub,
         "as" => TokenType::As,
         "external" => TokenType::External,
         "__builtin" => TokenType::Builtin,
@@ -76,12 +76,12 @@ extern {
         "[" => TokenType::OpenS,
         "]" => TokenType::CloseS,
         "." => TokenType::Dot,
-        ".." => TokenType::Dots,
-        "..=" => TokenType::DotsEq,
-        "+.." => TokenType::PlusDots,
+        ".." => TokenType::DotDot,
+        "..=" => TokenType::DotDotEq,
+        "+.." => TokenType::PlusDotDot,
         "&&" => TokenType::AmperAmper,
         "||" => TokenType::PipePipe,
-        "^^" => TokenType::CircumflexCircumflex,
+        "^^" => TokenType::CaretCaret,
         "==" => TokenType::EqEq,
         "!=" => TokenType::Neq,
         ">=" => TokenType::Gte,
@@ -90,7 +90,7 @@ extern {
         "<" => TokenType::Lt,
         "&" => TokenType::Amper,
         "|" => TokenType::Pipe,
-        "^" => TokenType::Circumflex,
+        "^" => TokenType::Caret,
         "<<" => TokenType::LtLt,
         ">>" => TokenType::GtGt,
         "+" => TokenType::Plus,
@@ -107,8 +107,8 @@ extern {
         "/=" => TokenType::SlashEq,
         "%=" => TokenType::PercentEq,
         "&=" => TokenType::AmperEq,
-        "^=" => TokenType::CircumflexEq,
-        "|=" => TokenType::BarEq,
+        "|=" => TokenType::PipeEq,
+        "^=" => TokenType::CaretEq,
     }
 }
 
@@ -125,6 +125,7 @@ Item: Item = {
         => Item::CommonDeclaration(decl),
 
     <start:@L>
+        // TODO make ports optional
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
@@ -155,8 +156,8 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" => {
-        InterfaceView { id, port_dirs }
+    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
+        InterfaceView { id, port_dirs, span: loc.span(start, end) }
     }
 }
 
@@ -226,7 +227,7 @@ ModuleStatementKind: ModuleStatementKind = {
         ModuleStatementKind::RegOutPortMarker(decl)
     },
     // combinatorial block
-    <span_keyword:Span<"comb">> <end_keyword:@R> <block:Block<BlockStatement>> => {
+    <span_keyword:Span<"comb">> <block:Block<BlockStatement>> => {
         let inner = CombinatorialBlock {
             block,
             span_keyword,
@@ -236,8 +237,8 @@ ModuleStatementKind: ModuleStatementKind = {
     // clocked block
     // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
     //   registers declared inside of the block do still inherit their clock/reset from the block though
-    <span_keyword:Span<"clocked">> <start_domain:@L> <end_keyword:@R> "("
-        <clock:Expr> <reset:("," <Spanned<ClockedBlockReset>>)?>
+    <span_keyword:Span<"clocked">> <start_domain:@L> "("
+        <clock:Expr> <reset:("," <Spanned<ClockedBlockReset>>)?> ","?
     ")" <end_domain:@R> <block:Block<BlockStatement>>
     => {
         let inner = ClockedBlock {
@@ -274,10 +275,14 @@ InstancePortConnections: Vec<Spanned<PortConnection>> = {
 // TODO find a way to avoid having to create a fake expression for the value here
 PortConnection: PortConnection = {
     <id:Id> <expr:("=" <Expr>)?> => {
-        let expr = expr.unwrap_or_else(|| {
-            let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
-            Spanned::new(id.span, arena_expr.push(kind))
-        });
+        let expr = match expr {
+            None => {
+                let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
+                let expr = Spanned::new(id.span, arena_expr.push(kind));
+                PortConnectionExpression::FakeId(expr)
+            },
+            Some(expr) => PortConnectionExpression::Real(expr),
+        };
         PortConnection { id, expr }
     }
 }
@@ -319,15 +324,16 @@ BlockStatementKind: BlockStatementKind = {
     // control flow terminators
     <span_return:Span<"return">> <value:Expr?> ";"
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),
-    <span:Span<"break">> ";" => BlockStatementKind::Break(span),
-    <span:Span<"continue">> ";" => BlockStatementKind::Continue(span),
+    <span:Span<"break">> ";" => BlockStatementKind::Break { span },
+    <span:Span<"continue">> ";" => BlockStatementKind::Continue { span },
 }
 
 IfStatement<B>: IfStatement<B> = {
     <start:@L> <span_if:Span<"if">> "(" <cond:Expr> ")" <then_block:B> <end_if:@R>
     <else_ifs:ElseIfPair<B>*>
-    <final_else:("else" <B>)?> => {
+    <final_else:("else" <B>)?> <end:@R> => {
         IfStatement {
+            span: loc.span(start, end),
             initial_if: IfCondBlockPair {
                 span: loc.span(start, end_if),
                 span_if: span_if,
@@ -357,15 +363,21 @@ MatchBranch<B>: MatchBranch<B> = {
 }
 
 MatchPattern: MatchPattern = {
-    <value:Expr> => MatchPattern::Equal(value),
+    <value:Expr> => {
+        match &arena_expr[value.inner] {
+            ExpressionKind::Dummy => MatchPattern::Wildcard,
+            _ => MatchPattern::Equal(value),
+        }
+    },
     "val" <id:Id> => MatchPattern::Val(id),
     "in" <value:Expr> => MatchPattern::In(value),
     "." <variant:Id> <id_content:("(" <MaybeValId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
 }
 
 MaybeValId: MaybeIdentifier = {
-    "val" <MaybeId> => <>,
-    Span<"_"> => MaybeIdentifier::Dummy(<>),
+    // extra val token to distinguish from ids used in expressions
+    "val" <Id> => MaybeIdentifier::Identifier(<>),
+    Span<"_"> => MaybeIdentifier::Dummy { span: <> },
 }
 
 ForStatement<S>: ForStatement<S> = {
@@ -427,12 +439,13 @@ Parameters: Parameters = {
 }
 
 Parameter: Parameter = {
-    <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> => Parameter { id, ty, default },
+    <start:@L> <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> <end:@R>
+        => Parameter { id, ty, default, span: loc.span(start, end) },
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
     <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
-        => Spanned { span: loc.span(start_ports, end_ports), inner: ports },
+        => Spanned { inner: ports, span: loc.span(start_ports, end_ports) },
 }
 
 ModulePortItemPort: ModulePortItem = {
@@ -499,6 +512,7 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
     <E> if has_e == "true" => ExtraItem::Inner(<>),
 
     // declarations, these already include a trailing ";" if necessary
+    // TODO maybe these should use commas instead of semicolons as the separator?
     <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
     
     // control flow
@@ -544,7 +558,7 @@ AsyncOrSyncDomain: DomainKind<Expression> = {
 }
 
 SyncDomain: SyncDomain<Expression> = {
-    "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ")" => SyncDomain { clock, reset },
+    "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ","? ")" => SyncDomain { clock, reset },
 }
 
 // expressions
@@ -725,25 +739,26 @@ ExprLevelCall<allow_block>: ExpressionKind = {
         => ExpressionKind::Call(target, args),
 
     // builtins
-    "__builtin" "(" <args:Spanned<Separated<Expr,",">>> ")"
-        => ExpressionKind::Builtin(args),
-    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ")"
+    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")"
         => ExpressionKind::UnsafeValueWithDomain(value, domain),
 
     // reg expression
-    <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ")"
+    <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ","? ")"
         => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 
     ExprLevelDot<allow_block>,
 }
 
+// TODO issue when trying to chain this with array indices, eg. a[0].b fails to parse
 ExprLevelDot<allow_block>: ExpressionKind = {
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index: Id>
-        => ExpressionKind::DotIdIndex(target, index),
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:Span<TokenIntLiteralDecimal>>
-        => ExpressionKind::DotIntIndex(target, index),
-
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:DotIndexKind>
+        => ExpressionKind::DotIndex(target, index),
     ExprLevelAtomic<allow_block>,
+}
+
+DotIndexKind: DotIndexKind = {
+    <index:Id> => DotIndexKind::Id(index),
+    <index:Span<TokenIntLiteralDecimal>> => DotIndexKind::Int { span: index },
 }
 
 // TODO allow "if" here
@@ -783,18 +798,19 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
     "undef" => ExpressionKind::Undefined,
+    "__builtin" => ExpressionKind::Builtin,
     <span:Span<TokenIntLiteralBinary>>
-        => ExpressionKind::IntLiteral(IntLiteral::Binary(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Binary { span }),
     <span:Span<TokenIntLiteralDecimal>>
-        => ExpressionKind::IntLiteral(IntLiteral::Decimal(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Decimal { span }),
     <span:Span<TokenIntLiteralHexadecimal>>
-        => ExpressionKind::IntLiteral(IntLiteral::Hexadecimal(span)),
+        => ExpressionKind::IntLiteral(IntLiteral::Hexadecimal { span }),
     TokenStringStart <StringPiece*> TokenStringEnd
         => ExpressionKind::StringLiteral(<>),
 }
 
 StringPiece: StringPiece = {
-    Span<TokenStringMiddle> => StringPiece::Literal(<>),
+    Span<TokenStringMiddle> => StringPiece::Literal { span: <> },
     TokenStringSubStart <Expr> TokenStringSubEnd => StringPiece::Substitute(<>),
 }
 
@@ -814,35 +830,35 @@ GeneralId: GeneralIdentifier = {
 }
 
 GeneralIdFromString: Expression = {
-    "id_from_str" "(" <Expr> ")",
+    "id_from_str" "(" <Expr> ","? ")",
 }
 
 MaybeId = MaybeIdImpl<Id>;
 MaybeGeneralId = MaybeIdImpl<GeneralId>;
 
 MaybeIdImpl<I>: MaybeIdentifier<I> = {
-    <span:Span<"_">> => MaybeIdentifier::Dummy(span),
+    <span:Span<"_">> => MaybeIdentifier::Dummy { span },
     I => MaybeIdentifier::Identifier(<>),
 }
 
 #[inline]
 Vis: Visibility = {
-    <span:Span<"pub">> => Visibility::Public(span),
+    <span:Span<"pub">> => Visibility::Public { span },
     => Visibility::Private,
 }
 
-AssignOp: Spanned<Option<BinaryOp>> = Spanned<AssignOpInner>;
+AssignOp: Spanned<Option<AssignBinaryOp>> = Spanned<AssignOpInner>;
 
-AssignOpInner: Option<BinaryOp> = {
+AssignOpInner: Option<AssignBinaryOp> = {
     "=" => None,
-    "+=" => Some(BinaryOp::Add),
-    "-=" => Some(BinaryOp::Sub),
-    "*=" => Some(BinaryOp::Mul),
-    "/=" => Some(BinaryOp::Div),
-    "%=" => Some(BinaryOp::Mod),
-    "&=" => Some(BinaryOp::BitAnd),
-    "^=" => Some(BinaryOp::BitXor),
-    "|=" => Some(BinaryOp::BitOr),
+    "+=" => Some(AssignBinaryOp::Add),
+    "-=" => Some(AssignBinaryOp::Sub),
+    "*=" => Some(AssignBinaryOp::Mul),
+    "/=" => Some(AssignBinaryOp::Div),
+    "%=" => Some(AssignBinaryOp::Mod),
+    "&=" => Some(AssignBinaryOp::BitAnd),
+    "|=" => Some(AssignBinaryOp::BitOr),
+    "^=" => Some(AssignBinaryOp::BitXor),
 }
 
 // utilities

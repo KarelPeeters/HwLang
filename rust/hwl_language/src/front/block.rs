@@ -15,11 +15,11 @@ use crate::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement,
 };
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ExtraItem, ExtraList, ForStatement,
-    Identifier, IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
-    ReturnStatement, Spanned, VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, Identifier,
+    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement,
+    VariableDeclaration, WhileStatement,
 };
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
@@ -212,14 +212,14 @@ impl CompileItemContext<'_, '_> {
 
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
                         // check that init fits in type
-                        if let Some(ty) = &ty {
-                            if let Some(init) = &init {
-                                let reason = TypeContainsReason::Assignment {
-                                    span_target: id.span(),
-                                    span_target_ty: ty.span,
-                                };
-                                check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
-                            }
+                        if let Some(ty) = &ty
+                            && let Some(init) = &init
+                        {
+                            let reason = TypeContainsReason::Assignment {
+                                span_target: id.span(),
+                                span_target_ty: ty.span,
+                            };
+                            check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
                         }
 
                         // build variable
@@ -258,6 +258,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 BlockStatementKind::If(stmt) => {
                     let IfStatement {
+                        span: _,
                         initial_if,
                         else_ifs,
                         final_else,
@@ -304,8 +305,8 @@ impl CompileItemContext<'_, '_> {
 
                     BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
                 }
-                &BlockStatementKind::Break(span) => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
-                &BlockStatementKind::Continue(span) => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
+                &BlockStatementKind::Break { span } => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
+                &BlockStatementKind::Continue { span } => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
             };
 
             match stmt_end {
@@ -486,9 +487,9 @@ impl CompileItemContext<'_, '_> {
                 }
 
                 match &branch.pattern.inner {
-                    MatchPattern::Dummy => {
+                    MatchPattern::Wildcard => {
                         cover_all = true;
-                        Ok(MatchPattern::Dummy)
+                        Ok(MatchPattern::Wildcard)
                     }
                     &MatchPattern::Val(i) => {
                         cover_all = true;
@@ -496,43 +497,37 @@ impl CompileItemContext<'_, '_> {
                     }
                     &MatchPattern::Equal(value) => {
                         // TODO support tuples, arrays, structs, enums (by value), all recursively
-                        if let ExpressionKind::Dummy = self.refs.get_expr(value) {
-                            cover_all = true;
-                            Ok(MatchPattern::Dummy)
-                        } else {
-                            let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
+                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
+                        check_type_contains_compile_value(
+                            diags,
+                            TypeContainsReason::MatchPattern(target.span),
+                            eq_expected_ty,
+                            value.as_ref(),
+                            false,
+                        )?;
 
-                            check_type_contains_compile_value(
-                                diags,
-                                TypeContainsReason::MatchPattern(target.span),
-                                eq_expected_ty,
-                                value.as_ref(),
-                                false,
-                            )?;
+                        let pattern = match value.inner {
+                            CompileValue::Bool(value) => {
+                                cover_bool_true |= value;
+                                cover_bool_false |= !value;
+                                cover_all |= cover_bool_true && cover_bool_false;
+                                PatternEqual::Bool(value)
+                            }
+                            CompileValue::Int(value) => {
+                                // TODO track covered int ranges
+                                PatternEqual::Int(value)
+                            }
+                            CompileValue::String(value) => PatternEqual::String(value),
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "unsupported match type",
+                                    value.span,
+                                    format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
+                                ));
+                            }
+                        };
 
-                            let pattern = match value.inner {
-                                CompileValue::Bool(value) => {
-                                    cover_bool_true |= value;
-                                    cover_bool_false |= !value;
-                                    cover_all |= cover_bool_true && cover_bool_false;
-                                    PatternEqual::Bool(value)
-                                }
-                                CompileValue::Int(value) => {
-                                    // TODO track covered int ranges
-                                    PatternEqual::Int(value)
-                                }
-                                CompileValue::String(value) => PatternEqual::String(value),
-                                _ => {
-                                    return Err(diags.report_simple(
-                                        "unsupported match type",
-                                        value.span,
-                                        format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
-                                    ));
-                                }
-                            };
-
-                            Ok(MatchPattern::Equal(pattern))
-                        }
+                        Ok(MatchPattern::Equal(pattern))
                     }
                     &MatchPattern::In(value) => {
                         if !matches!(target_ty, Type::Int(_)) {
@@ -706,7 +701,7 @@ impl CompileItemContext<'_, '_> {
             let pattern_span = pattern_raw.span;
 
             let matched: BranchMatched = match pattern {
-                MatchPattern::Dummy => BranchMatched::Yes(None),
+                MatchPattern::Wildcard => BranchMatched::Yes(None),
                 MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), target.clone()))),
                 MatchPattern::Equal(pattern) => {
                     let c = match (&pattern, &target) {
@@ -793,7 +788,7 @@ impl CompileItemContext<'_, '_> {
 
             // evaluate the pattern as a boolean condition and collect the variable to declare if any
             let (cond, declare): (Option<IrExpression>, Option<(MaybeIdentifier, HardwareValue)>) = match pattern {
-                MatchPattern::Dummy => (None, None),
+                MatchPattern::Wildcard => (None, None),
                 MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id), target.inner.clone()))),
                 MatchPattern::Equal(pattern) => {
                     let cond = match (&target.inner.ty, pattern) {
@@ -1097,7 +1092,7 @@ impl CompileItemContext<'_, '_> {
         Ok(BlockEnd::Normal)
     }
 
-    pub fn compile_elaborate_extra_list<'a, F: Flow, I>(
+    pub fn compile_elaborate_extra_list<'a, F: Flow, I: HasSpan>(
         &mut self,
         scope: &mut Scope,
         flow: &mut F,
@@ -1131,6 +1126,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
         let IfStatement {
+            span: _,
             initial_if,
             else_ifs,
             final_else,

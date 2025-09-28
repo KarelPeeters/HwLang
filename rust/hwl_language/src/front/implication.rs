@@ -10,6 +10,7 @@ pub struct BoolImplications {
     pub if_false: Vec<Implication>,
 }
 
+// TODO rename the concept "implication" to "type narrowing" everywhere
 #[derive(Debug, Clone)]
 pub struct Implication {
     pub version: ValueVersion,

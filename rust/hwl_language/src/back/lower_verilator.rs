@@ -4,7 +4,7 @@ use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
 use hwl_util::swriteln;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Itertools};
+use itertools::{Itertools, enumerate};
 use regex::{Captures, Regex};
 use std::convert::identity;
 use std::num::NonZeroU16;

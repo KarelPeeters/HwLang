@@ -1,0 +1,630 @@
+use crate::syntax::format::FormatSettings;
+use crate::syntax::format::common::swrite_indent;
+use crate::syntax::pos::LineOffsets;
+use crate::syntax::token::{char_is_whitespace, str_is_whitespace_or_empty};
+use crate::util::Never;
+use crate::util::data::VecExt;
+use crate::util::iter::IterExt;
+use hwl_util::swriteln;
+use std::fmt::Debug;
+
+pub type LNode<'s> = LNodeImpl<'s, ()>;
+pub type LNodeSimple<'s> = LNodeImpl<'s, Never>;
+
+/// Low-level formatting nodes.
+/// Based on the [Prettier commands](https://github.com/prettier/prettier/blob/main/commands.md).
+#[derive(Debug)]
+pub enum LNodeImpl<'s, E> {
+    /// Emit a space if the previous and next characters on the same line exist and are not whitespace.
+    Space,
+
+    /// Emit the given string.
+    AlwaysStr(&'s str),
+    /// Emit the given string if the containing group is wrapping.
+    WrapStr(&'s str),
+
+    /// Ensure there is a newline here. This forces any containing groups to wrap.
+    /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
+    AlwaysNewline,
+    /// Ensure there is a newline here, if the the containing group is wrapping.
+    /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
+    WrapNewline,
+    /// Ensure there is a full blank like here (= two newlines).
+    AlwaysBlankLine,
+
+    /// Force the enclosing group to wrap, without emitting anything itself.
+    ForceWrap(E),
+
+    /// Indent the inner node by one level.
+    /// The indent only applies to new lines emitted by the inner node, the current line is not retroactively indented.
+    Indent(Box<LNodeImpl<'s, E>>),
+
+    /// Dedent the inner node all the way to indentation 0, independently of the current indentation level.
+    /// Nodes that come after this node are indented normally again.
+    Dedent(Box<LNodeImpl<'s, E>>),
+
+    /// A sequence of nodes to be emitted in order.
+    /// Children can each individually decide to wrap or not,
+    /// based on whether their contants overflow the start or end line.
+    /// Any child wrapping forces the parent groups to wrap too.
+    Sequence(Vec<LNodeImpl<'s, E>>),
+
+    /// Groups are the mechanism to control wrapping.
+    /// A group either wraps or does not wrap, which recursively affects all child nodes.
+    /// Groups can be nested, in which case inner groups can only wrap if the outer group is wrapping,
+    ///   but inner groups are allowed to not wrap even if the outer group is wrapping.
+    Group {
+        force_wrap: bool,
+        child: Box<LNodeImpl<'s, E>>,
+    },
+
+    /// If this is the last child of a group, acts as if it was actually a sibling outside of the group.
+    /// This also works recursively through multiple nested groups.
+    EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
+}
+
+pub struct StringOutput {
+    pub stats: StringsStats,
+    pub string: String,
+}
+
+impl<E: Debug> LNodeImpl<'_, E> {
+    pub fn debug_str(&self) -> String {
+        let mut f = String::new();
+        self.debug_str_impl(&mut f, 0);
+        f
+    }
+
+    fn debug_str_impl(&self, f: &mut String, indent: usize) {
+        swrite_indent(f, indent);
+        match self {
+            LNodeImpl::Space => swriteln!(f, "Space"),
+            LNodeImpl::AlwaysStr(s) => swriteln!(f, "AlwaysStr({s:?})"),
+            LNodeImpl::WrapStr(s) => swriteln!(f, "WrapStr({s:?})"),
+            LNodeImpl::AlwaysNewline => swriteln!(f, "AlwaysNewline"),
+            LNodeImpl::WrapNewline => swriteln!(f, "WrapNewline"),
+            LNodeImpl::AlwaysBlankLine => swriteln!(f, "AlwaysBlankLine"),
+            LNodeImpl::ForceWrap(e) => swriteln!(f, "ForceWrap({e:?})"),
+            LNodeImpl::Indent(child) => {
+                swriteln!(f, "Indent");
+                child.debug_str_impl(f, indent + 1);
+            }
+            LNodeImpl::Dedent(child) => {
+                swriteln!(f, "Dedent");
+                child.debug_str_impl(f, indent + 1);
+            }
+            LNodeImpl::Sequence(children) => {
+                swriteln!(f, "Sequence");
+                for child in children {
+                    child.debug_str_impl(f, indent + 1);
+                }
+            }
+            LNodeImpl::Group { force_wrap, child } => {
+                swriteln!(f, "Group(force_wrap={force_wrap})");
+                child.debug_str_impl(f, indent + 1);
+            }
+            LNodeImpl::EscapeGroupIfLast(e, child) => {
+                swriteln!(f, "EscapeGroup({e:?})");
+                child.debug_str_impl(f, indent + 1);
+            }
+        }
+    }
+}
+
+impl<E> LNodeImpl<'static, E> {
+    pub const EMPTY: LNodeImpl<'static, E> = LNodeImpl::Sequence(vec![]);
+}
+
+struct SimplifyResult<'s> {
+    node: LNodeSimple<'s>,
+    force_wrap: bool,
+}
+
+impl<'s> LNode<'s> {
+    pub fn simplify(&self) -> LNodeSimple<'s> {
+        self.simplify_impl(None).node
+    }
+
+    fn simplify_impl(&self, mut escape_group: Option<&mut (Vec<LNodeSimple<'s>>, bool)>) -> SimplifyResult<'s> {
+        match self {
+            // flatten sequences
+            LNode::Sequence(children) => {
+                let mut result = Vec::with_capacity(children.len());
+                let mut force_wrap = false;
+                for (child, last) in children.iter().with_last() {
+                    let child_escape_group = if last { escape_group.as_deref_mut() } else { None };
+                    let child_simple = child.simplify_impl(child_escape_group);
+                    match child_simple.node {
+                        LNodeSimple::Sequence(inner) => result.extend(inner),
+                        c_simple => result.push(c_simple),
+                    }
+                    force_wrap |= child_simple.force_wrap;
+                }
+                SimplifyResult {
+                    node: result.single().unwrap_or_else(LNodeSimple::Sequence),
+                    force_wrap,
+                }
+            }
+            LNodeImpl::EscapeGroupIfLast((), inner) => {
+                let inner = inner.simplify_impl(escape_group.as_deref_mut());
+                if let Some(escape_group) = escape_group.as_deref_mut() {
+                    escape_group.0.push(inner.node);
+                    escape_group.1 |= inner.force_wrap;
+                    SimplifyResult {
+                        node: LNodeSimple::EMPTY,
+                        force_wrap: false,
+                    }
+                } else {
+                    inner
+                }
+            }
+            // simplify children
+            LNode::Indent(child) => simplify_container(child, escape_group, LNodeSimple::Indent),
+            LNode::Dedent(child) => simplify_container(child, escape_group, LNodeSimple::Dedent),
+            LNode::Group { force_wrap, child } => {
+                let mut result = match escape_group {
+                    None => {
+                        let mut escape_group = (vec![], false);
+                        let mut result = simplify_group(child, Some(&mut escape_group));
+
+                        result.force_wrap |= escape_group.1;
+                        if !escape_group.0.is_empty() {
+                            escape_group.0.insert(0, result.node);
+                            result.node = LNodeSimple::Sequence(escape_group.0);
+                        }
+
+                        result
+                    }
+                    Some(escape_group) => simplify_group(child, Some(escape_group)),
+                };
+
+                result.force_wrap |= *force_wrap;
+                result
+            }
+            // trivial cases
+            LNode::Space => SimplifyResult {
+                node: LNodeSimple::Space,
+                force_wrap: false,
+            },
+            LNode::AlwaysStr(s) => SimplifyResult {
+                node: LNodeSimple::AlwaysStr(s),
+                force_wrap: s.contains(LineOffsets::LINE_ENDING_CHARS),
+            },
+            LNode::WrapStr(s) => SimplifyResult {
+                node: LNodeSimple::WrapStr(s),
+                force_wrap: false,
+            },
+            LNode::AlwaysNewline => SimplifyResult {
+                node: LNodeSimple::AlwaysNewline,
+                force_wrap: true,
+            },
+            LNode::WrapNewline => SimplifyResult {
+                node: LNodeSimple::WrapNewline,
+                force_wrap: false,
+            },
+            LNode::AlwaysBlankLine => SimplifyResult {
+                node: LNodeSimple::AlwaysBlankLine,
+                force_wrap: true,
+            },
+            LNode::ForceWrap(()) => SimplifyResult {
+                node: LNodeSimple::EMPTY,
+                force_wrap: true,
+            },
+        }
+    }
+}
+
+fn simplify_container<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
+    f: impl FnOnce(Box<LNodeSimple<'s>>) -> LNodeSimple<'s>,
+) -> SimplifyResult<'s> {
+    simplify_container_impl(child, group_escape_slot, |child, _| f(child))
+}
+
+fn simplify_group<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
+) -> SimplifyResult<'s> {
+    simplify_container_impl(child, group_escape_slot, |child, force_wrap| LNodeImpl::Group {
+        force_wrap,
+        child,
+    })
+}
+
+fn simplify_container_impl<'s>(
+    child: &LNode<'s>,
+    group_escape_slot: Option<&mut (Vec<LNodeSimple<'s>>, bool)>,
+    f: impl FnOnce(Box<LNodeSimple<'s>>, bool) -> LNodeSimple<'s>,
+) -> SimplifyResult<'s> {
+    let child = child.simplify_impl(group_escape_slot);
+
+    let node = if let LNodeImpl::Sequence(inner) = &child.node
+        && inner.is_empty()
+    {
+        LNodeSimple::EMPTY
+    } else {
+        f(Box::new(child.node), child.force_wrap)
+    };
+
+    SimplifyResult {
+        node,
+        force_wrap: child.force_wrap,
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct StringsStats {
+    pub main_commands: usize,
+    pub fits_commands: usize,
+    pub fits_calls: usize,
+    pub restore_chars: usize,
+}
+
+struct StringBuilder<'f> {
+    settings: &'f FormatSettings,
+    buffer: String,
+    state: StringBuilderState,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct StringBuilderState {
+    curr_line_start: usize,
+    indent: usize,
+    emit_space: bool,
+}
+
+#[derive(Debug)]
+struct StringBuilderCheckpoint {
+    result_len: usize,
+    state: StringBuilderState,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct Line {
+    start: usize,
+}
+
+impl StringBuilderCheckpoint {
+    pub fn line(&self) -> Line {
+        Line {
+            start: self.state.curr_line_start,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum MaybeNewline {
+    No,
+    Yes,
+}
+
+impl<'f> StringBuilder<'f> {
+    pub fn new(settings: &'f FormatSettings, capacity: usize) -> Self {
+        StringBuilder {
+            settings,
+            buffer: String::with_capacity(capacity),
+            state: StringBuilderState {
+                curr_line_start: 0,
+                indent: 0,
+                emit_space: false,
+            },
+        }
+    }
+
+    pub fn checkpoint(&self) -> StringBuilderCheckpoint {
+        StringBuilderCheckpoint {
+            result_len: self.buffer.len(),
+            state: self.state,
+        }
+    }
+
+    pub fn restore(&mut self, stats: &mut StringsStats, checkpoint: StringBuilderCheckpoint) {
+        assert!(self.buffer.len() >= checkpoint.result_len);
+        stats.restore_chars += self.buffer.len() - checkpoint.result_len;
+        self.buffer.truncate(checkpoint.result_len);
+        self.state = checkpoint.state;
+    }
+
+    fn at_line_start(&self) -> bool {
+        self.state.curr_line_start == self.buffer.len()
+    }
+
+    fn line_overflows(&mut self, line: Line) -> bool {
+        let end = line.start + self.settings.max_line_length + 1;
+        if end <= self.buffer.len() {
+            !self.buffer[line.start..end].contains(LineOffsets::LINE_ENDING_CHARS)
+        } else {
+            false
+        }
+    }
+
+    #[must_use]
+    fn write_str(&mut self, s: &str) -> MaybeNewline {
+        // strings containing newlines need the parent to wrap
+        let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
+
+        // emit indent if this is the first text on the line
+        if self.at_line_start() && !str_is_whitespace_or_empty(s) {
+            for _ in 0..self.state.indent {
+                self.buffer.push_str(&self.settings.indent_str);
+            }
+        }
+
+        // emit space if asked and both the previous and next charactor are not whitespace
+        if self.state.emit_space
+            && !self.at_line_start()
+            && let Some(prev_char) = self.buffer.chars().last()
+            && !char_is_whitespace(prev_char)
+            && let Some(next_char) = s.chars().next()
+            && !char_is_whitespace(next_char)
+        {
+            self.buffer.push(' ');
+        }
+        if !s.is_empty() {
+            self.state.emit_space = false;
+        }
+
+        // emit str itself
+        self.buffer.push_str(s);
+
+        // update line state
+        if let Some(last_line_end) = last_line_end {
+            self.state.curr_line_start = self.buffer.len() - s.len() + last_line_end + 1;
+        }
+
+        if last_line_end.is_some() {
+            MaybeNewline::Yes
+        } else {
+            MaybeNewline::No
+        }
+    }
+
+    /// Ensure the buffer ends in at least `n` newlines.
+    /// This is used to avoid duplicate newlines being emitted where not necessary.
+    fn ensure_newlines(&mut self, n: usize) {
+        // count current ending newlines
+        let mut curr = self.buffer.as_str();
+        let mut curr_count = 0;
+        while curr_count < n
+            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
+        {
+            curr = before;
+            curr_count += 1;
+        }
+
+        // add newlines if necessary
+        for _ in curr_count..n {
+            let _: MaybeNewline = self.write_str(&self.settings.newline_str);
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum Command<'n, 's> {
+    Node(&'n LNodeSimple<'s>),
+    EndGroupNoWrap,
+    RestoreIndent { indent: usize },
+}
+
+pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
+    let mut builder = StringBuilder::new(settings, source_str.len() * 2);
+    let mut stats = StringsStats::default();
+
+    let mut cmd_stack = vec![Command::Node(root)];
+    let mut cmd_stack_fits = vec![];
+    let mut group_no_wrap_count: usize = 0;
+
+    while let Some(cmd) = cmd_stack.pop() {
+        stats.main_commands += 1;
+
+        match cmd {
+            Command::Node(node) => {
+                let wrapping = group_no_wrap_count == 0;
+                match visit_node(&mut builder, &mut cmd_stack, wrapping, node) {
+                    VisitResult::Group { force_wrap, child } => {
+                        // check whether we need to wrap this group by checking whether everything would fit if we don't
+                        let group_wrap = force_wrap || {
+                            group_no_wrap_count += 1;
+                            cmd_stack.push(Command::EndGroupNoWrap);
+                            cmd_stack.push(Command::Node(child));
+
+                            let group_fits = fits(
+                                &mut builder,
+                                &mut stats,
+                                group_no_wrap_count,
+                                &cmd_stack,
+                                &mut cmd_stack_fits,
+                            );
+
+                            group_no_wrap_count -= 1;
+                            cmd_stack.pop().unwrap();
+                            cmd_stack.pop().unwrap();
+
+                            !group_fits
+                        };
+
+                        // push the right commands based on the wrapping decision
+                        if group_wrap {
+                            cmd_stack.push(Command::Node(child));
+                        } else {
+                            group_no_wrap_count += 1;
+                            cmd_stack.push(Command::EndGroupNoWrap);
+                            cmd_stack.push(Command::Node(child));
+                        }
+                    }
+                    VisitResult::Other(new_line) => {
+                        // nothing to do here any more, all decisions have already been made
+                        let _ = new_line;
+                    }
+                }
+            }
+            Command::EndGroupNoWrap => {
+                assert!(group_no_wrap_count > 0);
+                group_no_wrap_count -= 1;
+                continue;
+            }
+            Command::RestoreIndent { indent } => {
+                builder.state.indent = indent;
+                continue;
+            }
+        }
+    }
+
+    StringOutput {
+        stats,
+        string: builder.buffer,
+    }
+}
+
+fn fits<'n, 's>(
+    builder: &mut StringBuilder,
+    stats: &mut StringsStats,
+    no_wrap_count: usize,
+    cmd_stack_outer: &[Command<'n, 's>],
+    cmd_stack: &mut Vec<Command<'n, 's>>,
+) -> bool {
+    assert!(cmd_stack.is_empty());
+    let check = builder.checkpoint();
+    stats.fits_calls += 1;
+
+    let mut no_wrap_count = no_wrap_count;
+    let mut cmd_stack_outer = cmd_stack_outer;
+
+    loop {
+        // stop once we've overflown the line
+        if builder.line_overflows(check.line()) {
+            break;
+        }
+
+        // find the next command
+        // (to avoid fully copying the outer queue, we instead use it as a separate second level of the stack)
+        let cmd = match cmd_stack.pop() {
+            Some(cmd) => cmd,
+            None => match cmd_stack_outer.split_last() {
+                Some((&cmd, rest)) => {
+                    cmd_stack_outer = rest;
+                    cmd
+                }
+                None => break,
+            },
+        };
+
+        // process the next command
+        stats.fits_commands += 1;
+        match cmd {
+            Command::Node(node) => {
+                let wrapping = no_wrap_count == 0;
+                let visit_result = visit_node(builder, cmd_stack, wrapping, node);
+
+                match visit_result {
+                    VisitResult::Group { force_wrap: _, child } => {
+                        // assume wrapping for all future groups, we just want to know if everything _can_ fit
+                        cmd_stack.push(Command::Node(child));
+                    }
+                    VisitResult::Other(new_line) => match new_line {
+                        MaybeNewline::No => {}
+                        MaybeNewline::Yes => {
+                            // we've encountered a newline,
+                            //   we can stop since future commands can't influence the current line anymore
+                            break;
+                        }
+                    },
+                }
+            }
+            Command::EndGroupNoWrap => {
+                no_wrap_count -= 1;
+                continue;
+            }
+            Command::RestoreIndent { indent } => {
+                builder.state.indent = indent;
+                continue;
+            }
+        };
+    }
+
+    cmd_stack.clear();
+
+    // check for final overflow and restore the builder
+    let fits = !builder.line_overflows(check.line());
+    builder.restore(stats, check);
+    fits
+}
+
+enum VisitResult<'n, 's> {
+    Group {
+        force_wrap: bool,
+        child: &'n LNodeSimple<'s>,
+    },
+    Other(MaybeNewline),
+}
+
+fn visit_node<'n, 's>(
+    builder: &mut StringBuilder,
+    queue: &mut Vec<Command<'n, 's>>,
+    wrapping: bool,
+    node: &'n LNodeSimple<'s>,
+) -> VisitResult<'n, 's> {
+    let result = match node {
+        LNodeSimple::Space => {
+            builder.state.emit_space = true;
+            MaybeNewline::No
+        }
+        LNodeSimple::AlwaysStr(s) => builder.write_str(s),
+        LNodeSimple::WrapStr(s) => {
+            if wrapping {
+                builder.write_str(s)
+            } else {
+                MaybeNewline::No
+            }
+        }
+        LNodeSimple::AlwaysNewline => {
+            builder.ensure_newlines(1);
+            MaybeNewline::Yes
+        }
+        LNodeSimple::WrapNewline => {
+            if wrapping {
+                builder.ensure_newlines(1);
+                MaybeNewline::Yes
+            } else {
+                MaybeNewline::No
+            }
+        }
+        LNodeSimple::AlwaysBlankLine => {
+            builder.ensure_newlines(2);
+            MaybeNewline::Yes
+        }
+        LNodeSimple::Indent(child) => {
+            let indent = builder.state.indent;
+            builder.state.indent += 1;
+            queue.push(Command::RestoreIndent { indent });
+            queue.push(Command::Node(child));
+            MaybeNewline::No
+        }
+        LNodeSimple::Dedent(child) => {
+            let indent = builder.state.indent;
+            builder.state.indent = 0;
+            queue.push(Command::RestoreIndent { indent });
+            queue.push(Command::Node(child));
+            MaybeNewline::No
+        }
+        LNodeSimple::Sequence(children) => {
+            queue.extend(children.iter().rev().map(Command::Node));
+            MaybeNewline::No
+        }
+        &LNodeSimple::Group { force_wrap, ref child } => {
+            if force_wrap {
+                assert!(wrapping);
+            }
+            return VisitResult::Group { force_wrap, child };
+        }
+        LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
+    };
+
+    match result {
+        MaybeNewline::Yes => assert!(wrapping),
+        MaybeNewline::No => {}
+    }
+
+    VisitResult::Other(result)
+}

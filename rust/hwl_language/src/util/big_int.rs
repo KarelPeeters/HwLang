@@ -110,14 +110,14 @@ impl BigUint {
     }
 
     pub fn set_bit(self, index: u64, value: bool) -> BigUint {
-        if let Storage::Small(slf) = self.0 {
-            if index < IStorage::BITS.into() {
-                let mask = 1 << index;
-                let result = if value { slf | mask } else { slf & !mask };
+        if let Storage::Small(slf) = self.0
+            && index < IStorage::BITS.into()
+        {
+            let mask = 1 << index;
+            let result = if value { slf | mask } else { slf & !mask };
 
-                if result >= 0 {
-                    return BigUint::new(Storage::Small(result));
-                }
+            if result >= 0 {
+                return BigUint::new(Storage::Small(result));
             }
         }
 
@@ -135,12 +135,11 @@ impl BigUint {
     }
 
     pub fn pow(&self, exp: &BigUint) -> BigUint {
-        if let (&Storage::Small(base), &Storage::Small(exp)) = (self.storage(), exp.storage()) {
-            if let Ok(exp) = u32::try_from(exp) {
-                if let Some(result) = base.checked_pow(exp) {
-                    return BigUint::new(Storage::Small(result));
-                }
-            }
+        if let (&Storage::Small(base), &Storage::Small(exp)) = (self.storage(), exp.storage())
+            && let Ok(exp) = u32::try_from(exp)
+            && let Some(result) = base.checked_pow(exp)
+        {
+            return BigUint::new(Storage::Small(result));
         }
 
         BigUint::new(Storage::from_maybe_big(
@@ -175,11 +174,7 @@ impl BigUint {
 
     pub fn as_usize_if_lt(&self, len: usize) -> Option<usize> {
         let s = self.try_into().ok()?;
-        if s < len {
-            Some(s)
-        } else {
-            None
-        }
+        if s < len { Some(s) } else { None }
     }
 }
 
@@ -219,10 +214,10 @@ impl BigInt {
     }
 
     pub fn abs(&self) -> BigUint {
-        if let Storage::Small(inner) = self.storage() {
-            if let Some(result) = inner.checked_abs() {
-                return BigUint::new(Storage::Small(result));
-            }
+        if let Storage::Small(inner) = self.storage()
+            && let Some(result) = inner.checked_abs()
+        {
+            return BigUint::new(Storage::Small(result));
         }
 
         BigUint::new(Storage::from_maybe_big(self.clone().into_num_bigint().abs()))
@@ -258,12 +253,11 @@ impl BigInt {
     }
 
     pub fn pow(&self, exp: &BigUint) -> BigInt {
-        if let (&Storage::Small(base), &Storage::Small(exp)) = (self.storage(), exp.storage()) {
-            if let Ok(exp) = u32::try_from(exp) {
-                if let Some(result) = base.checked_pow(exp) {
-                    return BigInt::new(Storage::Small(result));
-                }
-            }
+        if let (&Storage::Small(base), &Storage::Small(exp)) = (self.storage(), exp.storage())
+            && let Ok(exp) = u32::try_from(exp)
+            && let Some(result) = base.checked_pow(exp)
+        {
+            return BigInt::new(Storage::Small(result));
         }
 
         BigInt::new(Storage::from_maybe_big(
@@ -332,10 +326,10 @@ impl std::ops::Neg for &BigUint {
 impl std::ops::Neg for &BigInt {
     type Output = BigInt;
     fn neg(self) -> Self::Output {
-        if let Storage::Small(inner) = self.storage() {
-            if let Some(result) = inner.checked_neg() {
-                return BigInt::new(Storage::Small(result));
-            }
+        if let Storage::Small(inner) = self.storage()
+            && let Some(result) = inner.checked_neg()
+        {
+            return BigInt::new(Storage::Small(result));
         }
 
         BigInt::new(Storage::from_maybe_big(-self.clone().into_num_bigint()))

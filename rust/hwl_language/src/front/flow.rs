@@ -12,9 +12,9 @@ use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
     IrVariableInfo, IrVariables, IrWires,
 };
-use crate::syntax::ast::{MaybeIdentifier, Spanned, SyncDomain};
+use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
@@ -40,7 +40,7 @@ use unwrap_match::unwrap_match;
 //   try both and benchmark, create some deeply stacked flow chains
 
 trait FlowPrivate: Sized {
-    fn root(&self) -> &FlowRoot;
+    fn root(&self) -> &FlowRoot<'_>;
 
     fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
 
@@ -85,7 +85,7 @@ trait FlowPrivate: Sized {
 
     fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue);
 
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef>;
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>>;
 }
 
 #[allow(private_bounds)]
@@ -93,9 +93,9 @@ pub trait Flow: FlowPrivate {
     fn new_child_compile<'s>(&'s mut self, span: Span, reason: &'static str) -> FlowCompile<'s>;
 
     // TODO find a better name
-    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware>;
+    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>>;
 
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware>;
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>>;
 
     fn var_new(&mut self, info: VariableInfo) -> Variable;
 
@@ -204,7 +204,7 @@ pub struct FlowRootContent {
 }
 
 impl FlowRoot<'_> {
-    pub fn new(diags: &Diagnostics) -> FlowRoot {
+    pub fn new(diags: &Diagnostics) -> FlowRoot<'_> {
         FlowRoot {
             diags,
             check: RandomCheck::new(),
@@ -223,7 +223,7 @@ impl FlowRoot<'_> {
         }
     }
 
-    pub fn restore(diags: &Diagnostics, content: FlowRootContent) -> FlowRoot {
+    pub fn restore(diags: &Diagnostics, content: FlowRootContent) -> FlowRoot<'_> {
         let FlowRootContent {
             check,
             next_var_index,
@@ -282,7 +282,7 @@ pub enum FlowCompileKind<'p> {
 }
 
 impl FlowPrivate for FlowCompile<'_> {
-    fn root(&self) -> &FlowRoot {
+    fn root(&self) -> &FlowRoot<'_> {
         self.root
     }
 
@@ -307,11 +307,11 @@ impl FlowPrivate for FlowCompile<'_> {
         let diags = self.root.diags;
 
         let mut value = value;
-        if let MaybeAssignedValue::Assigned(assigned) = &value {
-            if let Value::Hardware(_) = assigned.value_with_version {
-                let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
-                value = MaybeAssignedValue::Error(e);
-            }
+        if let MaybeAssignedValue::Assigned(assigned) = &value
+            && let Value::Hardware(_) = assigned.value_with_version
+        {
+            let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
+            value = MaybeAssignedValue::Error(e);
         }
 
         let mut curr = self;
@@ -341,7 +341,7 @@ impl FlowPrivate for FlowCompile<'_> {
         slot.value = value;
     }
 
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>> {
         // TODO block evaluation of hardware values in compile context?
         assert_eq!(self.root.check, var.inner.check);
         let diags = self.root.diags;
@@ -366,7 +366,7 @@ impl FlowPrivate for FlowCompile<'_> {
 }
 
 impl Flow for FlowCompile<'_> {
-    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
+    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile<'_> {
         let root = self.root;
         let slf = unsafe { lifetime_cast::compile_mut(self) };
         FlowCompile {
@@ -378,7 +378,7 @@ impl Flow for FlowCompile<'_> {
         }
     }
 
-    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware> {
+    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>> {
         let diag = Diagnostic::new(format!("{reason} is only allowed in a hardware context"))
             .add_error(span, format!("{reason} here"))
             .add_info(
@@ -389,7 +389,7 @@ impl Flow for FlowCompile<'_> {
         Err(self.root.diags.report(diag))
     }
 
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>> {
         FlowKind::Compile(unsafe { lifetime_cast::compile_mut(self) })
     }
 
@@ -436,7 +436,7 @@ impl<'p> FlowCompile<'p> {
     }
 
     // TODO think about a better name
-    pub fn new_child_isolated(&self) -> FlowCompile {
+    pub fn new_child_isolated(&self) -> FlowCompile<'_> {
         let slf = unsafe { lifetime_cast::compile_ref(self) };
         FlowCompile {
             root: self.root,
@@ -447,7 +447,7 @@ impl<'p> FlowCompile<'p> {
         }
     }
 
-    pub fn new_child_scoped(&mut self) -> FlowCompile {
+    pub fn new_child_scoped(&mut self) -> FlowCompile<'_> {
         let root = self.root;
         let compile_span = self.compile_span;
         let compile_reason = self.compile_reason;
@@ -588,7 +588,7 @@ impl FlowHardwareCommon {
 }
 
 impl FlowPrivate for FlowHardware<'_> {
-    fn root(&self) -> &FlowRoot {
+    fn root(&self) -> &FlowRoot<'_> {
         self.root
     }
 
@@ -642,7 +642,7 @@ impl FlowPrivate for FlowHardware<'_> {
         variables.combined.entry(var.index).or_default().value = Some(value);
     }
 
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef> {
+    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>> {
         assert_eq!(self.root.check, var.inner.check);
 
         let mut curr = self;
@@ -652,10 +652,10 @@ impl FlowPrivate for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(combined) = variables.combined.get(&var.inner.index) {
-                if let Some(value) = &combined.value {
-                    return Ok(value.as_ref());
-                }
+            if let Some(combined) = variables.combined.get(&var.inner.index)
+                && let Some(value) = &combined.value
+            {
+                return Ok(value.as_ref());
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_get_maybe(var),
@@ -666,7 +666,7 @@ impl FlowPrivate for FlowHardware<'_> {
 }
 
 impl Flow for FlowHardware<'_> {
-    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile {
+    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile<'_> {
         let root = self.root;
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowCompile {
@@ -683,7 +683,7 @@ impl Flow for FlowHardware<'_> {
         Ok(slf)
     }
 
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile, &mut FlowHardware> {
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>> {
         FlowKind::Hardware(unsafe { lifetime_cast::hardware_mut(self) })
     }
 
@@ -714,10 +714,10 @@ impl Flow for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(info) = variables.combined.get(&var.inner.index) {
-                if let Some(info) = &info.info {
-                    return Ok(info);
-                }
+            if let Some(info) = variables.combined.get(&var.inner.index)
+                && let Some(info) = &info.info
+            {
+                return Ok(info);
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_info(var),
@@ -746,7 +746,7 @@ impl<'p> FlowHardwareRoot<'p> {
         }
     }
 
-    pub fn as_flow(&mut self) -> FlowHardware {
+    pub fn as_flow(&mut self) -> FlowHardware<'_> {
         let slf = unsafe { lifetime_cast::hardware_root_mut(self) };
         FlowHardware {
             root: slf.root,
@@ -807,7 +807,7 @@ impl<'p> FlowHardware<'p> {
         &mut self,
         cond_domain: Spanned<ValueDomain>,
         cond_implications: Vec<Implication>,
-    ) -> FlowHardwareBranch {
+    ) -> FlowHardwareBranch<'_> {
         let root = self.root;
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowHardwareBranch {
@@ -818,7 +818,7 @@ impl<'p> FlowHardware<'p> {
         }
     }
 
-    pub fn new_child_scoped(&mut self) -> FlowHardware {
+    pub fn new_child_scoped(&mut self) -> FlowHardware<'_> {
         let root = self.root;
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
         FlowHardware {
@@ -833,7 +833,7 @@ impl<'p> FlowHardware<'p> {
         }
     }
 
-    pub fn new_child_scoped_without_domain_checks(&mut self) -> FlowHardware {
+    pub fn new_child_scoped_without_domain_checks(&mut self) -> FlowHardware<'_> {
         let mut result = self.new_child_scoped();
         result.enable_domain_checks = false;
         result

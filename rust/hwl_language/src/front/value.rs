@@ -6,9 +6,9 @@ use crate::front::item::{ElaboratedEnum, ElaboratedInterface, ElaboratedModule, 
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType, IrVariable};
 use crate::syntax::pos::Span;
-use crate::util::big_int::{BigInt, BigUint};
 use crate::util::ResultExt;
-use itertools::{enumerate, Itertools};
+use crate::util::big_int::{BigInt, BigUint};
+use itertools::{Itertools, enumerate};
 use std::convert::identity;
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ pub enum Value<C = CompileValue, T = HardwareValue> {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileValue {
     Undefined,
+    Builtin,
     Type(Type),
 
     Bool(bool),
@@ -104,6 +105,7 @@ impl Typed for CompileValue {
             CompileValue::Module(_) => Type::Module,
             CompileValue::Interface(_) => Type::Interface,
             CompileValue::InterfaceView(_) => Type::InterfaceView,
+            CompileValue::Builtin => Type::Builtin,
         }
     }
 }
@@ -133,7 +135,8 @@ impl CompileValue {
             | CompileValue::Function(_)
             | CompileValue::Module(_)
             | CompileValue::Interface(_)
-            | CompileValue::InterfaceView(_) => false,
+            | CompileValue::InterfaceView(_)
+            | CompileValue::Builtin => false,
         }
     }
 
@@ -281,7 +284,8 @@ impl CompileValue {
             | CompileValue::Function(_)
             | CompileValue::Module(_)
             | CompileValue::Interface(_)
-            | CompileValue::InterfaceView(_) => {
+            | CompileValue::InterfaceView(_)
+            | CompileValue::Builtin => {
                 Err(diags.report_internal_error(span, "this value kind is not representable as hardware"))
             }
         }
@@ -374,6 +378,7 @@ impl CompileValue {
             CompileValue::Module(_) => "module".to_string(),
             CompileValue::Interface(_) => "interface".to_string(),
             CompileValue::InterfaceView(_) => "interface_view".to_string(),
+            CompileValue::Builtin => "builtin".to_string(),
         }
     }
 }

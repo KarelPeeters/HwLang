@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::front::compile::{compile, ElaborationSet};
+use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::NoPrintHandler;
 use hwl_language::syntax::hierarchy::SourceHierarchy;

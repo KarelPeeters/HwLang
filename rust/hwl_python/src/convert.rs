@@ -10,10 +10,10 @@ use hwl_language::{
 use itertools::Itertools;
 use pyo3::types::{PyBool, PyInt, PyType};
 use pyo3::{
+    IntoPyObjectExt,
     exceptions::PyException,
     prelude::*,
     types::{PyDict, PyList, PyTuple},
-    IntoPyObjectExt,
 };
 use std::sync::Arc;
 
@@ -65,6 +65,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
         CompileValue::InterfaceView(_) => UnsupportedValue("interface view".to_owned()).into_py_any(py),
         CompileValue::Struct(_, _) => UnsupportedValue("struct".to_owned()).into_py_any(py),
         CompileValue::Enum(_, _) => UnsupportedValue("enum".to_owned()).into_py_any(py),
+        CompileValue::Builtin => UnsupportedValue("builtin".to_owned()).into_py_any(py),
     }
 }
 

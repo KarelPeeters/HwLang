@@ -1,9 +1,9 @@
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{FailedCaptureReason, Variable};
 use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
-use crate::syntax::ast::{MaybeIdentifier, Spanned};
+use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::FileId;
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
@@ -220,7 +220,7 @@ impl<'p> Scope<'p> {
         entry: DiagResult<ScopedEntry>,
     ) {
         let id = match id {
-            Ok(MaybeIdentifier::Dummy(_)) => return,
+            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
             Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
             Err(e) => Err(e),
         };
@@ -234,7 +234,7 @@ impl<'p> Scope<'p> {
         self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 
-    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound> {
+    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound<'_>> {
         self.find_impl(diags, id, None, self.span, false)
     }
 

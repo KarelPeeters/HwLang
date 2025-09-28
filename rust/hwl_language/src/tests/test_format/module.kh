@@ -1,0 +1,123 @@
+module module_empty ports() {}
+
+pub module module_pub ports() {}
+
+external module module_external ports()
+
+external module module_external(u: uint) ports()
+
+module module_ports ports(
+    clk: in clock,
+    rst: in async bool,
+
+    derp: in sync(clk, rst) bool,
+    derp: in sync(clk) bool,
+
+    cst: in const bool,
+
+    axi_in: interface async axi.input(bool),
+    axi_out: interface async axi.input(bool),
+
+    sync(clk) {
+        x: in bool,
+        y: out bool,
+
+        axi_in: interface axi.input(bool),
+        axi_out: interface axi.input(bool),
+    }
+    async {
+        d: out uint,
+    }
+) {}
+
+module module_params_single(x: uint, t: type) ports() {}
+
+module module_params_wrap(
+    x: uint,
+    t: type,
+    const d = false;
+) ports() {}
+
+module module_declarations ports() {
+    const c = false;
+
+    wire w;
+    wire w: clock;
+    wire w: bool;
+    wire w: async;
+    wire w: async bool;
+    wire w = false;
+    wire w: clock = false;
+    wire w: bool = false;
+    wire w: async = false;
+    wire w: async bool = false;
+
+    wire w: interface axi(bool);
+    wire w: async interface axi(bool);
+
+    reg r: bool = false;
+    reg r: bool = false;
+    reg r: sync(clk) bool = false;
+
+    pub wire w = false;
+    pub reg r: bool = false;
+
+    reg out y = false;
+}
+
+module module_structures ports() {
+    {
+        wire a = false;
+    }
+
+    if (false) {
+        wire a = false;
+    } else if (true) {
+        wire b = false;
+    } else {
+        wire c = false;
+    }
+
+    for (i in 0..28) {
+        wire a = false;
+    }
+}
+
+module module_declarations ports() {
+    const c = false;
+
+    wire w;
+    wire w: clock;
+    wire w: bool;
+    wire w: async;
+    wire w: async bool;
+    wire w = false;
+    wire w: clock = false;
+    wire w: bool = false;
+    wire w: async = false;
+    wire w: async bool = false;
+
+    wire w: interface axi(bool);
+    wire w: async interface axi(bool);
+
+    reg r: bool = false;
+    reg r: bool = false;
+    reg r: sync(clk) bool = false;
+
+    pub wire w = false;
+    pub reg r: bool = false;
+
+    reg out y = false;
+}
+
+module module_blocks ports() {
+    comb {}
+    clocked(clk) {}
+    clocked(clk, async rst) {}
+    clocked(clk, sync rst) {}
+}
+
+module module_instance ports() {
+    instance foo ports(x=x, y, z=false);
+    instance f = foo ports();
+}

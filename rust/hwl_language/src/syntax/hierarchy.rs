@@ -1,13 +1,13 @@
 use crate::front::diagnostic::{DiagError, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::token::is_valid_identifier;
+use crate::syntax::token::str_is_valid_identifier;
 use indexmap::{IndexMap, IndexSet};
 
 #[derive(Debug)]
 pub struct SourceHierarchy {
     pub root: HierarchyNode,
-    pub files: IndexSet<FileId>,
+    files: IndexSet<FileId>,
 }
 
 // TODO cross-platform ordering guarantees?
@@ -48,7 +48,7 @@ impl SourceHierarchy {
 
         // check that steps are valid identifiers
         for step in steps {
-            if !is_valid_identifier(step) {
+            if !str_is_valid_identifier(step) {
                 return Err(diags.report_simple(
                     format!("Invalid identifier `{step}` in hierarchy steps"),
                     span,

@@ -1,8 +1,8 @@
 use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::{PortDirection, Spanned};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::PortDirection;
+use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use indexmap::IndexSet;

@@ -23,18 +23,18 @@ use crate::mid::ir::{
     IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
-    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, Expression,
-    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    RegisterDelay, Spanned, StringPiece, SyncDomain, UnaryOp,
+    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind,
+    Expression, ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection,
+    RangeLiteral, RegisterDelay, StringPiece, SyncDomain, UnaryOp,
 };
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
-use crate::syntax::token::apply_string_literal_escapes;
+use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{Never, ResultDoubleExt, ResultNeverExt, result_pair};
@@ -87,7 +87,7 @@ impl<'a> CompileItemContext<'a, '_> {
         id: MaybeIdentifier<GeneralIdentifier>,
     ) -> DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>> {
         match id {
-            MaybeIdentifier::Dummy(span) => Ok(MaybeIdentifier::Dummy(span)),
+            MaybeIdentifier::Dummy { span } => Ok(MaybeIdentifier::Dummy { span }),
             MaybeIdentifier::Identifier(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 Ok(MaybeIdentifier::Identifier(id))
@@ -174,6 +174,8 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ExpressionKind::Undefined => Value::Compile(CompileValue::Undefined),
             ExpressionKind::Type => Value::Compile(CompileValue::Type(Type::Type)),
+            ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
+            ExpressionKind::Builtin => Value::Compile(CompileValue::Builtin),
             &ExpressionKind::Wrapped(inner) => {
                 return self.eval_expression_inner(scope, flow, expected_ty, inner);
             }
@@ -233,23 +235,24 @@ impl<'a> CompileItemContext<'a, '_> {
                     result.map_hardware(HardwareValueWithImplications::simple_version),
                 ));
             }
-            ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::IntLiteral(pattern) => {
+                // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
+                //   the risk of divergence is huge
                 let value = match *pattern {
-                    IntLiteral::Binary(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Binary { span } => {
+                        let raw = source.span_str(span);
                         let clean = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&clean, 2)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Decimal(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Decimal { span } => {
+                        let raw = source.span_str(span);
                         let clean = raw.replace('_', "");
                         BigUint::from_str_radix(&clean, 10)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
                     }
-                    IntLiteral::Hexadecimal(raw) => {
-                        let raw = source.span_str(raw);
+                    IntLiteral::Hexadecimal { span } => {
+                        let raw = source.span_str(span);
                         let s_hex = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&s_hex, 16)
                             .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
@@ -263,7 +266,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 for &piece in pieces {
                     match piece {
-                        StringPiece::Literal(span) => {
+                        StringPiece::Literal { span } => {
                             let raw = source.span_str(span);
                             let escaped = apply_string_literal_escapes(raw);
                             s.push_str(escaped.as_ref());
@@ -529,70 +532,72 @@ impl<'a> CompileItemContext<'a, '_> {
                     .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
                 Value::Compile(CompileValue::Type(result))
             }
-            &ExpressionKind::DotIdIndex(base, index) => {
-                return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
-            }
-            &ExpressionKind::DotIntIndex(base, index_span) => {
-                let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
-                let index = source.span_str(index_span);
+            &ExpressionKind::DotIndex(base, index) => match index {
+                DotIndexKind::Id(index) => {
+                    return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
+                }
+                DotIndexKind::Int { span: index_span } => {
+                    let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
+                    let index = source.span_str(index_span);
 
-                let index_int = BigUint::from_str_radix(index, 10)
-                    .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
-                let err_not_tuple = |ty: &str| {
-                    let diag = Diagnostic::new("indexing into non-tuple type")
-                        .add_error(index_span, "attempt to index into non-tuple type here")
-                        .add_info(base.span, format!("base has type `{ty}`"))
-                        .finish();
-                    diags.report(diag)
-                };
-                let err_index_out_of_bounds = |len: usize| {
-                    let diag = Diagnostic::new("tuple index out of bounds")
-                        .add_error(index_span, format!("index `{index_int}` is out of bounds"))
-                        .add_info(base.span, format!("base is tuple with length `{len}`"))
-                        .finish();
-                    diags.report(diag)
-                };
+                    let index_int = BigUint::from_str_radix(index, 10)
+                        .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
+                    let err_not_tuple = |ty: &str| {
+                        let diag = Diagnostic::new("indexing into non-tuple type")
+                            .add_error(index_span, "attempt to index into non-tuple type here")
+                            .add_info(base.span, format!("base has type `{ty}`"))
+                            .finish();
+                        diags.report(diag)
+                    };
+                    let err_index_out_of_bounds = |len: usize| {
+                        let diag = Diagnostic::new("tuple index out of bounds")
+                            .add_error(index_span, format!("index `{index_int}` is out of bounds"))
+                            .add_info(base.span, format!("base is tuple with length `{len}`"))
+                            .finish();
+                        diags.report(diag)
+                    };
 
-                match base_eval {
-                    ValueInner::Value(Value::Compile(CompileValue::Tuple(inner))) => {
-                        let index = index_int
-                            .as_usize_if_lt(inner.len())
-                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                        Value::Compile(inner[index].clone())
-                    }
-                    ValueInner::Value(Value::Compile(CompileValue::Type(Type::Tuple(inner)))) => {
-                        let index = index_int
-                            .as_usize_if_lt(inner.len())
-                            .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                        Value::Compile(CompileValue::Type(inner[index].clone()))
-                    }
-                    ValueInner::Value(Value::Hardware(value)) => {
-                        let value = value.value;
-                        match value.ty {
-                            HardwareType::Tuple(inner_tys) => {
-                                let index = index_int
-                                    .as_usize_if_lt(inner_tys.len())
-                                    .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
+                    match base_eval {
+                        ValueInner::Value(Value::Compile(CompileValue::Tuple(inner))) => {
+                            let index = index_int
+                                .as_usize_if_lt(inner.len())
+                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                            Value::Compile(inner[index].clone())
+                        }
+                        ValueInner::Value(Value::Compile(CompileValue::Type(Type::Tuple(inner)))) => {
+                            let index = index_int
+                                .as_usize_if_lt(inner.len())
+                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
+                            Value::Compile(CompileValue::Type(inner[index].clone()))
+                        }
+                        ValueInner::Value(Value::Hardware(value)) => {
+                            let value = value.value;
+                            match value.ty {
+                                HardwareType::Tuple(inner_tys) => {
+                                    let index = index_int
+                                        .as_usize_if_lt(inner_tys.len())
+                                        .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
 
-                                let expr = IrExpressionLarge::TupleIndex {
-                                    base: value.expr,
-                                    index: index.into(),
-                                };
-                                Value::Hardware(HardwareValue {
-                                    ty: inner_tys[index].clone(),
-                                    domain: value.domain,
-                                    expr: self.large.push_expr(expr),
-                                })
+                                    let expr = IrExpressionLarge::TupleIndex {
+                                        base: value.expr,
+                                        index: index.into(),
+                                    };
+                                    Value::Hardware(HardwareValue {
+                                        ty: inner_tys[index].clone(),
+                                        domain: value.domain,
+                                        expr: self.large.push_expr(expr),
+                                    })
+                                }
+                                _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
                             }
-                            _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
+                        }
+                        ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
+                        ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
+                            return Err(err_not_tuple("interface instance"));
                         }
                     }
-                    ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
-                    ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
-                        return Err(err_not_tuple("interface instance"));
-                    }
                 }
-            }
+            },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
                 let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
@@ -616,6 +621,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // check that the target is a function
                 let target_inner = match target.inner {
+                    CompileValue::Builtin => {
+                        return self
+                            .eval_builtin(flow, expr.span, target.span, args?)
+                            .map(|v| ValueInner::Value(ValueWithImplications::simple(v)));
+                    }
                     CompileValue::Type(Type::Int(range)) => {
                         // handle integer calls here
                         let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
@@ -642,7 +652,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
                 .flatten_err()?
             }
-            ExpressionKind::Builtin(args) => self.eval_builtin(scope, flow, expr.span, args)?,
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
 
@@ -931,11 +940,11 @@ impl<'a> CompileItemContext<'a, '_> {
         }
 
         // struct new
-        if let &Value::Compile(CompileValue::Type(Type::Struct(elab))) = &base_eval {
-            if index_str == "new" {
-                let result = Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)));
-                return Ok(ValueInner::Value(result));
-            }
+        if let &Value::Compile(CompileValue::Type(Type::Struct(elab))) = &base_eval
+            && index_str == "new"
+        {
+            let result = Value::Compile(CompileValue::Function(FunctionValue::StructNew(elab)));
+            return Ok(ValueInner::Value(result));
         }
 
         let base_item_function = match &base_eval {
@@ -945,12 +954,12 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             _ => None,
         };
-        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function {
-            if index_str == "new" {
-                let func = FunctionValue::StructNewInfer(unique);
-                let result = Value::Compile(CompileValue::Function(func));
-                return Ok(ValueInner::Value(result));
-            }
+        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
+            && index_str == "new"
+        {
+            let func = FunctionValue::StructNewInfer(unique);
+            let result = Value::Compile(CompileValue::Function(func));
+            return Ok(ValueInner::Value(result));
         }
 
         // enum variants
@@ -1266,18 +1275,34 @@ impl<'a> CompileItemContext<'a, '_> {
     // TODO replace builtin+import+prelude with keywords?
     fn eval_builtin(
         &mut self,
-        scope: &Scope,
         flow: &mut impl Flow,
         expr_span: Span,
-        args: &Spanned<Vec<Expression>>,
+        target_span: Span,
+        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         // evaluate args
-        let args_eval = args
-            .inner
-            .iter()
-            .map(|&arg| Ok(self.eval_expression(scope, flow, &Type::Any, arg)?.inner))
+        // TODO delay arg evaluation so we can do weird things like use certain args as a domain?
+        let Args {
+            span: _,
+            inner: args_inner,
+        } = args;
+        let args_eval = args_inner
+            .into_iter()
+            .map(|arg| {
+                let Arg { span: _, name, value } = arg;
+                if let Some(name) = name {
+                    let diag = Diagnostic::new(format!("{TOKEN_STR_BUILTIN} does not support named arguments"))
+                        .snippet(expr_span)
+                        .add_error(name.span, "tried to pass named argument here")
+                        .add_info(target_span, format!("calling {TOKEN_STR_BUILTIN} here"))
+                        .finish()
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+                Ok(value.inner)
+            })
             .try_collect_all_vec()?;
 
         if let (Some(Value::Compile(CompileValue::String(a0))), Some(Value::Compile(CompileValue::String(a1)))) =
@@ -1461,8 +1486,8 @@ impl<'a> CompileItemContext<'a, '_> {
         let build_err =
             |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {actual}"));
 
-        let result = match self.refs.get_expr(expr) {
-            &ExpressionKind::Id(id) => {
+        let result = match *self.refs.get_expr(expr) {
+            ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
@@ -1494,7 +1519,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 }
             }
-            &ExpressionKind::ArrayIndex(inner_target, ref indices) => {
+            ExpressionKind::ArrayIndex(inner_target, ref indices) => {
                 let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
                 let array_steps = indices
                     .inner
@@ -1518,64 +1543,78 @@ impl<'a> CompileItemContext<'a, '_> {
                     array_steps,
                 }
             }
-            &ExpressionKind::DotIdIndex(base, index) => match self.refs.get_expr(base) {
-                &ExpressionKind::Id(base) => {
-                    let base = self.eval_general_id(scope, flow, base)?;
-                    let base = base.as_ref().map_inner(ArcOrRef::as_ref);
+            ExpressionKind::DotIndex(base, index) => {
+                match index {
+                    DotIndexKind::Id(index) => {
+                        match self.refs.get_expr(base) {
+                            &ExpressionKind::Id(base) => {
+                                let base = self.eval_general_id(scope, flow, base)?;
+                                let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
-                    match self.eval_named_or_value(scope, base)?.inner {
-                        NamedOrValue::Named(NamedValue::PortInterface(base)) => {
-                            // get port
-                            let port_interface_info = &self.port_interfaces[base];
-                            let interface_info = self
-                                .refs
-                                .shared
-                                .elaboration_arenas
-                                .interface_info(port_interface_info.view.inner.interface);
-                            let (port_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                            let port = port_interface_info.ports[port_index];
+                                match self.eval_named_or_value(scope, base)?.inner {
+                                    NamedOrValue::Named(NamedValue::PortInterface(base)) => {
+                                        // get port
+                                        let port_interface_info = &self.port_interfaces[base];
+                                        let interface_info = self
+                                            .refs
+                                            .shared
+                                            .elaboration_arenas
+                                            .interface_info(port_interface_info.view.inner.interface);
+                                        let (port_index, _) =
+                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                                        let port = port_interface_info.ports[port_index];
 
-                            // check direction
-                            let direction = self.ports[port].direction;
-                            match direction.inner {
-                                PortDirection::Input => return Err(build_err("input port")),
-                                PortDirection::Output => {}
+                                        // check direction
+                                        let direction = self.ports[port].direction;
+                                        match direction.inner {
+                                            PortDirection::Input => return Err(build_err("input port")),
+                                            PortDirection::Output => {}
+                                        }
+
+                                        AssignmentTarget::simple(Spanned::new(
+                                            expr.span,
+                                            AssignmentTargetBase::Port(port),
+                                        ))
+                                    }
+                                    NamedOrValue::Named(NamedValue::WireInterface(base)) => {
+                                        // get port
+                                        let wire_interface_info = &self.wire_interfaces[base];
+                                        let interface_info = self
+                                            .refs
+                                            .shared
+                                            .elaboration_arenas
+                                            .interface_info(wire_interface_info.interface.inner);
+                                        let (wire_index, _) =
+                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
+                                        let wire = wire_interface_info.wires[wire_index];
+
+                                        AssignmentTarget::simple(Spanned::new(
+                                            expr.span,
+                                            AssignmentTargetBase::Wire(wire),
+                                        ))
+                                    }
+                                    _ => {
+                                        return Err(diags.report_simple(
+                                            "dot index is only allowed on port/wire interfaces",
+                                            base.span,
+                                            "got other named value here",
+                                        ));
+                                    }
+                                }
                             }
-
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
-                        }
-                        NamedOrValue::Named(NamedValue::WireInterface(base)) => {
-                            // get port
-                            let wire_interface_info = &self.wire_interfaces[base];
-                            let interface_info = self
-                                .refs
-                                .shared
-                                .elaboration_arenas
-                                .interface_info(wire_interface_info.interface.inner);
-                            let (wire_index, _) = interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                            let wire = wire_interface_info.wires[wire_index];
-
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(wire)))
-                        }
-                        _ => {
-                            return Err(diags.report_simple(
-                                "dot index is only allowed on port/wire interfaces",
-                                base.span,
-                                "got other named value here",
-                            ));
+                            _ => {
+                                return Err(diags.report_simple(
+                                    "dot index is only allowed on port/wire interfaces",
+                                    base.span,
+                                    "got other expression here",
+                                ));
+                            }
                         }
                     }
+                    DotIndexKind::Int { span: _ } => {
+                        return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
+                    }
                 }
-                _ => {
-                    return Err(diags.report_simple(
-                        "dot index is only allowed on port/wire interfaces",
-                        base.span,
-                        "got other expression here",
-                    ));
-                }
-            },
-            ExpressionKind::DotIntIndex(_, _) => {
-                return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
             }
             _ => return Err(build_err("other expression")),
         };
@@ -1800,7 +1839,7 @@ fn eval_int_ty_call(
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
 ) -> DiagResult<IncRange<BigInt>> {
     // ensure single unnamed compile-time arg
-    let arg = args.inner.single().ok_or_else(|| {
+    let arg = args.inner.single().map_err(|_| {
         diags.report_simple(
             "expected single argument for int type",
             args.span,
@@ -1946,10 +1985,10 @@ impl Iterator for ForIterator {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             ForIterator::Int { next, end_inc } => {
-                if let Some(end_inc) = end_inc {
-                    if next > end_inc {
-                        return None;
-                    }
+                if let Some(end_inc) = end_inc
+                    && next > end_inc
+                {
+                    return None;
                 }
 
                 let curr = Value::Compile(CompileValue::Int(next.clone()));

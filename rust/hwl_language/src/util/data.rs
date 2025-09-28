@@ -1,6 +1,7 @@
-use indexmap::map::Entry;
 use indexmap::IndexMap;
+use indexmap::map::Entry;
 use std::hash::Hash;
+use std::ops::Range;
 
 pub trait IndexMapExt<K, V> {
     // The same as [IndexMap::insert], but asserts that the key is not already present.
@@ -25,26 +26,57 @@ where
     }
 }
 
-pub trait VecExt<T> {
-    fn single(self) -> Option<T>;
+pub trait VecExt<T>: Sized {
+    fn into_vec(self) -> Vec<T>;
+    fn as_vec_mut(&mut self) -> &mut Vec<T>;
 
-    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R;
-}
-
-impl<T> VecExt<T> for Vec<T> {
-    fn single(mut self) -> Option<T> {
-        if self.len() == 1 {
-            Some(self.pop().unwrap())
+    fn single(self) -> Result<T, Vec<T>> {
+        let mut slf = self.into_vec();
+        if slf.len() == 1 {
+            Ok(slf.pop().unwrap())
         } else {
-            None
+            Err(slf)
         }
     }
 
-    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.push(v);
-        let result = f(self);
-        assert!(self.pop().is_some());
+    fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Vec<T>) -> R) -> R {
+        let slf = self.as_vec_mut();
+
+        slf.push(v);
+        let result = f(slf);
+        assert!(slf.pop().is_some());
         result
+    }
+
+    fn insert_iter(&mut self, index: usize, iter: impl IntoIterator<Item = T>) {
+        let slf = self.as_vec_mut();
+        drop(slf.splice(index..index, iter));
+    }
+
+    fn retain_range(&mut self, range: Range<usize>, mut f: impl FnMut(&T) -> bool) {
+        let slf = self.as_vec_mut();
+        let Range { start, end } = range;
+
+        let mut write = start;
+        for read in start..end {
+            let retain = f(&slf[read]);
+            if retain {
+                slf.swap(read, write);
+                write += 1;
+            }
+        }
+
+        drop(slf.drain(write..end));
+    }
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn into_vec(self) -> Vec<T> {
+        self
+    }
+
+    fn as_vec_mut(&mut self) -> &mut Vec<T> {
+        self
     }
 }
 

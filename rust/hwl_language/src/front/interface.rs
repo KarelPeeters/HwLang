@@ -4,13 +4,14 @@ use crate::front::flow::{FlowCompile, FlowRoot};
 use crate::front::function::CapturedScope;
 use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
-use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection, Spanned};
+use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection};
 use crate::syntax::parsed::AstRefInterface;
+use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::SourceDatabase;
-use crate::util::iter::IterExt;
 use crate::util::ResultDoubleExt;
-use indexmap::map::Entry;
+use crate::util::iter::IterExt;
 use indexmap::IndexMap;
+use indexmap::map::Entry;
 
 #[derive(Debug)]
 pub struct ElaboratedInterfaceInfo {
@@ -138,6 +139,7 @@ impl CompileRefs<'_, '_> {
         let mut view_map: IndexMap<String, ElaboratedInterfaceViewInfo> = IndexMap::new();
         for view in views {
             let &InterfaceView {
+                span: _,
                 id: view_id,
                 ref port_dirs,
             } = view;

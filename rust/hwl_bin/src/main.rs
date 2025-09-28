@@ -1,7 +1,7 @@
 use clap::Parser;
 use hwl_bin::args::{Args, ArgsCommand};
-use hwl_bin::build::main_build;
-use hwl_bin::fmt::main_fmt;
+use hwl_bin::main_build::main_build;
+use hwl_bin::main_fmt::main_fmt;
 use std::process::ExitCode;
 
 // TODO automatically disable this when miri is used

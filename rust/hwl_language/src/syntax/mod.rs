@@ -12,6 +12,7 @@ use pos::Pos;
 
 pub mod ast;
 pub mod collect;
+pub mod format;
 pub mod hierarchy;
 pub mod manifest;
 pub mod parsed;
@@ -48,7 +49,7 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
     let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
         .filter(|token| match token {
-            Ok(token) => !matches!(token.ty.category(), TokenCategory::WhiteSpace | TokenCategory::Comment),
+            Ok(token) => !matches!(token.ty.category(), TokenCategory::Comment),
             Err(_) => true,
         })
         .map(|token| token.map(|token| (token.span.start_byte, token.ty, token.span.end_byte)));

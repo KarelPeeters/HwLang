@@ -19,7 +19,7 @@ pub interface axi_stream(T: type) {
     }
 }
 
-pub module axi_passthrough(T: type) ports (
+pub module axi_passthrough(T: type) ports(
     clk: in clock,
     rst: in async bool,
     input: interface sync(clk, rst) axi_stream(T).input,

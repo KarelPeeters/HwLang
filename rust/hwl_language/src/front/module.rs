@@ -32,10 +32,10 @@ use crate::syntax::ast::{
 };
 use crate::syntax::ast::{
     Block, ClockedBlock, CombinatorialBlock, DomainKind, Identifier, MaybeIdentifier, ModulePortItem, ModulePortSingle,
-    PortConnection, RegDeclaration, RegOutPortMarker, Spanned, SyncDomain, WireDeclaration,
+    PortConnection, RegDeclaration, RegOutPortMarker, SyncDomain, WireDeclaration,
 };
 use crate::syntax::parsed::{AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
@@ -879,7 +879,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
 
                     match &decl.vis {
-                        Visibility::Public(_) => {
+                        Visibility::Public { span: _ } => {
                             pub_declarations.push((id.clone(), entry.clone()));
                         }
                         Visibility::Private => {}
@@ -907,7 +907,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
 
                     match &decl.vis {
-                        Visibility::Public(_) => {
+                        Visibility::Public { span: _ } => {
                             pub_declarations.push((id.clone(), entry.clone()));
                         }
                         Visibility::Private => {}
@@ -1446,6 +1446,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             id: ref connection_id,
             expr: value_expr,
         } = &connection.inner;
+        let value_expr = value_expr.expr();
+
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
         // double-check id match
@@ -1811,25 +1813,25 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             (None, Signal::Wire(wire), IrWireOrPort::Wire(ir_wires[port_index]))
                         }
                     };
-                    if let Some(value_dir) = value_dir {
-                        if connector_dir.inner != value_dir.inner {
-                            let diag = Diagnostic::new(format!(
-                                "direction mismatch for interface port `{}`",
-                                interface_info.ports[port_index].id.str(source)
-                            ))
-                            .add_info(
-                                connection_id.span,
-                                format!("expected direction {}", connector_dir.inner.diagnostic_string()),
-                            )
-                            .add_error(
-                                value_expr.span,
-                                format!("got direction {}", value_dir.inner.diagnostic_string()),
-                            )
-                            .add_info(connector_dir.span, "expected direction set here")
-                            .add_info(value_dir.span, "actual direction set here")
-                            .finish();
-                            return Err(diags.report(diag));
-                        }
+                    if let Some(value_dir) = value_dir
+                        && connector_dir.inner != value_dir.inner
+                    {
+                        let diag = Diagnostic::new(format!(
+                            "direction mismatch for interface port `{}`",
+                            interface_info.ports[port_index].id.str(source)
+                        ))
+                        .add_info(
+                            connection_id.span,
+                            format!("expected direction {}", connector_dir.inner.diagnostic_string()),
+                        )
+                        .add_error(
+                            value_expr.span,
+                            format!("got direction {}", value_dir.inner.diagnostic_string()),
+                        )
+                        .add_info(connector_dir.span, "expected direction set here")
+                        .add_info(value_dir.span, "actual direction set here")
+                        .finish();
+                        return Err(diags.report(diag));
                     }
                     let dir = connector_dir.inner;
 
@@ -2661,74 +2663,65 @@ fn pull_register_init_into_process(
         diags.report_internal_error(reg_info.id.span(), "no inferred domain even though there are drivers")
     })?;
 
-    if let Driver::ClockedBlock(stmt_index) = driver {
-        if let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index) {
-            if let Child::Clocked(process) = &mut children[process_index].inner {
-                if let Some(init) = register_initial_values.get(&reg) {
-                    let init = init.as_ref_ok()?;
-                    let init_ir = init.inner.as_ir_expression_or_undefined(
-                        ctx.refs,
-                        &mut ctx.large,
-                        init.span,
-                        &reg_info.ty.inner,
-                    )?;
+    if let Driver::ClockedBlock(stmt_index) = driver
+        && let Some(&process_index) = clocked_block_statement_index_to_process_index.get(&stmt_index)
+        && let Child::Clocked(process) = &mut children[process_index].inner
+        && let Some(init) = register_initial_values.get(&reg)
+    {
+        let init = init.as_ref_ok()?;
+        let init_ir =
+            init.inner
+                .as_ir_expression_or_undefined(ctx.refs, &mut ctx.large, init.span, &reg_info.ty.inner)?;
 
-                    match init_ir {
-                        MaybeUndefined::Undefined => {
-                            // we don't need to reset
+        match init_ir {
+            MaybeUndefined::Undefined => {
+                // we don't need to reset
+            }
+            MaybeUndefined::Defined(init_ir) => {
+                match &mut process.reset {
+                    Some(reset) => {
+                        // check that the reset style matches
+                        let reset_style_err = |block: &str, reg: &str| {
+                            let diag = Diagnostic::new("reset style mismatch")
+                                .add_error(driver_first_span, "block drives register here")
+                                .add_info(reset.kind.span, format!("block defined with {block} reset here"))
+                                .add_info(reg_domain.span, format!("register defined with {reg} reset here"))
+                                .finish();
+                            diags.report(diag)
+                        };
+                        match (reset.kind.inner, reg_domain.inner.reset) {
+                            (ResetKind::Async, Some(_)) => {}
+                            (ResetKind::Sync, None) => {}
+                            (ResetKind::Async, None) => return Err(reset_style_err("async", "sync")),
+                            (ResetKind::Sync, Some(_)) => return Err(reset_style_err("sync", "async")),
                         }
-                        MaybeUndefined::Defined(init_ir) => {
-                            match &mut process.reset {
-                                Some(reset) => {
-                                    // check that the reset style matches
-                                    let reset_style_err = |block: &str, reg: &str| {
-                                        let diag = Diagnostic::new("reset style mismatch")
-                                            .add_error(driver_first_span, "block drives register here")
-                                            .add_info(reset.kind.span, format!("block defined with {block} reset here"))
-                                            .add_info(
-                                                reg_domain.span,
-                                                format!("register defined with {reg} reset here"),
-                                            )
-                                            .finish();
-                                        diags.report(diag)
-                                    };
-                                    match (reset.kind.inner, reg_domain.inner.reset) {
-                                        (ResetKind::Async, Some(_)) => {}
-                                        (ResetKind::Sync, None) => {}
-                                        (ResetKind::Async, None) => return Err(reset_style_err("async", "sync")),
-                                        (ResetKind::Sync, Some(_)) => return Err(reset_style_err("sync", "async")),
-                                    }
 
-                                    // all good, record the reset value
-                                    reset.reg_inits.push(ExtraRegisterInit {
-                                        span: init.span,
-                                        reg: reg_info.ir,
-                                        init: init_ir,
-                                    });
-                                }
-                                None => {
-                                    // TODO actually, this is conceptually a bit weird:
-                                    //   why is reset a properly of the process, and not (only) the register?
-                                    let diag = Diagnostic::new(
-                                        "clocked block without reset cannot drive register with reset value",
-                                    )
-                                    .add_error(driver_first_span, "clocked block drives register here")
-                                    .add_info(process.clock_signal.span, "clocked block declared without reset here")
-                                    .add_info(init.span, "register reset value defined here")
-                                    .footer(
-                                        Level::Help,
-                                        "either add an reset to the block or use `undef` as the the initial value",
-                                    )
-                                    .finish();
-                                    return Err(diags.report(diag));
-                                }
-                            }
-                        }
+                        // all good, record the reset value
+                        reset.reg_inits.push(ExtraRegisterInit {
+                            span: init.span,
+                            reg: reg_info.ir,
+                            init: init_ir,
+                        });
                     }
-                    return Ok(());
+                    None => {
+                        // TODO actually, this is conceptually a bit weird:
+                        //   why is reset a properly of the process, and not (only) the register?
+                        let diag =
+                            Diagnostic::new("clocked block without reset cannot drive register with reset value")
+                                .add_error(driver_first_span, "clocked block drives register here")
+                                .add_info(process.clock_signal.span, "clocked block declared without reset here")
+                                .add_info(init.span, "register reset value defined here")
+                                .footer(
+                                    Level::Help,
+                                    "either add an reset to the block or use `undef` as the the initial value",
+                                )
+                                .finish();
+                        return Err(diags.report(diag));
+                    }
                 }
             }
         }
+        return Ok(());
     }
 
     Err(diags.report_internal_error(

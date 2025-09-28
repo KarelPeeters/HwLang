@@ -27,6 +27,7 @@ pub trait ResultNeverExt<T> {
 }
 
 impl<T> ResultNeverExt<T> for Result<T, Never> {
+    // TODO find a better name
     fn remove_never(self) -> T {
         match self {
             Ok(v) => v,
@@ -157,9 +158,5 @@ impl Display for Indent {
 }
 
 pub fn separator_non_trailing(s: &str, i: usize, len: usize) -> &str {
-    if i == len - 1 {
-        ""
-    } else {
-        s
-    }
+    if i == len - 1 { "" } else { s }
 }

@@ -1,6 +1,8 @@
 from typing import List, Optional, Any, Iterator
 
 
+def format_file(source: str) -> str: ...
+
 class SourceBuilder:
     def __init__(self) -> None: ...
 

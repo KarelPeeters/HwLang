@@ -4,7 +4,7 @@ use crossbeam_channel::Sender;
 use lsp_server::{Message, RequestId, Response};
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
-use lsp_types::{notification, MessageType, ShowMessageParams};
+use lsp_types::{MessageType, ShowMessageParams, notification};
 use std::collections::HashSet;
 
 pub struct ServerSender {

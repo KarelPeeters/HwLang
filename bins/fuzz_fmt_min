@@ -1,0 +1,3 @@
+#!/bin/bash -ue
+
+cargo +nightly fuzz tmin -O fuzz_format "$@"

@@ -1,6 +1,6 @@
 use crate::engine::vfs::{VfsError, VfsResult};
-use fluent_uri::enc::EStr;
 use fluent_uri::HostData;
+use fluent_uri::enc::EStr;
 use hwl_language::throw;
 use lsp_types::{FileSystemWatcher, GlobPattern, OneOf, RelativePattern, Uri};
 use std::path::{Path, PathBuf};

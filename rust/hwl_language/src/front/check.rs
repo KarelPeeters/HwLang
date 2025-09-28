@@ -3,8 +3,9 @@ use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagno
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::syntax::ast::{Spanned, SyncDomain};
-use crate::syntax::pos::Span;
+use crate::syntax::ast::SyncDomain;
+use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
 use annotate_snippets::Level;
 use itertools::Itertools;
@@ -78,7 +79,10 @@ impl CompileItemContext<'_, '_> {
                 .footer(Level::Info, format!("crossing due to {required_reason}"))
                 .footer(
                     Level::Help,
-                    "to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`",
+                    format!(
+                        "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
+                        TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
+                    ),
                 )
                 .finish();
             diags.report(diag)
@@ -409,26 +413,25 @@ pub fn check_type_is_bool_array(
     value: Spanned<Value>,
     expected_len: Option<&BigUint>,
 ) -> DiagResult<Value<Vec<bool>, HardwareValue<BigUint>>> {
-    if let Type::Array(ty_inner, ty_len) = value.inner.ty() {
-        if expected_len.is_none_or(|expected_len| expected_len == &ty_len) {
-            if let Type::Bool = *ty_inner {
-                return match value.inner {
-                    Value::Compile(c) => {
-                        let c = unwrap_match!(c, CompileValue::Array(c) => c);
-                        let result = c
-                            .iter()
-                            .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
-                            .collect_vec();
-                        Ok(Value::Compile(result))
-                    }
-                    Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
-                        ty: ty_len,
-                        domain: c.domain,
-                        expr: c.expr,
-                    })),
-                };
+    if let Type::Array(ty_inner, ty_len) = value.inner.ty()
+        && expected_len.is_none_or(|expected_len| expected_len == &ty_len)
+        && let Type::Bool = *ty_inner
+    {
+        return match value.inner {
+            Value::Compile(c) => {
+                let c = unwrap_match!(c, CompileValue::Array(c) => c);
+                let result = c
+                    .iter()
+                    .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
+                    .collect_vec();
+                Ok(Value::Compile(result))
             }
-        }
+            Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
+                ty: ty_len,
+                domain: c.domain,
+                expr: c.expr,
+            })),
+        };
     }
 
     let expected_ty_str = match expected_len {

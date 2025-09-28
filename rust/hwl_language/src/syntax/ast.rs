@@ -1,8 +1,8 @@
-use crate::front::value::Value;
-use crate::new_index_type;
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
+use crate::syntax::token::TokenType;
 use crate::util::arena::Arena;
+use crate::{impl_has_span, new_index_type};
 
 new_index_type!(pub ExpressionKindIndex);
 
@@ -11,12 +11,14 @@ pub struct FileContent {
     pub span: Span,
     pub items: Vec<Item>,
 
-    pub arena_expressions: Arena<ExpressionKindIndex, ExpressionKind>,
+    pub arena_expressions: ArenaExpressions,
 }
+
+pub type ArenaExpressions = Arena<ExpressionKindIndex, ExpressionKind>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility<S = Span> {
-    Public(S),
+    Public { span: S },
     Private,
 }
 
@@ -29,7 +31,7 @@ pub enum Item {
     // common declarations that are allowed anywhere
     CommonDeclaration(Spanned<CommonDeclaration<Visibility>>),
     // declarations that are only allowed top-level
-    // TODO maybe we should also just allow module declarations anywhere?
+    // TODO turn all of these into common declarations, even the imports
     ModuleInternal(ItemDefModuleInternal),
     ModuleExternal(ItemDefModuleExternal),
     Interface(ItemDefInterface),
@@ -156,11 +158,13 @@ pub struct ItemDefInterface {
     pub params: Option<Parameters>,
     pub span_body: Span,
     pub port_types: ExtraList<(Identifier, Expression)>,
+    // TODO this should be an ExtraList too
     pub views: Vec<InterfaceView>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceView {
+    pub span: Span,
     pub id: MaybeIdentifier,
     pub port_dirs: ExtraList<(Identifier, Spanned<PortDirection>)>,
 }
@@ -173,11 +177,13 @@ pub struct Parameters {
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    pub span: Span,
     pub id: Identifier,
     pub ty: Expression,
     pub default: Option<Expression>,
 }
 
+// TODO maybe this is the same as Block?
 #[derive(Debug, Clone)]
 pub struct ExtraList<I> {
     pub span: Span,
@@ -232,7 +238,7 @@ pub enum ModulePortSingleKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum PortSingleKindInner {
     Clock {
         span_clock: Span,
@@ -243,7 +249,7 @@ pub enum PortSingleKindInner {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum ModulePortInBlockKind {
     Port {
         direction: Spanned<PortDirection>,
@@ -318,6 +324,13 @@ impl PortDirection {
             PortDirection::Output => "output",
         }
     }
+
+    pub fn token(self) -> TokenType {
+        match self {
+            PortDirection::Input => TokenType::In,
+            PortDirection::Output => TokenType::Out,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -374,12 +387,13 @@ pub enum BlockStatementKind {
 
     // control flow terminators
     Return(ReturnStatement),
-    Break(Span),
-    Continue(Span),
+    Break { span: Span },
+    Continue { span: Span },
 }
 
 #[derive(Debug, Clone)]
 pub struct IfStatement<B> {
+    pub span: Span,
     pub initial_if: IfCondBlockPair<B>,
     pub else_ifs: Vec<IfCondBlockPair<B>>,
     pub final_else: Option<B>,
@@ -408,9 +422,8 @@ pub struct MatchBranch<B> {
 
 #[derive(Debug, Clone)]
 pub enum MatchPattern<E = Expression, R = Expression, V = Identifier, I = Identifier> {
-    Dummy,
+    Wildcard,
     Val(I),
-
     Equal(E),
     In(R),
     EnumVariant(V, Option<MaybeIdentifier>),
@@ -513,7 +526,7 @@ pub struct VariableDeclaration {
 #[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
-    pub op: Spanned<Option<BinaryOp>>,
+    pub op: Spanned<Option<AssignBinaryOp>>,
     pub target: Expression,
     pub value: Expression,
 }
@@ -562,6 +575,15 @@ pub enum ResetKind {
     Sync,
 }
 
+impl ResetKind {
+    pub fn token(self) -> TokenType {
+        match self {
+            ResetKind::Async => TokenType::Async,
+            ResetKind::Sync => TokenType::Sync,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleInstanceItem {
     pub span: Span,
@@ -574,13 +596,30 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub span_keyword: Span,
     pub module: Expression,
+    // TODO this should be an extra list
     pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
+// TODO find a way to avoid this expression representation weirdness
 #[derive(Debug, Clone)]
 pub struct PortConnection {
     pub id: Identifier,
-    pub expr: Expression,
+    pub expr: PortConnectionExpression,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PortConnectionExpression {
+    FakeId(Expression),
+    Real(Expression),
+}
+
+impl PortConnectionExpression {
+    pub fn expr(&self) -> Expression {
+        match *self {
+            PortConnectionExpression::FakeId(expr) => expr,
+            PortConnectionExpression::Real(expr) => expr,
+        }
+    }
 }
 
 // TODO we're using Box<Spanned<ExpressionKind>> a lot, but maybe
@@ -596,6 +635,7 @@ pub enum ExpressionKind {
     Undefined,
     Type,
     TypeFunction,
+    Builtin,
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Expression),
@@ -620,19 +660,23 @@ pub enum ExpressionKind {
     // Indexing
     ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Expression),
     ArrayIndex(Expression, Spanned<Vec<Expression>>),
-    DotIdIndex(Expression, Identifier),
-    DotIntIndex(Expression, Span),
+    DotIndex(Expression, DotIndexKind),
 
     // Calls
     Call(Expression, Args),
-    Builtin(Spanned<Vec<Expression>>),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
     RegisterDelay(RegisterDelay),
 }
 
 #[derive(Debug, Copy, Clone)]
+pub enum DotIndexKind {
+    Id(Identifier),
+    Int { span: Span },
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum StringPiece {
-    Literal(Span),
+    Literal { span: Span },
     Substitute(Expression),
 }
 
@@ -646,10 +690,11 @@ pub struct RegisterDelay {
 #[derive(Debug, Clone)]
 pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
+    // TODO this should be an ExtraList
     pub inner: Vec<Arg<N, T>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Arg<N = Option<Identifier>, T = Expression> {
     pub span: Span,
     pub name: N,
@@ -660,24 +705,6 @@ pub struct Arg<N = Option<Identifier>, T = Expression> {
 pub enum ArrayLiteralElement<V> {
     Single(V),
     Spread(Span, V),
-}
-
-impl<V> ArrayLiteralElement<Spanned<V>> {
-    pub fn span(&self) -> Span {
-        match self {
-            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
-            ArrayLiteralElement::Single(value) => value.span,
-        }
-    }
-}
-
-impl<V> ArrayLiteralElement<Box<Spanned<V>>> {
-    pub fn span(&self) -> Span {
-        match self {
-            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
-            ArrayLiteralElement::Single(value) => value.span,
-        }
-    }
 }
 
 impl<V> ArrayLiteralElement<V> {
@@ -726,7 +753,7 @@ pub struct StructLiteralField {
     pub value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum RangeLiteral {
     ExclusiveEnd {
         op_span: Span,
@@ -758,11 +785,11 @@ pub struct SyncExpression {
 #[derive(Debug, Clone)]
 pub enum IntLiteral {
     // 0b[01_]+
-    Binary(Span),
+    Binary { span: Span },
     // [0-9_]+
-    Decimal(Span),
+    Decimal { span: Span },
     // 0x[0-9a-fA-F_]+
-    Hexadecimal(Span),
+    Hexadecimal { span: Span },
 }
 
 // TODO rename back to Identifier?
@@ -780,7 +807,7 @@ pub enum GeneralIdentifier {
 
 #[derive(Debug, Copy, Clone)]
 pub enum MaybeIdentifier<I = Identifier> {
-    Dummy(Span),
+    Dummy { span: Span },
     Identifier(I),
 }
 
@@ -833,77 +860,37 @@ pub enum BinaryOp {
     In,
 }
 
+// TODO add a test that checks that the parser matches these levels
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BinaryOpLevel {
+    Add,
+    Mul,
+    Pow,
+    Bit,
+    Bool,
+    Shift,
+    Cmp,
+    In,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum AssignBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    // TODO add boolean and shift operators
+    BitAnd,
+    BitOr,
+    BitXor,
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum UnaryOp {
     Plus,
     Neg,
     Not,
-}
-
-// TODO move to pos?
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Spanned<T> {
-    pub span: Span,
-    pub inner: T,
-}
-
-impl<T> Spanned<T> {
-    pub fn new(span: Span, inner: T) -> Spanned<T> {
-        Spanned { span, inner }
-    }
-
-    pub fn map_inner<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
-        Spanned {
-            span: self.span,
-            inner: f(self.inner),
-        }
-    }
-
-    pub fn as_ref(&self) -> Spanned<&T> {
-        Spanned {
-            span: self.span,
-            inner: &self.inner,
-        }
-    }
-}
-
-impl<T> Spanned<&T> {
-    pub fn cloned(&self) -> Spanned<T>
-    where
-        T: Clone,
-    {
-        Spanned {
-            span: self.span,
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<T, E> Spanned<Result<T, E>> {
-    pub fn transpose(self) -> Result<Spanned<T>, E> {
-        self.inner.map(|inner| Spanned { span: self.span, inner })
-    }
-}
-
-impl<T> Spanned<Option<T>> {
-    pub fn transpose(self) -> Option<Spanned<T>> {
-        self.inner.map(|inner| Spanned { span: self.span, inner })
-    }
-}
-
-impl<T, C> Spanned<Value<T, C>> {
-    pub fn transpose(self) -> Value<Spanned<T>, Spanned<C>> {
-        match self.inner {
-            Value::Compile(value) => Value::Compile(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-            Value::Hardware(value) => Value::Hardware(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-        }
-    }
 }
 
 impl Identifier {
@@ -923,39 +910,23 @@ impl Identifier {
 impl<I> MaybeIdentifier<I> {
     pub fn map_id<J>(self, f: impl FnOnce(I) -> J) -> MaybeIdentifier<J> {
         match self {
-            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(f(id)),
         }
     }
 
     pub fn as_ref(&self) -> MaybeIdentifier<&I> {
         match self {
-            &MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            &MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id),
         }
     }
 }
 
-impl<T> MaybeIdentifier<Spanned<T>> {
-    pub fn span(&self) -> Span {
-        match self {
-            &MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-}
-
 impl MaybeIdentifier<Identifier> {
-    pub fn span(self) -> Span {
-        match self {
-            MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-
     pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
         match self {
-            MaybeIdentifier::Dummy(span) => MaybeIdentifier::Dummy(span),
+            MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => {
                 MaybeIdentifier::Identifier(Spanned::new(id.span, source.span_str(id.span)))
             }
@@ -964,7 +935,7 @@ impl MaybeIdentifier<Identifier> {
 
     pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
         match self {
-            MaybeIdentifier::Dummy(span) => Spanned::new(span, None),
+            MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
             MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(source.span_str(id.span).to_owned())),
         }
     }
@@ -973,33 +944,15 @@ impl MaybeIdentifier<Identifier> {
 impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
     pub fn diagnostic_str(&self) -> &str {
         match self {
-            MaybeIdentifier::Dummy(_) => "_",
+            MaybeIdentifier::Dummy { span: _ } => "_",
             MaybeIdentifier::Identifier(id) => id.inner.as_ref(),
         }
     }
 
     pub fn spanned_string(&self) -> Spanned<Option<String>> {
         match self {
-            MaybeIdentifier::Dummy(span) => Spanned::new(*span, None),
+            &MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
             MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.inner.as_ref().to_owned())),
-        }
-    }
-}
-
-impl GeneralIdentifier {
-    pub fn span(self) -> Span {
-        match self {
-            GeneralIdentifier::Simple(id) => id.span,
-            GeneralIdentifier::FromString(span, _) => span,
-        }
-    }
-}
-
-impl MaybeIdentifier<GeneralIdentifier> {
-    pub fn span(self) -> Span {
-        match self {
-            MaybeIdentifier::Dummy(span) => span,
-            MaybeIdentifier::Identifier(id) => id.span(),
         }
     }
 }
@@ -1074,16 +1027,6 @@ impl<V> CommonDeclaration<V> {
 }
 
 impl CommonDeclarationNamedKind {
-    pub fn span(&self) -> Span {
-        match self {
-            CommonDeclarationNamedKind::Type(decl) => decl.span,
-            CommonDeclarationNamedKind::Const(decl) => decl.span,
-            CommonDeclarationNamedKind::Struct(decl) => decl.span,
-            CommonDeclarationNamedKind::Enum(decl) => decl.span,
-            CommonDeclarationNamedKind::Function(decl) => decl.span,
-        }
-    }
-
     pub fn id(&self) -> MaybeIdentifier {
         match self {
             CommonDeclarationNamedKind::Type(decl) => decl.id,
@@ -1095,30 +1038,195 @@ impl CommonDeclarationNamedKind {
     }
 }
 
-impl BinaryOp {
-    pub fn symbol(self) -> &'static str {
+impl UnaryOp {
+    pub fn token(self) -> TokenType {
         match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Mod => "%",
-            BinaryOp::Pow => "**",
-            BinaryOp::BitAnd => "&",
-            BinaryOp::BitOr => "|",
-            BinaryOp::BitXor => "^",
-            BinaryOp::BoolAnd => "&&",
-            BinaryOp::BoolOr => "||",
-            BinaryOp::BoolXor => "^^",
-            BinaryOp::Shl => "<<",
-            BinaryOp::Shr => ">>",
-            BinaryOp::CmpEq => "==",
-            BinaryOp::CmpNeq => "!=",
-            BinaryOp::CmpLt => "<",
-            BinaryOp::CmpLte => "<=",
-            BinaryOp::CmpGt => ">",
-            BinaryOp::CmpGte => ">=",
-            BinaryOp::In => "in",
+            UnaryOp::Plus => TokenType::Plus,
+            UnaryOp::Neg => TokenType::Minus,
+            UnaryOp::Not => TokenType::Bang,
+        }
+    }
+}
+
+impl BinaryOp {
+    pub fn token(self) -> TokenType {
+        match self {
+            BinaryOp::Add => TokenType::Plus,
+            BinaryOp::Sub => TokenType::Minus,
+            BinaryOp::Mul => TokenType::Star,
+            BinaryOp::Div => TokenType::Slash,
+            BinaryOp::Mod => TokenType::Percent,
+            BinaryOp::Pow => TokenType::StarStar,
+            BinaryOp::BitAnd => TokenType::Amper,
+            BinaryOp::BitOr => TokenType::Pipe,
+            BinaryOp::BitXor => TokenType::Caret,
+            BinaryOp::BoolAnd => TokenType::AmperAmper,
+            BinaryOp::BoolOr => TokenType::PipePipe,
+            BinaryOp::BoolXor => TokenType::CaretCaret,
+            BinaryOp::Shl => TokenType::LtLt,
+            BinaryOp::Shr => TokenType::GtGt,
+            BinaryOp::CmpEq => TokenType::EqEq,
+            BinaryOp::CmpNeq => TokenType::Neq,
+            BinaryOp::CmpLt => TokenType::Lt,
+            BinaryOp::CmpLte => TokenType::Lte,
+            BinaryOp::CmpGt => TokenType::Gt,
+            BinaryOp::CmpGte => TokenType::Gte,
+            BinaryOp::In => TokenType::In,
+        }
+    }
+
+    pub fn level(self) -> BinaryOpLevel {
+        match self {
+            BinaryOp::Add | BinaryOp::Sub => BinaryOpLevel::Add,
+            BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => BinaryOpLevel::Mul,
+            BinaryOp::Pow => BinaryOpLevel::Pow,
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => BinaryOpLevel::Bit,
+            BinaryOp::BoolAnd | BinaryOp::BoolOr | BinaryOp::BoolXor => BinaryOpLevel::Bool,
+            BinaryOp::Shl | BinaryOp::Shr => BinaryOpLevel::Shift,
+            BinaryOp::CmpEq
+            | BinaryOp::CmpNeq
+            | BinaryOp::CmpLt
+            | BinaryOp::CmpLte
+            | BinaryOp::CmpGt
+            | BinaryOp::CmpGte => BinaryOpLevel::Cmp,
+            BinaryOp::In => BinaryOpLevel::In,
+        }
+    }
+}
+
+impl AssignBinaryOp {
+    pub fn token(self) -> TokenType {
+        match self {
+            AssignBinaryOp::Add => TokenType::PlusEq,
+            AssignBinaryOp::Sub => TokenType::MinusEq,
+            AssignBinaryOp::Mul => TokenType::StarEq,
+            AssignBinaryOp::Div => TokenType::SlashEq,
+            AssignBinaryOp::Mod => TokenType::PercentEq,
+            AssignBinaryOp::BitAnd => TokenType::AmperEq,
+            AssignBinaryOp::BitOr => TokenType::PipeEq,
+            AssignBinaryOp::BitXor => TokenType::CaretEq,
+        }
+    }
+
+    pub fn to_binary_op(self) -> BinaryOp {
+        match self {
+            AssignBinaryOp::Add => BinaryOp::Add,
+            AssignBinaryOp::Sub => BinaryOp::Sub,
+            AssignBinaryOp::Mul => BinaryOp::Mul,
+            AssignBinaryOp::Div => BinaryOp::Div,
+            AssignBinaryOp::Mod => BinaryOp::Mod,
+            AssignBinaryOp::BitAnd => BinaryOp::BitAnd,
+            AssignBinaryOp::BitOr => BinaryOp::BitOr,
+            AssignBinaryOp::BitXor => BinaryOp::BitXor,
+        }
+    }
+}
+
+// TODO this could be reduced a bit with a derive macro, eg. for enums it could automatically combine the branches
+impl_has_span!(Identifier);
+impl_has_span!(Parameter);
+impl_has_span!(ModulePortInBlock);
+impl_has_span!(StructField);
+impl_has_span!(EnumDeclaration);
+impl_has_span!(EnumVariant);
+
+impl HasSpan for ModulePortItem {
+    fn span(&self) -> Span {
+        match self {
+            ModulePortItem::Single(port) => port.span,
+            ModulePortItem::Block(block) => block.span,
+        }
+    }
+}
+
+impl<I: HasSpan> HasSpan for ExtraItem<I> {
+    fn span(&self) -> Span {
+        match self {
+            ExtraItem::Inner(item) => item.span(),
+            ExtraItem::Declaration(decl) => decl.span(),
+            ExtraItem::If(if_stmt) => if_stmt.span,
+        }
+    }
+}
+
+impl<V> HasSpan for ArrayLiteralElement<Spanned<V>> {
+    fn span(&self) -> Span {
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
+impl<V> HasSpan for ArrayLiteralElement<Box<Spanned<V>>> {
+    fn span(&self) -> Span {
+        match self {
+            ArrayLiteralElement::Spread(span, value) => span.join(value.span),
+            ArrayLiteralElement::Single(value) => value.span,
+        }
+    }
+}
+
+impl<T> HasSpan for MaybeIdentifier<Spanned<T>> {
+    fn span(&self) -> Span {
+        match self {
+            &MaybeIdentifier::Dummy { span } => span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+}
+
+impl HasSpan for MaybeIdentifier<Identifier> {
+    fn span(&self) -> Span {
+        match self {
+            &MaybeIdentifier::Dummy { span } => span,
+            MaybeIdentifier::Identifier(id) => id.span,
+        }
+    }
+}
+
+impl HasSpan for GeneralIdentifier {
+    fn span(&self) -> Span {
+        match self {
+            GeneralIdentifier::Simple(id) => id.span,
+            GeneralIdentifier::FromString(span, _) => *span,
+        }
+    }
+}
+
+impl HasSpan for MaybeIdentifier<GeneralIdentifier> {
+    fn span(&self) -> Span {
+        match self {
+            MaybeIdentifier::Dummy { span } => *span,
+            MaybeIdentifier::Identifier(id) => id.span(),
+        }
+    }
+}
+
+impl<V> HasSpan for CommonDeclaration<V> {
+    fn span(&self) -> Span {
+        match self {
+            CommonDeclaration::Named(decl) => decl.kind.span(),
+            CommonDeclaration::ConstBlock(decl) => decl.span(),
+        }
+    }
+}
+
+impl HasSpan for ConstBlock {
+    fn span(&self) -> Span {
+        let ConstBlock { span_keyword, block } = self;
+        span_keyword.join(block.span)
+    }
+}
+
+impl HasSpan for CommonDeclarationNamedKind {
+    fn span(&self) -> Span {
+        match self {
+            CommonDeclarationNamedKind::Type(decl) => decl.span,
+            CommonDeclarationNamedKind::Const(decl) => decl.span,
+            CommonDeclarationNamedKind::Struct(decl) => decl.span,
+            CommonDeclarationNamedKind::Enum(decl) => decl.span,
+            CommonDeclarationNamedKind::Function(decl) => decl.span,
         }
     }
 }

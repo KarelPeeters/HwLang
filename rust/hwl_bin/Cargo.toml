@@ -11,6 +11,7 @@ hwl_language.workspace = true
 
 clap.workspace = true
 ctrlc.workspace = true
+indexmap.workspace = true
 itertools.workspace = true
 mimalloc.workspace = true
 num_cpus.workspace = true

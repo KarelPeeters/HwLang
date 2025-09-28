@@ -15,9 +15,9 @@ use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters, Spanned,
+    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters,
 };
-use crate::syntax::pos::Span;
+use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
@@ -611,7 +611,12 @@ impl CompileItemContext<'_, '_> {
         )?;
 
         self.compile_elaborate_extra_list(&mut scope, flow, &params.items, &mut |ctx, scope, flow, param| {
-            let &Parameter { id, ty, default } = param;
+            let &Parameter {
+                span: _,
+                id,
+                ty,
+                default,
+            } = param;
 
             let ty = ctx.eval_expression_as_ty(scope, flow, ty)?;
             let default = default
@@ -696,7 +701,7 @@ impl CompileItemContext<'_, '_> {
         // check arg is single non-named value
         // TODO use new common arg-matching machinery
         let value = match args.inner.single() {
-            Some(Arg { span: _, name, value }) => {
+            Ok(Arg { span: _, name, value }) => {
                 if let Some(name) = name {
                     return Err(diags.report_simple(
                         "this function expects a single unnamed parameter",
@@ -706,7 +711,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 value
             }
-            None => {
+            Err(_) => {
                 return Err(diags.report_simple(
                     "this function expects a single parameter",
                     args.span,

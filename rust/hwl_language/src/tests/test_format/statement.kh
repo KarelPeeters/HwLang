@@ -1,0 +1,64 @@
+const {
+    // declarations
+    const c = false;
+
+    var a;
+    var a: bool;
+    var a = false;
+    var a: bool = false;
+
+    val a;
+
+    // assignments
+    a = false;
+    a += false;
+    a[0] = false;
+    a.0[1] = false;
+
+    // expression
+    false;
+
+    // blocks
+    {
+        print("derp");
+    }
+    {
+        print("derp");
+        17
+    };
+
+    // control flow
+    if (false) {
+        print("a");
+    } else if (true) {
+        print("b");
+    } else {
+        print("c");
+    }
+
+    if (false) {} else {}
+
+    match (c) {
+        _ => {
+            print("derp");
+        }
+        val x => {}
+        false => {}
+        in 0..16 => {}
+        .Some(val x) => {}
+        .Some(_) => {}
+        .None => {}
+    }
+
+    while (true) {
+        break;
+        continue;
+        return;
+        return a;
+    }
+    for (i in 0..16) {
+        break;
+    }
+
+    for (i: uint in 0..16) {}
+}

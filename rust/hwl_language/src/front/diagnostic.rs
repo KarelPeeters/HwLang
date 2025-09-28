@@ -60,6 +60,7 @@ impl Diagnostics {
 
     // TODO go through and try to avoid early-exits as much as possible
     // TODO limit the number of diagnostics reported, eg. stop after 1k
+    // TODO turn this into diag.report(diags) so we can chain this
     pub fn report(&self, diag: Diagnostic) -> DiagError {
         self.diagnostics.borrow_mut().push(diag);
         DiagError(())
@@ -77,7 +78,11 @@ impl Diagnostics {
 
     // TODO rename to "report_bug"
     pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> DiagError {
-        self.report(Diagnostic::new_internal_error(span, reason))
+        self.report(
+            Diagnostic::new_internal_error(reason)
+                .add_error(span, "caused here")
+                .finish(),
+        )
     }
 
     // TODO sort diagnostics by location, for a better user experience?
@@ -133,14 +138,18 @@ pub struct DiagnosticStringSettings {
 
     /// Whether to include a backtrace in todo and internal compiler error diagnostics.
     backtrace: bool,
+
+    /// Whether to use ANSI color codes in the output.
+    ansi_color: bool,
 }
 
-impl Default for DiagnosticStringSettings {
-    fn default() -> Self {
+impl DiagnosticStringSettings {
+    pub fn default(ansi_color: bool) -> Self {
         DiagnosticStringSettings {
             snippet_context_lines: 2,
             snippet_merge_max_distance: Some(3),
             backtrace: false,
+            ansi_color,
         }
     }
 }
@@ -176,11 +185,10 @@ impl Diagnostic {
         Diagnostic::new(title).add_error(span, label).finish()
     }
 
-    pub fn new_internal_error(span: Span, reason: impl Into<String>) -> Diagnostic {
-        let mut diag =
-            Diagnostic::new(format!("internal compiler error: '{}'", reason.into())).add_error(span, "caused here");
+    pub fn new_internal_error(reason: impl Into<String>) -> DiagnosticBuilder {
+        let mut diag = Diagnostic::new(format!("internal compiler error: '{}'", reason.into()));
         diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
-        diag.finish()
+        diag
     }
 
     pub fn main_annotation(&self) -> Option<&Annotation> {
@@ -295,15 +303,19 @@ impl Diagnostic {
             message = message.footer(level.title(footer));
         }
 
-        if let Some(backtrace) = &backtrace {
-            if settings.backtrace {
-                message = message.footer(Level::Info.title(backtrace));
-            }
+        if let Some(backtrace) = &backtrace
+            && settings.backtrace
+        {
+            message = message.footer(Level::Info.title(backtrace));
         }
 
         // format into string
-        let renderer =
-            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))));
+        let renderer = if settings.ansi_color {
+            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))))
+        } else {
+            Renderer::plain()
+        };
+
         let render = renderer.render(message);
         render.to_string()
     }
@@ -396,4 +408,16 @@ pub trait DiagnosticAddable: Sized {
 
 pub fn compare_level(left: Level, right: Level) -> Ordering {
     (left as u8).cmp(&(right as u8)).reverse()
+}
+
+pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> String {
+    let settings = DiagnosticStringSettings::default(ansi_color);
+
+    let mut s = String::new();
+    for diag in diags {
+        s.push_str(&diag.to_string(source, settings));
+        s.push('\n');
+        s.push('\n');
+    }
+    s
 }

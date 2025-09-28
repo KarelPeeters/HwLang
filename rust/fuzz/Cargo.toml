@@ -26,6 +26,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_format"
+path = "fuzz_targets/format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_compile"
 path = "fuzz_targets/compile.rs"
 test = false

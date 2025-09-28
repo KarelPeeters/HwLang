@@ -1,0 +1,3 @@
+#!/bin/bash -ue
+
+cargo +nightly fuzz run fuzz_format --release -j 28 -- -only_ascii=1

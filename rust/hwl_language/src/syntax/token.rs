@@ -1,19 +1,19 @@
 use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
-use crate::util::data::VecExt;
+use crate::util::iter::IterExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
 use strum::EnumIter;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Token {
     pub ty: TokenType,
     pub span: Span,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TokenError {
     InvalidToken { pos: Pos },
     InvalidIntLiteral { span: Span },
@@ -62,7 +62,15 @@ macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='
 #[rustfmt::skip]
 macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
 
+#[derive(Debug, Copy, Clone)]
+enum NextInnerResult {
+    Ty(TokenType),
+    Whitespace,
+    Eof,
+}
+
 impl<'s> Tokenizer<'s> {
+    // TODO is there ever really a reason to set emit_incomplete_token to false?
     pub fn new(file: FileId, source: &'s str, emit_incomplete_token: bool) -> Self {
         Tokenizer {
             file,
@@ -122,7 +130,7 @@ impl<'s> Tokenizer<'s> {
 
     // TODO automatically generate most of this match logic
     // TODO try memchr where it applies, see if it's actually faster
-    fn next_inner_ty(&mut self) -> Result<Option<TokenType>, TokenError> {
+    fn next_inner_ty(&mut self) -> Result<NextInnerResult, TokenError> {
         let start = self.curr_pos();
         let start_left_str = self.left.as_str();
 
@@ -135,7 +143,7 @@ impl<'s> Tokenizer<'s> {
                 if self.peek() == Some('}') {
                     self.skip(1);
                     self.mode = Mode::StringMiddle { str_start, subs: true };
-                    return Ok(Some(TokenType::StringSubEnd));
+                    return Ok(NextInnerResult::Ty(TokenType::StringSubEnd));
                 } else {
                     // fallthrough
                 }
@@ -175,7 +183,7 @@ impl<'s> Tokenizer<'s> {
                 };
 
                 self.mode = next_mode;
-                return Ok(Some(ty));
+                return Ok(NextInnerResult::Ty(ty));
             }
         };
 
@@ -185,14 +193,14 @@ impl<'s> Tokenizer<'s> {
             let first = match iter.next() {
                 Some(first) => first,
                 None => {
-                    // end of file, valid if we're not still in a string literal
+                    // end of file, valid iff we're not still in a string literal
                     return if let Some((start, _)) = self.mode_stack.last() {
                         Err(TokenError::StringLiteralMissingEnd {
                             start: *start,
                             eof: self.curr_pos(),
                         })
                     } else {
-                        Ok(None)
+                        Ok(NextInnerResult::Eof)
                     };
                 }
             };
@@ -209,7 +217,7 @@ impl<'s> Tokenizer<'s> {
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
-                TokenType::WhiteSpace
+                return Ok(NextInnerResult::Whitespace);
             }
 
             ['"', _, _] => {
@@ -328,9 +336,9 @@ impl<'s> Tokenizer<'s> {
             }
 
             // trigram
-            ['.', '.', '='] => skip_fixed(3, TokenType::DotsEq),
-            ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDots),
-            ['.', '.', _] => skip_fixed(2, TokenType::Dots),
+            ['.', '.', '='] => skip_fixed(3, TokenType::DotDotEq),
+            ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDotDot),
+            ['.', '.', _] => skip_fixed(2, TokenType::DotDot),
 
             // simple fixed
             ['=', '=', _] => skip_fixed(2, TokenType::EqEq),
@@ -350,11 +358,11 @@ impl<'s> Tokenizer<'s> {
             ['&', '=', _] => skip_fixed(2, TokenType::AmperEq),
             ['&', _, _] => skip_fixed(1, TokenType::Amper),
             ['|', '|', _] => skip_fixed(2, TokenType::PipePipe),
-            ['|', '=', _] => skip_fixed(2, TokenType::BarEq),
+            ['|', '=', _] => skip_fixed(2, TokenType::PipeEq),
             ['|', _, _] => skip_fixed(1, TokenType::Pipe),
-            ['^', '^', _] => skip_fixed(2, TokenType::CircumflexCircumflex),
-            ['^', '=', _] => skip_fixed(2, TokenType::CircumflexEq),
-            ['^', _, _] => skip_fixed(1, TokenType::Circumflex),
+            ['^', '^', _] => skip_fixed(2, TokenType::CaretCaret),
+            ['^', '=', _] => skip_fixed(2, TokenType::CaretEq),
+            ['^', _, _] => skip_fixed(1, TokenType::Caret),
             ['+', '=', _] => skip_fixed(2, TokenType::PlusEq),
             ['+', _, _] => skip_fixed(1, TokenType::Plus),
             ['-', '=', _] => skip_fixed(2, TokenType::MinusEq),
@@ -379,14 +387,18 @@ impl<'s> Tokenizer<'s> {
 
             _ => return Err(TokenError::InvalidToken { pos: start }),
         };
-        Ok(Some(ty))
+        Ok(NextInnerResult::Ty(ty))
     }
 
     fn next_inner(&mut self) -> Result<Option<Token>, TokenError> {
-        let start_byte = self.curr_byte;
-
-        let Some(ty) = self.next_inner_ty()? else {
-            return Ok(None);
+        // TODO try moving this whitespace loop into the inner function, maybe that's faster
+        let (start_byte, ty) = loop {
+            let start_byte = self.curr_byte;
+            match self.next_inner_ty()? {
+                NextInnerResult::Ty(ty) => break (start_byte, ty),
+                NextInnerResult::Whitespace => continue,
+                NextInnerResult::Eof => return Ok(None),
+            };
         };
 
         let span = Span::new(self.file, start_byte, self.curr_byte);
@@ -419,19 +431,29 @@ impl<'s> Tokenizer<'s> {
     }
 }
 
-pub fn apply_string_literal_escapes(raw: &str) -> Cow<str> {
+pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
     // TODO actually do escapes here, keep in sync with tokenizer state machine
     Cow::Borrowed(raw)
 }
 
-pub fn is_valid_identifier(s: &str) -> bool {
-    match tokenize(FileId::dummy(), s, false) {
-        Ok(tokens) => match tokens.single() {
-            None => false,
-            Some(token) => token.ty == TokenType::Identifier,
-        },
-        Err(_) => false,
+fn str_is_single_token(s: &str, ty: TokenType) -> bool {
+    let tokenizer = Tokenizer::new(FileId::dummy(), s, false);
+    match tokenizer.into_iter().single() {
+        Some(Ok(token)) => token.ty == ty,
+        Some(Err(_)) | None => false,
     }
+}
+
+pub fn str_is_valid_identifier(s: &str) -> bool {
+    str_is_single_token(s, TokenType::Identifier)
+}
+
+pub fn str_is_whitespace_or_empty(s: &str) -> bool {
+    s.chars().all(|c| matches!(c, pattern_whitespace!()))
+}
+
+pub fn char_is_whitespace(c: char) -> bool {
+    matches!(c, pattern_whitespace!())
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {
@@ -471,7 +493,7 @@ macro_rules! declare_tokens {
             $($c_token:ident($c_cat:expr),)*
         }
         fixed {
-            $($f_token:ident($f_string:literal, $f_cat:expr),)*
+            $($f_token:ident($f_string:expr, $f_cat:expr),)*
         }
     ) => {
         use TokenCategory as TC;
@@ -501,7 +523,7 @@ macro_rules! declare_tokens {
             pub fn diagnostic_string(&self) -> &str {
                 match self {
                     $(TokenType::$c_token => stringify!($c_token),)*
-                    $(TokenType::$f_token => concat!("\"", $f_string, "\""),)*
+                    $(TokenType::$f_token => $f_string,)*
                 }
             }
         }
@@ -510,7 +532,6 @@ macro_rules! declare_tokens {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, strum::Display)]
 pub enum TokenCategory {
-    WhiteSpace,
     Comment,
     Identifier,
     IntegerLiteral,
@@ -525,10 +546,13 @@ impl TokenCategory {
     }
 }
 
+// these have dedicated constants so we can refer to them in diagnostics
+pub const TOKEN_STR_BUILTIN: &str = "__builtin";
+pub const TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN: &str = "unsafe_value_with_domain";
+
+// TODO rename tokens to match the literal string better
 declare_tokens! {
     custom {
-        // ignored
-        WhiteSpace(TC::WhiteSpace),
         BlockComment(TC::Comment),
         LineComment(TC::Comment),
 
@@ -553,8 +577,8 @@ declare_tokens! {
         Module("module", TC::Keyword),
         Interface("interface", TC::Keyword),
         Instance("instance", TC::Keyword),
-        Function("fn", TC::Keyword),
-        Combinatorial("comb", TC::Keyword),
+        Fn("fn", TC::Keyword),
+        Comb("comb", TC::Keyword),
         Clock("clock", TC::Keyword),
         Clocked("clocked", TC::Keyword),
         Const("const", TC::Keyword),
@@ -571,21 +595,21 @@ declare_tokens! {
         Continue("continue", TC::Keyword),
         True("true", TC::IntegerLiteral),
         False("false", TC::IntegerLiteral),
-        Undefined("undef", TC::IntegerLiteral),
+        Undef("undef", TC::IntegerLiteral),
         If("if", TC::Keyword),
         Else("else", TC::Keyword),
         Loop("loop", TC::Keyword),
         Match("match", TC::Keyword),
         For("for", TC::Keyword),
         While("while", TC::Keyword),
-        Public("pub", TC::Keyword),
+        Pub("pub", TC::Keyword),
         As("as", TC::Keyword),
         External("external", TC::Keyword),
 
         // builtins
         // TODO separate category?
-        Builtin("__builtin", TC::Keyword),
-        UnsafeValueWithDomain("unsafe_value_with_domain", TC::Keyword),
+        Builtin(TOKEN_STR_BUILTIN, TC::Keyword),
+        UnsafeValueWithDomain(TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN, TC::Keyword),
         IdFromStr("id_from_str", TC::Keyword),
 
         // misc symbols
@@ -607,12 +631,12 @@ declare_tokens! {
 
         // operators
         Dot(".", TC::Symbol),
-        Dots("..", TC::Symbol),
-        DotsEq("..=", TC::Symbol),
-        PlusDots("+..", TC::Symbol),
+        DotDot("..", TC::Symbol),
+        DotDotEq("..=", TC::Symbol),
+        PlusDotDot("+..", TC::Symbol),
         AmperAmper("&&", TC::Symbol),
         PipePipe("||", TC::Symbol),
-        CircumflexCircumflex("^^", TC::Symbol),
+        CaretCaret("^^", TC::Symbol),
         EqEq("==", TC::Symbol),
         Neq("!=", TC::Symbol),
         Gte(">=", TC::Symbol),
@@ -621,7 +645,7 @@ declare_tokens! {
         Lt("<", TC::Symbol),
         Amper("&", TC::Symbol),
         Pipe("|", TC::Symbol),
-        Circumflex("^", TC::Symbol),
+        Caret("^", TC::Symbol),
         LtLt("<<", TC::Symbol),
         GtGt(">>", TC::Symbol),
         Plus("+", TC::Symbol),
@@ -640,8 +664,8 @@ declare_tokens! {
         SlashEq("/=", TC::Symbol),
         PercentEq("%=", TC::Symbol),
         AmperEq("&=", TC::Symbol),
-        CircumflexEq("^=", TC::Symbol),
-        BarEq("|=", TC::Symbol),
+        PipeEq("|=", TC::Symbol),
+        CaretEq("^=", TC::Symbol),
     }
 }
 
@@ -694,7 +718,7 @@ impl TokenError {
 mod test {
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
-    use crate::syntax::token::{tokenize, Token, TokenError, TokenType, Tokenizer};
+    use crate::syntax::token::{Token, TokenError, TokenType, Tokenizer, tokenize};
     use hwl_util::swriteln;
     use std::collections::HashSet;
 
@@ -715,16 +739,21 @@ mod test {
     #[test]
     fn basic_tokenize() {
         let file = FileId::dummy();
-
         assert_eq!(Ok(vec![]), tokenize(file, "", false));
+        assert_eq!(Ok(vec![]), tokenize(file, "\n", false));
+        assert!(tokenize(file, "test foo function \"foo\"", false).is_ok());
+    }
+
+    #[test]
+    fn count_whitespace() {
+        let file = FileId::dummy();
         assert_eq!(
             Ok(vec![Token {
-                ty: TokenType::WhiteSpace,
-                span: Span::new(file, 0, 1),
+                ty: TokenType::Identifier,
+                span: Span::new(file, 1, 1 + 5)
             }]),
-            tokenize(file, "\n", false)
+            tokenize(file, " hello", false)
         );
-        assert!(tokenize(file, "test foo function \"foo\"", false).is_ok());
     }
 
     #[test]
@@ -734,7 +763,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span::new(file, 0, 4),
+                span: Span::new(file, 0, 4)
             }]),
             tokenize(file, "/**/", false)
         );
@@ -742,7 +771,7 @@ mod test {
         assert_eq!(
             Ok(vec![Token {
                 ty: TokenType::BlockComment,
-                span: Span::new(file, 0, 8),
+                span: Span::new(file, 0, 8)
             }]),
             tokenize(file, "/*/**/*/", false)
         );
@@ -804,7 +833,7 @@ mod test {
     }
 
     #[test]
-    fn literal_tokens_unique() {
+    fn fixed_tokens_unique() {
         let mut set = HashSet::new();
         for info in TokenType::FIXED_TOKENS {
             assert!(!info.literal.is_empty());
@@ -813,7 +842,7 @@ mod test {
     }
 
     #[test]
-    fn literal_tokens_covered() {
+    fn fixed_tokens_covered() {
         let mut any_error = false;
 
         for info in TokenType::FIXED_TOKENS {

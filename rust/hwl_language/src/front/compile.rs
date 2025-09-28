@@ -11,11 +11,11 @@ use crate::front::signal::{
 };
 use crate::front::value::{CompileValue, Value};
 use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
-use crate::syntax::ast::Spanned;
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
+use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::throw;
 use crate::util::arena::Arena;
@@ -475,7 +475,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         if let Ok(ScopedEntry::Item(source_item)) = source_value {
                             let decl_info = parsed[source_item].info().declaration.unwrap();
                             match decl_info.vis {
-                                Visibility::Public(_) => {}
+                                Visibility::Public { span: _ } => {}
                                 Visibility::Private => {
                                     let err = Diagnostic::new(format!("cannot access identifier `{}`", id.str(source)))
                                         .add_info(decl_info.id.span(), "identifier declared here")
@@ -528,6 +528,7 @@ fn resolve_import_path(
 
     // get the span without the trailing separator
     let parents_span = if path.inner.is_empty() {
+        // TODO is an empty path even possible?
         path.span
     } else {
         path.inner.first().unwrap().span.join(path.inner.last().unwrap().span)
