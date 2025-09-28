@@ -64,8 +64,7 @@ pub fn add_source_files_to_tree(
         let mut all_steps = steps.clone();
         all_steps.extend(relative_steps.iter().cloned());
 
-        let content =
-            read(&path).map_err(|e| diags.report_simple(e, manifest_span, "while reading here files here"))?;
+        let content = read(path).map_err(|e| diags.report_simple(e, manifest_span, "while reading here files here"))?;
 
         let file = source.add_file(path.to_string_lossy().into_owned(), content);
         hierarchy.add_file(diags, source, manifest_span, &all_steps, file)?;

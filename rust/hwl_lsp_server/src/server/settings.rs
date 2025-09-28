@@ -31,20 +31,19 @@ impl Settings {
         // figure out position encoding
         //   default to utf-16 (as required by the spec), but prefer utf-8 if the client supports it
         let mut position_encoding = PositionEncoding::Utf16;
-        if let Some(general) = &initialize_params.capabilities.general {
-            if let Some(position_encodings) = &general.position_encodings {
-                if position_encodings.contains(&PositionEncodingKind::UTF8) {
-                    position_encoding = PositionEncoding::Utf8;
-                }
-            }
+        if let Some(general) = &initialize_params.capabilities.general
+            && let Some(position_encodings) = &general.position_encodings
+            && position_encodings.contains(&PositionEncodingKind::UTF8)
+        {
+            position_encoding = PositionEncoding::Utf8;
         }
 
         // make sure the client can watch files for us
         let mut watch_dynamic = false;
-        if let Some(workspace) = &initialize_params.capabilities.workspace {
-            if let Some(did_change_watched_files) = workspace.did_change_watched_files {
-                watch_dynamic = did_change_watched_files.dynamic_registration.unwrap_or(false);
-            }
+        if let Some(workspace) = &initialize_params.capabilities.workspace
+            && let Some(did_change_watched_files) = workspace.did_change_watched_files
+        {
+            watch_dynamic = did_change_watched_files.dynamic_registration.unwrap_or(false);
         }
         // TODO support watching file changes ourself? but then how does synchronization work?
         if !watch_dynamic {
@@ -55,10 +54,10 @@ impl Settings {
 
         // check if the client supports multi-line tokens
         let mut supports_multi_line_semantic_tokens = false;
-        if let Some(text_document) = &initialize_params.capabilities.text_document {
-            if let Some(semantic_tokens) = &text_document.semantic_tokens {
-                supports_multi_line_semantic_tokens = semantic_tokens.multiline_token_support.unwrap_or(false);
-            }
+        if let Some(text_document) = &initialize_params.capabilities.text_document
+            && let Some(semantic_tokens) = &text_document.semantic_tokens
+        {
+            supports_multi_line_semantic_tokens = semantic_tokens.multiline_token_support.unwrap_or(false);
         }
 
         // TODO for all of these, first check that the client supports them?

@@ -34,11 +34,11 @@ pub fn manifest_find_read_parse(
     let manifest_file = source.add_file(found.path.to_string_lossy().into_owned(), found.source);
 
     let diags = Diagnostics::new();
-    let manifest = match Manifest::parse_toml(&diags, &source, manifest_file) {
+    let manifest = match Manifest::parse_toml(&diags, source, manifest_file) {
         Ok(m) => m,
         Err(e) => {
             let _: DiagError = e;
-            print_diagnostics(&source, diags);
+            print_diagnostics(source, diags);
             return Err(ErrorExit);
         }
     };

@@ -307,11 +307,11 @@ impl FlowPrivate for FlowCompile<'_> {
         let diags = self.root.diags;
 
         let mut value = value;
-        if let MaybeAssignedValue::Assigned(assigned) = &value {
-            if let Value::Hardware(_) = assigned.value_with_version {
-                let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
-                value = MaybeAssignedValue::Error(e);
-            }
+        if let MaybeAssignedValue::Assigned(assigned) = &value
+            && let Value::Hardware(_) = assigned.value_with_version
+        {
+            let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
+            value = MaybeAssignedValue::Error(e);
         }
 
         let mut curr = self;
@@ -652,10 +652,10 @@ impl FlowPrivate for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(combined) = variables.combined.get(&var.inner.index) {
-                if let Some(value) = &combined.value {
-                    return Ok(value.as_ref());
-                }
+            if let Some(combined) = variables.combined.get(&var.inner.index)
+                && let Some(value) = &combined.value
+            {
+                return Ok(value.as_ref());
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_get_maybe(var),
@@ -714,10 +714,10 @@ impl Flow for FlowHardware<'_> {
                 FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
                 FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
             };
-            if let Some(info) = variables.combined.get(&var.inner.index) {
-                if let Some(info) = &info.info {
-                    return Ok(info);
-                }
+            if let Some(info) = variables.combined.get(&var.inner.index)
+                && let Some(info) = &info.info
+            {
+                return Ok(info);
             }
             curr = match next {
                 Either::Left(root) => return root.parent.var_info(var),

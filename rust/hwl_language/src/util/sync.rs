@@ -83,12 +83,12 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         f_cycle: impl FnOnce(Vec<&S>) -> E,
     ) -> Result<&V, E> {
         // fast path without any exclusive locking
-        if let Some(entry) = self.map.get(&item) {
-            if entry.done_atomic.load(Ordering::Acquire) {
-                let state = unsafe { &*entry.state.get() };
-                let value = unwrap_match!(state, ItemState::Done(v) => v);
-                return Ok(value);
-            }
+        if let Some(entry) = self.map.get(&item)
+            && entry.done_atomic.load(Ordering::Acquire)
+        {
+            let state = unsafe { &*entry.state.get() };
+            let value = unwrap_match!(state, ItemState::Done(v) => v);
+            return Ok(value);
         }
 
         // try claiming the entry

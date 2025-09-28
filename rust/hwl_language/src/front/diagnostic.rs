@@ -303,10 +303,10 @@ impl Diagnostic {
             message = message.footer(level.title(footer));
         }
 
-        if let Some(backtrace) = &backtrace {
-            if settings.backtrace {
-                message = message.footer(Level::Info.title(backtrace));
-            }
+        if let Some(backtrace) = &backtrace
+            && settings.backtrace
+        {
+            message = message.footer(Level::Info.title(backtrace));
         }
 
         // format into string

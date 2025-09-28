@@ -1035,17 +1035,17 @@ fn lower_edge_to_str(large: &IrLargeArena, name_map: NameMap, expr: Spanned<&IrE
     let mut not_count: u32 = 0;
     let mut curr = expr.inner;
     loop {
-        if let &IrExpression::Large(curr_large) = curr {
-            if let IrExpressionLarge::BoolNot(inner) = &large[curr_large] {
-                not_count += 1;
-                curr = inner;
-                continue;
-            }
+        if let &IrExpression::Large(curr_large) = curr
+            && let IrExpressionLarge::BoolNot(inner) = &large[curr_large]
+        {
+            not_count += 1;
+            curr = inner;
+            continue;
         }
         break;
     }
 
-    let (edge, if_prefix) = if not_count % 2 == 0 {
+    let (edge, if_prefix) = if not_count.is_multiple_of(2) {
         ("posedge", "")
     } else {
         ("negedge", "!")

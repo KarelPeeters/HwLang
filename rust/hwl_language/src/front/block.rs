@@ -212,14 +212,14 @@ impl CompileItemContext<'_, '_> {
 
                     let entry = result_pair(ty, init).and_then(|(ty, init)| {
                         // check that init fits in type
-                        if let Some(ty) = &ty {
-                            if let Some(init) = &init {
-                                let reason = TypeContainsReason::Assignment {
-                                    span_target: id.span(),
-                                    span_target_ty: ty.span,
-                                };
-                                check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
-                            }
+                        if let Some(ty) = &ty
+                            && let Some(init) = &init
+                        {
+                            let reason = TypeContainsReason::Assignment {
+                                span_target: id.span(),
+                                span_target_ty: ty.span,
+                            };
+                            check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
                         }
 
                         // build variable

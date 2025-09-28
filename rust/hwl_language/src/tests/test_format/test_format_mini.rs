@@ -187,7 +187,7 @@ const c = [
             * long_long_long_long_long_long_long_long_long_long_long_long_long_long,
 ];
 ";
-    assert_formatted(&src);
+    assert_formatted(src);
 }
 
 #[test]

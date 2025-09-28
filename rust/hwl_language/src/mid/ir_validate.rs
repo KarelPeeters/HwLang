@@ -254,12 +254,11 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::FromBits(ty, expr) => {
-                    if let IrType::Array(element, len) = expr.ty(module, locals) {
-                        if let IrType::Bool = *element {
-                            if len == ty.size_bits() {
-                                return Ok(());
-                            }
-                        }
+                    if let IrType::Array(element, len) = expr.ty(module, locals)
+                        && let IrType::Bool = *element
+                        && len == ty.size_bits()
+                    {
+                        return Ok(());
                     }
                     return Err(diags.report_internal_error(span, "FromInt width mismatch"));
                 }
