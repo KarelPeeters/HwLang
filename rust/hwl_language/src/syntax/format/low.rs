@@ -72,12 +72,14 @@ pub struct StringOutput {
 pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeSimple) -> StringOutput {
     // TODO match field order
     let mut state = NewState {
-        settings,
-        result: String::with_capacity(2 * source_str.len()),
-        state: StringState {
-            curr_line_start: 0,
-            indent: 0,
-            emit_space: false,
+        builder: StringBuilder {
+            settings,
+            buffer: String::with_capacity(2 * source_str.len()),
+            state: StringBuilderState {
+                curr_line_start: 0,
+                indent: 0,
+                emit_space: false,
+            },
         },
         stats: StringsStats::default(),
         queue: vec![],
@@ -91,7 +93,7 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
 
     StringOutput {
         stats: state.stats,
-        string: state.result,
+        string: state.builder.buffer,
     }
 }
 
@@ -320,7 +322,6 @@ fn simplify_container_impl<'s>(
 
 // TODO rename (and merge?)
 struct NewState<'n, 's, 'f> {
-    settings: &'f FormatSettings,
     stats: StringsStats,
 
     queue: Vec<Command<'n, 's>>,
@@ -330,8 +331,123 @@ struct NewState<'n, 's, 'f> {
     group_no_wrap_stack: Vec<CheckGroupNoWrap<'n, 's>>,
     group_no_wrap_active: Vec<usize>,
 
-    state: StringState,
-    result: String,
+    builder: StringBuilder<'f>,
+}
+
+struct StringBuilder<'f> {
+    settings: &'f FormatSettings,
+    buffer: String,
+    state: StringBuilderState,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct StringBuilderState {
+    curr_line_start: usize,
+    indent: usize,
+    emit_space: bool,
+}
+
+#[derive(Debug)]
+struct StringBuilderCheckpoint {
+    result_len: usize,
+    state: StringBuilderState,
+}
+
+impl StringBuilderCheckpoint {
+    pub fn line(&self) -> Line {
+        Line {
+            start: self.state.curr_line_start,
+        }
+    }
+}
+
+impl StringBuilder<'_> {
+    pub fn line(&self) -> Line {
+        Line {
+            start: self.state.curr_line_start,
+        }
+    }
+
+    pub fn checkpoint(&self) -> StringBuilderCheckpoint {
+        StringBuilderCheckpoint {
+            result_len: self.buffer.len(),
+            state: self.state,
+        }
+    }
+
+    pub fn restore(&mut self, checkpoint: StringBuilderCheckpoint) {
+        assert!(self.buffer.len() >= checkpoint.result_len);
+        self.buffer.truncate(checkpoint.result_len);
+        self.state = checkpoint.state;
+    }
+
+    fn at_line_start(&self) -> bool {
+        self.state.curr_line_start == self.buffer.len()
+    }
+
+    fn line_length(&mut self, line: Line) -> usize {
+        let rest = &self.buffer[line.start..];
+        rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len())
+    }
+
+    #[must_use]
+    fn write_str(&mut self, s: &str) -> bool {
+        // strings containing newlines need the parent to wrap
+        let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
+
+        // emit indent if this is the first text on the line
+        // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
+        //   first abstractly push indent/str nodes, then later actually convert to a full string
+        //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
+        if self.at_line_start() && !str_is_whitespace_or_empty(s) {
+            for _ in 0..self.state.indent {
+                self.buffer.push_str(&self.settings.indent_str);
+            }
+        }
+
+        // emit space if asked and both the previous and next charactor are not whitespace
+        if self.state.emit_space
+            && !self.at_line_start()
+            && let Some(prev_char) = self.buffer.chars().last()
+            && !char_is_whitespace(prev_char)
+            && let Some(next_char) = s.chars().next()
+            && !char_is_whitespace(next_char)
+        {
+            self.buffer.push(' ');
+        }
+        if !s.is_empty() {
+            self.state.emit_space = false;
+        }
+
+        // emit str itself
+        self.buffer.push_str(s);
+
+        // update line state
+        if let Some(last_line_end) = last_line_end {
+            self.state.curr_line_start = self.buffer.len() - s.len() + last_line_end + 1;
+        }
+
+        last_line_end.is_some()
+    }
+
+    /// Ensure the buffer ends in at least `n` newlines.
+    /// This is used to avoid duplicate newlines being emitted where not necessary.
+    fn ensure_newlines(&mut self, n: usize) {
+        // count current ending newlines
+        let mut curr = self.buffer.as_str();
+        let mut curr_count = 0;
+        while curr_count < n
+            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
+        {
+            curr = before;
+            curr_count += 1;
+        }
+
+        // add newlines if necessary
+        for _ in curr_count..n {
+            let _ = self.write_str(&self.settings.newline_str);
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -350,8 +466,7 @@ enum CommandKind<'n, 's> {
 // TODO document all of this
 #[derive(Debug)]
 struct CheckGroupNoWrap<'n, 's> {
-    result_len: usize,
-    string_state: StringState,
+    check: StringBuilderCheckpoint,
 
     queue_next: usize,
     queue_len: usize,
@@ -359,14 +474,6 @@ struct CheckGroupNoWrap<'n, 's> {
     first_active: usize,
 
     group_inner: &'n LNodeSimple<'s>,
-}
-
-impl<'n, 's> CheckGroupNoWrap<'n, 's> {
-    pub fn line(&self) -> Line {
-        Line {
-            start: self.string_state.curr_line_start,
-        }
-    }
 }
 
 struct CausedWrap;
@@ -388,92 +495,6 @@ impl<'n, 's> NewState<'n, 's, '_> {
         );
     }
 
-    fn at_line_start(&self) -> bool {
-        self.state.curr_line_start == self.result.len()
-    }
-
-    fn line(&self) -> Line {
-        Line {
-            start: self.state.curr_line_start,
-        }
-    }
-
-    /// Check if the line at which the checkpoint was taken overflows the max line length.
-    fn line_overflows(&mut self, line: Line) -> bool {
-        self.stats.check_overflow += 1;
-
-        // TODO only overflow if the length of the line larger than the indent, otherwise wrapping will never help
-        //   (that's only true if the result of wrapping wil cause extra indents, is that always true?)
-        let rest = &self.result[line.start..];
-        let line_len = rest.find(LineOffsets::LINE_ENDING_CHARS).unwrap_or(rest.len());
-        line_len > self.settings.max_line_length
-    }
-
-    fn write_str(&mut self, s: &str) -> Result<(), CausedWrap> {
-        // strings containing newlines need the parent to wrap
-        let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
-        if last_line_end.is_some() {
-            self.force_wrap_now()?;
-        }
-
-        // emit indent if this is the first text on the line
-        // TODO instead of actually emitting the indent, we can also add yet another symbolic layer:
-        //   first abstractly push indent/str nodes, then later actually convert to a full string
-        //   this should speed up the somewhat bruteforce backtracking we do now, especially when indents are deep
-        if self.at_line_start() && !str_is_whitespace_or_empty(s) {
-            for _ in 0..self.state.indent {
-                self.result.push_str(&self.settings.indent_str);
-            }
-        }
-
-        // emit space if asked and both the previous and next charactor are not whitespace
-        if self.state.emit_space
-            && !self.at_line_start()
-            && let Some(prev_char) = self.result.chars().last()
-            && !char_is_whitespace(prev_char)
-            && let Some(next_char) = s.chars().next()
-            && !char_is_whitespace(next_char)
-        {
-            self.result.push(' ');
-        }
-        if !s.is_empty() {
-            self.state.emit_space = false;
-        }
-
-        // emit str itself
-        self.result.push_str(s);
-
-        // update line state
-        if let Some(last_line_end) = last_line_end {
-            self.state.curr_line_start = self.result.len() - s.len() + last_line_end + 1;
-        }
-
-        Ok(())
-    }
-
-    /// Ensure the buffer ends in at least `n` newlines.
-    /// This is used to avoid duplicate newlines being emitted where not necessary.
-    fn ensure_newlines(&mut self, n: usize) -> Result<(), CausedWrap> {
-        // TODO should we always force wrap, even if we don't emit any new newlines here?
-
-        // count current ending newlines
-        let mut curr_count = 0;
-        let mut curr = self.result.as_str();
-        while curr_count < n
-            && let Some(before) = curr.strip_suffix(&self.settings.newline_str)
-        {
-            curr_count += 1;
-            curr = before;
-        }
-
-        // add newlines if necessary
-        for _ in curr_count..n {
-            self.write_str(&self.settings.newline_str)?;
-        }
-
-        Ok(())
-    }
-
     fn can_wrap(&self) -> bool {
         self.group_no_wrap_active.is_empty()
     }
@@ -493,8 +514,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
 
         let check = CheckGroupNoWrap {
             // TODO match field order
-            result_len: self.result.len(),
-            string_state: self.state,
+            check: self.builder.checkpoint(),
             queue_next: self.queue_next,
             queue_len: self.queue.len(),
             // queue_after: self.queue.len() - self.queue_next,
@@ -525,8 +545,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
         // println!("{:?}", self.stack_group_no_wrap[first_active]);
 
         let CheckGroupNoWrap {
-            result_len,
-            string_state: state,
+            check,
             queue_next,
             queue_len,
             first_active,
@@ -540,9 +559,7 @@ impl<'n, 's> NewState<'n, 's, '_> {
         self.group_no_wrap_active.clear();
 
         // restore string
-        self.stats.restore_chars += self.result.len() - result_len;
-        self.result.truncate(result_len);
-        self.state = state;
+        self.builder.restore(check);
 
         // restore queue
         // TODO retore the queue to _after_ the insert, saving some duplicate effort here (benchmark)
@@ -587,12 +604,12 @@ fn new_loop(state: &mut NewState) {
         state.stats.loop_iterations += 1;
 
         // check for line overflow
-        let curr_line = state.line();
-        if state.line_overflows(curr_line) {
+        let curr_line = state.builder.line();
+        if state.builder.line_length(curr_line) > state.builder.settings.max_line_length {
             let info = enumerate(&state.group_no_wrap_stack)
                 .rev()
-                .take_while(|(_, info)| info.line() >= curr_line)
-                .find(|(_, info)| info.line() == curr_line);
+                .take_while(|(_, info)| info.check.line() >= curr_line)
+                .find(|(_, info)| info.check.line() == curr_line);
             if let Some((info_pos, _)) = info {
                 state.restore_and_wrap(info_pos);
                 continue;
@@ -615,7 +632,7 @@ fn new_loop(state: &mut NewState) {
                 continue;
             }
             CommandKind::RestoreIndent { indent } => {
-                state.state.indent = indent;
+                state.builder.state.indent = indent;
                 continue;
             }
         };
@@ -627,35 +644,51 @@ fn new_loop(state: &mut NewState) {
         // TODO discard this whole branching idea again and do something more similar to prettier?
         let res = match next {
             LNodeSimple::Space => {
-                state.state.emit_space = true;
+                state.builder.state.emit_space = true;
                 Ok(())
             }
-            LNodeSimple::AlwaysStr(s) => state.write_str(s),
+            LNodeSimple::AlwaysStr(s) => {
+                if state.builder.write_str(s) {
+                    state.force_wrap_now()
+                } else {
+                    Ok(())
+                }
+            }
             LNodeSimple::WrapStr(s) => {
                 if state.can_wrap() {
-                    state.write_str(s)
-                } else {
-                    Ok(())
+                    let _ = state.builder.write_str(s);
                 }
+                Ok(())
             }
-            LNodeSimple::AlwaysNewline => state.ensure_newlines(1),
+            LNodeSimple::AlwaysNewline => {
+                let res = state.force_wrap_now();
+                if res.is_ok() {
+                    state.builder.ensure_newlines(1);
+                }
+                res
+            }
             LNodeSimple::WrapNewline => {
                 if state.can_wrap() {
-                    state.ensure_newlines(1)
-                } else {
-                    Ok(())
+                    state.builder.ensure_newlines(1);
                 }
+                Ok(())
             }
-            LNodeSimple::AlwaysBlankLine => state.ensure_newlines(2),
+            LNodeSimple::AlwaysBlankLine => {
+                let res = state.force_wrap_now();
+                if res.is_ok() {
+                    state.builder.ensure_newlines(2);
+                }
+                res
+            }
             LNodeSimple::Indent(child) => {
-                let indent = state.state.indent;
-                state.state.indent += 1;
+                let indent = state.builder.state.indent;
+                state.builder.state.indent += 1;
                 state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
             LNodeSimple::Dedent(child) => {
-                let indent = state.state.indent;
-                state.state.indent = 0;
+                let indent = state.builder.state.indent;
+                state.builder.state.indent = 0;
                 state.push_iter([CommandKind::Node(child), CommandKind::RestoreIndent { indent }]);
                 Ok(())
             }
