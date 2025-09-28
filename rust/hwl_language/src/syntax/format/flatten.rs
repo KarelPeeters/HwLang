@@ -101,22 +101,6 @@ impl Context<'_> {
                 nodes.push(self.fmt_import_entry(entry));
             }
             ImportFinalKind::Multi(entries) => {
-                // let mut group = vec![];
-                //
-                // group.push(token(TT::OpenS));
-                //
-                // let mut nodes_fill = vec![];
-                // for (entry, last) in entries.iter().with_last() {
-                //     let mut seq = vec![self.fmt_import_entry(entry)];
-                //     seq.push(comma_nodes(last));
-                //     nodes_fill.push(HNode::Sequence(seq));
-                // }
-                //
-                // group.push(HNode::Fill(nodes_fill));
-                // group.push(token(TT::CloseS));
-                //
-                // nodes.push(HNode::Group(Box::new(HNode::Sequence(group))));
-
                 let mut seq = vec![];
 
                 for (entry, last) in entries.iter().with_last() {
@@ -487,9 +471,9 @@ impl Context<'_> {
                         domain,
                         interface,
                     } => HNode::Sequence(vec![
-                        self.fmt_domain(domain.inner),
-                        HNode::Space,
                         token(TT::Interface),
+                        HNode::Space,
+                        self.fmt_domain(domain.inner),
                         HNode::Space,
                         self.fmt_expr(interface),
                     ]),
