@@ -3,6 +3,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::print::CollectPrintHandler;
+use hwl_language::syntax::format::{FormatError, FormatSettings, format};
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
@@ -25,25 +26,29 @@ pub fn start() {
 }
 
 #[wasm_bindgen(getter_with_clone)]
-pub struct CompileAndLowerResult {
-    pub diagnostics_ansi: String,
-    pub prints: Vec<String>,
+pub struct RunAllResult {
+    pub compile_diags_ansi: String,
+    pub compile_prints: Vec<String>,
+
     pub lowered_verilog: String,
     pub lowered_cpp: String,
+
+    pub format_diags_ansi: String,
+    pub format_debug_str: String,
 }
 
 const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[wasm_bindgen]
-pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
+pub fn run_all(top_src: String) -> RunAllResult {
     let diags = Diagnostics::new();
     let mut source = SourceDatabase::new();
     let hierarchy_file = build_source(&diags, &mut source, top_src);
 
+    // compile
     let mut print_handler = CollectPrintHandler::new();
-
-    let compiled = hierarchy_file.and_then(|(hierarchy, top_file)| {
-        let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
+    let compiled = hierarchy_file.as_ref_ok().and_then(|&(ref hierarchy, top_file)| {
+        let parsed = ParsedDatabase::new(&diags, &source, hierarchy);
 
         let start = wasm_timer::Instant::now();
         let should_stop = || start.elapsed() >= TIMEOUT;
@@ -52,7 +57,7 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         compile(
             &diags,
             &source,
-            &hierarchy,
+            hierarchy,
             &parsed,
             ElaborationSet::AsMuchAsPossible,
             &mut print_handler,
@@ -62,6 +67,7 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         )
     });
 
+    // lower
     let lowered = compiled
         .as_ref_ok()
         .and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
@@ -69,16 +75,41 @@ pub fn compile_and_lower(top_src: String) -> CompileAndLowerResult {
         .as_ref_ok()
         .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
 
+    // format
+    let diags_format = Diagnostics::new();
+    let formatted = hierarchy_file.as_ref_ok().and_then(|&(_, top_file)| {
+        format(&diags_format, &source, &FormatSettings::default(), top_file).map_err(|e| match e {
+            FormatError::Syntax(e) | FormatError::Internal(e) => e,
+        })
+    });
+
+    // package results
     // TODO lower diagnostics directly to html instead of through ansi first?
-    let diagnostics_ansi = diags_to_string(&source, diags.finish(), true);
+    let compile_diags_ansi = diags_to_string(&source, diags.finish(), true);
     let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.source);
     let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
 
-    CompileAndLowerResult {
-        diagnostics_ansi,
-        prints: print_handler.finish(),
+    let format_diags_ansi = diags_to_string(&source, diags_format.finish(), true);
+    let format_debug_str = formatted.map_or_else(|_| "/* error */".to_string(), |f| f.debug_str());
+
+    RunAllResult {
+        compile_diags_ansi,
+        compile_prints: print_handler.finish(),
         lowered_verilog,
         lowered_cpp,
+        format_diags_ansi,
+        format_debug_str,
+    }
+}
+
+#[wasm_bindgen]
+pub fn format_source(source: String) -> Option<String> {
+    let diags = Diagnostics::new();
+    let mut src_db = SourceDatabase::new();
+    let file = src_db.add_file("dummy.kh".to_owned(), source);
+    match format(&diags, &src_db, &FormatSettings::default(), file) {
+        Ok(result) => Some(result.new_content),
+        Err(_) => None,
     }
 }
 

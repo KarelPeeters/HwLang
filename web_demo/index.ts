@@ -87,7 +87,9 @@ let language = new Language(null, new HwlParser(), [], "HWLang");
 const element_editor_input = document.getElementById("div-editor-input");
 const element_editor_output_verilog = document.getElementById("div-editor-output-verilog");
 const element_editor_output_cpp = document.getElementById("div-editor-output-cpp");
-const element_messages = document.getElementById("div-messages");
+const element_editor_output_format = document.getElementById("div-editor-output-format");
+const element_diags_compile = document.getElementById("div-diags-compile");
+const element_diags_format = document.getElementById("div-diags-format");
 const element_share_link = document.getElementById("button-share") as HTMLAnchorElement;
 const element_clear_button = document.getElementById("button-clear");
 
@@ -121,7 +123,7 @@ function diagnostics_ansi_to_html(ansi: string): string {
 const EMPTY_DOC = "// empty";
 const COOKIE_SOURCE = "source";
 
-function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView) {
+function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView) {
     // store code in cookie
     Cookies.set(COOKIE_SOURCE, source);
 
@@ -132,31 +134,34 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     element_share_link.href = url.toString()
 
     // run the compiler
-    let diagnostics_ansi, lowered_verilog, lowered_cpp;
+    let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str;
     try {
-        const result = hwl_wasm.compile_and_lower(source);
-        diagnostics_ansi = result.diagnostics_ansi;
+        const result = hwl_wasm.run_all(source);
+        compile_diags_ansi = result.compile_diags_ansi;
         lowered_verilog = result.lowered_verilog;
         lowered_cpp = result.lowered_cpp;
+        format_diags_ansi = result.format_diags_ansi;
+        format_debug_str = result.format_debug_str;
 
-        if (result.prints.length > 0) {
+        if (result.compile_prints.length > 0) {
             let combined_prints = "// prints:\n";
-            for (const print of result.prints) {
+            for (const print of result.compile_prints) {
                 combined_prints += "//  " + print + "\n";
             }
             combined_prints += "\n";
             lowered_verilog = combined_prints + lowered_verilog;
         }
-
-        // TODO include tab for lowered cpp
     } catch (e) {
-        diagnostics_ansi = "compiler panicked\nsee console for the error message and stack trace";
+        compile_diags_ansi = "compiler panicked\nsee console for the error message and stack trace";
         lowered_verilog = "";
         lowered_cpp = "";
+        format_diags_ansi = compile_diags_ansi;
+        format_debug_str = "";
     }
 
     // display diagnostics as html
-    element_messages.innerHTML = diagnostics_ansi_to_html(diagnostics_ansi);
+    element_diags_compile.innerHTML = diagnostics_ansi_to_html(compile_diags_ansi);
+    element_diags_format.innerHTML = diagnostics_ansi_to_html(format_diags_ansi);
 
     // replace output contents with newly generated source,
     // put at least some text to prevent confusion
@@ -165,6 +170,9 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     }
     if (lowered_cpp.length == 0) {
         lowered_cpp = EMPTY_DOC;
+    }
+    if (format_debug_str.length == 0) {
+        format_debug_str = EMPTY_DOC;
     }
 
     editor_view_output_verilog.dispatch({
@@ -179,6 +187,13 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
             from: 0,
             to: editor_view_output_cpp.state.doc.length,
             insert: lowered_cpp,
+        }
+    })
+    editor_view_output_format.dispatch({
+        changes: {
+            from: 0,
+            to: editor_view_output_format.state.doc.length,
+            insert: format_debug_str,
         }
     })
 }
@@ -196,6 +211,20 @@ let common_extensions = [
     indentUnit.of(" ".repeat(4)),
     syntaxHighlighting(defaultHighlightStyle),
 ];
+
+function formatCurrentCode() {
+    const currentCode = editor_view_input.state.doc.toString();
+    const formatted = hwl_wasm.format_source(currentCode);
+    if (formatted !== null) {
+        editor_view_input.dispatch({
+            changes: {
+                from: 0,
+                to: editor_view_input.state.doc.length,
+                insert: formatted,
+            }
+        });
+    }
+}
 
 // TODO compare legacy mode to to https://www.npmjs.com/package/codemirror-lang-verilog
 let editor_state_output_verilog = EditorState.create({
@@ -220,11 +249,22 @@ let editor_view_output_cpp = new EditorView({
     state: editor_state_output_cpp,
     parent: element_editor_output_cpp
 })
+let editor_state_output_format = EditorState.create({
+    doc: EMPTY_DOC,
+    extensions: common_extensions.concat([
+        EditorState.readOnly.of(true),
+        new LanguageSupport(language)
+    ]),
+})
+let editor_view_output_format = new EditorView({
+    state: editor_state_output_format,
+    parent: element_editor_output_format
+})
 
 // TODO get this out of the typing event loop, run this async or on a separate thread
 let updateListenerExtension = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-        onDocumentChanged(update.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp);
+        onDocumentChanged(update.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format);
     }
 })
 
@@ -251,6 +291,12 @@ let editor_state_input = EditorState.create({
         highlightActiveLineGutter(),
         new LanguageSupport(language),
         updateListenerExtension,
+        keymap.of([{
+            key: "Ctrl-Shift-i", run: () => {
+                formatCurrentCode();
+                return true;
+            }
+        }]),
     ])
 })
 let editor_view_input = new EditorView({
@@ -270,4 +316,4 @@ element_clear_button.addEventListener("click", () => {
 });
 
 // initial update
-onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp)
+onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format)
