@@ -416,40 +416,40 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
     let mut builder = StringBuilder::new(settings, source_str.len() * 2);
     let mut stats = StringsStats::default();
 
-    let mut queue = vec![Command::Node(root)];
-    let mut queue_fill = vec![];
+    let mut cmd_stack = vec![Command::Node(root)];
+    let mut cmd_stack_fits = vec![];
     let mut group_no_wrap_count: usize = 0;
 
-    while let Some(cmd) = queue.pop() {
+    while let Some(cmd) = cmd_stack.pop() {
         stats.iter_loop += 1;
 
         match cmd {
             Command::Node(node) => {
                 let wrapping = group_no_wrap_count == 0;
-                match visit_node(&mut builder, &mut queue, wrapping, node) {
+                match visit_node(&mut builder, &mut cmd_stack, wrapping, node) {
                     VisitResult::Group { force_wrap, child } => {
                         // check whether we need to wrap this group by checking whether everything would fit if we don't
                         let group_wrap = force_wrap || {
                             group_no_wrap_count += 1;
-                            queue.push(Command::EndGroupNoWrap);
-                            queue.push(Command::Node(child));
+                            cmd_stack.push(Command::EndGroupNoWrap);
+                            cmd_stack.push(Command::Node(child));
 
-                            let group_fits = fits(&mut builder, group_no_wrap_count, &queue, &mut queue_fill);
+                            let group_fits = fits(&mut builder, group_no_wrap_count, &cmd_stack, &mut cmd_stack_fits);
 
                             group_no_wrap_count -= 1;
-                            queue.pop().unwrap();
-                            queue.pop().unwrap();
+                            cmd_stack.pop().unwrap();
+                            cmd_stack.pop().unwrap();
 
                             !group_fits
                         };
 
                         // push the right commands based on the wrapping decision
                         if group_wrap {
-                            queue.push(Command::Node(child));
+                            cmd_stack.push(Command::Node(child));
                         } else {
                             group_no_wrap_count += 1;
-                            queue.push(Command::EndGroupNoWrap);
-                            queue.push(Command::Node(child));
+                            cmd_stack.push(Command::EndGroupNoWrap);
+                            cmd_stack.push(Command::Node(child));
                         }
                     }
                     VisitResult::Other(new_line) => {
@@ -478,12 +478,16 @@ pub fn node_to_string(settings: &FormatSettings, source_str: &str, root: &LNodeS
 
 fn fits<'n, 's>(
     builder: &mut StringBuilder,
-    mut no_wrap_count: usize,
-    mut queue_outer: &[Command<'n, 's>],
-    queue: &mut Vec<Command<'n, 's>>,
+    no_wrap_count: usize,
+    cmd_stack_outer: &[Command<'n, 's>],
+    cmd_stack: &mut Vec<Command<'n, 's>>,
 ) -> bool {
+    assert!(cmd_stack.is_empty());
+
     let check = builder.checkpoint();
-    queue.clear();
+
+    let mut no_wrap_count = no_wrap_count;
+    let mut cmd_stack_outer = cmd_stack_outer;
 
     loop {
         // stop once we've overflown the line
@@ -493,11 +497,11 @@ fn fits<'n, 's>(
 
         // find the next command
         // (to avoid fully copying the outer queue, we instead use it as a separate second level of the stack)
-        let cmd = match queue.pop() {
+        let cmd = match cmd_stack.pop() {
             Some(cmd) => cmd,
-            None => match queue_outer.split_last() {
+            None => match cmd_stack_outer.split_last() {
                 Some((&cmd, rest)) => {
-                    queue_outer = rest;
+                    cmd_stack_outer = rest;
                     cmd
                 }
                 None => break,
@@ -508,12 +512,12 @@ fn fits<'n, 's>(
         match cmd {
             Command::Node(node) => {
                 let wrapping = no_wrap_count == 0;
-                let visit_result = visit_node(builder, queue, wrapping, node);
+                let visit_result = visit_node(builder, cmd_stack, wrapping, node);
 
                 match visit_result {
                     VisitResult::Group { force_wrap: _, child } => {
                         // assume wrapping for all future groups, we just want to know if everything _can_ fit
-                        queue.push(Command::Node(child));
+                        cmd_stack.push(Command::Node(child));
                     }
                     VisitResult::Other(new_line) => match new_line {
                         MaybeNewline::No => {}
@@ -536,7 +540,7 @@ fn fits<'n, 's>(
         };
     }
 
-    queue.clear();
+    cmd_stack.clear();
 
     // check for final overflow and restore the builder
     let fits = !builder.line_overflows(check.line());
