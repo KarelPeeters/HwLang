@@ -66,7 +66,7 @@ pub struct ArgsFormat {
     #[arg(long, short)]
     pub verbose: bool,
     #[arg(long, short)]
-    pub debug: bool,
+    pub debug: Option<PathBuf>,
 }
 
 const MANIFEST_DOC: &str = concat!(

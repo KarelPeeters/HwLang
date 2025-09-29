@@ -7,7 +7,7 @@ use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::util::data::IndexMapExt;
 use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath, recurse_for_each_file};
-use hwl_util::swrite;
+use hwl_util::{swrite, swriteln};
 use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
 use std::ffi::OsStr;
@@ -101,11 +101,14 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     let mut count_changed: usize = 0;
     let mut count_error_syntax: usize = 0;
     let mut count_error_internal: usize = 0;
+
+    let mut debug_output = String::new();
+
     for ((&file, file_path), result) in zip_eq(&files, &results) {
         let msg = match result {
             Ok(result) => {
-                if debug {
-                    eprintln!("{}", result.debug_str());
+                if debug.is_some() {
+                    swriteln!(debug_output, "{}", result.debug_str());
                 }
 
                 if result.new_content == source[file].content {
@@ -143,7 +146,13 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
     }
 
     // do something with the results
-    if check {
+    if let Some(debug) = &debug {
+        let io_result = std::fs::write(debug, debug_output).map_err(|e| e.with_path(debug));
+        if let Err(e) = io_result {
+            eprintln!("Failed to write debug file: {e:?}");
+            return ExitCode::FAILURE;
+        }
+    } else if check {
         // set exit code depending on whether any files would be changed
         if count_unchanged != files.len() {
             eprintln!("\nCheck failed, not all files are formatted correctly");
