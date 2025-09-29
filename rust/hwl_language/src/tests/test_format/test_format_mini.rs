@@ -338,3 +338,10 @@ fn newlines_not_preserved_between_commas() {
     let expected = "const c: (a, b) = false;\n";
     assert_formats_to(src, expected);
 }
+
+#[test]
+fn dont_preserve_newlines_at_start_and_end() {
+    let src = "fn foo(\n\n    // a\n\n    // b\n\n) {}\n\nfn foo() {\n\n    // a\n\n    // b\n\n}\n\nfn foo() {\n\n    a;\n\n    b;\n\n}\n";
+    let expected = "fn foo(\n    // a\n\n    // b\n) {}\n\nfn foo() {\n    // a\n\n    // b\n}\n\nfn foo() {\n    a;\n\n    b;\n}\n";
+    assert_formats_to(src, expected);
+}

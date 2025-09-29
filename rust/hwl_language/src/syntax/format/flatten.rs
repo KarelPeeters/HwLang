@@ -35,9 +35,9 @@ struct Context<'a> {
 impl Context<'_> {
     fn fmt_file_items(&self, items: &[Item]) -> HNode {
         // special case to deal with empty files
-        let mut nodes = vec![HNode::PreserveBlankLines { last: items.is_empty() }];
+        let mut nodes = vec![HNode::PreserveBlankLines];
 
-        for (item, last) in items.iter().with_last() {
+        for item in items {
             let item_node = match item {
                 Item::Import(import) => self.fmt_import(import),
                 Item::CommonDeclaration(decl) => self.fmt_common_decl(&decl.inner),
@@ -74,7 +74,7 @@ impl Context<'_> {
             };
             nodes.push(item_node);
 
-            nodes.push(HNode::PreserveBlankLines { last })
+            nodes.push(HNode::PreserveBlankLines)
         }
 
         HNode::Sequence(nodes)
@@ -181,7 +181,10 @@ impl Context<'_> {
                     seq.push(self.fmt_if(stmt, |inner| self.fmt_extra_list(SurroundKind::Curly, true, inner, f)))
                 }
             }
-            seq.push(HNode::PreserveBlankLines { last });
+
+            if !last {
+                seq.push(HNode::PreserveBlankLines);
+            }
         }
         HNode::Sequence(seq)
     }
@@ -381,15 +384,15 @@ impl Context<'_> {
 
             if !port_types.items.is_empty() && !views.is_empty() {
                 body_seq.push(HNode::AlwaysBlankLine);
-                body_seq.push(HNode::PreserveBlankLines { last: false });
+                body_seq.push(HNode::PreserveBlankLines);
             }
 
             for (view, last) in views.iter().with_last() {
                 body_seq.push(self.fmt_interface_view_decl(view));
                 if !last {
                     body_seq.push(HNode::AlwaysNewline);
+                    body_seq.push(HNode::PreserveBlankLines);
                 }
-                body_seq.push(HNode::PreserveBlankLines { last });
             }
 
             surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(body_seq))
@@ -895,7 +898,7 @@ impl Context<'_> {
             seq_branches.push(f(block));
             seq_branches.push(HNode::AlwaysNewline);
             if !last {
-                seq_branches.push(HNode::PreserveBlankLines { last: false });
+                seq_branches.push(HNode::PreserveBlankLines);
             }
         }
 
@@ -1232,7 +1235,9 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
     for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
         let last = last_stmt && final_expression.is_none();
-        seq.push(HNode::PreserveBlankLines { last });
+        if !last {
+            seq.push(HNode::PreserveBlankLines);
+        }
     }
 
     if let Some(final_expression) = final_expression {
@@ -1240,10 +1245,6 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
         seq.push(final_expression);
         seq.push(HNode::WrapNewline);
         seq.push(HNode::Space);
-    }
-
-    if statements.is_empty() {
-        seq.push(HNode::PreserveBlankLines { last: true });
     }
 
     surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(seq))
@@ -1260,7 +1261,9 @@ fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNod
         seq.push(f(item));
         seq.push(comma_nodes(last));
         seq.push(HNode::WrapNewline);
-        seq.push(HNode::PreserveBlankLines { last });
+        if !last {
+            seq.push(HNode::PreserveBlankLines);
+        }
     }
 
     surrounded_group_indent(surround, HNode::Sequence(seq))

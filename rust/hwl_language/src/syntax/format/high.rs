@@ -23,7 +23,7 @@ pub enum HNode {
     Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
-    PreserveBlankLines { last: bool },
+    PreserveBlankLines,
 }
 
 #[derive(Debug)]
@@ -90,7 +90,7 @@ impl HNode {
                 swriteln!(f, "Group");
                 child.debug_str_impl(f, indent + 1);
             }
-            HNode::PreserveBlankLines { last: end } => swriteln!(f, "PreserveBlankLines(end={end})"),
+            HNode::PreserveBlankLines => swriteln!(f, "PreserveBlankLines"),
         }
     }
 }
@@ -210,7 +210,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         // preserve newlines between comments
         if !next_is_first_comment {
             let len_before = seq.len();
-            if self.preserve_newlines(seq, true, true) {
+            if self.preserve_newlines(seq, true, false) {
                 report_newline(len_before);
             }
         }
@@ -408,20 +408,16 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 force_wrap: false,
                 child: Box::new(self.map(prev_space, next_wrap_comma, inner)?),
             },
-            HNode::PreserveBlankLines { last: end } => {
+            HNode::PreserveBlankLines => {
                 let mut seq_escaping = vec![];
 
-                let next_token_is_comment = self.peek_token().is_some_and(|t| t.ty.category() == TC::Comment);
+                self.preserve_newlines(&mut seq_escaping, false, true);
 
-                if !end || next_token_is_comment {
+                let len_before = seq_escaping.len();
+                self.collect_comments_all(prev_space, &mut seq_escaping);
+
+                if seq_escaping.len() > len_before {
                     self.preserve_newlines(&mut seq_escaping, false, true);
-
-                    let len_before = seq_escaping.len();
-                    self.collect_comments_all(prev_space, &mut seq_escaping);
-
-                    if !end && seq_escaping.len() > len_before {
-                        self.preserve_newlines(&mut seq_escaping, false, true);
-                    }
                 }
 
                 if seq_escaping.is_empty() {
@@ -470,7 +466,7 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
         HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
         HNode::Group(inner) => node_starts_with_wrap_comma(inner),
-        HNode::PreserveBlankLines { last: _ } => None,
+        HNode::PreserveBlankLines => None,
     }
 }
 
