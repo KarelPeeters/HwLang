@@ -4,6 +4,7 @@ from pathlib import Path
 
 import hwl
 
+# TODO update this and add it to CI
 print("Loading, parsing, compiling")
 compiled = hwl.Source.simple(str(Path(__file__).parent / "../design/project")).compile()
 print("  parsed files:")

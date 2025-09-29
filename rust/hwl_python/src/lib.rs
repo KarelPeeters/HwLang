@@ -604,7 +604,7 @@ impl Module {
         // load library
         let lib = unsafe {
             VerilatedLib::new(&ir_database.ir_modules, ir_module, &path_so)
-                .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e:?}")))?
+                .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e}")))?
         };
         Ok(ModuleVerilated {
             compile: self.compile.clone_ref(py),
