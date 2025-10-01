@@ -225,10 +225,11 @@ project.compile_top()
 also expose incremental stuff for easy interop with other build systems. Ideally even `Make` just works decently out of the box.
 
 Runtime simulation sketch:
+
 ```python
 sim = Simulation()
-sim.module["my_module"].send_inputs("b", np.array([1, 2, 3]))
-result = sim.module["my_module"].get_outputs("a")
+sim.eval_mod["my_module"].send_inputs("b", np.array([1, 2, 3]))
+result = sim.eval_mod["my_module"].get_outputs("a")
 assert result == [...]
 ```
 
