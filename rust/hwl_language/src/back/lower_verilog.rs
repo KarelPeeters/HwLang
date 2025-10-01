@@ -14,7 +14,7 @@ use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::IndexMapExt;
-use crate::util::int::IntRepresentation;
+use crate::util::int::{IntRepresentation, Signed};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
@@ -983,13 +983,23 @@ fn lower_expression(large: &IrLargeArena, name_map: NameMap, expr: &IrExpression
                     lower_expression(large, name_map, value, f)?;
                 }
                 IrExpressionLarge::ExpandIntRange(target, value) => {
-                    // just add zero of the right width to expand the range
-                    // TODO skip if unnecessary?
-                    // TODO this is probably wrong for signed values, and definitely for zero-width values
+                    // cast the value to the right signedness
+                    //   and add a literal of the right sign and size to force expansion
                     let target_repr = IntRepresentation::for_range(target);
-                    swrite!(f, "({}'d0 + ", target_repr.size_bits());
-                    lower_expression(large, name_map, value, f)?;
-                    swrite!(f, ")");
+                    let target_size = target_repr.size_bits();
+
+                    match target_repr.signed() {
+                        Signed::Signed => {
+                            swrite!(f, "$unsigned({}'sd0 + $signed(", target_size);
+                            lower_expression(large, name_map, value, f)?;
+                            swrite!(f, "))");
+                        }
+                        Signed::Unsigned => {
+                            swrite!(f, "({}'d0 + ", target_size);
+                            lower_expression(large, name_map, value, f)?;
+                            swrite!(f, ")");
+                        }
+                    }
                 }
                 IrExpressionLarge::ConstrainIntRange(target, value) => {
                     // TODO this not correct, we're not actually lowering the bit width

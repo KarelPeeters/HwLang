@@ -129,6 +129,14 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     );
     let time_compile = start_compile.elapsed();
 
+    std::fs::write(
+        "../ignored/lowered.ir",
+        compiled
+            .as_ref()
+            .map_or("// failed".to_owned(), |s| format!("{:#?}", s)),
+    )
+    .unwrap();
+
     // TODO parallelize lowering?
     let lower_results = if skip_lower {
         None
