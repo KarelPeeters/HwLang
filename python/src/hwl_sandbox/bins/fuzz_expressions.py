@@ -5,6 +5,8 @@ from pathlib import Path
 import hwl
 import itertools
 
+from hwl_sandbox.common.util import compile_custom
+
 
 def sample_range():
     # TODO speed up by uniformly sampling from triangle
@@ -17,14 +19,6 @@ def sample_range():
 
         if start <= end:
             return range(start, end + 1)
-
-
-def compile_source(src: str) -> hwl.Compile:
-    # TODO share this implementation with tests/util.py
-    source = hwl.Source()
-    source.add_tree(["std"], str(Path(__file__).parent / "../../design/project/std"))
-    source.add_file_content(["top"], "python.kh", src)
-    return source.compile()
 
 
 def fuzz_step(build_dir: Path, sample_count: int):
@@ -55,7 +49,7 @@ def fuzz_step(build_dir: Path, sample_count: int):
 
     # compile code
     # TODO also include C++ backend in this comparison
-    com = compile_source(src)
+    com = compile_custom(src)
     compute_func: hwl.Function = com.resolve("top.compute_func")
     compute_mod: hwl.Module = com.resolve("top.compute_mod")
     compile_ver = compute_mod.as_verilated(build_dir=str(build_dir)).instance()
@@ -77,7 +71,7 @@ def fuzz_step(build_dir: Path, sample_count: int):
 
 def main():
     sample_count = 100
-    build_dir_base = Path(__file__).parent / "../build/" / Path(__file__).stem
+    build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
 
     for i in itertools.count():
         print(f"Starting fuzz iteration: {i}")

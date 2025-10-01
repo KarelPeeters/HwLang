@@ -23,7 +23,7 @@ print("Generating verilog")
 print(top.as_verilog())
 
 print("Verilating")
-build_dir = "./build"
+build_dir = "../../../build"
 os.makedirs(build_dir, exist_ok=True)
 top_verilated = top.as_verilated(build_dir=build_dir)
 print(top_verilated)

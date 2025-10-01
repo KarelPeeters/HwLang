@@ -1,7 +1,7 @@
 import hwl
 import pytest
 
-from util import compile_custom
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_signal_does_not_fit():

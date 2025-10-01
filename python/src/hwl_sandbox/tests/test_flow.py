@@ -1,6 +1,6 @@
 import pytest
 
-from util import compile_custom
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_flow_read_hw_in_hw():

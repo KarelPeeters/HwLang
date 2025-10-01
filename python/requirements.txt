@@ -1,0 +1,6 @@
+# TODO pin exact versions
+# TODO use this in the CI command set
+pytest
+uv
+maturin
+z3-solver

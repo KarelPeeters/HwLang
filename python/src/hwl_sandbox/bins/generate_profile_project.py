@@ -75,15 +75,15 @@ def main():
     n = 1024 * 32
 
     curr_path = Path(__file__).parent
-    output_path = curr_path / "profile_test"
+    output_path = curr_path / "../../../profile_test"
 
     source = generate_source(n=n)
     print(f"Generated {len(source.splitlines())} loc")
 
     if output_path.exists():
         shutil.rmtree(output_path)
-    output_path.mkdir()
-    shutil.copytree(curr_path / "../design/project/std", output_path / "std")
+    output_path.mkdir(parents=True)
+    shutil.copytree(curr_path / "../../../../design/project/std", output_path / "std")
 
     with open(output_path / "top.kh", "w") as f:
         f.write(source)

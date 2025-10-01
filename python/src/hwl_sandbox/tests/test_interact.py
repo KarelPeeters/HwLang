@@ -2,7 +2,7 @@ from pathlib import Path
 
 from hwl import hwl
 
-from util import compile_custom
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_interact_add():
@@ -18,7 +18,7 @@ def test_interact_string_array():
 
 
 def test_compile_manifest():
-    manifest_path = Path(__file__).parent / "../../design/project/hwl.toml"
+    manifest_path = Path(__file__).parent / "../../../../design/project/hwl.toml"
     s = hwl.Source.new_from_manifest_path(str(manifest_path))
     c = s.compile()
     assert isinstance(c.resolve("top.top"), hwl.Module)

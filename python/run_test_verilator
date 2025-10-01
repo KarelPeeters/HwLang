@@ -1,5 +1,0 @@
-#!/bin/bash -ue
-cd "$(dirname "$0")"
-
-maturin dev --manifest-path ../rust/hwl_python/Cargo.toml
-python3 test_verilator.py
