@@ -22,8 +22,8 @@ use crate::front::value::{CompileValue, ElaboratedInterfaceView, MaybeUndefined}
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrPorts, IrRegister, IrRegisterInfo, IrStatement, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort,
+    IrPortConnection, IrPortInfo, IrPorts, IrRegister, IrRegisterInfo, IrSignal, IrStatement, IrVariables, IrWire,
+    IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
     self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModuleInstance, ModulePortBlock,
@@ -1594,9 +1594,11 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 .transpose()?;
 
                         // build extra wire and process if necessary
-                        let connection_value_ir = if !ir_block.statements.is_empty()
-                            || connection_value_ir_raw.inner.contains_variable(&self.ctx.large)
+                        let connection_signal_ir = if ir_block.statements.is_empty()
+                            && let Some(connection_signal) = connection_value_ir_raw.inner.as_signal()
                         {
+                            connection_signal
+                        } else {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(self.ctx.refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
@@ -1618,14 +1620,12 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             let child = Child::Finished(IrModuleChild::CombinatorialProcess(process));
                             self.children.push(Spanned::new(connection.span, child));
 
-                            IrExpression::Wire(extra_ir_wire)
-                        } else {
-                            connection_value_ir_raw.inner
+                            IrSignal::Wire(extra_ir_wire)
                         };
 
                         IrPortConnection::Input(Spanned {
                             span: value_expr.span,
-                            inner: connection_value_ir,
+                            inner: connection_signal_ir,
                         })
                     }
                     PortDirection::Output => {
@@ -1839,7 +1839,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     let ir_connection = match dir {
                         PortDirection::Input => {
                             any_input = true;
-                            IrPortConnection::Input(Spanned::new(value_expr.span, value_ir.as_expression()))
+                            IrPortConnection::Input(Spanned::new(value_expr.span, value_ir.as_signal()))
                         }
                         PortDirection::Output => {
                             any_output = true;

@@ -4,7 +4,7 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
     IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrStatement, IrTargetStep, IrType, IrVariable,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort, ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
@@ -255,20 +255,12 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
 
                     let connection_str = match &connection.inner {
                         IrPortConnection::Input(expr) => match expr.inner {
-                            IrExpression::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
-                            IrExpression::Wire(wire) => {
+                            IrSignal::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
+                            IrSignal::Wire(wire) => {
                                 format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
                             }
-                            IrExpression::Register(reg) => {
+                            IrSignal::Register(reg) => {
                                 format!("&signals.{}", reg_str(reg, &module_info.registers[reg]))
-                            }
-                            // TODO maybe just remove this from IR,
-                            //   we can't guarantee that every expression is lowerable as a single expression
-                            ref connection => {
-                                return Err(diags.report_todo(
-                                    expr.span,
-                                    format!("simulator input port general expression {connection:?}"),
-                                ));
                             }
                         },
                         &IrPortConnection::Output(expr) => match expr {

@@ -86,8 +86,9 @@ impl IrModuleInfo {
                         let conn_ty = match &connection.inner {
                             IrPortConnection::Input(expr) => {
                                 check_dir_match(diags, connection.span, PortDirection::Input, direction)?;
-                                expr.inner.validate(diags, self, no_variables, expr.span)?;
-                                expr.inner.ty(self, no_variables)
+                                let inner_expr = expr.inner.as_expression();
+                                inner_expr.validate(diags, self, no_variables, expr.span)?;
+                                inner_expr.ty(self, no_variables)
                             }
                             &IrPortConnection::Output(expr) => {
                                 check_dir_match(diags, connection.span, PortDirection::Output, direction)?;

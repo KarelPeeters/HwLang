@@ -620,7 +620,7 @@ fn lower_port_connections<S: AsRef<str>>(
 
         match &connection.inner {
             IrPortConnection::Input(expr) => {
-                lower_expression(large, name_map, &expr.inner, f)?;
+                lower_expression(large, name_map, &expr.inner.as_expression(), f)?;
             }
             &IrPortConnection::Output(signal) => {
                 match signal {

@@ -174,23 +174,21 @@ pub struct IrModuleExternalInstance {
 
 #[derive(Debug, Clone)]
 pub enum IrPortConnection {
-    Input(Spanned<IrExpression>),
+    Input(Spanned<IrSignal>),
     Output(Option<IrWireOrPort>),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum IrSignal {
+    Wire(IrWire),
+    Port(IrPort),
+    Register(IrRegister),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum IrWireOrPort {
     Wire(IrWire),
     Port(IrPort),
-}
-
-impl IrWireOrPort {
-    pub fn as_expression(self) -> IrExpression {
-        match self {
-            IrWireOrPort::Wire(wire) => IrExpression::Wire(wire),
-            IrWireOrPort::Port(port) => IrExpression::Port(port),
-        }
-    }
 }
 
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
@@ -625,16 +623,35 @@ impl IrExpression {
         }
     }
 
-    pub fn contains_variable(&self, large: &IrLargeArena) -> bool {
-        if let IrExpression::Variable(_) = self {
-            return true;
+    pub fn as_signal(&self) -> Option<IrSignal> {
+        match *self {
+            IrExpression::Port(port) => Some(IrSignal::Port(port)),
+            IrExpression::Wire(wire) => Some(IrSignal::Wire(wire)),
+            IrExpression::Register(reg) => Some(IrSignal::Register(reg)),
+            _ => None,
         }
+    }
+}
 
-        // TODO short circuit
-        let mut any = false;
-        self.for_each_expression_operand(large, &mut |expr| {
-            any |= expr.contains_variable(large);
-        });
-        any
+impl IrSignal {
+    pub fn as_expression(self) -> IrExpression {
+        match self {
+            IrSignal::Wire(wire) => IrExpression::Wire(wire),
+            IrSignal::Port(port) => IrExpression::Port(port),
+            IrSignal::Register(reg) => IrExpression::Register(reg),
+        }
+    }
+}
+
+impl IrWireOrPort {
+    pub fn as_signal(self) -> IrSignal {
+        match self {
+            IrWireOrPort::Wire(wire) => IrSignal::Wire(wire),
+            IrWireOrPort::Port(port) => IrSignal::Port(port),
+        }
+    }
+
+    pub fn as_expression(self) -> IrExpression {
+        self.as_signal().as_expression()
     }
 }
