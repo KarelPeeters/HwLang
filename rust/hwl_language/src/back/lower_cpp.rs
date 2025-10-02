@@ -1,4 +1,5 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::signal::Polarized;
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
@@ -152,7 +153,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     };
 
                     // TODO this might not be correct, think about which prev/reset combination reset needs to look at
-                    let reset_eval = ctx.eval(indent, reset_signal.span, &reset_signal.inner, Stage::Next)?;
+                    let reset_eval = ctx.eval_polarized_signal(reset_signal.inner, Stage::Next);
                     swriteln!(ctx.f, "{I}if (!({reset_eval})) {{");
                     swriteln!(ctx.f, "{I}{I}return;");
                     swriteln!(ctx.f, "{I}}}");
@@ -185,8 +186,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     f: &mut f_step,
                     next_temporary_index: 0,
                 };
-                let clock_prev_eval = ctx.eval(indent, clock_signal.span, &clock_signal.inner, Stage::Prev)?;
-                let clock_next_eval = ctx.eval(indent, clock_signal.span, &clock_signal.inner, Stage::Next)?;
+                let clock_prev_eval = ctx.eval_polarized_signal(clock_signal.inner, Stage::Prev);
+                let clock_next_eval = ctx.eval_polarized_signal(clock_signal.inner, Stage::Next);
                 // TODO also skip if reset is active
                 // TODO maybe switch to a single function for both?
                 //   or maybe that just mixes sensitivities for no good reason
@@ -383,6 +384,32 @@ impl CodegenBlockContext<'_> {
         }
     }
 
+    fn eval_signal(&self, signal: IrSignal, stage_read: Stage) -> Evaluated {
+        match signal {
+            IrSignal::Port(port) => {
+                let name = port_str(port, &self.module_info.ports[port]);
+                Evaluated::Inline(format!("(*{stage_read}_ports.{name})"))
+            }
+            IrSignal::Wire(wire) => {
+                let name = wire_str(wire, &self.module_info.wires[wire]);
+                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
+            }
+            IrSignal::Register(reg) => {
+                let name = reg_str(reg, &self.module_info.registers[reg]);
+                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
+            }
+        }
+    }
+
+    fn eval_polarized_signal(&self, signal: Polarized<IrSignal>, stage_read: Stage) -> Evaluated {
+        let Polarized { inverted, signal } = signal;
+        let signal = self.eval_signal(signal, stage_read);
+        match inverted {
+            false => signal,
+            true => Evaluated::Inline(format!("(!{signal})")),
+        }
+    }
+
     fn eval(&mut self, indent: Indent, span: Span, expr: &IrExpression, stage_read: Stage) -> DiagResult<Evaluated> {
         let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
 
@@ -390,19 +417,13 @@ impl CodegenBlockContext<'_> {
             &IrExpression::Bool(b) => Evaluated::Inline(format!("{b}")),
             // TODO support arbitrary sized ints
             IrExpression::Int(v) => Evaluated::Inline(format!("INT64_C({v})")),
-            &IrExpression::Port(port) => {
-                let name = port_str(port, &self.module_info.ports[port]);
-                Evaluated::Inline(format!("(*{stage_read}_ports.{name})"))
-            }
-            &IrExpression::Wire(wire) => {
-                let name = wire_str(wire, &self.module_info.wires[wire]);
-                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
-            }
-            &IrExpression::Register(reg) => {
-                let name = reg_str(reg, &self.module_info.registers[reg]);
-                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
-            }
+
+            &IrExpression::Port(s) => self.eval_signal(IrSignal::Port(s), stage_read),
+            &IrExpression::Wire(s) => self.eval_signal(IrSignal::Wire(s), stage_read),
+            &IrExpression::Register(s) => self.eval_signal(IrSignal::Register(s), stage_read),
+
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
+
             &IrExpression::Large(expr_large) => match &self.module_info.large[expr_large] {
                 IrExpressionLarge::BoolNot(inner) => {
                     let inner_eval = self.eval(indent, span, inner, stage_read)?;

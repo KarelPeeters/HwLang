@@ -178,6 +178,13 @@ impl VerilatedInstance {
         let bits = (0..size_bits)
             .map(|i| (buffer[i / 8] >> (i % 8)) & 1 != 0)
             .collect_vec();
+
+        let value_tried = port_info.ty.value_from_bits(&bits).ok();
+        println!(
+            "get_port '{}' {:?} {:?} -> {:?}",
+            port_info.name, port_info.ty, bits, value_tried
+        );
+
         let value = port_info
             .ty
             .value_from_bits(&bits)
@@ -209,6 +216,11 @@ impl VerilatedInstance {
             .ty
             .value_to_bits(value.inner)
             .map_err(|_: WrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
+
+        println!(
+            "set_port '{}' {:?} {:?} -> {:?}",
+            port_info.name, port_info.ty, value.inner, bits
+        );
 
         let size_bytes = bits.len().div_ceil(8);
         let mut buffer = vec![0u8; size_bytes];

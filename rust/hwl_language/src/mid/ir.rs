@@ -1,3 +1,4 @@
+use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::front::value::CompileValue;
 use crate::new_index_type;
@@ -139,14 +140,15 @@ pub enum IrModuleChild {
 pub struct IrClockedProcess {
     // TODO rename to variables
     pub locals: IrVariables,
-    pub clock_signal: Spanned<IrExpression>,
+    pub clock_signal: Spanned<Polarized<IrSignal>>,
     pub clock_block: IrBlock,
     pub async_reset: Option<IrAsyncResetInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub struct IrAsyncResetInfo {
-    pub signal: Spanned<IrExpression>,
+    pub signal: Spanned<Polarized<IrSignal>>,
+    // TODO make this a constant instead of an arbitrary expression, or maybe a "SimpleExpression"
     pub resets: Vec<Spanned<(IrRegister, IrExpression)>>,
 }
 
@@ -639,6 +641,18 @@ impl IrSignal {
             IrSignal::Wire(wire) => IrExpression::Wire(wire),
             IrSignal::Port(port) => IrExpression::Port(port),
             IrSignal::Register(reg) => IrExpression::Register(reg),
+        }
+    }
+}
+
+impl Polarized<IrSignal> {
+    pub fn as_expression(self, large: &mut IrLargeArena) -> IrExpression {
+        let Polarized { inverted, signal } = self;
+        let signal = signal.as_expression();
+        if inverted {
+            large.push_expr(IrExpressionLarge::BoolNot(signal))
+        } else {
+            signal
         }
     }
 }

@@ -10,7 +10,7 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
-use crate::mid::ir::{IrDatabase, IrExpression, IrExpressionLarge, IrLargeArena, IrModule, IrModuleInfo};
+use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
@@ -727,23 +727,18 @@ fn finish_ir_database_impl(
 
 // TODO move somewhere else
 impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> DiagResult<IrExpression> {
+    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> DiagResult<Polarized<IrSignal>> {
         let signal_span = signal.span;
-        let Polarized { inverted, signal } = signal.inner;
-
-        let inner = match signal {
-            Signal::Port(port) => IrExpression::Port(self.ports[port].ir),
-            Signal::Wire(wire) => {
-                let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, signal_span)?;
-                IrExpression::Wire(typed.ir)
-            }
-            Signal::Register(reg) => IrExpression::Register(self.registers[reg].ir),
-        };
-        let result = if inverted {
-            self.large.push_expr(IrExpressionLarge::BoolNot(inner))
-        } else {
-            inner
-        };
-        Ok(result)
+        signal.inner.try_map_inner(|signal| {
+            let signal_ir = match signal {
+                Signal::Port(port) => IrSignal::Port(self.ports[port].ir),
+                Signal::Wire(wire) => {
+                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, signal_span)?;
+                    IrSignal::Wire(typed.ir)
+                }
+                Signal::Register(reg) => IrSignal::Register(self.registers[reg].ir),
+            };
+            Ok(signal_ir)
+        })
     }
 }

@@ -727,7 +727,7 @@ impl ChildClockedProcess {
                         };
 
                         let if_stmt = IrIfStatement {
-                            condition: reset_signal_ir.inner,
+                            condition: reset_signal_ir.inner.as_expression(&mut ctx.large),
                             then_block: reset_block,
                             else_block: Some(clock_block),
                         };

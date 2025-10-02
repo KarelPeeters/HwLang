@@ -1,4 +1,5 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrClockedProcess,
     IrDatabase, IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
@@ -35,22 +36,41 @@ impl IrModuleInfo {
                         clock_block,
                         async_reset,
                     } = process;
+                    let Polarized {
+                        inverted: _,
+                        signal: clock_signal_inner,
+                    } = clock_signal.inner;
 
-                    clock_signal
-                        .inner
+                    clock_signal_inner
+                        .as_expression()
                         .validate(diags, self, no_variables, clock_signal.span)?;
                     check_type_match(
                         diags,
                         clock_signal.span,
                         &IrType::Bool,
-                        &clock_signal.inner.ty(self, no_variables),
+                        &clock_signal_inner.as_expression().ty(self, no_variables),
                     )?;
                     clock_block.validate(diags, self, locals)?;
 
                     if let Some(async_reset) = async_reset {
-                        let IrAsyncResetInfo { signal, resets } = async_reset;
-                        signal.inner.validate(diags, self, no_variables, signal.span)?;
-                        check_type_match(diags, signal.span, &IrType::Bool, &signal.inner.ty(self, no_variables))?;
+                        let IrAsyncResetInfo {
+                            signal: reset_signal,
+                            resets,
+                        } = async_reset;
+                        let Polarized {
+                            inverted: _,
+                            signal: reset_signal_inner,
+                        } = reset_signal.inner;
+
+                        reset_signal_inner
+                            .as_expression()
+                            .validate(diags, self, no_variables, reset_signal.span)?;
+                        check_type_match(
+                            diags,
+                            reset_signal.span,
+                            &IrType::Bool,
+                            &reset_signal_inner.as_expression().ty(self, no_variables),
+                        )?;
 
                         // TODO check drivers, ie. only driven and reset in one process
                         for reset in resets {
