@@ -167,12 +167,15 @@ impl VerilatedInstance {
         let size_bytes = size_bits.div_ceil(8);
         let mut buffer = vec![0u8; size_bytes];
 
-        unsafe {
-            let result = self
-                .lib
-                .lib
-                .get_port(self.instance, port.inner().index(), size_bytes, buffer.as_mut_ptr());
-            check_result(result, "get_port")?;
+        // zero-width ports don't exist in verilog, so don't try to access them
+        if size_bits != 0 {
+            unsafe {
+                let result =
+                    self.lib
+                        .lib
+                        .get_port(self.instance, port.inner().index(), size_bytes, buffer.as_mut_ptr());
+                check_result(result, "get_port")?;
+            }
         }
 
         let bits = (0..size_bits)
@@ -211,7 +214,8 @@ impl VerilatedInstance {
             .value_to_bits(value.inner)
             .map_err(|_: WrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
 
-        let size_bytes = bits.len().div_ceil(8);
+        let size_bits = bits.len();
+        let size_bytes = size_bits.div_ceil(8);
         let mut buffer = vec![0u8; size_bytes];
         for (i, bit) in enumerate(bits) {
             if bit {
@@ -219,12 +223,15 @@ impl VerilatedInstance {
             }
         }
 
-        unsafe {
-            let result = self
-                .lib
-                .lib
-                .set_port(self.instance, port.inner().index(), size_bytes, buffer.as_ptr());
-            check_result(result, "set_port").map_err(Either::Left)?;
+        // zero-width ports don't exist in verilog, so don't try to access them
+        if size_bits != 0 {
+            unsafe {
+                let result = self
+                    .lib
+                    .lib
+                    .set_port(self.instance, port.inner().index(), size_bytes, buffer.as_ptr());
+                check_result(result, "set_port").map_err(Either::Left)?;
+            }
         }
 
         Ok(())

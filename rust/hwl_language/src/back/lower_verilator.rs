@@ -30,17 +30,24 @@ pub fn lower_verilator(modules: &IrModules, top_module: IrModule) -> LoweredVeri
 
         let mut f = String::new();
         for (port_index, (_, port_info)) in enumerate(&top_module_info.ports) {
-            let include = match (port_info.direction, dir) {
+            // zero-width ports don't exist in verilog, and so can't be accessed here
+            if port_info.ty.size_bits().is_zero() {
+                continue;
+            }
+
+            // check if this port should get this accessor function
+            let include_dir = match (port_info.direction, dir) {
                 // input ports support set/get
                 (PortDirection::Input, _) => true,
                 // outputs ports only support get
                 (PortDirection::Output, PortDirection::Output) => true,
                 (PortDirection::Output, PortDirection::Input) => false,
             };
-            if !include {
+            if !include_dir {
                 continue;
             }
 
+            // add a case branch for the port
             let port_name = &port_info.name;
             let indent = if port_index == 0 { "" } else { "            " };
             swriteln!(

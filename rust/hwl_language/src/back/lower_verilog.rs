@@ -139,7 +139,7 @@ impl<'p> LoweredNameScope<'p> {
             return Ok(LoweredName(string.to_owned()));
         }
 
-        for i in 0u32.. {
+        for i in 0u64.. {
             let suffixed = format!("{string}_{i}");
             if !self.is_used(&suffixed) {
                 self.local_used.insert(suffixed.clone());
@@ -1006,6 +1006,16 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let name_map = self.name_map;
         let indent = self.indent;
 
+        // skip any zero-width expressions
+        //   expressions are always pure, they can never have side-effects
+        let result_ty = expr.ty(self.module, self.locals);
+        let result_ty_verilog = match VerilogType::new_from_ir(self.diags, span, &result_ty)? {
+            Ok(ty) => ty,
+            Err(ZeroWidth) => {
+                return Ok(Err(ZeroWidth));
+            }
+        };
+
         let eval = match expr {
             &IrExpression::Bool(x) => {
                 let s = if x { "1'b0" } else { "1'b1" };
@@ -1042,21 +1052,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO div/mod truncation directions are not right
                         // TODO pow is very likely not right
                         // TODO lower mod to branch + sub, lower mul/pow to shift if possible
-                        // allocate a temporary for the result
-                        let res_tmp = match self.new_temporary(span, &IrType::Int(ty.clone()))? {
-                            Ok(res_tmp) => res_tmp,
-                            Err(ZeroWidth) => {
-                                // if the result is zero-width,
-                                //   we know the result already without even evaluating the operands
-                                return Ok(Err(ZeroWidth));
-                            }
-                        };
-
                         let left = self.lower_expression_int_expanded(span, ty, left)?;
                         let right = self.lower_expression_int_expanded(span, ty, right)?;
 
-                        // build the final expression,
-                        //   storing the result in a temporary to force truncation
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
                             IrIntArithmeticOp::Sub => "-",
@@ -1065,6 +1063,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntArithmeticOp::Mod => "%",
                             IrIntArithmeticOp::Pow => "**",
                         };
+
+                        // store result in a temporary to force truncation
+                        // TODO skip if no truncation is actually necessary
+                        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
                         swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
                         Evaluated::Temporary(res_tmp)
                     }
@@ -1188,20 +1190,20 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ExpandIntRange(target, value) => {
                         self.lower_expression_int_expanded(span, target, value)?
                     }
-                    IrExpressionLarge::ConstrainIntRange(target, value) => {
+                    IrExpressionLarge::ConstrainIntRange(range, value) => {
+                        // already handled through the result type
+                        let _ = range;
+
                         // TODO add assertions? what exactly are the semantics of this operation?
-                        let result_tmp = match self.new_temporary(span, &IrType::Int(target.clone()))? {
-                            Ok(res_tmp) => res_tmp,
-                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
-                        };
                         let value = match self.lower_expression(span, value)? {
                             Ok(value) => value,
                             Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
                         };
 
                         // store in temporary to force truncation
-                        swriteln!(self.f, "{indent}{result_tmp} = {value};");
-                        Evaluated::Temporary(result_tmp)
+                        let tmp = self.new_temporary(span, result_ty_verilog)?;
+                        swriteln!(self.f, "{indent}{tmp} = {value};");
+                        Evaluated::Temporary(tmp)
                     }
                 }
             }
@@ -1286,18 +1288,13 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(Evaluated::String(g))
     }
 
-    fn new_temporary(&mut self, span: Span, ty: &IrType) -> DiagResult<Result<Temporary<'n>, ZeroWidth>> {
-        let ty_verilog = match VerilogType::new_from_ir(self.diags, span, ty)? {
-            Ok(ty_verilog) => ty_verilog,
-            Err(zw) => return Ok(Err(zw)),
-        };
-
+    fn new_temporary(&mut self, span: Span, ty: VerilogType) -> DiagResult<Temporary<'n>> {
         let name = self.name_scope.make_unique_str(self.diags, span, "tmp", true)?;
 
-        let info = TemporaryInfo { name, ty: ty_verilog };
+        let info = TemporaryInfo { name, ty };
         let info = self.temporaries.push(info);
 
-        Ok(Ok(Temporary(&info.name)))
+        Ok(Temporary(&info.name))
     }
 }
 

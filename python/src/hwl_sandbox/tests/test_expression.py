@@ -43,3 +43,13 @@ def test_negative_result_expanded(tmpdir: Path):
 def test_negative_result_positive(tmpdir: Path):
     e = compile_expression(["int(-128..128)", "int(128..256)"], "int(-4096..=4096)", "a0 + a1", tmpdir)
     e.eval_assert([-1, 129], 128)
+
+
+def test_zero_width(tmpdir: Path):
+    e = compile_expression(["int(0..=0)", "int(0..16)"], "int(0..16)", "a0 + a1", tmpdir)
+    e.eval_assert([0, 8], 8)
+
+
+def test_constant_non_zero(tmpdir: Path):
+    e = compile_expression(["int(5..=5)", "int(0..16)"], "int(5..21)", "a0 + a1", tmpdir)
+    e.eval_assert([5, 8], 13)
