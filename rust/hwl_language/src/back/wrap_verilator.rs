@@ -10,6 +10,7 @@ use crate::util::big_int::BigUint;
 use dlopen2::wrapper::{Container, WrapperApi};
 use indexmap::IndexMap;
 use itertools::{Either, Itertools, enumerate};
+use num_integer::div_ceil;
 use std::ffi::{CString, NulError, c_char, c_void};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -164,7 +165,7 @@ impl VerilatedInstance {
         let port_info = &self.lib.ports()[port];
 
         let size_bits = usize::try_from(port_info.ty.size_bits()).map_err(VerilatorError::PortTooLarge)?;
-        let size_bytes = size_bits.div_ceil(8);
+        let size_bytes = port_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
 
         // zero-width ports don't exist in verilog, so don't try to access them
@@ -215,7 +216,7 @@ impl VerilatedInstance {
             .map_err(|_: WrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
 
         let size_bits = bits.len();
-        let size_bytes = size_bits.div_ceil(8);
+        let size_bytes = port_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
         for (i, bit) in enumerate(bits) {
             if bit {
@@ -235,6 +236,16 @@ impl VerilatedInstance {
         }
 
         Ok(())
+    }
+}
+
+fn port_size_bytes(size_bits: usize) -> usize {
+    match size_bits {
+        0 => 0,
+        1..=8 => 1,
+        9..=16 => 2,
+        17..=32 => 4,
+        33.. => div_ceil(size_bits, 64) * 8,
     }
 }
 
