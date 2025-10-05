@@ -1,51 +1,96 @@
 import random
+import re
 import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Union, Optional
 
-from hwl_sandbox.common.expression import compile_expression
+from hwl_sandbox.common.expression import expression_compile, expression_get_type
 from hwl_sandbox.common.util import enable_rust_backtraces
 
 
-def sample_range(rng: random.Random) -> range:
-    # TODO speed up by uniformly sampling from triangle
-    # TODO increase range
-    # TODO allow empty ranges
+def sample_range_edge(rng: random.Random) -> int:
+    if rng.random() < 0.5:
+        return rng.randint(-256, 256)
+    else:
+        bits = int(rng.expovariate(0.1))
+        mag = rng.randint(0, 2 ** bits)
+        sign = rng.randint(0, 1) * 2 - 1
+        return sign * mag
 
+
+# TODO use hwl.Range and hwl.Types once those are convenient enough
+@dataclass(frozen=True)
+class Range:
+    start: int
+    end_inc: int
+
+    def __contains__(self, item: Union[int, "Range"]) -> bool:
+        if isinstance(item, Range):
+            return self.start <= item.start and item.end_inc <= self.end_inc
+        else:
+            return self.start <= item <= self.end_inc
+
+
+def sample_range(rng: random.Random, must_contain: Optional[Range] = None) -> Range:
+    # TODO allow empty ranges?
     while True:
-        start = rng.randint(-1024, 1024)
-        end = rng.randint(-1024, 1024)
+        start = sample_range_edge(rng)
+        end = sample_range_edge(rng)
 
         if start <= end:
-            return range(start, end + 1)
+            r = Range(start=start, end_inc=end)
+            if must_contain is None or must_contain in r:
+                return r
+
+
+def sample_from_range(rng: random.Random, r: Range) -> int:
+    if rng.random() < 0.3:
+        choices = []
+        for a in [0, r.start, r.end_inc]:
+            for d in [-2, -1, 0, 1, 2]:
+                v = a + d
+                if v in r:
+                    choices.append(v)
+        if choices:
+            return rng.choice(choices)
+
+    return rng.randint(r.start, r.end_inc)
 
 
 def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
     # decide types and operations
-    ra = sample_range(rng)
-    rb = sample_range(rng)
-
-    # TODO somehow compute output range? can we ask the compiler?
-    #   or just randomly generate one and get rejected if it doesn't fit
     # TODO add "expansion" tests, where the output range is too large, to see if the value is properly re-encoded
     # TODO allow multiple args and returns to increase fuzzing throughput
+    # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
+    #    arrays, conditional statements, variable assignments, ...
+    ra = sample_range(rng)
+    rb = sample_range(rng)
+    ty_a0 = f"int({ra.start}..={ra.end_inc})"
+    ty_a1 = f"int({rb.start}..={rb.end_inc})"
 
-    ty_a = f"int({ra.start}..{ra.stop})"
-    ty_b = f"int({rb.start}..{rb.stop})"
-    ty_res = f"int(-4096..=4096)"
+    ty_inputs = [ty_a0, ty_a1]
     expression = "a0 + a1"
 
+    # generate result type that contains all possible output values
+    ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
+    m = re.match(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
+    assert m
+    range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
+    range_res = sample_range(rng, must_contain=range_res_min)
+    ty_res = f"int({range_res.start}..={range_res.end_inc})"
+
     # generate and compile code
-    compiled = compile_expression(ty_inputs=[ty_a, ty_b], ty_res=ty_res, expr=expression, build_dir=build_dir)
+    compiled = expression_compile(ty_inputs=ty_inputs, ty_res=ty_res, expr=expression, build_dir=build_dir)
 
     # put through some random values
     for _ in range(sample_count):
-        val_a = rng.choice(ra)
-        val_b = rng.choice(rb)
+        val_a = sample_from_range(rng, ra)
+        val_b = sample_from_range(rng, rb)
 
         res_func, res_mod = compiled.eval([val_a, val_b])
-        assert res_func == res_mod, f"Mismatch for types `{ty_a}`, `{ty_b}`, `{ty_res}`, expression `{expression}`, values `{val_a}` `{val_b}`: function {res_func} != module {res_mod}"
+        assert res_func == res_mod, f"Mismatch for types `{ty_a0}`, `{ty_a1}`, `{ty_res}`, expression `{expression}`, values `{val_a}` `{val_b}`: function {res_func} != module {res_mod}"
 
 
 def main_iteration(build_dir_base: Path, sample_count: int, seed_base: int, i: int):
@@ -85,7 +130,7 @@ def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_ba
 def main():
     # settings
     sample_count = 1024
-    thread_count = 4
+    thread_count = 1
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
 
     # random seed
