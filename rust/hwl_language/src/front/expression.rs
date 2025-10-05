@@ -53,10 +53,11 @@ pub enum ValueInner {
     WireInterface(WireInterface),
 }
 
+// TODO rename/remove
 #[derive(Debug)]
 pub enum NamedOrValue {
     Named(NamedValue),
-    Value(Value),
+    ItemValue(CompileValue),
 }
 
 impl<'a> CompileItemContext<'a, '_> {
@@ -95,6 +96,7 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
+    // TODO remove, everyone calling this should call scope.find directly
     pub fn eval_named_or_value(&mut self, scope: &Scope, id: Spanned<&str>) -> DiagResult<Spanned<NamedOrValue>> {
         let diags = self.refs.diags;
 
@@ -103,11 +105,11 @@ impl<'a> CompileItemContext<'a, '_> {
         let result = match *found.value {
             ScopedEntry::Named(value) => NamedOrValue::Named(value),
             ScopedEntry::Item(item) => {
+                // TODO do we need to push a stack entry here? maybe it's better to move that into eval_item,
+                //   so no once can accidentally forget
                 let entry = StackEntry::ItemUsage(id.span);
-                self.recurse(entry, |s| {
-                    Ok(NamedOrValue::Value(Value::Compile(s.eval_item(item)?.clone())))
-                })
-                .flatten_err()?
+                let value = self.recurse(entry, |s| Ok(s.eval_item(item)?.clone())).flatten_err()?;
+                NamedOrValue::ItemValue(value)
             }
         };
         Ok(Spanned {
@@ -198,11 +200,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::Value(value) => {
-                        return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                    NamedOrValue::ItemValue(value) => {
+                        return Ok(ValueInner::Value(ValueWithImplications::simple(Value::Compile(value))));
                     }
                     NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => flow.var_eval(self, Spanned::new(expr.span, var))?,
+                        NamedValue::Variable(var) => flow.var_eval_unchecked(self, Spanned::new(expr.span, var))?,
                         NamedValue::Port(port) => {
                             let flow = flow.check_hardware(expr.span, "port access")?;
                             Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
@@ -601,6 +603,13 @@ impl<'a> CompileItemContext<'a, '_> {
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
                 let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
+
+                // handle typeof operator, special-cased because it does not actually evaluate its args
+                if target.inner == CompileValue::Type(Type::Type) {
+                    let ty = self.eval_type_of(scope, flow, expr.span, args)?;
+                    let value = Value::Compile(CompileValue::Type(ty));
+                    return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                }
 
                 // eval args
                 let args_eval = args
@@ -1396,6 +1405,71 @@ impl<'a> CompileItemContext<'a, '_> {
         Err(diags.report(diag))
     }
 
+    fn eval_type_of(&mut self, scope: &Scope, flow: &mut impl Flow, expr_span: Span, args: &Args) -> DiagResult<Type> {
+        let diags = self.refs.diags;
+
+        // check single unnamed arg
+        // TODO extract common code, there are probably other users of this pattern
+        let Args {
+            span: args_span,
+            inner: args_inner,
+        } = args;
+        let arg = match args_inner.single_ref() {
+            Ok(&Arg { span: _, name, value }) => {
+                if let Some(name) = name {
+                    return Err(diags.report_simple(
+                        "typeof only takes a single unnamed argument",
+                        name.span,
+                        "tried to pass named argument here",
+                    ));
+                } else {
+                    value
+                }
+            }
+            Err(()) => {
+                return Err(diags.report_simple(
+                    "typeof only takes a single unnamed argument",
+                    *args_span,
+                    "incorrect number of arguments here",
+                ));
+            }
+        };
+
+        // eval id
+        let &ExpressionKind::Id(id) = self.refs.get_expr(arg) else {
+            return Err(diags.report_simple(
+                "typeof only works on identifiers, not general expressions",
+                arg.span,
+                "tried to pass non-identifier here",
+            ));
+        };
+        let id = self.eval_general_id(scope, flow, id)?;
+        let value = self
+            .eval_named_or_value(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
+            .inner;
+
+        // get type
+        let ty = match value {
+            NamedOrValue::ItemValue(value) => value.ty(),
+            NamedOrValue::Named(value) => match value {
+                NamedValue::Variable(var) => {
+                    let info = flow.var_eval_unchecked(self, Spanned::new(arg.span, var))?;
+                    info.into_value().ty()
+                }
+                NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
+                NamedValue::Wire(wire) => {
+                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
+                    typed.ty.inner.as_type()
+                }
+                NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
+                NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
+                    return Err(diags.report_todo(expr_span, "typeof for interfaces"));
+                }
+            },
+        };
+        Ok(ty)
+    }
+
     pub fn eval_expression_as_compile(
         &mut self,
         scope: &Scope,
@@ -1492,7 +1566,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::Value(_) => return Err(build_err("value")),
+                    NamedOrValue::ItemValue(_) => return Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(v) => {
                             AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
@@ -1665,7 +1739,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
-                    NamedOrValue::Value(_) => Err(build_err("value")),
+                    NamedOrValue::ItemValue(_) => Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(_) => Err(build_err("variable")),
                         NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),

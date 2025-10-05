@@ -380,7 +380,7 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let var_eval = flow.var_eval(self, target_base)?;
+                    let var_eval = flow.var_eval_unchecked(self, target_base)?;
                     let target_eval = Spanned::new(target_span, ValueWithImplications::simple_version(var_eval));
                     let value_eval = eval_binary_expression(
                         self.refs,
@@ -422,7 +422,7 @@ impl CompileItemContext<'_, '_> {
         }
 
         // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(target_base.span, flow.var_eval(self, target_base)?);
+        let target_base_eval = Spanned::new(target_base.span, flow.var_eval_unchecked(self, target_base)?);
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;

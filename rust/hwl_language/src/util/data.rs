@@ -29,6 +29,7 @@ where
 
 pub trait VecExt<T>: Sized {
     fn into_vec(self) -> Vec<T>;
+    fn as_vec(&self) -> &Vec<T>;
     fn as_vec_mut(&mut self) -> &mut Vec<T>;
 
     fn single(self) -> Result<T, Vec<T>> {
@@ -38,6 +39,12 @@ pub trait VecExt<T>: Sized {
         } else {
             Err(slf)
         }
+    }
+
+    #[allow(clippy::result_unit_err)]
+    fn single_ref(&self) -> Result<&T, ()> {
+        let slf = self.as_vec();
+        if slf.len() == 1 { Ok(&slf[0]) } else { Err(()) }
     }
 
     fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Vec<T>) -> R) -> R {
@@ -75,7 +82,9 @@ impl<T> VecExt<T> for Vec<T> {
     fn into_vec(self) -> Vec<T> {
         self
     }
-
+    fn as_vec(&self) -> &Vec<T> {
+        self
+    }
     fn as_vec_mut(&mut self) -> &mut Vec<T> {
         self
     }

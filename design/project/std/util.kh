@@ -1,10 +1,5 @@
 import std.types.[any, bool, str, uint];
 
-// TODO this should be a keyword that does not evaluate the target and only works for named values
-pub fn typeof(value: any) -> type {
-    return __builtin("fn", "typeof", value);
-}
-
 pub fn print(value: any) {
     __builtin("fn", "print", value);
 }

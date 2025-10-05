@@ -121,7 +121,8 @@ pub trait Flow: FlowPrivate {
 
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
 
-    fn var_eval(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
+    /// Evaluate the variable without checking if this allowed in the current context.
+    fn var_eval_unchecked(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
         let diags = ctx.refs.diags;
 
         match self.var_get_maybe(var)? {

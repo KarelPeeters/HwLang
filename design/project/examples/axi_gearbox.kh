@@ -1,5 +1,5 @@
 import std.types.[bool, int, uint, natural, any];
-import std.util.[typeof, print];
+import std.util.print;
 import std.math.[gcd, min, max, clog2];
 
 import examples.axi_stream.axi_stream;
