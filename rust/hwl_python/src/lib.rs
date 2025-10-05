@@ -547,59 +547,63 @@ impl Module {
         std::fs::write(build_dir.join(name_cpp), &source_cpp)?;
 
         // verilate
-        // TODO get everything properly incremental
-        // TODO make tracing optional
-        // TODO move this compilation process to somewhere else, not in the python create
-        run_command(
-            Command::new("verilator")
-                .arg("-cc")
-                .arg("-CFLAGS")
-                .arg("-fPIC")
-                // TODO improve backend so these are no longer needed?
-                .arg("-Wno-widthexpand")
-                .arg("-Wno-cmpconst")
-                .arg("-Wno-widthtrunc")
-                .arg("+1364-2001ext+v")
-                .arg("--trace")
-                .arg("--top-module")
-                .arg(&top_module_name)
-                .arg("--prefix")
-                .arg(&top_class_name)
-                .arg(name_verilog)
-                .arg(name_cpp),
-            build_dir,
-            "verilator",
-        )?;
-
-        // compile
         let obj_dir = build_dir.join("obj_dir");
-        run_command(
-            Command::new("make")
-                .arg("-f")
-                .arg(format!("{top_class_name}.mk"))
-                .arg("-j")
-                .arg(num_cpus::get().to_string()),
-            &obj_dir,
-            "make",
-        )?;
-
-        // link
-        let objects = std::fs::read_dir(&obj_dir)
-            .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {e}")))?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "o"))
-            .map(|entry| entry.file_name())
-            .collect::<Vec<_>>();
-
         let name_so = "combined.so";
         let path_so = obj_dir.join(name_so);
 
-        // TODO use faster linker
-        run_command(
-            Command::new("g++").args(objects).arg("-o").arg(name_so).arg("-shared"),
-            &obj_dir,
-            "linking",
-        )?;
+        py.allow_threads::<PyResult<()>, _>(|| {
+            // TODO get everything properly incremental
+            // TODO make tracing optional
+            // TODO move this compilation process to somewhere else, not in the python create
+            run_command(
+                Command::new("verilator")
+                    .arg("-cc")
+                    .arg("-CFLAGS")
+                    .arg("-fPIC")
+                    // TODO improve backend so these are no longer needed?
+                    .arg("-Wno-widthexpand")
+                    .arg("-Wno-cmpconst")
+                    .arg("-Wno-widthtrunc")
+                    .arg("+1364-2001ext+v")
+                    .arg("--trace")
+                    .arg("--top-module")
+                    .arg(&top_module_name)
+                    .arg("--prefix")
+                    .arg(&top_class_name)
+                    .arg(name_verilog)
+                    .arg(name_cpp),
+                build_dir,
+                "verilator",
+            )?;
+
+            // compile
+            run_command(
+                Command::new("make")
+                    .arg("-f")
+                    .arg(format!("{top_class_name}.mk"))
+                    .arg("-j")
+                    .arg(num_cpus::get().to_string()),
+                &obj_dir,
+                "make",
+            )?;
+
+            // link
+            let objects = std::fs::read_dir(&obj_dir)
+                .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {e}")))?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "o"))
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>();
+
+            // TODO use faster linker
+            run_command(
+                Command::new("g++").args(objects).arg("-o").arg(name_so).arg("-shared"),
+                &obj_dir,
+                "linking",
+            )?;
+
+            Ok(())
+        })?;
 
         // load library
         let lib = unsafe {
