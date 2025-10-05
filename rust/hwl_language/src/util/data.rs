@@ -1,5 +1,6 @@
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use std::cell::RefCell;
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -96,5 +97,39 @@ pub trait SliceExt<T> {
 impl<T> SliceExt<T> for [T] {
     fn sort_by_key_ref<K: Ord>(&mut self, mut f: impl FnMut(&T) -> &K) {
         self.sort_by(|a, b| f(a).cmp(f(b)));
+    }
+}
+
+/// Variant of Vec that provides stable references to its elements.
+/// In return it's not possible to remove elements from it.
+pub struct GrowVec<T> {
+    // TODO instead of boxing, use a stack of growing arrays?
+    inner: RefCell<Vec<Box<T>>>,
+}
+
+impl<T> GrowVec<T> {
+    pub fn new() -> Self {
+        Self {
+            inner: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn push(&self, value: T) -> &T {
+        let boxed = Box::new(value);
+        let ptr = boxed.as_ref() as *const T;
+        self.inner.borrow_mut().push(boxed);
+        unsafe { &*ptr }
+    }
+
+    pub fn into_vec(self) -> Vec<Box<T>> {
+        self.inner.into_inner()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.borrow().is_empty()
     }
 }

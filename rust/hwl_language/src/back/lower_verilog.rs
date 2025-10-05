@@ -14,7 +14,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
-use crate::util::data::IndexMapExt;
+use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
@@ -48,10 +48,8 @@ pub fn lower_to_verilog(
         diags,
         modules,
         module_map: IndexMap::new(),
-        top_name_scope: LoweredNameScope {
-            used: external_modules.clone(),
-        },
-        lowered_modules: vec![],
+        top_name_scope: LoweredNameScope::new_root(external_modules.clone()),
+        result_source: vec![],
     };
 
     let modules = ir_modules_topological_sort(modules, top_module);
@@ -62,7 +60,7 @@ pub fn lower_to_verilog(
 
     let top_name = ctx.module_map.get(&top_module).unwrap().name.clone();
     Ok(LoweredVerilog {
-        source: ctx.lowered_modules.join("\n\n"),
+        source: ctx.result_source.join("\n\n"),
         top_module_name: top_name.0.clone(),
         debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.name.0)).collect(),
     })
@@ -72,8 +70,8 @@ struct LowerContext<'a> {
     diags: &'a Diagnostics,
     modules: &'a IrModules,
     module_map: IndexMap<IrModule, LoweredModule>,
-    top_name_scope: LoweredNameScope,
-    lowered_modules: Vec<String>,
+    top_name_scope: LoweredNameScope<'static>,
+    result_source: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,39 +84,64 @@ struct LoweredModule {
 }
 
 #[derive(Default)]
-struct LoweredNameScope {
-    used: IndexSet<String>,
+struct LoweredNameScope<'p> {
+    parent: Option<&'p LoweredNameScope<'p>>,
+    local_used: IndexSet<String>,
 }
 
-impl LoweredNameScope {
+impl<'p> LoweredNameScope<'p> {
+    pub fn new_root(used: IndexSet<String>) -> Self {
+        Self {
+            parent: None,
+            local_used: used,
+        }
+    }
+
+    pub fn new_child(&'p self) -> Self {
+        Self {
+            parent: Some(self),
+            local_used: IndexSet::new(),
+        }
+    }
+
     pub fn exact_for_new_id(&mut self, diags: &Diagnostics, span: Span, id: &str) -> DiagResult<LoweredName> {
         check_identifier_valid(diags, Spanned { span, inner: id })?;
-        if !self.used.insert(id.to_owned()) {
+        if self.is_used(id) {
             throw!(diags.report_internal_error(span, format!("lowered identifier `{id}` already used its scope")))
         }
         Ok(LoweredName(id.to_owned()))
     }
 
     pub fn make_unique_maybe_id(&mut self, diags: &Diagnostics, id: Spanned<Option<&str>>) -> DiagResult<LoweredName> {
-        self.make_unique_str(diags, id.span, id.inner.unwrap_or("_"))
+        self.make_unique_str(diags, id.span, id.inner.unwrap_or("_"), false)
     }
 
     #[allow(dead_code)]
     pub fn make_unique_id(&mut self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<LoweredName> {
-        self.make_unique_str(diags, id.span, id.inner)
+        self.make_unique_str(diags, id.span, id.inner, false)
     }
 
-    pub fn make_unique_str(&mut self, diags: &Diagnostics, span: Span, string: &str) -> DiagResult<LoweredName> {
+    pub fn make_unique_str(
+        &mut self,
+        diags: &Diagnostics,
+        span: Span,
+        string: &str,
+        force_index: bool,
+    ) -> DiagResult<LoweredName> {
+        // TODO avoid repeated allocations in this function
+        //   * for each str, store the next (potentially) valid suffix
+        //   * repeatedly truncate and re-add suffix, instead of creating new strings
         check_identifier_valid(diags, Spanned { span, inner: string })?;
 
-        if self.used.insert(string.to_owned()) {
+        if !force_index && !self.is_used(string) {
+            self.local_used.insert(string.to_owned());
             return Ok(LoweredName(string.to_owned()));
         }
 
-        // TODO speed this up?
         for i in 0u32.. {
             let suffixed = format!("{string}_{i}");
-            if self.used.insert(suffixed.clone()) {
+            if !self.is_used(&suffixed) {
+                self.local_used.insert(suffixed.clone());
                 return Ok(LoweredName(suffixed));
             }
         }
@@ -127,6 +150,19 @@ impl LoweredNameScope {
             span,
             format!("failed to generate unique lowered identifier for `{string}`")
         ))
+    }
+
+    fn is_used(&self, s: &str) -> bool {
+        let mut curr = self;
+        loop {
+            if curr.local_used.contains(s) {
+                return true;
+            }
+            match curr.parent {
+                Some(p) => curr = p,
+                None => return false,
+            }
+        }
     }
 }
 
@@ -195,9 +231,6 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     let diags = ctx.diags;
     assert!(!ctx.module_map.contains_key(&module));
 
-    // TODO careful with name scoping: we don't want eg. ports to accidentally shadow other modules
-    //   or maybe verilog has separate namespaces, then it's fine
-
     let module_info = &ctx.modules[module];
     let IrModuleInfo {
         ports,
@@ -254,7 +287,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         ports: port_name_map,
     };
 
-    ctx.lowered_modules.push(f);
+    ctx.result_source.push(f);
     Ok(lowered_module)
 }
 
@@ -422,10 +455,13 @@ fn lower_module_statements(
                     variables: &variables,
                 };
 
+                let temporaries = GrowVec::new();
                 let mut ctx = LowerBlockContext {
+                    diags,
                     large,
                     name_map,
-                    temporary_sizes: vec![],
+                    name_scope: module_name_scope.new_child(),
+                    temporaries: &temporaries,
                     indent: Indent::new(2),
                     newline: &mut newline,
                     f,
@@ -434,7 +470,7 @@ fn lower_module_statements(
                 ctx.newline.start_new_block();
                 ctx.lower_block(block)?;
 
-                if !ctx.temporary_sizes.is_empty() {
+                if !temporaries.is_empty() {
                     todo!()
                 }
 
@@ -512,16 +548,19 @@ fn lower_module_statements(
                             let reg_name = reg_name_map.get(reg).unwrap();
 
                             // TODO maybe we can avoid this here if we only allow single-expression reset values?
+                            let temporaries = GrowVec::new();
                             let mut ctx = LowerBlockContext {
+                                diags,
                                 large,
                                 name_map: outer_name_map,
-                                temporary_sizes: vec![],
+                                name_scope: module_name_scope.new_child(),
+                                temporaries: &temporaries,
                                 indent: indent_inner,
                                 newline: &mut newline,
                                 f,
                             };
-                            let value = ctx.lower_expression(value)?;
-                            if !ctx.temporary_sizes.is_empty() {
+                            let value = ctx.lower_expression(reset.span, value)?;
+                            if !temporaries.is_empty() {
                                 todo!()
                             }
 
@@ -542,16 +581,20 @@ fn lower_module_statements(
 
                 // block itself, using inner name map (with shadowing)
                 newline.start_new_block();
+
+                let temporaries = GrowVec::new();
                 let mut ctx = LowerBlockContext {
+                    diags,
                     large,
                     name_map: inner_name_map,
-                    temporary_sizes: vec![],
+                    name_scope: module_name_scope.new_child(),
+                    temporaries: &temporaries,
                     indent: indent_clocked,
                     newline: &mut newline,
                     f,
                 };
                 ctx.lower_block(clock_block)?;
-                if !ctx.temporary_sizes.is_empty() {
+                if temporaries.is_empty() {
                     todo!()
                 }
 
@@ -750,7 +793,7 @@ fn lower_shadow_registers(
 
         let register_name = debug_info_id.inner.unwrap_or("_");
         let shadow_name =
-            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{register_name}"))?;
+            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{register_name}"), false)?;
 
         match ty.to_prefix_str() {
             Ok(ty_prefix_str) => {
@@ -805,33 +848,46 @@ fn collect_written_registers(block: &IrBlock, result: &mut IndexSet<IrRegister>)
 enum Evaluated<'n> {
     Name(&'n LoweredName),
     #[allow(dead_code)]
-    Temporary(Temporary),
+    Temporary(Temporary<'n>),
     String(String),
     Str(&'static str),
 }
 
 #[derive(Debug, Copy, Clone)]
+struct Temporary<'n>(&'n LoweredName);
+
 #[allow(dead_code)]
-struct Temporary(usize);
+#[derive(Debug)]
+struct TemporaryInfo {
+    name: LoweredName,
+    ty: VerilogType,
+}
+
+impl Display for Temporary<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl Display for Evaluated<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Evaluated::Name(name) => write!(f, "{}", name),
-            Evaluated::Temporary(_) => todo!(),
+            Evaluated::Name(n) => write!(f, "{}", n),
+            Evaluated::Temporary(tmp) => write!(f, "{}", tmp),
             Evaluated::String(s) => write!(f, "{}", s),
             Evaluated::Str(s) => write!(f, "{}", s),
         }
     }
 }
 
+#[allow(dead_code)]
 struct LowerBlockContext<'a, 'n> {
+    diags: &'a Diagnostics,
     large: &'a IrLargeArena,
 
-    // TODO for local variables, prefix everything with var_, that leaves tmp_ for temporaries
-    //   (although we still need to be careful about signal shadowing, but we can do that as a separate operation)
     name_map: NameMap<'n>,
-    temporary_sizes: Vec<u64>,
+    name_scope: LoweredNameScope<'a>,
+    temporaries: &'n GrowVec<TemporaryInfo>,
 
     indent: Indent,
     newline: &'a mut NewlineGenerator,
@@ -852,19 +908,19 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         for stmt in statements {
             self.newline.before_item(self.f);
-            self.lower_statement(&stmt.inner)?;
+            self.lower_statement(stmt.as_ref())?;
         }
 
         Ok(())
     }
 
-    fn lower_statement(&mut self, stmt: &IrStatement) -> DiagResult {
+    fn lower_statement(&mut self, stmt: Spanned<&IrStatement>) -> DiagResult {
         let indent = self.indent;
 
-        match stmt {
+        match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let target = self.lower_assign_target(target)?;
-                let source = self.lower_expression(source)?;
+                let target = self.lower_assign_target(stmt.span, target)?;
+                let source = self.lower_expression(stmt.span, source)?;
                 swriteln!(self.f, "{indent}{target} = {source};");
             }
             IrStatement::Block(inner) => {
@@ -877,7 +933,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 then_block,
                 else_block,
             }) => {
-                let cond = self.lower_expression(condition)?;
+                let cond = self.lower_expression(stmt.span, condition)?;
                 swrite!(self.f, "{indent}if ({cond}) begin");
                 self.indent(|s| s.lower_block(then_block))?;
                 swrite!(self.f, "{indent}end");
@@ -899,7 +955,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(())
     }
 
-    fn lower_expression(&mut self, expr: &IrExpression) -> DiagResult<Evaluated<'n>> {
+    #[allow(clippy::only_used_in_recursion)]
+    fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Evaluated<'n>> {
         let name_map = self.name_map;
 
         let eval = match expr {
@@ -917,7 +974,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
                     IrExpressionLarge::BoolNot(inner) => {
-                        let inner = self.lower_expression(inner)?;
+                        let inner = self.lower_expression(span, inner)?;
                         Evaluated::String(format!("(!{inner}"))
                     }
                     IrExpressionLarge::BoolBinary(op, left, right) => {
@@ -929,17 +986,19 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrBoolBinaryOp::Xor => "^",
                         };
 
-                        let left = self.lower_expression(left)?;
-                        let right = self.lower_expression(right)?;
+                        let left = self.lower_expression(span, left)?;
+                        let right = self.lower_expression(span, right)?;
 
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
                     IrExpressionLarge::IntArithmetic(op, ty, left, right) => {
-                        // TODO bit-widths are not correct
-                        // TODO store into intermediate temporary to fix bitwidths
-                        // TODO div/mod truncation directions are not right
                         let _ = ty;
 
+                        // TODO div/mod truncation directions are not right
+                        // TODO pow is very likely not right
+                        // TODO lower mod to branch + sub, lower mul/pow to shift if possible
+                        let left = self.lower_expression(span, left)?;
+                        let right = self.lower_expression(span, right)?;
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
                             IrIntArithmeticOp::Sub => "-",
@@ -948,9 +1007,6 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntArithmeticOp::Mod => "%",
                             IrIntArithmeticOp::Pow => "**",
                         };
-
-                        let left = self.lower_expression(left)?;
-                        let right = self.lower_expression(right)?;
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
@@ -964,8 +1020,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntCompareOp::Gte => ">=",
                         };
 
-                        let left = self.lower_expression(left)?;
-                        let right = self.lower_expression(right)?;
+                        let left = self.lower_expression(span, left)?;
+                        let right = self.lower_expression(span, right)?;
 
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
@@ -977,7 +1033,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let mut g = String::new();
                         swrite!(g, "{{");
                         for (i, elem) in enumerate(elements) {
-                            let elem = self.lower_expression(elem)?;
+                            let elem = self.lower_expression(span, elem)?;
                             swrite!(g, "{elem}");
                             swrite!(g, "{}", separator_non_trailing(",", i, elements.len()));
                         }
@@ -998,7 +1054,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                                 IrArrayLiteralElement::Single(inner) => inner,
                             };
 
-                            let inner = self.lower_expression(inner)?;
+                            let inner = self.lower_expression(span, inner)?;
                             swrite!(g, "{}", inner);
                             swrite!(g, "{}", separator_non_trailing(",", i, elements.len()));
                         }
@@ -1008,32 +1064,32 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     IrExpressionLarge::TupleIndex { base, index } => {
                         // TODO this is completely wrong
-                        let base = self.lower_expression(base)?;
+                        let base = self.lower_expression(span, base)?;
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
-                        let base = self.lower_expression(base)?;
-                        let index = self.lower_expression(index)?;
+                        let base = self.lower_expression(span, base)?;
+                        let index = self.lower_expression(span, index)?;
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
-                        let base = self.lower_expression(base)?;
-                        let start = self.lower_expression(start)?;
+                        let base = self.lower_expression(span, base)?;
+                        let start = self.lower_expression(span, start)?;
                         let len = lower_uint_str(len);
                         Evaluated::String(format!("({base}[{start}+:{len}])"))
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
                         // in verilog everything is just a bit vector, so we don't need to do anything
-                        self.lower_expression(value)?
+                        self.lower_expression(span, value)?
                     }
                     IrExpressionLarge::FromBits(_ty, value) => {
                         // in verilog everything is just a bit vector, so we don't need to do anything
-                        self.lower_expression(value)?
+                        self.lower_expression(span, value)?
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
                         // cast the value to the right signedness
@@ -1041,7 +1097,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let target_repr = IntRepresentation::for_range(target);
                         let target_size = target_repr.size_bits();
 
-                        let value = self.lower_expression(value)?;
+                        let value = self.lower_expression(span, value)?;
 
                         let s = match target_repr.signed() {
                             Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
@@ -1054,7 +1110,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO add assertions?
                         let target_repr = IntRepresentation::for_range(target);
                         let _ = target_repr;
-                        self.lower_expression(value)?
+                        self.lower_expression(span, value)?
                     }
                 }
             }
@@ -1062,7 +1118,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(eval)
     }
 
-    fn lower_assign_target(&mut self, target: &IrAssignmentTarget) -> DiagResult<Evaluated<'n>> {
+    fn lower_assign_target(&mut self, span: Span, target: &IrAssignmentTarget) -> DiagResult<Evaluated<'n>> {
         // TODO this is probably wrong, we might need intermediate variables for the base and after each step
         let IrAssignmentTarget { base, steps } = target;
 
@@ -1087,11 +1143,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         for step in steps {
             match step {
                 IrTargetStep::ArrayIndex(start) => {
-                    let start = self.lower_expression(start)?;
+                    let start = self.lower_expression(span, start)?;
                     swrite!(g, "[{start}]");
                 }
                 IrTargetStep::ArraySlice(start, len) => {
-                    let start = self.lower_expression(start)?;
+                    let start = self.lower_expression(span, start)?;
                     let len = lower_uint_str(len);
                     swrite!(g, "[{start}+:{len}]");
                 }
@@ -1099,6 +1155,16 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         }
 
         Ok(Evaluated::String(g))
+    }
+
+    #[allow(dead_code)]
+    fn new_temporary(&mut self, ty: Spanned<IrType>) -> DiagResult<Temporary<'n>> {
+        let ty_verilog = VerilogType::from_ir_ty(self.diags, ty.span, &ty.inner)?;
+        let name = self.name_scope.make_unique_str(self.diags, ty.span, "tmp", true)?;
+        let info = TemporaryInfo { name, ty: ty_verilog };
+
+        let info = self.temporaries.push(info);
+        Ok(Temporary(&info.name))
     }
 }
 
