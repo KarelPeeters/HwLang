@@ -996,6 +996,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     #[allow(clippy::only_used_in_recursion)]
     fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Evaluated<'n>> {
         let name_map = self.name_map;
+        let indent = self.indent;
 
         let eval = match expr {
             &IrExpression::Bool(x) => {
@@ -1050,7 +1051,13 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntArithmeticOp::Pow => "**",
                         };
 
-                        Evaluated::String(format!("({left} {op_str} {right})"))
+                        // TODO only do this if we're actually truncating?
+                        // store in temporary to force truncation
+                        let Ok(tmp) = self.new_temporary(span, &IrType::Int(ty.clone()))? else {
+                            todo!("handle zero width expressions");
+                        };
+                        swriteln!(self.f, "{indent}{tmp} = {left} {op_str} {right};");
+                        Evaluated::Temporary(tmp)
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // TODO bit-widths are probably not correct
@@ -1226,7 +1233,8 @@ fn lower_expand_int_range<'n>(
 
     // TODO avoid repeated signed/unsigned casts when not necessary,
     //   maybe by keeping signedness metadata in Evaluated
-    let s = match target_repr.signed() {
+    // sign/zero-extend based on the signedness of the original value
+    let s = match value_repr.signed() {
         Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
         Signed::Unsigned => format!("({target_size}'d0 + {value})"),
     };

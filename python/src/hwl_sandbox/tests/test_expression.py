@@ -33,3 +33,13 @@ def test_negative_simple(tmpdir: Path):
 def test_negative_complex(tmpdir: Path):
     e = compile_expression(["int(-902..-640)", "int(-129..-71)"], "int(-4096..=4096)", "a0 + a1", tmpdir)
     e.eval_assert([-644, -91], -735)
+
+
+def test_negative_result_expanded(tmpdir: Path):
+    e = compile_expression(["int(-128..128)", "int(0..128)"], "int(-128..256)", "a0 + a1", tmpdir)
+    e.eval_assert([-1, 64], 64 - 1)
+
+
+def test_negative_result_positive(tmpdir: Path):
+    e = compile_expression(["int(-128..128)", "int(128..256)"], "int(-4096..=4096)", "a0 + a1", tmpdir)
+    e.eval_assert([-1, 129], 128)
