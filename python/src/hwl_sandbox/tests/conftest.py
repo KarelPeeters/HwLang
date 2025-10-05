@@ -1,6 +1,7 @@
-import os
 import subprocess
 from pathlib import Path
+
+from hwl_sandbox.common.util import enable_rust_backtraces
 
 # Update the rust module
 subprocess.check_call(
@@ -10,5 +11,4 @@ subprocess.check_call(
 )
 
 # Enable rust backtraces by default for easier debugging
-if "RUST_BACKTRACE" not in os.environ:
-    os.environ["RUST_BACKTRACE"] = "1"
+enable_rust_backtraces()

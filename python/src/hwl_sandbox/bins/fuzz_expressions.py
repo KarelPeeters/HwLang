@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hwl_sandbox.common.expression import compile_expression
+from hwl_sandbox.common.util import enable_rust_backtraces
 
 
 def sample_range(rng: random.Random) -> range:
@@ -110,4 +111,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_rust_backtraces()
     main()
