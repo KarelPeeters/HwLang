@@ -75,7 +75,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
     # generate result type that contains all possible output values
     ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
-    m = re.match(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
+    m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
     assert m
     range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
     range_res = sample_range(rng, must_contain=range_res_min)
