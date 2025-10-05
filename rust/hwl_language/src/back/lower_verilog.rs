@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
-use crate::front::types::HardwareType;
+use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
     IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
@@ -38,6 +38,7 @@ pub struct LoweredVerilog {
 // TODO should we still be doing diagnostics here, or should lowering just never start?
 // TODO identifier ID: prefix _all_ signals with something: wire, reg, local, ...,
 //   so nothing can conflict with ports/module names. Not fully right yet, but maybe a good idea.
+// TODO avoid a bunch of string allocations
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     modules: &IrModules,
@@ -315,12 +316,12 @@ fn lower_module_ports(
 
         // TODO check that port names are valid and unique
         let lower_name = module_name_scope.exact_for_new_id(diags, *debug_span, name)?;
-        let port_ty = VerilogType::from_ir_ty(diags, *debug_span, ty)?;
+        let port_ty = VerilogType::new_from_ir(diags, *debug_span, ty)?;
 
         let slot;
         let (is_actual_port, ty_str) = match port_ty {
             Ok(ty_str) => {
-                slot = ty_str.to_prefix_display().to_string();
+                slot = ty_str.to_prefix().to_string();
                 (true, slot.as_str())
             }
             Err(ZeroWidth) => (false, "[empty]"),
@@ -376,9 +377,9 @@ fn lower_module_signals(
         let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
         let slot;
-        let (prefix_str, ty_prefix_str) = match VerilogType::from_ir_ty(diags, debug_info_id.span, ty)? {
+        let (prefix_str, ty_prefix_str) = match VerilogType::new_from_ir(diags, debug_info_id.span, ty)? {
             Ok(ty_prefix_str) => {
-                slot = ty_prefix_str.to_prefix_display().to_string();
+                slot = ty_prefix_str.to_prefix().to_string();
                 ("", slot.as_str())
             }
             Err(ZeroWidth) => ("// ", "[empty]"),
@@ -480,7 +481,7 @@ fn lower_module_statements(
                 newline_body.start_group();
                 for t in temporaries.into_vec() {
                     newline_body.start_item(&mut f_body);
-                    swriteln!(f_module, "reg {}{};", t.ty.to_prefix_display(), t.name);
+                    swriteln!(f_module, "reg {}{};", t.ty.to_prefix(), t.name);
                 }
 
                 if !f_body.is_empty() {
@@ -530,7 +531,7 @@ fn lower_module_statements(
 
                 // declare shadow registers and locals
                 let mut newline_body = NewlineGenerator::new();
-                let mut written_regs = collect_written_registers(clock_block);
+                let written_regs = collect_written_registers(clock_block);
                 let reg_name_map_shadowed = declare_shadow_registers(
                     diags,
                     module_name_scope,
@@ -609,7 +610,7 @@ fn lower_module_statements(
                 newline_body.start_group();
                 for t in temporaries.into_vec() {
                     newline_body.start_item(&mut f_body);
-                    todo!("declare temporary")
+                    swriteln!(f_module, "reg {}{};", t.ty.to_prefix(), t.name);
                 }
                 if !f_body.is_empty() {
                     newline_body.start_group_and_item(f_module);
@@ -779,9 +780,9 @@ fn declare_locals(
         let name = module_name_scope.make_unique_maybe_id(diags, maybe_id_as_ref(debug_info_id))?;
 
         let slot;
-        let (prefix_str, ty_prefix_str) = match VerilogType::from_ir_ty(diags, debug_info_id.span, ty)? {
+        let (prefix_str, ty_prefix_str) = match VerilogType::new_from_ir(diags, debug_info_id.span, ty)? {
             Ok(ty_prefix_str) => {
-                slot = ty_prefix_str.to_prefix_display().to_string();
+                slot = ty_prefix_str.to_prefix().to_string();
                 ("", slot.as_str())
             }
             Err(ZeroWidth) => ("// ", "[empty]"),
@@ -810,7 +811,7 @@ fn declare_shadow_registers(
         let register_info = &registers[reg];
         let debug_info_id = maybe_id_as_ref(&register_info.debug_info_id);
 
-        let ty_verilog = VerilogType::from_ir_ty(diags, debug_info_id.span, &register_info.ty)?;
+        let ty_verilog = VerilogType::new_from_ir(diags, debug_info_id.span, &register_info.ty)?;
 
         let register_name = debug_info_id.inner.unwrap_or("_");
         let shadow_name =
@@ -819,7 +820,7 @@ fn declare_shadow_registers(
         match ty_verilog {
             Ok(ty_verilog) => {
                 newline.start_item(f);
-                let ty_verilog = ty_verilog.to_prefix_display();
+                let ty_verilog = ty_verilog.to_prefix();
                 swriteln!(f, "{I}{I}reg {ty_verilog}{shadow_name};");
             }
             Err(ZeroWidth) => {
@@ -875,6 +876,7 @@ fn collect_written_registers(block: &IrBlock) -> IndexSet<IrRegister> {
 #[derive(Debug)]
 enum Evaluated<'n> {
     Name(&'n LoweredName),
+    #[allow(dead_code)]
     Temporary(Temporary<'n>),
     String(String),
     Str(&'static str),
@@ -984,7 +986,6 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     #[allow(clippy::only_used_in_recursion)]
     fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Evaluated<'n>> {
         let name_map = self.name_map;
-        let indent = self.indent;
 
         let eval = match expr {
             &IrExpression::Bool(x) => {
@@ -1024,6 +1025,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO lower mod to branch + sub, lower mul/pow to shift if possible
                         let left = self.lower_expression(span, left)?;
                         let right = self.lower_expression(span, right)?;
+
+                        let left = lower_expand_int_range(ty, left);
+                        let right = lower_expand_int_range(ty, right);
+
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
                             IrIntArithmeticOp::Sub => "-",
@@ -1033,16 +1038,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntArithmeticOp::Pow => "**",
                         };
 
-                        let tmp = self.new_temporary(span, &IrType::Int(ty.clone()))?;
-                        let tmp = match tmp {
-                            Ok(tmp) => tmp,
-                            Err(zw) => todo!("handle {zw:?}"),
-                        };
-
-                        let bits = IntRepresentation::for_range(ty).size_bits();
-
-                        swriteln!(self.f, "{indent}{tmp} = {bits}'d0 + {left} {op_str} {right};");
-                        Evaluated::Temporary(tmp)
+                        Evaluated::String(format!("({left} {op_str} {right})"))
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // TODO bit-widths are probably not correct
@@ -1127,18 +1123,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         self.lower_expression(span, value)?
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
-                        // cast the value to the right signedness
-                        //   and add a literal of the right sign and size to force expansion
-                        let target_repr = IntRepresentation::for_range(target);
-                        let target_size = target_repr.size_bits();
-
                         let value = self.lower_expression(span, value)?;
-
-                        let s = match target_repr.signed() {
-                            Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
-                            Signed::Unsigned => format!("({target_size}'d0 + {value})"),
-                        };
-                        Evaluated::String(s)
+                        Evaluated::String(lower_expand_int_range(target, value))
                     }
                     IrExpressionLarge::ConstrainIntRange(target, value) => {
                         // TODO this not correct, we're not actually lowering the bit width
@@ -1192,8 +1178,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(Evaluated::String(g))
     }
 
+    #[allow(dead_code)]
     fn new_temporary(&mut self, span: Span, ty: &IrType) -> DiagResult<Result<Temporary<'n>, ZeroWidth>> {
-        let ty_verilog = match VerilogType::from_ir_ty(self.diags, span, ty)? {
+        let ty_verilog = match VerilogType::new_from_ir(self.diags, span, ty)? {
             Ok(ty_verilog) => ty_verilog,
             Err(zw) => return Ok(Err(zw)),
         };
@@ -1204,6 +1191,19 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let info = self.temporaries.push(info);
 
         Ok(Ok(Temporary(&info.name)))
+    }
+}
+
+fn lower_expand_int_range(target: &ClosedIncRange<BigInt>, value: Evaluated) -> String {
+    // TODO skip if bitwidth is the same as the source ty
+    // cast the value to the right signedness
+    //   and add a literal of the right sign and size to force expansion
+    let target_repr = IntRepresentation::for_range(target);
+    let target_size = target_repr.size_bits();
+
+    match target_repr.signed() {
+        Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
+        Signed::Unsigned => format!("({target_size}'d0 + {value})"),
     }
 }
 
@@ -1255,9 +1255,6 @@ const I: &str = Indent::I;
 #[derive(Debug, Copy, Clone)]
 struct ZeroWidth;
 
-// TODO maybe simplify this to just a single "width" value?
-// TODO maybe expand this to represent multi-dim arrays?
-// TODO should empty types be represented as single bits or should all interacting code be skipped?
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum VerilogType {
     /// Single bit value.
@@ -1268,7 +1265,7 @@ enum VerilogType {
 }
 
 impl VerilogType {
-    pub fn array(diags: &Diagnostics, span: Span, w: BigUint) -> DiagResult<Result<VerilogType, ZeroWidth>> {
+    pub fn new_array(diags: &Diagnostics, span: Span, w: BigUint) -> DiagResult<Result<VerilogType, ZeroWidth>> {
         let w = diag_big_int_to_u32(diags, span, &w.into(), "array width too large")?;
         match NonZeroU32::new(w) {
             None => Ok(Err(ZeroWidth)),
@@ -1276,15 +1273,14 @@ impl VerilogType {
         }
     }
 
-    // TODO split tuples and short arrays into multiple ports instead?
-    pub fn from_ir_ty(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Result<VerilogType, ZeroWidth>> {
+    pub fn new_from_ir(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Result<VerilogType, ZeroWidth>> {
         match ty {
             IrType::Bool => Ok(Ok(VerilogType::Bit)),
-            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::array(diags, span, ty.size_bits()),
+            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::new_array(diags, span, ty.size_bits()),
         }
     }
 
-    pub fn to_prefix_display(self) -> impl Display {
+    pub fn to_prefix(self) -> impl Display {
         struct D(VerilogType);
         impl Display for D {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
