@@ -9,12 +9,10 @@ use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
-use hwl_language::front::print::StdoutPrintHandler;
+use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
-use hwl_language::front::value::Value;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
-use hwl_language::syntax::ast::{Arg, Args};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
 };
@@ -25,6 +23,7 @@ use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
+use hwl_language::util::data::GrowVec;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
@@ -61,6 +60,20 @@ struct Compile {
     #[pyo3(get)]
     parsed: Py<Parsed>,
     state: CompileShared,
+    capture_prints: Option<Py<CapturePrints>>,
+}
+
+#[pyclass]
+struct CapturePrints {
+    #[pyo3(get)]
+    prints: Vec<String>,
+}
+
+#[pyclass]
+struct CapturePrintsContext {
+    compile: Py<Compile>,
+    capture: Py<CapturePrints>,
+    prev_capture: Option<Py<CapturePrints>>,
 }
 
 #[pyclass]
@@ -143,6 +156,8 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
+    m.add_class::<CapturePrints>()?;
+    m.add_class::<CapturePrintsContext>()?;
     m.add_class::<UnsupportedValue>()?;
     m.add_class::<Undefined>()?;
     m.add_class::<Type>()?;
@@ -307,7 +322,11 @@ impl Parsed {
             state
         };
 
-        Ok(Compile { parsed: slf, state })
+        Ok(Compile {
+            parsed: slf,
+            state,
+            capture_prints: None,
+        })
     }
 }
 
@@ -321,7 +340,7 @@ impl Compile {
 
         let parsed_ref = slf_ref.parsed.borrow(py);
         let parsed = &parsed_ref.parsed;
-        let source_ref = &parsed_ref.source.borrow(py);
+        let source_ref = parsed_ref.source.borrow(py);
         let source = &source_ref.source;
         let hierarchy = &source_ref.hierarchy;
 
@@ -362,6 +381,8 @@ impl Compile {
         };
 
         // evaluate the item
+        // TODO release GIL during evaluation
+        let print_handler = CollectPrintHandler::new();
         let refs = CompileRefs {
             fixed: CompileFixed {
                 source,
@@ -370,18 +391,91 @@ impl Compile {
             },
             shared: state,
             diags: &diags,
-            print_handler: &StdoutPrintHandler,
+            print_handler: &print_handler,
             should_stop: &|| false,
         };
+
+        // eval item and elaborate any necessary items
         let mut item_ctx = CompileItemContext::new_empty(refs, None);
-
-        let value = item_ctx.eval_item(item);
-        let value = map_diag_error(&diags, source, value)?;
-
+        let value = item_ctx.eval_item(item).cloned();
         refs.run_elaboration_loop();
-        check_diags(source, &diags)?;
 
-        compile_value_to_py(py, &slf, value)
+        let value = map_diag_error(&diags, source, value);
+        let result_diags = check_diags(source, &diags);
+
+        drop(source_ref);
+        drop(parsed_ref);
+        slf_ref.collect_prints(py, print_handler);
+
+        let value = value?;
+        result_diags?;
+        compile_value_to_py(py, &slf, &value)
+    }
+
+    #[pyo3(signature=(capture=None))]
+    fn capture_prints(
+        slf: Py<Self>,
+        py: Python,
+        capture: Option<Py<CapturePrints>>,
+    ) -> PyResult<Py<CapturePrintsContext>> {
+        let capture = match capture {
+            Some(capture) => capture,
+            None => Py::new(py, CapturePrints::new())?,
+        };
+        Py::new(
+            py,
+            CapturePrintsContext {
+                compile: slf,
+                capture,
+                prev_capture: None,
+            },
+        )
+    }
+}
+
+impl Compile {
+    fn collect_prints(&mut self, py: Python, handler: CollectPrintHandler) {
+        if let Some(capture) = &self.capture_prints {
+            capture.borrow_mut(py).prints.extend(handler.finish());
+        }
+    }
+}
+
+#[pymethods]
+impl CapturePrints {
+    #[new]
+    fn new() -> Self {
+        CapturePrints { prints: Vec::new() }
+    }
+}
+
+#[pymethods]
+impl CapturePrintsContext {
+    fn __enter__(&mut self, py: Python) -> PyResult<Py<CapturePrints>> {
+        let compile = self.compile.clone_ref(py);
+        let mut compile = compile.borrow_mut(py);
+
+        // replace the capture destination, keep the previous one to restore later so nesting works properly
+        self.prev_capture = Option::replace(&mut compile.capture_prints, self.capture.clone_ref(py));
+
+        // return the capture object for convenient, so the user can bind it
+        Ok(self.capture.clone_ref(py))
+    }
+
+    fn __exit__(
+        &mut self,
+        py: Python,
+        _exc_type: Option<&Bound<PyAny>>,
+        _exc_value: Option<&Bound<PyAny>>,
+        _traceback: Option<&Bound<PyAny>>,
+    ) -> PyResult<bool> {
+        let mut compile = self.compile.borrow_mut(py);
+
+        // restore previous capture destination
+        compile.capture_prints = Option::take(&mut self.prev_capture);
+
+        // do not suppress exceptions
+        Ok(false)
     }
 }
 
@@ -420,6 +514,7 @@ impl Function {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
+        // TODO release GIL during evaluation
         let diags = Diagnostics::new();
 
         let returned = {
@@ -434,24 +529,11 @@ impl Function {
             let dummy_span = source_ref.dummy_span;
 
             // convert args
-            let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span)?;
-            let args = Args {
-                span: dummy_span,
-                inner: args
-                    .inner
-                    .iter()
-                    .map(|arg| {
-                        Arg {
-                            span: dummy_span,
-                            name: arg.name.as_ref().map(|name| Spanned::new(dummy_span, name.as_str())),
-                            // TODO avoid clone here
-                            value: Spanned::new(dummy_span, Value::Compile(arg.value.clone())),
-                        }
-                    })
-                    .collect_vec(),
-            };
+            let arg_key_buffer = GrowVec::new();
+            let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
 
             // call function
+            let print_handler = CollectPrintHandler::new();
             let refs = CompileRefs {
                 fixed: CompileFixed {
                     source,
@@ -460,7 +542,7 @@ impl Function {
                 },
                 shared: state,
                 diags: &diags,
-                print_handler: &StdoutPrintHandler,
+                print_handler: &print_handler,
                 should_stop: &|| false,
             };
 
@@ -468,7 +550,8 @@ impl Function {
             let flow_root = FlowRoot::new(&diags);
             let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
 
-            let returned = item_ctx.call_function(
+            // call the function and run any elaboration that is needed
+            let returned = item_ctx.call_function_compile(
                 &mut flow,
                 &RustType::Any,
                 dummy_span,
@@ -476,23 +559,18 @@ impl Function {
                 &self.function_value,
                 args,
             );
-            let returned = map_diag_error(&diags, source, returned)?;
-
-            // run any downstream elaboration
             refs.run_elaboration_loop();
-            check_diags(source, &diags)?;
 
-            // unwrap compile
-            match returned {
-                Value::Compile(returned) => returned,
-                Value::Hardware(_) => {
-                    let err = diags.report_internal_error(
-                        dummy_span,
-                        "function called with only compile-time args should return compile-time value",
-                    );
-                    return Err(convert_diag_error(&diags, source, err));
-                }
-            }
+            let returned = map_diag_error(&diags, source, returned);
+            let result_diags = check_diags(source, &diags);
+
+            drop(source_ref);
+            drop(parsed_ref);
+            compile_ref.collect_prints(py, print_handler);
+
+            let returned = returned?;
+            result_diags?;
+            returned
         };
 
         compile_value_to_py(py, &self.compile, &returned)

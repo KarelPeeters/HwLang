@@ -28,3 +28,24 @@ def test_format():
     src = "const c = a+b;"
     expected = "const c = a + b;\n"
     assert hwl.format_file(src) == expected
+
+
+def test_capture_prints():
+    c = compile_custom(
+        """
+        import std.types.int;
+        import std.util.print;
+        fn f(a: int) -> int {
+            print("hello");
+            print("world");
+            return a + 1;
+        }
+        """
+    )
+    f = c.resolve("top.f")
+
+    with c.capture_prints() as capture:
+        result = f(5)
+
+    assert result == 6
+    assert capture.prints == ['"hello"', '"world"']

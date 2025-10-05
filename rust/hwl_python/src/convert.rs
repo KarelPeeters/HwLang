@@ -1,5 +1,7 @@
 use crate::{Compile, Function, IncRange, Module, Type, Undefined, UnsupportedValue};
+use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
+use hwl_language::util::data::GrowVec;
 use hwl_language::{
     front::{types::IncRange as RustIncRange, types::Type as RustType, value::CompileValue},
     syntax::{
@@ -131,26 +133,27 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     )))
 }
 
-pub fn convert_python_args_and_kwargs_to_args(
+pub fn convert_python_args_and_kwargs_to_args<'k>(
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
-) -> PyResult<Args<Option<String>, CompileValue>> {
+    key_buffer: &'k GrowVec<String>,
+) -> PyResult<Args<Option<Spanned<&'k str>>, Spanned<CompileValue>>> {
     let mut args_inner = vec![];
     for value in args {
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: compile_value_from_py(&value)?,
+            value: Spanned::new(dummy_span, compile_value_from_py(&value)?),
         });
     }
     if let Some(kwargs) = kwargs {
         for (name, value) in kwargs {
-            let name = name.extract::<String>()?;
+            let name = key_buffer.push(name.extract::<String>()?);
             args_inner.push(Arg {
                 span: dummy_span,
-                name: Some(name),
-                value: compile_value_from_py(&value)?,
+                name: Some(Spanned::new(dummy_span, name.as_str())),
+                value: Spanned::new(dummy_span, compile_value_from_py(&value)?),
             });
         }
     }

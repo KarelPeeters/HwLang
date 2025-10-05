@@ -33,6 +33,20 @@ class Compile:
 
     def resolve(self, path: str) -> Any: ...
 
+    def capture_prints(self, capture: Optional['CapturePrints'] = None) -> 'CapturePrintsContext': ...
+
+
+class CapturePrints:
+    prints: List[str]
+
+    def __init__(self) -> None: ...
+
+
+class CapturePrintsContext:
+    def __enter__(self) -> CapturePrints: ...
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool: ...
+
 
 class UnsupportedValue:
     def __repr__(self) -> str: ...
