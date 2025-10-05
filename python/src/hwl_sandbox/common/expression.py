@@ -56,6 +56,8 @@ def compile_expression(ty_inputs: List[str], ty_res: str, expr: str, build_dir: 
     }}
     """
 
+    print(src)
+
     c = compile_custom(src)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")

@@ -53,3 +53,8 @@ def test_zero_width(tmpdir: Path):
 def test_constant_non_zero(tmpdir: Path):
     e = compile_expression(["int(5..=5)", "int(0..16)"], "int(5..21)", "a0 + a1", tmpdir)
     e.eval_assert([5, 8], 13)
+
+
+def test_zero_width_outside_result_range(tmpdir: Path):
+    e = compile_expression(["int(-1..0)", "int(0..1)"], "int(-8..8)", "a0 + a1", tmpdir)
+    e.eval_assert([-1, 0], -1)

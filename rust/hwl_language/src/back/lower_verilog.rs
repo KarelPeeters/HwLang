@@ -1052,8 +1052,13 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO div/mod truncation directions are not right
                         // TODO pow is very likely not right
                         // TODO lower mod to branch + sub, lower mul/pow to shift if possible
-                        let left = self.lower_expression_int_expanded(span, ty, left)?;
-                        let right = self.lower_expression_int_expanded(span, ty, right)?;
+                        // find common range that contains all operands and the result
+                        let ty_all = ty
+                            .union(left.ty(self.module, self.locals).unwrap_int())
+                            .union(right.ty(self.module, self.locals).unwrap_int());
+
+                        let left = self.lower_expression_int_expanded(span, &ty_all, left)?;
+                        let right = self.lower_expression_int_expanded(span, &ty_all, right)?;
 
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
@@ -1326,8 +1331,7 @@ fn lower_expand_int_range<'n>(
 }
 
 fn lower_int_constant(ty: ClosedIncRange<&BigInt>, x: &BigInt) -> String {
-    assert!(ty.contains(&x));
-
+    assert!(ty.contains(&x), "Trying to emit constant {x:?} encoded as range {ty:?}");
     let repr = IntRepresentation::for_range(ty);
     let bits = repr.size_bits();
     let signed = match repr.signed() {
