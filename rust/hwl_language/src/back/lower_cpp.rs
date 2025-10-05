@@ -599,7 +599,7 @@ impl CodegenBlockContext<'_> {
                 // TODO this this pretty inefficient
                 // TODO this is probably not correct for signed values
                 let tmp_i = self.new_temporary();
-                let size_bits = IntRepresentation::for_range(range).size_bits();
+                let size_bits = IntRepresentation::for_range(range.as_ref()).size_bits();
                 swriteln!(
                     self.f,
                     "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {size_bits}; {tmp_i}++) {{"
@@ -660,7 +660,7 @@ impl CodegenBlockContext<'_> {
                 // TODO this this pretty inefficient
                 // TODO this is probably not correct for signed values
                 let tmp_i = self.new_temporary();
-                let size_bits = IntRepresentation::for_range(range).size_bits();
+                let size_bits = IntRepresentation::for_range(range.as_ref()).size_bits();
 
                 swriteln!(self.f, "{indent}{result} = 0;");
                 swriteln!(

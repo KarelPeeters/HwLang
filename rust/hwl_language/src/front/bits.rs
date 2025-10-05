@@ -22,7 +22,7 @@ impl HardwareType {
         match self {
             HardwareType::Bool => true,
             HardwareType::Int(range) => {
-                let repr = IntRepresentation::for_range(range);
+                let repr = IntRepresentation::for_range(range.as_ref());
                 &repr.range() == range
             }
             HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
@@ -41,7 +41,7 @@ impl HardwareType {
                     start_inc: BigInt::ZERO,
                     end_inc: BigInt::from(info.variants.len()) - 1,
                 };
-                let tag_repr = IntRepresentation::for_range(&tag_range);
+                let tag_repr = IntRepresentation::for_range(tag_range.as_ref());
                 if tag_repr.range() != tag_range {
                     return false;
                 }
@@ -88,7 +88,7 @@ impl HardwareType {
                 Ok(())
             }
             (HardwareType::Int(range), CompileValue::Int(v)) => {
-                let repr = IntRepresentation::for_range(range);
+                let repr = IntRepresentation::for_range(range.as_ref());
                 repr.value_to_bits(v, result).map_err(|_| err_internal())
             }
             (HardwareType::Tuple(ty_inners), CompileValue::Tuple(v_inners)) => {
@@ -190,7 +190,7 @@ impl HardwareType {
         match self {
             HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(err_internal())?)),
             HardwareType::Int(range) => {
-                let repr = IntRepresentation::for_range(range);
+                let repr = IntRepresentation::for_range(range.as_ref());
                 let bits: Vec<bool> = (0..repr.size_bits())
                     .map(|_| bits.next().ok_or_else(err_internal))
                     .try_collect()?;
@@ -265,7 +265,7 @@ impl IrType {
     pub fn size_bits(&self) -> BigUint {
         match self {
             IrType::Bool => BigUint::ONE,
-            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range).size_bits()),
+            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range.as_ref()).size_bits()),
             IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
             IrType::Array(inner, len) => inner.size_bits() * len,
         }
@@ -284,7 +284,7 @@ impl IrType {
                 Ok(())
             }
             (IrType::Int(range), CompileValue::Int(v)) => {
-                let repr = IntRepresentation::for_range(range);
+                let repr = IntRepresentation::for_range(range.as_ref());
                 repr.value_to_bits(v, result).map_err(|_: InvalidRange| WrongType)
             }
             (IrType::Tuple(ty_inners), CompileValue::Tuple(v_inners)) => {
@@ -324,7 +324,7 @@ impl IrType {
         match self {
             IrType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(WrongType)?)),
             IrType::Int(range) => {
-                let repr = IntRepresentation::for_range(range);
+                let repr = IntRepresentation::for_range(range.as_ref());
                 let bits: Vec<bool> = (0..repr.size_bits())
                     .map(|_| bits.next().ok_or(WrongType))
                     .try_collect()?;

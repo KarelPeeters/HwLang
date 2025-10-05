@@ -13,7 +13,7 @@ use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::{Span, Spanned};
 use crate::throw;
 use crate::util::arena::Arena;
-use crate::util::big_int::{BigInt, BigUint, Sign};
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::{Indent, separator_non_trailing};
@@ -485,7 +485,7 @@ fn lower_module_statements(
                 newline_body.start_group();
                 for t in temporaries.into_vec() {
                     newline_body.start_item(&mut f_body);
-                    swriteln!(f_module, "reg {}{};", t.ty.to_prefix(), t.name);
+                    swriteln!(f_module, "{I}{I}reg {}{};", t.ty.to_prefix(), t.name);
                 }
 
                 if !f_body.is_empty() {
@@ -577,7 +577,13 @@ fn lower_module_statements(
                                 f: &mut f_body,
                             };
                             let value = ctx.lower_expression(reset.span, value)?;
-                            swriteln!(f_body, "{indent_inner}{reg_name} <= {value};");
+
+                            match value {
+                                Ok(value) => swriteln!(f_body, "{indent_inner}{reg_name} <= {value};"),
+                                Err(ZeroWidth) => {
+                                    // zero-width assignments can be skipped
+                                }
+                            }
                         }
 
                         swriteln!(f_body, "{I}{I}end else begin");
@@ -618,7 +624,7 @@ fn lower_module_statements(
                 newline_body.start_group();
                 for t in temporaries.into_vec() {
                     newline_body.start_item(&mut f_body);
-                    swriteln!(f_module, "reg {}{};", t.ty.to_prefix(), t.name);
+                    swriteln!(f_module, "{I}{I}reg {}{};", t.ty.to_prefix(), t.name);
                 }
                 if !f_body.is_empty() {
                     newline_body.start_group_and_item(f_module);
@@ -958,7 +964,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             IrStatement::Assign(target, source) => {
                 let target = self.lower_assign_target(stmt.span, target)?;
                 let source = self.lower_expression(stmt.span, source)?;
-                swriteln!(self.f, "{indent}{target} = {source};");
+                match source {
+                    Ok(source) => swriteln!(self.f, "{indent}{target} = {source};"),
+                    Err(ZeroWidth) => {}
+                }
             }
             IrStatement::Block(inner) => {
                 swriteln!(self.f, "{indent}begin");
@@ -970,7 +979,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 then_block,
                 else_block,
             }) => {
-                let cond = self.lower_expression(stmt.span, condition)?;
+                let cond = self.lower_expression_non_zero_width(stmt.span, condition, "condition")?;
                 swrite!(self.f, "{indent}if ({cond}) begin");
                 self.lower_block_indented(then_block)?;
                 swrite!(self.f, "{indent}end");
@@ -993,8 +1002,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(())
     }
 
-    #[allow(clippy::only_used_in_recursion)]
-    fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Evaluated<'n>> {
+    fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Result<Evaluated<'n>, ZeroWidth>> {
         let name_map = self.name_map;
         let indent = self.indent;
 
@@ -1003,7 +1011,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let s = if x { "1'b0" } else { "1'b1" };
                 Evaluated::Str(s)
             }
-            IrExpression::Int(x) => Evaluated::String(lower_int_str(x)),
+            IrExpression::Int(x) => Evaluated::String(lower_int_constant(ClosedIncRange::single(x), x)),
 
             &IrExpression::Port(s) => Evaluated::Name(name_map.map_signal(IrSignal::Port(s))),
             &IrExpression::Wire(s) => Evaluated::Name(name_map.map_signal(IrSignal::Wire(s))),
@@ -1013,7 +1021,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
                     IrExpressionLarge::BoolNot(inner) => {
-                        let inner = self.lower_expression(span, inner)?;
+                        let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
                         Evaluated::String(format!("(!{inner}"))
                     }
                     IrExpressionLarge::BoolBinary(op, left, right) => {
@@ -1025,8 +1033,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrBoolBinaryOp::Xor => "^",
                         };
 
-                        let left = self.lower_expression(span, left)?;
-                        let right = self.lower_expression(span, right)?;
+                        let left = self.lower_expression_non_zero_width(span, left, "boolean")?;
+                        let right = self.lower_expression_non_zero_width(span, right, "boolean")?;
 
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
@@ -1034,14 +1042,21 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO div/mod truncation directions are not right
                         // TODO pow is very likely not right
                         // TODO lower mod to branch + sub, lower mul/pow to shift if possible
-                        let left_eval = self.lower_expression(span, left)?;
-                        let right_eval = self.lower_expression(span, right)?;
+                        // allocate a temporary for the result
+                        let res_tmp = match self.new_temporary(span, &IrType::Int(ty.clone()))? {
+                            Ok(res_tmp) => res_tmp,
+                            Err(ZeroWidth) => {
+                                // if the result is zero-width,
+                                //   we know the result already without even evaluating the operands
+                                return Ok(Err(ZeroWidth));
+                            }
+                        };
 
-                        let left_ty = left.ty(self.module, self.locals);
-                        let right_ty = right.ty(self.module, self.locals);
-                        let left = lower_expand_int_range(ty, left_ty.unwrap_int(), left_eval);
-                        let right = lower_expand_int_range(ty, right_ty.unwrap_int(), right_eval);
+                        let left = self.lower_expression_int_expanded(span, ty, left)?;
+                        let right = self.lower_expression_int_expanded(span, ty, right)?;
 
+                        // build the final expression,
+                        //   storing the result in a temporary to force truncation
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
                             IrIntArithmeticOp::Sub => "-",
@@ -1050,17 +1065,22 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntArithmeticOp::Mod => "%",
                             IrIntArithmeticOp::Pow => "**",
                         };
-
-                        // TODO only do this if we're actually truncating?
-                        // store in temporary to force truncation
-                        let Ok(tmp) = self.new_temporary(span, &IrType::Int(ty.clone()))? else {
-                            todo!("handle zero width expressions");
-                        };
-                        swriteln!(self.f, "{indent}{tmp} = {left} {op_str} {right};");
-                        Evaluated::Temporary(tmp)
+                        swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
+                        Evaluated::Temporary(res_tmp)
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
-                        // TODO bit-widths are probably not correct
+                        // find common range that contains all operands
+                        let left_ty = left.ty(self.module, self.locals);
+                        let left_range = left_ty.unwrap_int();
+                        let right_ty = right.ty(self.module, self.locals);
+                        let right_range = right_ty.unwrap_int();
+                        let combined_range = left_range.union(right_range);
+
+                        // lower both operands to that range
+                        let left = self.lower_expression_int_expanded(span, &combined_range, left)?;
+                        let right = self.lower_expression_int_expanded(span, &combined_range, right)?;
+
+                        // build the final expression
                         let op_str = match op {
                             IrIntCompareOp::Eq => "==",
                             IrIntCompareOp::Neq => "!=",
@@ -1069,10 +1089,6 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             IrIntCompareOp::Gt => ">",
                             IrIntCompareOp::Gte => ">=",
                         };
-
-                        let left = self.lower_expression(span, left)?;
-                        let right = self.lower_expression(span, right)?;
-
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
 
@@ -1081,11 +1097,19 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         //  (assuming all sub-expression have the right width, which they should)
                         // TODO this is probably incorrect in general, we need to store the tuple in a variable first
                         let mut g = String::new();
+                        let mut any_prev = false;
                         swrite!(g, "{{");
-                        for (i, elem) in enumerate(elements) {
-                            let elem = self.lower_expression(span, elem)?;
+                        for elem in elements {
+                            let elem = match self.lower_expression(span, elem)? {
+                                Ok(elem) => elem,
+                                Err(ZeroWidth) => continue,
+                            };
+
+                            if any_prev {
+                                swrite!(g, ", ");
+                            }
                             swrite!(g, "{elem}");
-                            swrite!(g, "{}", separator_non_trailing(",", i, elements.len()));
+                            any_prev = true;
                         }
                         swrite!(g, "}}");
                         Evaluated::String(g)
@@ -1097,16 +1121,23 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO use repeat operator if array elements are repeated
                         // TODO the order is wrong, the verilog array operator is the wrong way around
                         let mut g = String::new();
+                        let mut any_prev = false;
                         swrite!(g, "{{");
-                        for (i, elem) in enumerate(elements) {
-                            let inner = match elem {
+                        for elem in elements {
+                            let elem = match elem {
                                 IrArrayLiteralElement::Spread(inner) => inner,
                                 IrArrayLiteralElement::Single(inner) => inner,
                             };
+                            let elem = match self.lower_expression(span, elem)? {
+                                Ok(elem) => elem,
+                                Err(ZeroWidth) => continue,
+                            };
 
-                            let inner = self.lower_expression(span, inner)?;
-                            swrite!(g, "{}", inner);
-                            swrite!(g, "{}", separator_non_trailing(",", i, elements.len()));
+                            if any_prev {
+                                swrite!(g, ", ");
+                            }
+                            swrite!(g, "{elem}");
+                            any_prev = true;
                         }
                         swrite!(g, "}}");
                         Evaluated::String(g)
@@ -1114,49 +1145,102 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     IrExpressionLarge::TupleIndex { base, index } => {
                         // TODO this is completely wrong
-                        let base = self.lower_expression(span, base)?;
+                        let base = match self.lower_expression(span, base)? {
+                            Ok(base) => base,
+                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
+                        };
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
-                        let base = self.lower_expression(span, base)?;
-                        let index = self.lower_expression(span, index)?;
+                        let base = match self.lower_expression(span, base)? {
+                            Ok(base) => base,
+                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
+                        };
+                        let Ok(index) = self.lower_expression(span, index)? else {
+                            todo!("handle zero-width indexing");
+                        };
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
-                        let base = self.lower_expression(span, base)?;
-                        let start = self.lower_expression(span, start)?;
+                        let base = match self.lower_expression(span, base)? {
+                            Ok(base) => base,
+                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
+                        };
+                        let Ok(start) = self.lower_expression(span, start)? else {
+                            todo!("handle zero-width indexing");
+                        };
                         let len = lower_uint_str(len);
                         Evaluated::String(format!("({base}[{start}+:{len}])"))
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
                         // in verilog everything is just a bit vector, so we don't need to do anything
-                        self.lower_expression(span, value)?
+                        return self.lower_expression(span, value);
                     }
                     IrExpressionLarge::FromBits(_ty, value) => {
                         // in verilog everything is just a bit vector, so we don't need to do anything
-                        self.lower_expression(span, value)?
+                        return self.lower_expression(span, value);
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
-                        let value_eval = self.lower_expression(span, value)?;
-                        let value_ty = value.ty(self.module, self.locals);
-                        lower_expand_int_range(target, value_ty.unwrap_int(), value_eval)
+                        self.lower_expression_int_expanded(span, target, value)?
                     }
                     IrExpressionLarge::ConstrainIntRange(target, value) => {
-                        // TODO this not correct, we're not actually lowering the bit width
-                        // TODO add assertions?
-                        let target_repr = IntRepresentation::for_range(target);
-                        let _ = target_repr;
-                        self.lower_expression(span, value)?
+                        // TODO add assertions? what exactly are the semantics of this operation?
+                        let result_tmp = match self.new_temporary(span, &IrType::Int(target.clone()))? {
+                            Ok(res_tmp) => res_tmp,
+                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
+                        };
+                        let value = match self.lower_expression(span, value)? {
+                            Ok(value) => value,
+                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
+                        };
+
+                        // store in temporary to force truncation
+                        swriteln!(self.f, "{indent}{result_tmp} = {value};");
+                        Evaluated::Temporary(result_tmp)
                     }
                 }
             }
         };
-        Ok(eval)
+        Ok(Ok(eval))
+    }
+
+    // TODO doc
+    fn lower_expression_non_zero_width(
+        &mut self,
+        span: Span,
+        expr: &IrExpression,
+        reason: &str,
+    ) -> DiagResult<Evaluated<'n>> {
+        self.lower_expression(span, expr)?.map_err(|_: ZeroWidth| {
+            self.diags
+                .report_internal_error(span, format!("{reason} cannot be zero-width"))
+        })
+    }
+
+    // TODO doc
+    fn lower_expression_int_expanded(
+        &mut self,
+        span: Span,
+        target_ty: &ClosedIncRange<BigInt>,
+        value: &IrExpression,
+    ) -> DiagResult<Evaluated<'n>> {
+        let value_ty = value.ty(self.module, self.locals);
+        let value_ty = value_ty.unwrap_int();
+
+        let value = match self.lower_expression(span, value)? {
+            Ok(value) => lower_expand_int_range(target_ty.as_ref(), value_ty.as_ref(), value),
+            Err(ZeroWidth) => {
+                let value = value_ty.as_single().unwrap();
+                Evaluated::String(lower_int_constant(target_ty.as_ref(), value))
+            }
+        };
+
+        Ok(value)
     }
 
     fn lower_assign_target(&mut self, span: Span, target: &IrAssignmentTarget) -> DiagResult<Evaluated<'n>> {
@@ -1184,11 +1268,15 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         for step in steps {
             match step {
                 IrTargetStep::ArrayIndex(start) => {
-                    let start = self.lower_expression(span, start)?;
+                    let Ok(start) = self.lower_expression(span, start)? else {
+                        todo!("handle zero-width indexing");
+                    };
                     swrite!(g, "[{start}]");
                 }
                 IrTargetStep::ArraySlice(start, len) => {
-                    let start = self.lower_expression(span, start)?;
+                    let Ok(start) = self.lower_expression(span, start)? else {
+                        todo!("handle zero-width indexing");
+                    };
                     let len = lower_uint_str(len);
                     swrite!(g, "[{start}+:{len}]");
                 }
@@ -1198,7 +1286,6 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(Evaluated::String(g))
     }
 
-    #[allow(dead_code)]
     fn new_temporary(&mut self, span: Span, ty: &IrType) -> DiagResult<Result<Temporary<'n>, ZeroWidth>> {
         let ty_verilog = match VerilogType::new_from_ir(self.diags, span, ty)? {
             Ok(ty_verilog) => ty_verilog,
@@ -1215,8 +1302,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 }
 
 fn lower_expand_int_range<'n>(
-    target_ty: &ClosedIncRange<BigInt>,
-    value_ty: &ClosedIncRange<BigInt>,
+    target_ty: ClosedIncRange<&BigInt>,
+    value_ty: ClosedIncRange<&BigInt>,
     value: Evaluated<'n>,
 ) -> Evaluated<'n> {
     // cast the value to the right signedness
@@ -1241,21 +1328,23 @@ fn lower_expand_int_range<'n>(
     Evaluated::String(s)
 }
 
-fn lower_int_str(x: &BigInt) -> String {
-    // TODO zero-width literals are probably not allowed in verilog
-    // TODO double-check integer bit-width promotion rules
-    let sign = match x.sign() {
-        Sign::Positive | Sign::Zero => "",
-        Sign::Negative => "-",
+fn lower_int_constant(ty: ClosedIncRange<&BigInt>, x: &BigInt) -> String {
+    assert!(ty.contains(&x));
+
+    let repr = IntRepresentation::for_range(ty);
+    let bits = repr.size_bits();
+    let signed = match repr.signed() {
+        Signed::Signed => "s",
+        Signed::Unsigned => "",
     };
-    let repr = IntRepresentation::for_single(x);
-    format!("{}{}'d{}", sign, repr.size_bits(), x.abs())
+    format!("{bits}'{signed}d{x}")
 }
 
 fn lower_uint_str(x: &BigUint) -> String {
     // TODO zero-width literals are probably not allowed in verilog
     // TODO double-check integer bit-width promotion rules
     // TODO avoid clone
+    // TODO remove this redundant function and always use lower_int_constant
     let repr = IntRepresentation::for_single(&x.into());
     format!("{}'d{}", repr.size_bits(), x)
 }

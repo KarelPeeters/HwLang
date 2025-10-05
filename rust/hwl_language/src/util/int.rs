@@ -18,13 +18,36 @@ pub enum IntRepresentation {
 pub struct InvalidRange;
 
 impl IntRepresentation {
-    pub fn for_range(range: &ClosedIncRange<BigInt>) -> Self {
-        let ClosedIncRange { start_inc, end_inc } = range;
-        Self::for_range_impl(start_inc, end_inc)
+    pub fn for_range(range: ClosedIncRange<&BigInt>) -> Self {
+        let ClosedIncRange {
+            start_inc: start,
+            end_inc: end,
+        } = range;
+        assert!(start <= end, "Range must be valid, got {start}..={end}");
+
+        // TODO consider switching to zero-width range when there is only a single possible value
+        //    this is a bit tricky for signed, and also only a partial optimization
+        //    (we could minimize bits even for non-single-value ranges too)
+        match BigUint::try_from(start) {
+            Ok(_) => {
+                // non-negative start => unsigned
+                let end = BigUint::try_from(end).unwrap();
+                IntRepresentation::Unsigned { width: end.size_bits() }
+            }
+            Err(_) => {
+                // negative start => signed
+                let end_non_neg = BigUint::try_from(end).unwrap_or(BigUint::ZERO);
+                let width_1 = max(
+                    BigUint::try_from(-start - 1u8).unwrap().size_bits(),
+                    end_non_neg.size_bits(),
+                );
+                IntRepresentation::Signed { width_1 }
+            }
+        }
     }
 
     pub fn for_single(value: &BigInt) -> Self {
-        Self::for_range_impl(value, value)
+        Self::for_range(ClosedIncRange::single(value))
     }
 
     pub fn signed(self) -> Signed {
@@ -122,31 +145,6 @@ impl IntRepresentation {
             }
         }
     }
-
-    fn for_range_impl(start: &BigInt, end: &BigInt) -> Self {
-        assert!(start <= end, "Range must be valid, got {start}..={end}");
-
-        // TODO consider switching to zero-width range when there is only a single possible value
-        //    this is a bit tricky for signed, and also only a partial optimization
-        //    (we could minimize bits even for non-single-value ranges too)
-
-        match BigUint::try_from(start) {
-            Ok(_) => {
-                // non-negative start => unsigned
-                let end = BigUint::try_from(end).unwrap();
-                IntRepresentation::Unsigned { width: end.size_bits() }
-            }
-            Err(_) => {
-                // negative start => signed
-                let end_non_neg = BigUint::try_from(end).unwrap_or(BigUint::ZERO);
-                let width_1 = max(
-                    BigUint::try_from(-start - 1u8).unwrap().size_bits(),
-                    end_non_neg.size_bits(),
-                );
-                IntRepresentation::Signed { width_1 }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -170,7 +168,7 @@ mod test {
             start_inc: BigInt::from(range.start),
             end_inc: BigInt::from(range.end) - 1,
         };
-        let result = IntRepresentation::for_range(&range);
+        let result = IntRepresentation::for_range(range.as_ref());
         println!("range {range:?} => {result:?}");
         assert_eq!(expected, result, "mismatch for range {range:?}");
     }

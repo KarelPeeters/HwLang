@@ -152,30 +152,7 @@ impl Type {
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
             (Type::Builtin, Type::Builtin) => Type::Builtin,
 
-            (Type::Int(a), Type::Int(b)) => {
-                let IncRange {
-                    start_inc: a_start,
-                    end_inc: a_end,
-                } = a;
-                let IncRange {
-                    start_inc: b_start,
-                    end_inc: b_end,
-                } = b;
-
-                let start = match (a_start, b_start) {
-                    (Some(a_start), Some(b_start)) => Some(a_start.min(b_start).clone()),
-                    (None, _) | (_, None) => None,
-                };
-                let end = match (a_end, b_end) {
-                    (Some(a_end), Some(b_end)) => Some(a_end.max(b_end).clone()),
-                    (None, _) | (_, None) => None,
-                };
-
-                Type::Int(IncRange {
-                    start_inc: start,
-                    end_inc: end,
-                })
-            }
+            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
@@ -445,6 +422,34 @@ impl<T> IncRange<T> {
 
         start_contains && end_contains
     }
+
+    pub fn union(&self, other: &IncRange<T>) -> IncRange<T>
+    where
+        T: Ord + Clone,
+    {
+        let IncRange {
+            start_inc: a_start,
+            end_inc: a_end,
+        } = self;
+        let IncRange {
+            start_inc: b_start,
+            end_inc: b_end,
+        } = other;
+
+        let start = match (a_start, b_start) {
+            (Some(a_start), Some(b_start)) => Some(a_start.min(b_start)),
+            (None, _) | (_, None) => None,
+        };
+        let end = match (a_end, b_end) {
+            (Some(a_end), Some(b_end)) => Some(a_end.max(b_end)),
+            (None, _) | (_, None) => None,
+        };
+
+        IncRange {
+            start_inc: start.cloned(),
+            end_inc: end.cloned(),
+        }
+    }
 }
 
 impl<T> ClosedIncRange<T> {
@@ -526,6 +531,25 @@ impl<T> ClosedIncRange<T> {
                 None
             }
         })
+    }
+
+    pub fn union(&self, other: &ClosedIncRange<T>) -> ClosedIncRange<T>
+    where
+        T: Ord + Clone,
+    {
+        let ClosedIncRange {
+            start_inc: a_start,
+            end_inc: a_end,
+        } = self;
+        let ClosedIncRange {
+            start_inc: b_start,
+            end_inc: b_end,
+        } = other;
+
+        ClosedIncRange {
+            start_inc: a_start.min(b_start).clone(),
+            end_inc: a_end.max(b_end).clone(),
+        }
     }
 }
 
