@@ -56,3 +56,12 @@ def test_constant_non_zero(tmpdir: Path):
 def test_zero_width_outside_result_range(tmpdir: Path):
     e = expression_compile(["int(-1..0)", "int(0..1)"], "int(-8..8)", "a0 + a1", tmpdir)
     e.eval_assert([-1, 0], -1)
+
+
+def test_large_port(tmpdir: Path):
+    e = expression_compile(["int(0..2**128)", "int(0..=0)"], "int(0..2**128)", "a0 + a1", tmpdir)
+    e.eval_assert([0, 0], 0)
+    e.eval_assert([2 ** 63 - 1, 0], 2 ** 63 - 1)
+    e.eval_assert([2 ** 64 - 1, 0], 2 ** 64 - 1)
+    e.eval_assert([2 ** 65 - 1, 0], 2 ** 65 - 1)
+    e.eval_assert([2 ** 128 - 1, 0], 2 ** 128 - 1)

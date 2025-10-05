@@ -57,7 +57,7 @@ Result get_port_impl(VlWide<W> &port, size_t data_len, uint8_t *data) {
     if (data_len != expected_len) return FAIL_WRONG_LEN;
     if (!data) return FAIL_DATA_NULL;
     for (size_t i = 0; i < W; ++i) {
-        int_to_bytes<W>(port.at(i), &data[i * sizeof(EData)]);
+        int_to_bytes<EData>(port.at(i), &data[i * sizeof(EData)]);
     }
     return SUCCESS;
 }
@@ -90,7 +90,7 @@ Result set_port_impl(VlWide<W> &port, size_t data_len, uint8_t const *data) {
     if (!data) return FAIL_DATA_NULL;
 
     for (size_t i = 0; i < W; ++i) {
-        port.data()[i] = int_from_bytes<W>(&data[i * sizeof(EData)]);
+        port.data()[i] = int_from_bytes<EData>(&data[i * sizeof(EData)]);
     }
     return SUCCESS;
 }

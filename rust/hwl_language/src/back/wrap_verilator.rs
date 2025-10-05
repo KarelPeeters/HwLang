@@ -241,11 +241,15 @@ impl VerilatedInstance {
 
 fn port_size_bytes(size_bits: usize) -> usize {
     match size_bits {
+        // empty ports, they don't actually exist in verilog
         0 => 0,
+        // single word scalar ports
         1..=8 => 1,
         9..=16 => 2,
         17..=32 => 4,
-        33.. => div_ceil(size_bits, 64) * 8,
+        33..=64 => 8,
+        // wide ports
+        65.. => div_ceil(size_bits, 32) * 4,
     }
 }
 
