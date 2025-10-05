@@ -271,6 +271,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     lower_module_statements(
         ctx,
         large,
+        module_info,
         &mut module_name_scope,
         &port_name_map,
         &reg_name_map,
@@ -433,6 +434,7 @@ fn lower_module_signals(
 fn lower_module_statements(
     ctx: &mut LowerContext,
     large: &IrLargeArena,
+    module: &IrModuleInfo,
     module_name_scope: &mut LoweredNameScope,
     port_name_map: &IndexMap<IrPort, LoweredName>,
     reg_name_map: &IndexMap<IrRegister, LoweredName>,
@@ -470,6 +472,8 @@ fn lower_module_statements(
                 let mut ctx = LowerBlockContext {
                     diags,
                     large,
+                    module,
+                    locals,
                     name_map,
                     name_scope: module_name_scope.new_child(),
                     temporaries: &temporaries,
@@ -564,6 +568,8 @@ fn lower_module_statements(
                             let mut ctx = LowerBlockContext {
                                 diags,
                                 large,
+                                module,
+                                locals,
                                 name_map: outer_name_map,
                                 name_scope: module_name_scope.new_child(),
                                 temporaries: &temporaries,
@@ -597,6 +603,8 @@ fn lower_module_statements(
                 let mut ctx = LowerBlockContext {
                     diags,
                     large,
+                    module,
+                    locals,
                     name_map: inner_name_map,
                     name_scope: module_name_scope.new_child(),
                     temporaries: &temporaries,
@@ -911,6 +919,8 @@ impl Display for Evaluated<'_> {
 struct LowerBlockContext<'a, 'n> {
     diags: &'a Diagnostics,
     large: &'a IrLargeArena,
+    module: &'a IrModuleInfo,
+    locals: &'a IrVariables,
 
     name_map: NameMap<'n>,
     name_scope: LoweredNameScope<'a>,
@@ -1023,11 +1033,13 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         // TODO div/mod truncation directions are not right
                         // TODO pow is very likely not right
                         // TODO lower mod to branch + sub, lower mul/pow to shift if possible
-                        let left = self.lower_expression(span, left)?;
-                        let right = self.lower_expression(span, right)?;
+                        let left_eval = self.lower_expression(span, left)?;
+                        let right_eval = self.lower_expression(span, right)?;
 
-                        let left = lower_expand_int_range(ty, left);
-                        let right = lower_expand_int_range(ty, right);
+                        let left_ty = left.ty(self.module, self.locals);
+                        let right_ty = right.ty(self.module, self.locals);
+                        let left = lower_expand_int_range(ty, left_ty.unwrap_int(), left_eval);
+                        let right = lower_expand_int_range(ty, right_ty.unwrap_int(), right_eval);
 
                         let op_str = match op {
                             IrIntArithmeticOp::Add => "+",
@@ -1123,8 +1135,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         self.lower_expression(span, value)?
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
-                        let value = self.lower_expression(span, value)?;
-                        Evaluated::String(lower_expand_int_range(target, value))
+                        let value_eval = self.lower_expression(span, value)?;
+                        let value_ty = value.ty(self.module, self.locals);
+                        lower_expand_int_range(target, value_ty.unwrap_int(), value_eval)
                     }
                     IrExpressionLarge::ConstrainIntRange(target, value) => {
                         // TODO this not correct, we're not actually lowering the bit width
@@ -1194,17 +1207,30 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     }
 }
 
-fn lower_expand_int_range(target: &ClosedIncRange<BigInt>, value: Evaluated) -> String {
-    // TODO skip if bitwidth is the same as the source ty
+fn lower_expand_int_range<'n>(
+    target_ty: &ClosedIncRange<BigInt>,
+    value_ty: &ClosedIncRange<BigInt>,
+    value: Evaluated<'n>,
+) -> Evaluated<'n> {
     // cast the value to the right signedness
     //   and add a literal of the right sign and size to force expansion
-    let target_repr = IntRepresentation::for_range(target);
+    let target_repr = IntRepresentation::for_range(target_ty);
     let target_size = target_repr.size_bits();
 
-    match target_repr.signed() {
+    let value_repr = IntRepresentation::for_range(value_ty);
+    let value_size = value_repr.size_bits();
+
+    if target_size == value_size {
+        return value;
+    }
+
+    // TODO avoid repeated signed/unsigned casts when not necessary,
+    //   maybe by keeping signedness metadata in Evaluated
+    let s = match target_repr.signed() {
         Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
         Signed::Unsigned => format!("({target_size}'d0 + {value})"),
-    }
+    };
+    Evaluated::String(s)
 }
 
 fn lower_int_str(x: &BigInt) -> String {
