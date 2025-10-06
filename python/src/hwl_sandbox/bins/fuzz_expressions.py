@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union, Optional
 
+import hwl
+
 from hwl_sandbox.common.expression import expression_compile, expression_get_type
 from hwl_sandbox.common.util import enable_rust_backtraces
 
@@ -60,21 +62,36 @@ def sample_from_range(rng: random.Random, r: Range) -> int:
 
 
 def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
-    # decide types and operations
-    # TODO add "expansion" tests, where the output range is too large, to see if the value is properly re-encoded
-    # TODO allow multiple args and returns to increase fuzzing throughput
-    # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
-    #    arrays, conditional statements, variable assignments, ...
-    ra = sample_range(rng)
-    rb = sample_range(rng)
-    ty_a0 = f"int({ra.start}..={ra.end_inc})"
-    ty_a1 = f"int({rb.start}..={rb.end_inc})"
+    while True:
+        # decide types and operations
+        # TODO add "expansion" tests, where the output range is too large, to see if the value is properly re-encoded
+        # TODO allow multiple args and returns to increase fuzzing throughput
+        # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
+        #    arrays, conditional statements, variable assignments, ...
+        ra = sample_range(rng)
+        rb = sample_range(rng)
+        ty_a0 = f"int({ra.start}..={ra.end_inc})"
+        ty_a1 = f"int({rb.start}..={rb.end_inc})"
 
-    ty_inputs = [ty_a0, ty_a1]
-    expression = "a0 + a1"
+        ty_inputs = [ty_a0, ty_a1]
+        operator = rng.choice(["+", "-", "*", "/"])
+        expression = f"a0 {operator} a1"
 
-    # generate result type that contains all possible output values
-    ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
+        # check expression validness and extract the return type
+        try:
+            ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
+
+            # success, we've generated a valid expression
+            break
+        except hwl.DiagnosticException as e:
+            # check that this is once of the expected failure modes
+            if len(e.messages) == 1 and "division by zero is not allowed" in e.messages[0]:
+                continue
+
+            # unexpected error
+            raise e
+
+    # parse return type and generate a random range that contains it
     m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
     assert m
     range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
@@ -94,7 +111,10 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
 
 def main_iteration(build_dir_base: Path, sample_count: int, seed_base: int, i: int):
+    # TODO move this print into a lock
+    # TODO log current expression and number of trials
     print(f"Starting fuzz iteration: {i}")
+
     rng = random.Random(str((seed_base, i)))
 
     # create a new build dir for each iteration to avoid issues with dlopen caching old versions
