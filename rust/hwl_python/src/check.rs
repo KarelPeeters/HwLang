@@ -1,5 +1,5 @@
 use crate::DiagnosticException;
-use hwl_language::front::diagnostic::{DiagResult, diags_to_string};
+use hwl_language::front::diagnostic::{DiagResult, diags_to_string_vec};
 use hwl_language::util::Never;
 use hwl_language::{
     front::diagnostic::{DiagError, Diagnostics},
@@ -7,28 +7,47 @@ use hwl_language::{
 };
 use pyo3::prelude::*;
 
-pub fn check_diags(source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
+pub fn check_diags(py: Python, source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
     if diags.len() == 0 {
         Ok(())
     } else {
-        // TODO should we include ansi colors in python exceptions?
-        //   if it works it looks nice, but we don't know where it will be displayed
-        let msg = diags_to_string(source, diags.clone().finish(), true);
-        Err(DiagnosticException::new_err(msg))
+        let exc = DiagnosticException {
+            messages: diags_to_string_vec(source, diags.clone().finish(), false),
+            messages_colored: diags_to_string_vec(source, diags.clone().finish(), true),
+        };
+        Err(exc.into_err(py)?)
     }
 }
 
-pub fn map_diag_error<T>(diags: &Diagnostics, source: &RustSourceDatabase, value: DiagResult<T>) -> Result<T, PyErr> {
-    check_diags(source, diags)?;
-    unwrap_diag_result(value)
+pub fn map_diag_error<T>(
+    py: Python,
+    diags: &Diagnostics,
+    source: &RustSourceDatabase,
+    value: DiagResult<T>,
+) -> Result<T, PyErr> {
+    check_diags(py, source, diags)?;
+    unwrap_diag_result(py, value)
 }
 
-pub fn unwrap_diag_result<T>(result: DiagResult<T>) -> Result<T, PyErr> {
-    result.map_err(|_| DiagnosticException::new_err("diagnostic already reported previously"))
+pub fn unwrap_diag_result<T>(py: Python, result: DiagResult<T>) -> Result<T, PyErr> {
+    match result {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            let _: DiagError = e;
+
+            // TODO create a dedicated exception type for this case?
+            let msg = "diagnostic already reported previously";
+            let exc = DiagnosticException {
+                messages: vec![msg.to_string()],
+                messages_colored: vec![msg.to_string()],
+            };
+            Err(exc.into_err(py)?)
+        }
+    }
 }
 
-pub fn convert_diag_error(diags: &Diagnostics, source: &RustSourceDatabase, err: DiagError) -> PyErr {
-    match map_diag_error::<Never>(diags, source, Err(err)) {
+pub fn convert_diag_error(py: Python, diags: &Diagnostics, source: &RustSourceDatabase, err: DiagError) -> PyErr {
+    match map_diag_error::<Never>(py, diags, source, Err(err)) {
         Ok(never) => never.unreachable(),
         Err(e) => e,
     }

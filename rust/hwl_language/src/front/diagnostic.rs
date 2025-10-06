@@ -421,3 +421,13 @@ pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_col
     }
     s
 }
+
+pub fn diags_to_string_vec(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> Vec<String> {
+    let settings = DiagnosticStringSettings::default(ansi_color);
+
+    let mut s = vec![];
+    for diag in diags {
+        s.push(diag.to_string(source, settings));
+    }
+    s
+}

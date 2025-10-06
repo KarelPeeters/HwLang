@@ -27,16 +27,14 @@ use hwl_language::util::data::GrowVec;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
-use pyo3::exceptions::{PyIOError, PyKeyError, PyValueError};
-use pyo3::types::PyIterator;
+use pyo3::exceptions::{PyException, PyIOError, PyKeyError, PyValueError};
+use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
-    create_exception,
-    exceptions::PyException,
-    prelude::*,
-    types::{PyDict, PyTuple},
+    Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyResult, Python, create_exception, intern, pyclass,
+    pyfunction, pymethods, pymodule, wrap_pyfunction,
 };
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 mod check;
 mod convert;
@@ -143,12 +141,48 @@ struct VerilatedPort {
     port: IrPort,
 }
 
-create_exception!(hwl, HwlException, PyException);
+#[pyclass(subclass, extends=PyException)]
+struct HwlException {}
+
+#[pyclass(extends=HwlException)]
+struct DiagnosticException {
+    #[pyo3(get)]
+    messages: Vec<String>,
+    #[pyo3(get)]
+    messages_colored: Vec<String>,
+}
+
 create_exception!(hwl, SourceSetException, HwlException);
-create_exception!(hwl, DiagnosticException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
 create_exception!(hwl, GenerateVerilogException, HwlException);
 create_exception!(hwl, VerilationException, HwlException);
+
+#[pymethods]
+impl HwlException {
+    #[new]
+    fn new(msg: String) -> Self {
+        // dummy constructor needs to exist for subclass constructors to work
+        let _ = msg;
+        HwlException {}
+    }
+}
+
+impl DiagnosticException {
+    pub fn into_err(self, py: Python) -> PyResult<PyErr> {
+        // TODO should we include ansi colors in python exceptions by default or not?
+        //   it's nice when it works, but will it always work?
+        let messages_colored = self.messages_colored.iter().join("\n\n");
+
+        let init = PyClassInitializer::from(HwlException {}).add_subclass(self);
+        let instance = Py::new(py, init)?;
+
+        // set exception message
+        // ideally we would immediately pass this to the super constructor, but pyo3 does not yet seem to support that
+        instance.setattr(py, intern!(py, "args"), (messages_colored,))?;
+
+        Ok(PyErr::from_value(instance.into_bound(py).into_any()))
+    }
+}
 
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -179,12 +213,12 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn format_file(src: String) -> PyResult<String> {
+fn format_file(py: Python, src: String) -> PyResult<String> {
     let diags = Diagnostics::new();
     let mut source = RustSourceDatabase::new();
     let file = source.add_file("dummy.kh".to_owned(), src);
     let result = rust_format_file(&diags, &source, &FormatSettings::default(), file);
-    let result = map_diag_error(&diags, &source, result.map_err(FormatError::to_diag_error))?;
+    let result = map_diag_error(py, &diags, &source, result.map_err(FormatError::to_diag_error))?;
     Ok(result.new_content)
 }
 
@@ -207,7 +241,7 @@ impl Source {
     }
 
     #[staticmethod]
-    fn new_from_manifest_path(manifest_path: &str) -> PyResult<Self> {
+    fn new_from_manifest_path(py: Python, manifest_path: &str) -> PyResult<Self> {
         let diags = Diagnostics::new();
         let mut source = RustSourceDatabase::new();
 
@@ -227,7 +261,7 @@ impl Source {
 
         // parse manifest
         let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
-        let manifest = map_diag_error(&diags, &source, manifest)?;
+        let manifest = map_diag_error(py, &diags, &source, manifest)?;
         let Manifest {
             source: manifest_source,
         } = manifest;
@@ -235,7 +269,7 @@ impl Source {
         // collect hierarchy
         let hierarchy =
             collect_source_from_manifest(&diags, &mut source, manifest_file, manifest_parent, &manifest_source);
-        let (hierarchy, _) = map_diag_error(&diags, &source, hierarchy)?;
+        let (hierarchy, _) = map_diag_error(py, &diags, &source, hierarchy)?;
 
         let manifest_span = source.full_span(manifest_file);
         Ok(Source {
@@ -245,20 +279,26 @@ impl Source {
         })
     }
 
-    fn add_file_content(&mut self, steps: Vec<String>, debug_info_path: String, content: String) -> PyResult<()> {
+    fn add_file_content(
+        &mut self,
+        py: Python,
+        steps: Vec<String>,
+        debug_info_path: String,
+        content: String,
+    ) -> PyResult<()> {
         let diags = Diagnostics::new();
         let file = self.source.add_file(debug_info_path, content);
         let result = self
             .hierarchy
             .add_file(&diags, &self.source, self.dummy_span, &steps, file);
-        map_diag_error(&diags, &self.source, result)
+        map_diag_error(py, &diags, &self.source, result)
     }
 
-    fn add_tree(&mut self, steps: Vec<String>, path: &str) -> PyResult<()> {
+    fn add_tree(&mut self, py: Python, steps: Vec<String>, path: &str) -> PyResult<()> {
         let diags = Diagnostics::new();
 
         let files = collect_source_files_from_tree(&diags, self.dummy_span, PathBuf::from(path));
-        let files = map_diag_error(&diags, &self.source, files)?;
+        let files = map_diag_error(py, &diags, &self.source, files)?;
 
         let result = add_source_files_to_tree(
             &diags,
@@ -269,7 +309,7 @@ impl Source {
             &files,
             |path| std::fs::read_to_string(path).map_err(|e| io_error_message(e.with_path(path))),
         );
-        map_diag_error(&diags, &self.source, result)?;
+        map_diag_error(py, &diags, &self.source, result)?;
 
         Ok(())
     }
@@ -289,7 +329,7 @@ impl Source {
         let source = slf.borrow(py);
         let parsed = RustParsedDatabase::new(&diags, &source.source, &source.hierarchy);
 
-        check_diags(&source.source, &diags)?;
+        check_diags(py, &source.source, &diags)?;
         drop(source);
 
         Ok(Parsed { source: slf, parsed })
@@ -317,7 +357,7 @@ impl Parsed {
             };
 
             let state = CompileShared::new(&diags, fixed, false, NON_ZERO_USIZE_ONE);
-            check_diags(&source.source, &diags)?;
+            check_diags(py, &source.source, &diags)?;
 
             state
         };
@@ -368,7 +408,7 @@ impl Compile {
 
         // look up the item
         let diags = Diagnostics::new();
-        let found = map_diag_error(&diags, source, scope.find_immediate_str(&diags, item_name))?;
+        let found = map_diag_error(py, &diags, source, scope.find_immediate_str(&diags, item_name))?;
         let item = match found.value {
             &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
             ScopedEntry::Named(_) => {
@@ -376,7 +416,7 @@ impl Compile {
                     found.defining_span,
                     "file scope should only contain items, not named/value",
                 );
-                return Err(convert_diag_error(&diags, source, e));
+                return Err(convert_diag_error(py, &diags, source, e));
             }
         };
 
@@ -400,8 +440,8 @@ impl Compile {
         let value = item_ctx.eval_item(item).cloned();
         refs.run_elaboration_loop();
 
-        let value = map_diag_error(&diags, source, value);
-        let result_diags = check_diags(source, &diags);
+        let value = map_diag_error(py, &diags, source, value);
+        let result_diags = check_diags(py, source, &diags);
 
         drop(source_ref);
         drop(parsed_ref);
@@ -561,8 +601,8 @@ impl Function {
             );
             refs.run_elaboration_loop();
 
-            let returned = map_diag_error(&diags, source, returned);
-            let result_diags = check_diags(source, &diags);
+            let returned = map_diag_error(py, &diags, source, returned);
+            let result_diags = check_diags(py, source, &diags);
 
             drop(source_ref);
             drop(parsed_ref);
@@ -736,7 +776,7 @@ impl Module {
         // create temporary ir database
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
-        let ir_database = map_diag_error(&diags, source, ir_database)?;
+        let ir_database = map_diag_error(py, &diags, source, ir_database)?;
 
         // actual lowering
         let lowered = lower_to_verilog(
@@ -745,7 +785,7 @@ impl Module {
             &ir_database.external_modules,
             ir_module,
         );
-        let lowered = map_diag_error(&diags, source, lowered)?;
+        let lowered = map_diag_error(py, &diags, source, lowered)?;
 
         Ok((ir_database, ir_module, lowered))
     }
@@ -875,7 +915,7 @@ impl VerilatedPort {
 
         result.map_err(|e| match e {
             Either::Left(e) => map_verilator_error(e),
-            Either::Right(e) => convert_diag_error(&diags, &source.source, e),
+            Either::Right(e) => convert_diag_error(py, &diags, &source.source, e),
         })?;
 
         Ok(())
