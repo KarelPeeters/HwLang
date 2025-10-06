@@ -740,6 +740,7 @@ impl Module {
 fn run_command(command: &mut Command, dir: &Path, name: &str) -> PyResult<()> {
     let status = command
         .current_dir(dir)
+        .stdout(Stdio::null())
         .status()
         .map_err(|e| VerilationException::new_err(format!("`{name}` failed to launch: error={e:?}")))?;
 
