@@ -40,7 +40,7 @@ pub struct RunAllResult {
 const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[wasm_bindgen]
-pub fn run_all(top_src: String) -> RunAllResult {
+pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     let diags = Diagnostics::new();
     let mut source = SourceDatabase::new();
     let hierarchy_file = build_source(&diags, &mut source, top_src);
@@ -77,9 +77,15 @@ pub fn run_all(top_src: String) -> RunAllResult {
 
     // format
     let diags_format = Diagnostics::new();
-    let formatted = hierarchy_file.as_ref_ok().and_then(|&(_, top_file)| {
-        format_file(&diags_format, &source, &FormatSettings::default(), top_file).map_err(FormatError::to_diag_error)
-    });
+    let formatted = if include_format {
+        Some(hierarchy_file.as_ref_ok().and_then(|&(_, top_file)| {
+            format_file(&diags_format, &source, &FormatSettings::default(), top_file)
+                .map(|f| f.debug_str())
+                .map_err(FormatError::to_diag_error)
+        }))
+    } else {
+        None
+    };
 
     // package results
     // TODO lower diagnostics directly to html instead of through ansi first?
@@ -88,7 +94,7 @@ pub fn run_all(top_src: String) -> RunAllResult {
     let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
 
     let format_diags_ansi = diags_to_string(&source, diags_format.finish(), true);
-    let format_debug_str = formatted.map_or_else(|_| "/* error */".to_string(), |f| f.debug_str());
+    let format_debug_str = formatted.map_or_else(String::new, |f| f.unwrap_or_else(|_| "/* error */".to_string()));
 
     RunAllResult {
         compile_diags_ansi,

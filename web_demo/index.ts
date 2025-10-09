@@ -123,7 +123,7 @@ function diagnostics_ansi_to_html(ansi: string): string {
 const EMPTY_DOC = "// empty";
 const COOKIE_SOURCE = "source";
 
-function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView) {
+function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView, format_visible: boolean) {
     // store code in cookie
     Cookies.set(COOKIE_SOURCE, source);
 
@@ -136,7 +136,7 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     // run the compiler
     let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str;
     try {
-        const result = hwl_wasm.run_all(source);
+        const result = hwl_wasm.run_all(source, format_visible);
         compile_diags_ansi = result.compile_diags_ansi;
         lowered_verilog = result.lowered_verilog;
         lowered_cpp = result.lowered_cpp;
@@ -262,9 +262,15 @@ let editor_view_output_format = new EditorView({
 })
 
 // TODO get this out of the typing event loop, run this async or on a separate thread
+let format_visible = false;
+
+function force_update() {
+    onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, format_visible);
+}
+
 let updateListenerExtension = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-        onDocumentChanged(update.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format);
+        onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, format_visible);
     }
 })
 
@@ -315,5 +321,36 @@ element_clear_button.addEventListener("click", () => {
     })
 });
 
+// add tab change event handlers
+function show_output_tab(tab: string) {
+    function set_element_display(id: string, filter: string[]) {
+        const element = document.getElementById(id);
+        if (element) {
+            element.style.display = filter.includes(tab) ? 'block' : 'none';
+        }
+    }
+
+    set_element_display("div-diags-compile", ["verilog", "cpp"])
+    set_element_display("div-editor-output-verilog", ["verilog"])
+    set_element_display("div-editor-output-cpp", ["cpp"])
+
+    set_element_display("div-diags-format", ["format"])
+    set_element_display("div-editor-output-format", ["format"])
+
+    // update format tab state and possible compute format state if it was not visible before
+    let format_was_visible = format_visible;
+    format_visible = (tab == "format");
+    if (format_visible && !format_was_visible) {
+        force_update();
+    }
+}
+
+const svg_verilog = document.getElementById("svg-verilog");
+const svg_cpp = document.getElementById("svg-cpp");
+const svg_format = document.getElementById("svg-format");
+svg_verilog.addEventListener("click", () => show_output_tab("verilog"));
+svg_cpp.addEventListener("click", () => show_output_tab("cpp"));
+svg_format.addEventListener("click", () => show_output_tab("format"));
+
 // initial update
-onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format)
+force_update();
