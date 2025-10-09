@@ -188,7 +188,7 @@ impl HardwareType {
         };
 
         match self {
-            HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or(err_internal())?)),
+            HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or_else(err_internal)?)),
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range.as_ref());
                 let bits: Vec<bool> = (0..repr.size_bits())
@@ -203,7 +203,7 @@ impl HardwareType {
                     Err(err_internal())
                 }
             }
-            HardwareType::Tuple(inners) => Ok(CompileValue::Array(Arc::new(
+            HardwareType::Tuple(inners) => Ok(CompileValue::Tuple(Arc::new(
                 inners
                     .iter()
                     .map(|inner| inner.value_from_bits_impl(refs, span, bits))
@@ -337,7 +337,7 @@ impl IrType {
                     Err(WrongType)
                 }
             }
-            IrType::Tuple(inners) => Ok(CompileValue::Array(Arc::new(
+            IrType::Tuple(inners) => Ok(CompileValue::Tuple(Arc::new(
                 inners
                     .iter()
                     .map(|inner| inner.value_from_bits_impl(bits))
