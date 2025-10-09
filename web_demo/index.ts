@@ -215,7 +215,7 @@ let common_extensions = [
 function formatCurrentCode() {
     const currentCode = editor_view_input.state.doc.toString();
     const formatted = hwl_wasm.format_source(currentCode);
-    if (formatted !== null) {
+    if (formatted !== undefined) {
         editor_view_input.dispatch({
             changes: {
                 from: 0,
