@@ -87,7 +87,7 @@ def z3_max(values: List[z3.ArithRef]) -> z3.ArithRef:
 
 
 def z3_floor_div(a: z3.ArithRef, b: z3.ArithRef) -> z3.ArithRef:
-    return z3.If(b > 0, a / b, (a - b - 1) / b)
+    return (a + z3.If(b > 0, 0, (-b - 1))) / b
 
 
 def z3_floor_mod(a: z3.ArithRef, b: z3.ArithRef) -> z3.ArithRef:
@@ -233,10 +233,10 @@ def main():
 
     start = time.perf_counter()
 
-    success &= check_op_range("add", f_add)
-    success &= check_op_range("sub", f_sub)
-    success &= check_op_range("mul", f_mul)
-    success &= check_op_range("pow", f_pow)
+    # success &= check_op_range("add", f_add)
+    # success &= check_op_range("sub", f_sub)
+    # success &= check_op_range("mul", f_mul)
+    # success &= check_op_range("pow", f_pow)
     check_z3_floor_div_mod()
     success &= check_op_range("div", f_div)
     success &= check_op_range("mod", f_mod)

@@ -890,10 +890,12 @@ fn collect_written_registers(block: &IrBlock) -> IndexSet<IrRegister> {
 #[derive(Debug)]
 enum Evaluated<'n> {
     Name(&'n LoweredName),
-    #[allow(dead_code)]
     Temporary(Temporary<'n>),
     String(String),
     Str(&'static str),
+
+    // TODO doc (all variants, but especially this one)
+    SignedString(String),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -911,6 +913,32 @@ impl Display for Temporary<'_> {
     }
 }
 
+impl<'n> Evaluated<'n> {
+    pub fn as_signed_maybe(&self, signed: bool) -> impl Display {
+        struct S<'s, 'n> {
+            inner: &'s Evaluated<'n>,
+            signed: bool,
+        }
+        impl Display for S<'_, '_> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                if self.signed {
+                    match self.inner {
+                        Evaluated::SignedString(s) => write!(f, "{}", s),
+                        _ => write!(f, "$signed({})", self.inner),
+                    }
+                } else {
+                    write!(f, "{}", self.inner)
+                }
+            }
+        }
+        S { inner: self, signed }
+    }
+
+    pub fn as_signed(&self) -> impl Display {
+        self.as_signed_maybe(true)
+    }
+}
+
 impl Display for Evaluated<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -918,6 +946,7 @@ impl Display for Evaluated<'_> {
             Evaluated::Temporary(tmp) => write!(f, "{}", tmp),
             Evaluated::String(s) => write!(f, "{}", s),
             Evaluated::Str(s) => write!(f, "{}", s),
+            Evaluated::SignedString(s) => write!(f, "$unsigned({})", s),
         }
     }
 }
@@ -1032,7 +1061,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 match &self.large[expr] {
                     IrExpressionLarge::BoolNot(inner) => {
                         let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
-                        Evaluated::String(format!("(!{inner}"))
+                        Evaluated::String(format!("(!{inner})"))
                     }
                     IrExpressionLarge::BoolBinary(op, left, right) => {
                         // logical and bitwise operators would both work,
@@ -1048,32 +1077,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
-                    IrExpressionLarge::IntArithmetic(op, ty, left, right) => {
-                        // TODO div/mod truncation directions are not right
-                        // TODO pow is very likely not right
-                        // TODO lower mod to branch + sub, lower mul/pow to shift if possible
-                        // find common range that contains all operands and the result
-                        let ty_all = ty
-                            .union(left.ty(self.module, self.locals).unwrap_int())
-                            .union(right.ty(self.module, self.locals).unwrap_int());
-
-                        let left = self.lower_expression_int_expanded(span, &ty_all, left)?;
-                        let right = self.lower_expression_int_expanded(span, &ty_all, right)?;
-
-                        let op_str = match op {
-                            IrIntArithmeticOp::Add => "+",
-                            IrIntArithmeticOp::Sub => "-",
-                            IrIntArithmeticOp::Mul => "*",
-                            IrIntArithmeticOp::Div => "/",
-                            IrIntArithmeticOp::Mod => "%",
-                            IrIntArithmeticOp::Pow => "**",
-                        };
-
-                        // store result in a temporary to force truncation
-                        // TODO skip if no truncation is actually necessary
-                        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-                        swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
-                        Evaluated::Temporary(res_tmp)
+                    &IrExpressionLarge::IntArithmetic(op, ref result_range, ref left, ref right) => {
+                        self.lower_arithmetic_expression(span, result_range, result_ty_verilog, op, left, right)?
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // find common range that contains all operands
@@ -1216,6 +1221,102 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(Ok(eval))
     }
 
+    fn lower_arithmetic_expression(
+        &mut self,
+        span: Span,
+        result_range: &ClosedIncRange<BigInt>,
+        result_ty_verilog: VerilogType,
+        op: IrIntArithmeticOp,
+        left: &IrExpression,
+        right: &IrExpression,
+    ) -> DiagResult<Evaluated<'n>> {
+        // TODO strength reduction (where possible). We mostly want it for div/pow/pow
+        //    since those are sketchy for synthesis
+        //    * div/mod -> bit slice
+        //    * mod -> branch + sub
+        //    * div -> https://llvm.org/doxygen/structllvm_1_1SignedDivisionByConstantInfo.html#details
+        //    * mul -> shift
+        //    * pow -> shift
+        // TODO move strength reduction to common IR optimization pass?
+
+        let indent = self.indent;
+
+        // expand operands to a common range that contains all operands and the result
+        let ty_left = left.ty(self.module, self.locals);
+        let ty_right = right.ty(self.module, self.locals);
+        let range_left = ty_left.unwrap_int();
+        let range_right = ty_right.unwrap_int();
+        let range_all = result_range.union(range_left).union(range_right);
+
+        let left = self.lower_expression_int_expanded(span, &range_all, left)?;
+        let right = self.lower_expression_int_expanded(span, &range_all, right)?;
+
+        enum OpKind {
+            Simple(&'static str),
+            DivMod(&'static str),
+            Power,
+        }
+
+        // map the operator to the necessary details
+        let op_kind = match op {
+            IrIntArithmeticOp::Add => OpKind::Simple("+"),
+            IrIntArithmeticOp::Sub => OpKind::Simple("-"),
+            IrIntArithmeticOp::Mul => OpKind::Simple("*"),
+            IrIntArithmeticOp::Div => OpKind::DivMod("/"),
+            IrIntArithmeticOp::Mod => OpKind::DivMod("%"),
+            IrIntArithmeticOp::Pow => OpKind::Power,
+        };
+
+        // store result in a temporary to force truncation
+        // TODO skip if no truncation is actually necessary
+        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
+
+        // lower the operation itself
+        match op_kind {
+            OpKind::Simple(op_str) => {
+                swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
+            }
+            OpKind::DivMod(op_str) => {
+                // division and module need their operands to have the correct signedness
+                // TODO this might be wrong for mixed signedness,
+                //   we might need an extra zero bit for the non-signed operand
+                let signed = range_all.start_inc < BigInt::ZERO;
+                let left = left.as_signed_maybe(signed);
+                let right = right.as_signed_maybe(signed);
+
+                // because truncation behavior of the IR (down) and verilog (towards zero) differ for negative numbers,
+                //   we might need to add some corrections here
+
+                let result_can_be_negative = result_range.start_inc < BigInt::ZERO;
+                let result_can_be_positive = result_range.end_inc > BigInt::ZERO;
+                // TODO use result negativity (computed with xor) to determine if we need to correct, not the RHS
+
+                // TODO move these into the ifs where they're actually needed
+                let zero = lower_int_constant(range_all.as_ref(), &BigInt::ZERO);
+                let one = lower_int_constant(range_all.as_ref(), &BigInt::ONE);
+
+                let left_corrected = if result_can_be_negative {
+                    if result_can_be_positive {
+                        // could be negative or positive, we need to handle both cases
+                        // TODO maybe write this as a full if statement?
+                        format!("({left} - ((({left} < {zero}) ^ ({right} < {zero})) ? ({right} + {one}) : {zero}))")
+                    } else {
+                        // always negative, so always needs correction
+                        format!("({left} - {right} - {one})")
+                    }
+                } else {
+                    // never negative, so no correction needed
+                    left.to_string()
+                };
+
+                swriteln!(self.f, "{indent}{res_tmp} = {left_corrected} {op_str} {right};");
+            }
+            OpKind::Power => todo!(),
+        }
+
+        Ok(Evaluated::Temporary(res_tmp))
+    }
+
     // TODO doc
     fn lower_expression_non_zero_width(
         &mut self,
@@ -1320,14 +1421,15 @@ fn lower_expand_int_range<'n>(
         return value;
     }
 
-    // TODO avoid repeated signed/unsigned casts when not necessary,
-    //   maybe by keeping signedness metadata in Evaluated
     // sign/zero-extend based on the signedness of the original value
-    let s = match value_repr.signed() {
-        Signed::Signed => format!("$unsigned({target_size}'sd0 + $signed({value}))"),
-        Signed::Unsigned => format!("({target_size}'d0 + {value})"),
-    };
-    Evaluated::String(s)
+    match value_repr.signed() {
+        Signed::Signed => {
+            // the result will be signed too, keep it that way for now to reduce unnecessary casts
+            let value_signed = value.as_signed();
+            Evaluated::SignedString(format!("({target_size}'sd0 + {value_signed})"))
+        }
+        Signed::Unsigned => Evaluated::String(format!("({target_size}'d0 + {value})")),
+    }
 }
 
 fn lower_int_constant(ty: ClosedIncRange<&BigInt>, x: &BigInt) -> String {

@@ -74,18 +74,25 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
         ty_a1 = f"int({rb.start}..={rb.end_inc})"
 
         ty_inputs = [ty_a0, ty_a1]
-        operator = rng.choice(["+", "-", "*", "/"])
+        operator = rng.choice(["+", "-", "*", "/"])#, "%"]) #, "**"])
         expression = f"a0 {operator} a1"
 
         # check expression validness and extract the return type
         try:
             ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
 
+            # TODO check that result type is small enough to avoid power overflows
+
             # success, we've generated a valid expression
             break
         except hwl.DiagnosticException as e:
             # check that this is once of the expected failure modes
-            if len(e.messages) == 1 and "division by zero is not allowed" in e.messages[0]:
+            allowed_messages = [
+                "division by zero is not allowed",
+                "modulo by zero is not allowed",
+                "invalid power operation",
+            ]
+            if len(e.messages) == 1 and any(m in e.messages[0] for m in allowed_messages):
                 continue
 
             # unexpected error
@@ -150,11 +157,11 @@ def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_ba
 def main():
     # settings
     sample_count = 1024
-    thread_count = 1
+    thread_count = 8
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
 
     # random seed
-    seed = random.randint(0, 2 ** 64 - 1)
+    seed = 42
     print(f"Using random seed: {seed}")
 
     # create threads

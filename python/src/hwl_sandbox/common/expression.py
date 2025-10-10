@@ -63,6 +63,8 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
     }}
     """
 
+    print(src)
+
     return compile_custom(src)
 
 
@@ -79,6 +81,8 @@ def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, build_dir: 
     c = expression_codegen(ty_inputs, ty_res, expr)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
+
+    print(eval_mod.as_verilog().source)
     eval_mod_inst = eval_mod.as_verilated(str(build_dir)).instance()
 
     return CompiledExpression(
