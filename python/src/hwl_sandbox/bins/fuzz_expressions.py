@@ -12,16 +12,6 @@ from hwl_sandbox.common.expression import expression_compile, expression_get_typ
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
-def sample_range_edge(rng: random.Random) -> int:
-    if rng.random() < 0.5:
-        return rng.randint(-256, 256)
-    else:
-        bits = int(rng.expovariate(0.1))
-        mag = rng.randint(0, 2 ** bits)
-        sign = rng.randint(0, 1) * 2 - 1
-        return sign * mag
-
-
 # TODO use hwl.Range and hwl.Types once those are convenient enough
 @dataclass(frozen=True)
 class Range:
@@ -35,11 +25,27 @@ class Range:
             return self.start <= item <= self.end_inc
 
 
+def sample_range_edge(rng: random.Random) -> int:
+    t = rng.random()
+    if t < 1 / 3:
+        return rng.randint(-4, 4)
+    if rng.random() < 2 / 3:
+        return rng.randint(-256, 256)
+    else:
+        bits = int(rng.expovariate(0.1))
+        mag = rng.randint(0, 2 ** bits)
+        sign = rng.randint(0, 1) * 2 - 1
+        return sign * mag
+
+
 def sample_range(rng: random.Random, must_contain: Optional[Range] = None) -> Range:
     # TODO allow empty ranges?
     while True:
         start = sample_range_edge(rng)
-        end = sample_range_edge(rng)
+        if rng.random() < 0.1:
+            end = start + 1
+        else:
+            end = sample_range_edge(rng)
 
         if start <= end:
             r = Range(start=start, end_inc=end)
@@ -69,7 +75,11 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
         # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
         #    arrays, conditional statements, variable assignments, ...
         ra = sample_range(rng)
-        rb = sample_range(rng)
+        if rng.random() < 0.1:
+            rb = ra
+        else:
+            rb = sample_range(rng)
+
         ty_a0 = f"int({ra.start}..={ra.end_inc})"
         ty_a1 = f"int({rb.start}..={rb.end_inc})"
 
