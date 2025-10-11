@@ -100,16 +100,16 @@ def z3_eval_binary_f(f, *args):
     v_args = [z3.Int(f"x{i}") for i in range(len(args))]
     for i in range(len(args)):
         solver.add(v_args[i] == args[i])
-
     v_result = z3.Int("y")
     solver.add(v_result == f(*v_args))
 
     assert solver.check() == z3.sat
     result = solver.model()[v_result]
+
     solver.add(v_result != result)
     assert solver.check() == z3.unsat
 
-    return result
+    return result.as_long()
 
 
 def check_z3_floor_div_mod():

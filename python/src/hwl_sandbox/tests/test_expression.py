@@ -67,37 +67,47 @@ def test_large_port(tmpdir: Path):
     e.eval_assert([2 ** 128 - 1, 0], 2 ** 128 - 1)
 
 
-def test_div_simple(tmpdir: Path):
-    e = expression_compile(["int(0..16)", "int(1..32)"], "int(0..16)", "a0 / a1", tmpdir)
-    e.eval_assert([15, 3], 5)
-    e.eval_assert([15, 1], 15)
-    e.eval_assert([15, 30], 0)
-
-
 def assert_div(e: CompiledExpression, a: int, b: int, c: int):
     assert a // b == c
     e.eval_assert([a, b], c)
 
 
+def test_div_simple(tmpdir: Path):
+    e = expression_compile(["int(0..16)", "int(1..32)"], "int(0..16)", "a0 / a1", tmpdir)
+    assert_div(e, 15, 3, 5)
+    assert_div(e, 15, 1, 15)
+    assert_div(e, 15, 30, 0)
+
+
+# TODO bruteforce loop over all possible ranges and then all possible values
 def test_div_by_pos(tmpdir: Path):
-    # TODO expand right range
-    # TODO assert that these match python mod/div
     e = expression_compile(["int(-16..16)", "int(1..16)"], "int(-16..16)", "a0 / a1", tmpdir)
-
-    # assert_div(e, 15, 3, 5)
-    assert_div(e, -15, 3, -5)  # TODO fix in verilog
-
-    # assert_div(e, 15, 2, 7)
-    # assert_div(e, -15, 2, -8) # TODO fix in verilog
+    assert_div(e, 15, 3, 5)
+    assert_div(e, -15, 3, -5)
+    assert_div(e, 15, 2, 7)
+    assert_div(e, -15, 2, -8)
 
 
 def test_div_by_neg(tmpdir: Path):
-    # TODO expand right range
-    # TODO assert that these match python mod/div
     e = expression_compile(["int(-16..16)", "int(-16..0)"], "int(-16..=16)", "a0 / a1", tmpdir)
-
     assert_div(e, 15, -3, -5)
     assert_div(e, -15, -3, 5)
-
     assert_div(e, 15, -2, -8)
     assert_div(e, -15, -2, 7)
+
+
+def test_div_result_neg(tmpdir: Path):
+    e = expression_compile(["int(-16..0)", "int(1..16)"], "int(-16..0)", "a0 / a1", tmpdir)
+    assert_div(e, -15, 3, -5)
+    assert_div(e, -15, 2, -8)
+
+
+def test_div_result_pos(tmpdir: Path):
+    e = expression_compile(["int(-16..0)", "int(-16..=-1)"], "int(0..=16)", "a0 / a1", tmpdir)
+    assert_div(e, -15, -3, 5)
+    assert_div(e, -15, -2, 7)
+
+
+def test_div_tricky(tmpdir: Path):
+    e = expression_compile(["int(0..2107)", "int(-8..=-5)"], "int(-59332..=222)", "a0 / a1", tmpdir)
+    assert_div(e, 2106, -6, -351)

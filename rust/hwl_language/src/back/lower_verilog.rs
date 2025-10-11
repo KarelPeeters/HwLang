@@ -1230,15 +1230,41 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         left: &IrExpression,
         right: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
-        // TODO strength reduction (where possible). We mostly want it for div/pow/pow
-        //    since those are sketchy for synthesis
-        //    * div/mod -> bit slice
-        //    * mod -> branch + sub
-        //    * div -> https://llvm.org/doxygen/structllvm_1_1SignedDivisionByConstantInfo.html#details
-        //    * mul -> shift
-        //    * pow -> shift
-        // TODO move strength reduction to common IR optimization pass?
+        // TODO do strength reduction to common IR optimization pass?
+        // TODO strength reduction (where possible):
+        //    * mul -> shift when power of 2
+        //    * div/mod by power of 2 -> bit slice
+        //    * div by constant -> https://llvm.org/doxygen/structllvm_1_1SignedDivisionByConstantInfo.html#details
+        //    * pow of two -> shift
+        match op {
+            IrIntArithmeticOp::Add => {
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "+", left, right)
+            }
+            IrIntArithmeticOp::Sub => {
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "-", left, right)
+            }
+            IrIntArithmeticOp::Mul => {
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "*", left, right)
+            }
+            IrIntArithmeticOp::Div => {
+                self.lower_arithmetic_expression_div_mod(span, result_range, result_ty_verilog, "/", left, right)
+            }
+            IrIntArithmeticOp::Mod => {
+                self.lower_arithmetic_expression_div_mod(span, result_range, result_ty_verilog, "%", left, right)
+            }
+            IrIntArithmeticOp::Pow => todo!(),
+        }
+    }
 
+    fn lower_arithmetic_expression_simple(
+        &mut self,
+        span: Span,
+        result_range: &ClosedIncRange<BigInt>,
+        result_ty_verilog: VerilogType,
+        op_str: &str,
+        left: &IrExpression,
+        right: &IrExpression,
+    ) -> DiagResult<Evaluated<'n>> {
         let indent = self.indent;
 
         // expand operands to a common range that contains all operands and the result
@@ -1251,68 +1277,63 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let left = self.lower_expression_int_expanded(span, &range_all, left)?;
         let right = self.lower_expression_int_expanded(span, &range_all, right)?;
 
-        enum OpKind {
-            Simple(&'static str),
-            DivMod(&'static str),
-            Power,
-        }
+        // store result in a temporary to force truncation
+        // TODO skip if no truncation is actually necessary
+        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
+        swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
 
-        // map the operator to the necessary details
-        let op_kind = match op {
-            IrIntArithmeticOp::Add => OpKind::Simple("+"),
-            IrIntArithmeticOp::Sub => OpKind::Simple("-"),
-            IrIntArithmeticOp::Mul => OpKind::Simple("*"),
-            IrIntArithmeticOp::Div => OpKind::DivMod("/"),
-            IrIntArithmeticOp::Mod => OpKind::DivMod("%"),
-            IrIntArithmeticOp::Pow => OpKind::Power,
+        Ok(Evaluated::Temporary(res_tmp))
+    }
+
+    fn lower_arithmetic_expression_div_mod(
+        &mut self,
+        span: Span,
+        result_range: &ClosedIncRange<BigInt>,
+        result_ty_verilog: VerilogType,
+        op_str: &str,
+        left: &IrExpression,
+        right: &IrExpression,
+    ) -> DiagResult<Evaluated<'n>> {
+        let indent = self.indent;
+
+        // TODO document and rearrange
+
+        // figure out a common range that contains all operands (after adjustment) and the result
+        let ty_left = left.ty(self.module, self.locals);
+        let ty_right = right.ty(self.module, self.locals);
+        let range_left = ty_left.unwrap_int();
+        let range_right = ty_right.unwrap_int();
+
+        let range_base = result_range.union(range_left).union(range_right);
+        let max_adj_pos = (&range_right.end_inc - &BigInt::ONE).abs();
+        let max_adj_neg = (&range_right.start_inc + &BigInt::ONE).abs();
+        let max_adj = max_adj_pos.max(max_adj_neg);
+        let range_all = ClosedIncRange {
+            start_inc: &range_base.start_inc - &max_adj,
+            end_inc: &range_base.end_inc + &max_adj,
         };
+
+        let left = self.lower_expression_int_expanded(span, &range_all, left)?;
+        let right = self.lower_expression_int_expanded(span, &range_all, right)?;
+
+        // division and modulo need their operands to have the correct signedness
+        let signed = range_all.start_inc < BigInt::ZERO;
+        let left_signed = left.as_signed_maybe(signed);
+        let right_signed = right.as_signed_maybe(signed);
+
+        let a = left_signed;
+        let b = right_signed;
+        let zero = lower_int_constant(range_all.as_ref(), &BigInt::ZERO);
+        let one = lower_int_constant(range_all.as_ref(), &BigInt::ONE);
+
+        let a_corrected = format!(
+            "({a} + ((({a} < {zero}) != ({b} < {zero})) ? (({b} > {zero}) ? -({b} - {one}) : -({b} + {one})) : {zero}))"
+        );
 
         // store result in a temporary to force truncation
         // TODO skip if no truncation is actually necessary
         let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-
-        // lower the operation itself
-        match op_kind {
-            OpKind::Simple(op_str) => {
-                swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
-            }
-            OpKind::DivMod(op_str) => {
-                // division and module need their operands to have the correct signedness
-                // TODO this might be wrong for mixed signedness,
-                //   we might need an extra zero bit for the non-signed operand
-                let signed = range_all.start_inc < BigInt::ZERO;
-                let left = left.as_signed_maybe(signed);
-                let right = right.as_signed_maybe(signed);
-
-                // because truncation behavior of the IR (down) and verilog (towards zero) differ for negative numbers,
-                //   we might need to add some corrections here
-
-                let result_can_be_negative = result_range.start_inc < BigInt::ZERO;
-                let result_can_be_positive = result_range.end_inc > BigInt::ZERO;
-                // TODO use result negativity (computed with xor) to determine if we need to correct, not the RHS
-
-                // TODO move these into the ifs where they're actually needed
-                let zero = lower_int_constant(range_all.as_ref(), &BigInt::ZERO);
-                let one = lower_int_constant(range_all.as_ref(), &BigInt::ONE);
-
-                let left_corrected = if result_can_be_negative {
-                    if result_can_be_positive {
-                        // could be negative or positive, we need to handle both cases
-                        // TODO maybe write this as a full if statement?
-                        format!("({left} - ((({left} < {zero}) ^ ({right} < {zero})) ? ({right} + {one}) : {zero}))")
-                    } else {
-                        // always negative, so always needs correction
-                        format!("({left} - {right} - {one})")
-                    }
-                } else {
-                    // never negative, so no correction needed
-                    left.to_string()
-                };
-
-                swriteln!(self.f, "{indent}{res_tmp} = {left_corrected} {op_str} {right};");
-            }
-            OpKind::Power => todo!(),
-        }
+        swriteln!(self.f, "{indent}{res_tmp} = {a_corrected} {op_str} {b};");
 
         Ok(Evaluated::Temporary(res_tmp))
     }
