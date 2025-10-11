@@ -1332,26 +1332,29 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let a = a_raw.as_signed_maybe(signed);
         let b = b_raw.as_signed_maybe(signed);
 
-        // TODO avoid steps that are not necessary
-        let signs_differ = format!("(({a} < 0) ^ ({b} < 0))");
+        // make adjustments to match IR semantics (round down) instead of verilog (truncate towards zero)
+        let a_is_neg = MaybeBool::is_negative(&a, range_a.as_ref());
+        let b_is_neg = MaybeBool::is_negative(&b, range_b.as_ref());
+        let signs_differ = MaybeBool::xor(&a_is_neg, &b_is_neg);
         let res_expr = match op {
             OperatorDivMod::Div => {
-                let adj_one = format!("(({b} > 0) ? -1 : 1)");
-                let adj = format!("({signs_differ} ? ({b} + {adj_one}) : 0)");
+                let adj_one = b_is_neg.select("1", "-1");
+                let adj = signs_differ.select(&format!("({b} + {adj_one})"), "0");
                 let a_adj = format!("({a} - {adj})");
                 format!("{a_adj} / {b};")
             }
             OperatorDivMod::Mod => {
                 let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
                 swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
-                let adj = format!("(({tmp_mod} != 0 && {signs_differ}) ? {b} : 0)");
-                format!("{tmp_mod} + {adj};")
+                let should_adjust =
+                    MaybeBool::and(&MaybeBool::is_not_zero(&tmp_mod, result_range.range()), &signs_differ);
+                should_adjust.select(&format!("{tmp_mod} + {b}"), &tmp_mod.to_string())
             }
         };
 
         // store in temporary to force truncation
         let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-        swriteln!(self.f, "{indent}{res_tmp} = {res_expr}");
+        swriteln!(self.f, "{indent}{res_tmp} = {res_expr};");
 
         Ok(Evaluated::Temporary(res_tmp))
     }
@@ -1670,4 +1673,67 @@ lazy_static! {
 
 fn maybe_id_as_ref(id: &Spanned<Option<String>>) -> Spanned<Option<&str>> {
     id.as_ref().map_inner(|s| s.as_ref().map(String::as_ref))
+}
+
+enum MaybeBool {
+    Const(bool),
+    Runtime(String),
+}
+
+impl MaybeBool {
+    fn is_not_zero(v: &impl Display, r: ClosedIncRange<&BigInt>) -> MaybeBool {
+        let can_be_zero = r.contains(&&BigInt::ZERO);
+        let can_be_non_zero = r != ClosedIncRange::single(&BigInt::ZERO);
+
+        if can_be_zero && can_be_non_zero {
+            MaybeBool::Runtime(format!("({v} != 0)"))
+        } else if can_be_zero {
+            MaybeBool::Const(false)
+        } else {
+            MaybeBool::Const(true)
+        }
+    }
+
+    fn is_negative(v: &impl Display, r: ClosedIncRange<&BigInt>) -> MaybeBool {
+        let can_be_neg = r.start_inc < &BigInt::ZERO;
+        let can_be_non_neg = r.end_inc >= &BigInt::ZERO;
+        if can_be_neg && can_be_non_neg {
+            MaybeBool::Runtime(format!("({v} < 0)"))
+        } else if can_be_neg {
+            MaybeBool::Const(true)
+        } else {
+            MaybeBool::Const(false)
+        }
+    }
+
+    fn select(&self, t: &str, f: &str) -> String {
+        match self {
+            MaybeBool::Const(true) => t.to_string(),
+            MaybeBool::Const(false) => f.to_string(),
+            MaybeBool::Runtime(c) => format!("({c} ? {t} : {f})"),
+        }
+    }
+
+    fn xor(&self, other: &Self) -> MaybeBool {
+        match (self, other) {
+            (&MaybeBool::Const(a), &MaybeBool::Const(b)) => MaybeBool::Const(a ^ b),
+            (MaybeBool::Const(false), MaybeBool::Runtime(other))
+            | (MaybeBool::Runtime(other), MaybeBool::Const(false)) => MaybeBool::Runtime(other.to_string()),
+            (MaybeBool::Const(true), MaybeBool::Runtime(other))
+            | (MaybeBool::Runtime(other), MaybeBool::Const(true)) => MaybeBool::Runtime(format!("(!{})", other)),
+            (MaybeBool::Runtime(a), MaybeBool::Runtime(b)) => MaybeBool::Runtime(format!("({} ^ {})", a, b)),
+        }
+    }
+
+    fn and(&self, other: &Self) -> MaybeBool {
+        match (self, other) {
+            (&MaybeBool::Const(a), &MaybeBool::Const(b)) => MaybeBool::Const(a & b),
+            (MaybeBool::Const(true), MaybeBool::Runtime(other))
+            | (MaybeBool::Runtime(other), MaybeBool::Const(true)) => MaybeBool::Runtime(other.to_string()),
+            (MaybeBool::Const(false), MaybeBool::Runtime(_)) | (MaybeBool::Runtime(_), MaybeBool::Const(false)) => {
+                MaybeBool::Const(false)
+            }
+            (MaybeBool::Runtime(a), MaybeBool::Runtime(b)) => MaybeBool::Runtime(format!("({} && {})", a, b)),
+        }
+    }
 }
