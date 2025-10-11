@@ -1,3 +1,4 @@
+use crate::back::lower_verilog::non_zero_width::NonZeroWidthRange;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
@@ -1050,7 +1051,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let s = if x { "1'b0" } else { "1'b1" };
                 Evaluated::Str(s)
             }
-            IrExpression::Int(x) => Evaluated::String(lower_int_constant(ClosedIncRange::single(x), x)),
+            IrExpression::Int(x) => {
+                let range =
+                    NonZeroWidthRange::new(ClosedIncRange::single(x)).expect("already checked for zero-width earlier");
+                lower_int_constant(range, x)
+            }
 
             &IrExpression::Port(s) => Evaluated::Name(name_map.map_signal(IrSignal::Port(s))),
             &IrExpression::Wire(s) => Evaluated::Name(name_map.map_signal(IrSignal::Wire(s))),
@@ -1078,19 +1083,21 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
                     &IrExpressionLarge::IntArithmetic(op, ref result_range, ref left, ref right) => {
+                        let result_range = NonZeroWidthRange::new(result_range.as_ref())
+                            .expect("already checked for zero-width earlier");
                         self.lower_arithmetic_expression(span, result_range, result_ty_verilog, op, left, right)?
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // find common range that contains all operands
-                        let left_ty = left.ty(self.module, self.locals);
-                        let left_range = left_ty.unwrap_int();
-                        let right_ty = right.ty(self.module, self.locals);
-                        let right_range = right_ty.unwrap_int();
-                        let combined_range = left_range.union(right_range);
+                        let left_range = left.ty(self.module, self.locals).unwrap_int();
+                        let right_range = right.ty(self.module, self.locals).unwrap_int();
+                        let combined_range = left_range.as_ref().union(right_range.as_ref());
+                        let combined_range =
+                            NonZeroWidthRange::new(combined_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
 
                         // lower both operands to that range
-                        let left = self.lower_expression_int_expanded(span, &combined_range, left)?;
-                        let right = self.lower_expression_int_expanded(span, &combined_range, right)?;
+                        let left = self.lower_expression_int_expanded(span, combined_range, left)?;
+                        let right = self.lower_expression_int_expanded(span, combined_range, right)?;
 
                         // build the final expression
                         let op_str = match op {
@@ -1198,6 +1205,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         return self.lower_expression(span, value);
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
+                        let target =
+                            NonZeroWidthRange::new(target.as_ref()).expect("already checked for zero-width earlier");
                         self.lower_expression_int_expanded(span, target, value)?
                     }
                     IrExpressionLarge::ConstrainIntRange(range, value) => {
@@ -1224,7 +1233,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression(
         &mut self,
         span: Span,
-        result_range: &ClosedIncRange<BigInt>,
+        result_range: NonZeroWidthRange,
         result_ty_verilog: VerilogType,
         op: IrIntArithmeticOp,
         left: &IrExpression,
@@ -1246,12 +1255,22 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             IrIntArithmeticOp::Mul => {
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "*", left, right)
             }
-            IrIntArithmeticOp::Div => {
-                self.lower_arithmetic_expression_div_mod(span, result_range, result_ty_verilog, "/", left, right)
-            }
-            IrIntArithmeticOp::Mod => {
-                self.lower_arithmetic_expression_div_mod(span, result_range, result_ty_verilog, "%", left, right)
-            }
+            IrIntArithmeticOp::Div => self.lower_arithmetic_expression_div_mod(
+                span,
+                result_range,
+                result_ty_verilog,
+                OperatorDivMod::Div,
+                left,
+                right,
+            ),
+            IrIntArithmeticOp::Mod => self.lower_arithmetic_expression_div_mod(
+                span,
+                result_range,
+                result_ty_verilog,
+                OperatorDivMod::Mod,
+                left,
+                right,
+            ),
             IrIntArithmeticOp::Pow => todo!(),
         }
     }
@@ -1259,26 +1278,28 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression_simple(
         &mut self,
         span: Span,
-        result_range: &ClosedIncRange<BigInt>,
+        result_range: NonZeroWidthRange,
         result_ty_verilog: VerilogType,
         op_str: &str,
         left: &IrExpression,
         right: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
-        let indent = self.indent;
-
         // expand operands to a common range that contains all operands and the result
-        let ty_left = left.ty(self.module, self.locals);
-        let ty_right = right.ty(self.module, self.locals);
-        let range_left = ty_left.unwrap_int();
-        let range_right = ty_right.unwrap_int();
-        let range_all = result_range.union(range_left).union(range_right);
+        let range_left = left.ty(self.module, self.locals).unwrap_int();
+        let range_right = right.ty(self.module, self.locals).unwrap_int();
+        let range_all = result_range
+            .range()
+            .union(range_left.as_ref())
+            .union(range_right.as_ref());
+        let range_all = NonZeroWidthRange::new(range_all).expect("result range is non-zero, so the union is too");
 
-        let left = self.lower_expression_int_expanded(span, &range_all, left)?;
-        let right = self.lower_expression_int_expanded(span, &range_all, right)?;
+        // evaluate operands to that range
+        let left = self.lower_expression_int_expanded(span, range_all, left)?;
+        let right = self.lower_expression_int_expanded(span, range_all, right)?;
 
         // store result in a temporary to force truncation
         // TODO skip if no truncation is actually necessary
+        let indent = self.indent;
         let res_tmp = self.new_temporary(span, result_ty_verilog)?;
         swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
 
@@ -1288,52 +1309,49 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression_div_mod(
         &mut self,
         span: Span,
-        result_range: &ClosedIncRange<BigInt>,
+        result_range: NonZeroWidthRange,
         result_ty_verilog: VerilogType,
-        op_str: &str,
-        left: &IrExpression,
-        right: &IrExpression,
+        op: OperatorDivMod,
+        a: &IrExpression,
+        b: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
         let indent = self.indent;
+        let diags = self.diags;
 
-        // TODO document and rearrange
+        let range_a = a.ty(self.module, self.locals).unwrap_int();
+        let range_b = b.ty(self.module, self.locals).unwrap_int();
+        let range_all = result_range.range().union(range_a.as_ref()).union(range_b.as_ref());
+        let range_all = NonZeroWidthRange::new(range_all).expect("result range is non-zero, so the union is too");
 
-        // figure out a common range that contains all operands (after adjustment) and the result
-        let ty_left = left.ty(self.module, self.locals);
-        let ty_right = right.ty(self.module, self.locals);
-        let range_left = ty_left.unwrap_int();
-        let range_right = ty_right.unwrap_int();
+        // evaluate operands to that range
+        let a_raw = self.lower_expression_int_expanded(span, range_all, a)?;
+        let b_raw = self.lower_expression_int_expanded(span, range_all, b)?;
 
-        let range_base = result_range.union(range_left).union(range_right);
-        let max_adj_pos = (&range_right.end_inc - &BigInt::ONE).abs();
-        let max_adj_neg = (&range_right.start_inc + &BigInt::ONE).abs();
-        let max_adj = max_adj_pos.max(max_adj_neg);
-        let range_all = ClosedIncRange {
-            start_inc: &range_base.start_inc - &max_adj,
-            end_inc: &range_base.end_inc + &max_adj,
+        // cast operands to signed if necessary
+        let signed = range_all.range().start_inc < &BigInt::from(0);
+        let a = a_raw.as_signed_maybe(signed);
+        let b = b_raw.as_signed_maybe(signed);
+
+        // TODO avoid steps that are not necessary
+        let signs_differ = format!("(({a} < 0) ^ ({b} < 0))");
+        let res_expr = match op {
+            OperatorDivMod::Div => {
+                let adj_one = format!("(({b} > 0) ? -1 : 1)");
+                let adj = format!("({signs_differ} ? ({b} + {adj_one}) : 0)");
+                let a_adj = format!("({a} - {adj})");
+                format!("{a_adj} / {b};")
+            }
+            OperatorDivMod::Mod => {
+                let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
+                swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
+                let adj = format!("(({tmp_mod} != 0 && {signs_differ}) ? {b} : 0)");
+                format!("{tmp_mod} + {adj};")
+            }
         };
 
-        let left = self.lower_expression_int_expanded(span, &range_all, left)?;
-        let right = self.lower_expression_int_expanded(span, &range_all, right)?;
-
-        // division and modulo need their operands to have the correct signedness
-        let signed = range_all.start_inc < BigInt::ZERO;
-        let left_signed = left.as_signed_maybe(signed);
-        let right_signed = right.as_signed_maybe(signed);
-
-        let a = left_signed;
-        let b = right_signed;
-        let zero = lower_int_constant(range_all.as_ref(), &BigInt::ZERO);
-        let one = lower_int_constant(range_all.as_ref(), &BigInt::ONE);
-
-        let a_corrected = format!(
-            "({a} + ((({a} < {zero}) != ({b} < {zero})) ? (({b} > {zero}) ? -({b} - {one}) : -({b} + {one})) : {zero}))"
-        );
-
-        // store result in a temporary to force truncation
-        // TODO skip if no truncation is actually necessary
+        // store in temporary to force truncation
         let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-        swriteln!(self.f, "{indent}{res_tmp} = {a_corrected} {op_str} {b};");
+        swriteln!(self.f, "{indent}{res_tmp} = {res_expr}");
 
         Ok(Evaluated::Temporary(res_tmp))
     }
@@ -1355,17 +1373,17 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_expression_int_expanded(
         &mut self,
         span: Span,
-        target_ty: &ClosedIncRange<BigInt>,
+        range: NonZeroWidthRange,
         value: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
         let value_ty = value.ty(self.module, self.locals);
         let value_ty = value_ty.unwrap_int();
 
         let value = match self.lower_expression(span, value)? {
-            Ok(value) => lower_expand_int_range(target_ty.as_ref(), value_ty.as_ref(), value),
+            Ok(value) => lower_expand_int_range(range.range(), value_ty.as_ref(), value),
             Err(ZeroWidth) => {
                 let value = value_ty.as_single().unwrap();
-                Evaluated::String(lower_int_constant(target_ty.as_ref(), value))
+                lower_int_constant(range, value)
             }
         };
 
@@ -1453,15 +1471,18 @@ fn lower_expand_int_range<'n>(
     }
 }
 
-fn lower_int_constant(ty: ClosedIncRange<&BigInt>, x: &BigInt) -> String {
+fn lower_int_constant(ty: NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> {
+    let ty = ty.range();
     assert!(ty.contains(&x), "Trying to emit constant {x:?} encoded as range {ty:?}");
+
     let repr = IntRepresentation::for_range(ty);
     let bits = repr.size_bits();
-    let signed = match repr.signed() {
-        Signed::Signed => "s",
-        Signed::Unsigned => "",
-    };
-    format!("{bits}'{signed}d{x}")
+    assert_ne!(bits, 0);
+
+    match repr.signed() {
+        Signed::Unsigned => Evaluated::String(format!("{bits}'d{x}")),
+        Signed::Signed => Evaluated::SignedString(format!("{bits}'sd{x}")),
+    }
 }
 
 fn lower_uint_str(x: &BigUint) -> String {
@@ -1498,9 +1519,44 @@ fn lower_edge(name_map: NameMap, expr: Polarized<IrSignal>) -> DiagResult<EdgeSt
 
 const I: &str = Indent::I;
 
-// TODO implement zero-width expressions removal as a separate prepass? right now everything has to deal with it
 #[derive(Debug, Copy, Clone)]
 struct ZeroWidth;
+
+mod non_zero_width {
+    use crate::back::lower_verilog::ZeroWidth;
+    use crate::front::types::ClosedIncRange;
+    use crate::util::big_int::BigInt;
+    use crate::util::int::IntRepresentation;
+
+    #[derive(Debug, Copy, Clone)]
+    pub struct NonZeroWidthRange<'a>(ClosedIncRange<&'a BigInt>);
+
+    impl<'a> NonZeroWidthRange<'a> {
+        pub const ZERO_ONE: NonZeroWidthRange<'static> = NonZeroWidthRange(ClosedIncRange {
+            start_inc: &BigInt::ZERO,
+            end_inc: &BigInt::ONE,
+        });
+
+        pub fn new(range: ClosedIncRange<&'a BigInt>) -> Result<Self, ZeroWidth> {
+            let repr = IntRepresentation::for_range(range);
+            if repr.size_bits() == 0 {
+                Err(ZeroWidth)
+            } else {
+                Ok(NonZeroWidthRange(range))
+            }
+        }
+
+        pub fn range(&self) -> ClosedIncRange<&'a BigInt> {
+            self.0
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum OperatorDivMod {
+    Div,
+    Mod,
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum VerilogType {
@@ -1525,6 +1581,11 @@ impl VerilogType {
             IrType::Bool => Ok(Ok(VerilogType::Bit)),
             IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::new_array(diags, span, ty.size_bits()),
         }
+    }
+
+    pub fn new_from_range(diags: &Diagnostics, span: Span, range: NonZeroWidthRange) -> DiagResult<VerilogType> {
+        let repr = IntRepresentation::for_range(range.range());
+        Ok(Self::new_array(diags, span, BigUint::from(repr.size_bits()))?.expect("range should be non-zero-width"))
     }
 
     pub fn to_prefix(self) -> impl Display {

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from hwl_sandbox.common.expression import expression_compile, CompiledExpression
 
 
@@ -67,47 +69,65 @@ def test_large_port(tmpdir: Path):
     e.eval_assert([2 ** 128 - 1, 0], 2 ** 128 - 1)
 
 
-def assert_div(e: CompiledExpression, a: int, b: int, c: int):
-    assert a // b == c
-    e.eval_assert([a, b], c)
+def assert_div_or_mod(e: CompiledExpression, op: str, a: int, b: int, c_div: int, c_mod: int):
+    assert a // b == c_div
+    assert a % b == c_mod
+
+    if op == "/":
+        e.eval_assert([a, b], c_div)
+    elif op == "%":
+        e.eval_assert([a, b], c_mod)
+    else:
+        raise ValueError(f"Invalid op {op}")
 
 
-def test_div_simple(tmpdir: Path):
-    e = expression_compile(["int(0..16)", "int(1..32)"], "int(0..16)", "a0 / a1", tmpdir)
-    assert_div(e, 15, 3, 5)
-    assert_div(e, 15, 1, 15)
-    assert_div(e, 15, 30, 0)
+OPS_DIV_MOD = ["/", "%"]
+
+
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_simple(tmpdir: Path, op: str):
+    e = expression_compile(["int(0..16)", "int(1..32)"], "int(0..32)", f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, 15, 3, 5, 0)
+    assert_div_or_mod(e, op, 15, 1, 15, 0)
+    assert_div_or_mod(e, op, 15, 30, 0, 15)
 
 
 # TODO bruteforce loop over all possible ranges and then all possible values
-def test_div_by_pos(tmpdir: Path):
-    e = expression_compile(["int(-16..16)", "int(1..16)"], "int(-16..16)", "a0 / a1", tmpdir)
-    assert_div(e, 15, 3, 5)
-    assert_div(e, -15, 3, -5)
-    assert_div(e, 15, 2, 7)
-    assert_div(e, -15, 2, -8)
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_by_pos(tmpdir: Path, op: str):
+    e = expression_compile(["int(-16..16)", "int(1..16)"], "int(-16..16)", f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, 15, 3, 5, 0)
+    assert_div_or_mod(e, op, -15, 3, -5, 0)
+    assert_div_or_mod(e, op, 15, 2, 7, 1)
+    assert_div_or_mod(e, op, -15, 2, -8, 1)
 
 
-def test_div_by_neg(tmpdir: Path):
-    e = expression_compile(["int(-16..16)", "int(-16..0)"], "int(-16..=16)", "a0 / a1", tmpdir)
-    assert_div(e, 15, -3, -5)
-    assert_div(e, -15, -3, 5)
-    assert_div(e, 15, -2, -8)
-    assert_div(e, -15, -2, 7)
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_by_neg(tmpdir: Path, op: str):
+    e = expression_compile(["int(-16..16)", "int(-16..0)"], "int(-16..=16)", f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, 15, -3, -5, 0)
+    assert_div_or_mod(e, op, -15, -3, 5, 0)
+    assert_div_or_mod(e, op, 15, -2, -8, -1)
+    assert_div_or_mod(e, op, -15, -2, 7, -1)
 
 
-def test_div_result_neg(tmpdir: Path):
-    e = expression_compile(["int(-16..0)", "int(1..16)"], "int(-16..0)", "a0 / a1", tmpdir)
-    assert_div(e, -15, 3, -5)
-    assert_div(e, -15, 2, -8)
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_result_neg(tmpdir: Path, op: str):
+    result_type = "int(-16..0)" if op == "/" else "int(0..15)"
+    e = expression_compile(["int(-16..0)", "int(1..16)"], result_type, f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, -15, 3, -5, 0)
+    assert_div_or_mod(e, op, -15, 2, -8, 1)
 
 
-def test_div_result_pos(tmpdir: Path):
-    e = expression_compile(["int(-16..0)", "int(-16..=-1)"], "int(0..=16)", "a0 / a1", tmpdir)
-    assert_div(e, -15, -3, 5)
-    assert_div(e, -15, -2, 7)
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_result_pos(tmpdir: Path, op: str):
+    result_type = "int(0..=16)" if op == "/" else "int(-15..=0)"
+    e = expression_compile(["int(-16..0)", "int(-16..=-1)"], result_type, f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, -15, -3, 5, 0)
+    assert_div_or_mod(e, op, -15, -2, 7, -1)
 
 
-def test_div_tricky(tmpdir: Path):
-    e = expression_compile(["int(0..2107)", "int(-8..=-5)"], "int(-59332..=222)", "a0 / a1", tmpdir)
-    assert_div(e, 2106, -6, -351)
+@pytest.mark.parametrize("op", OPS_DIV_MOD)
+def test_div_tricky(tmpdir: Path, op: str):
+    e = expression_compile(["int(0..2107)", "int(-8..=-5)"], "int(-59332..=222)", f"a0 {op} a1", tmpdir)
+    assert_div_or_mod(e, op, 2106, -6, -351, 0)

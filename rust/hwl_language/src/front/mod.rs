@@ -13,6 +13,7 @@ pub mod interface;
 pub mod item;
 pub mod module;
 pub mod print;
+pub mod range;
 pub mod scope;
 pub mod signal;
 pub mod steps;

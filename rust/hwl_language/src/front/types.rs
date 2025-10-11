@@ -112,7 +112,7 @@ pub struct IncRange<T> {
 // TODO transition this to multi-range as the int type
 // TODO make sure that people can only construct non-decreasing ranges,
 //   there are still some panics in the compiler because of this
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ClosedIncRange<T> {
     pub start_inc: T,
     pub end_inc: T,
@@ -533,7 +533,7 @@ impl<T> ClosedIncRange<T> {
         })
     }
 
-    pub fn union(&self, other: &ClosedIncRange<T>) -> ClosedIncRange<T>
+    pub fn union(self, other: ClosedIncRange<T>) -> ClosedIncRange<T>
     where
         T: Ord + Clone,
     {
@@ -547,8 +547,8 @@ impl<T> ClosedIncRange<T> {
         } = other;
 
         ClosedIncRange {
-            start_inc: a_start.min(b_start).clone(),
-            end_inc: a_end.max(b_end).clone(),
+            start_inc: a_start.min(b_start),
+            end_inc: a_end.max(b_end),
         }
     }
 }

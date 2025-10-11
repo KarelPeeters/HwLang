@@ -408,7 +408,7 @@ impl IrType {
         self.as_type_hw().diagnostic_string()
     }
 
-    pub fn unwrap_int(&self) -> &ClosedIncRange<BigInt> {
+    pub fn unwrap_int(self) -> ClosedIncRange<BigInt> {
         unwrap_match!(self, IrType::Int(range) => range)
     }
 }

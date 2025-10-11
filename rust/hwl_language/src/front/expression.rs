@@ -34,14 +34,16 @@ use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
+use crate::front::range::{
+    range_binary_add, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow, range_binary_sub,
+    range_unary_neg,
+};
 use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{Never, ResultDoubleExt, ResultNeverExt, result_pair};
 use annotate_snippets::Level;
 use itertools::{Either, enumerate};
-use std::cmp::{max, min};
-use std::ops::Sub;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
@@ -438,19 +440,16 @@ impl<'a> CompileItemContext<'a, '_> {
                     match operand_int.inner {
                         Value::Compile(c) => Value::Compile(CompileValue::Int(-c)),
                         Value::Hardware(v) => {
-                            let result_range = ClosedIncRange {
-                                start_inc: -v.ty.end_inc,
-                                end_inc: -v.ty.start_inc,
-                            };
+                            let range = range_unary_neg(v.ty.as_ref());
                             let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
                                 IrIntArithmeticOp::Sub,
-                                result_range.clone(),
+                                range.clone(),
                                 IrExpression::Int(BigInt::ZERO),
                                 v.expr,
                             ));
 
                             let result = HardwareValue {
-                                ty: HardwareType::Int(result_range),
+                                ty: HardwareType::Int(range),
                                 domain: v.domain,
                                 expr: result_expr,
                             };
@@ -2174,7 +2173,6 @@ fn pair_compile_general<C, T, E>(
     }
 }
 
-// Proofs of the validness of the integer ranges can be found in `int_range_proofs.py`.
 pub fn eval_binary_expression(
     refs: CompileRefs,
     large: &mut IrLargeArena,
@@ -2203,10 +2201,7 @@ pub fn eval_binary_expression(
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner + right.inner)),
                 Value::Hardware((left, right)) => {
-                    let range = ClosedIncRange {
-                        start_inc: &left.inner.ty.start_inc + &right.inner.ty.start_inc,
-                        end_inc: &left.inner.ty.end_inc + &right.inner.ty.end_inc,
-                    };
+                    let range = range_binary_add(left.inner.ty.as_ref(), right.inner.ty.as_ref());
                     Value::Hardware(build_binary_int_arithmetic_op(
                         IrIntArithmeticOp::Add,
                         large,
@@ -2223,10 +2218,7 @@ pub fn eval_binary_expression(
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner - right.inner)),
                 Value::Hardware((left, right)) => {
-                    let range = ClosedIncRange {
-                        start_inc: &left.inner.ty.start_inc - &right.inner.ty.end_inc,
-                        end_inc: &left.inner.ty.end_inc - &right.inner.ty.start_inc,
-                    };
+                    let range = range_binary_sub(left.inner.ty.as_ref(), right.inner.ty.as_ref());
                     Value::Hardware(build_binary_int_arithmetic_op(
                         IrIntArithmeticOp::Sub,
                         large,
@@ -2312,17 +2304,7 @@ pub fn eval_binary_expression(
                     match pair_compile_int(left, right) {
                         Value::Compile((left, right)) => Value::Compile(CompileValue::Int(left.inner * right.inner)),
                         Value::Hardware((left, right)) => {
-                            // calculate valid range
-                            let extremes = [
-                                &left.inner.ty.start_inc * &right.inner.ty.start_inc,
-                                &left.inner.ty.start_inc * &right.inner.ty.end_inc,
-                                &left.inner.ty.end_inc * &right.inner.ty.start_inc,
-                                &left.inner.ty.end_inc * &right.inner.ty.end_inc,
-                            ];
-                            let range = ClosedIncRange {
-                                start_inc: extremes.iter().min().unwrap().clone(),
-                                end_inc: extremes.iter().max().unwrap().clone(),
-                            };
+                            let range = range_binary_mul(left.inner.ty.as_ref(), right.inner.ty.as_ref());
                             let result =
                                 build_binary_int_arithmetic_op(IrIntArithmeticOp::Mul, large, range, left, right);
                             Value::Hardware(result)
@@ -2357,7 +2339,6 @@ pub fn eval_binary_expression(
                     .finish();
                 return Err(diags.report(diag));
             }
-            let right_positive = right.inner.range().start_inc > &BigInt::ZERO;
 
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => {
@@ -2365,22 +2346,8 @@ pub fn eval_binary_expression(
                     Value::Compile(CompileValue::Int(result))
                 }
                 Value::Hardware((left, right)) => {
-                    let a_min = &left.inner.ty.start_inc;
-                    let a_max = &left.inner.ty.end_inc;
-                    let b_min = &right.inner.ty.start_inc;
-                    let b_max = &right.inner.ty.end_inc;
-                    let range = if right_positive {
-                        ClosedIncRange {
-                            start_inc: min(a_min.div_floor(b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
-                            end_inc: max(a_max.div_floor(b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
-                        }
-                    } else {
-                        ClosedIncRange {
-                            start_inc: min(a_max.div_floor(b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
-                            end_inc: max(a_min.div_floor(b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
-                        }
-                    };
-
+                    let range = range_binary_div(left.inner.ty.as_ref(), right.inner.ty.as_ref())
+                        .expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Div, large, range, left, right);
                     Value::Hardware(result)
                 }
@@ -2404,7 +2371,6 @@ pub fn eval_binary_expression(
                     .finish();
                 return Err(diags.report(diag));
             }
-            let right_positive = right.inner.range().start_inc > &BigInt::ZERO;
 
             match pair_compile_int(left, right) {
                 Value::Compile((left, right)) => {
@@ -2412,18 +2378,8 @@ pub fn eval_binary_expression(
                     Value::Compile(CompileValue::Int(result))
                 }
                 Value::Hardware((left, right)) => {
-                    let range = if right_positive {
-                        ClosedIncRange {
-                            start_inc: BigInt::ZERO,
-                            end_inc: &right.inner.ty.end_inc - 1,
-                        }
-                    } else {
-                        ClosedIncRange {
-                            start_inc: &right.inner.ty.start_inc + 1,
-                            end_inc: BigInt::ZERO,
-                        }
-                    };
-
+                    let range = range_binary_mod(left.inner.ty.as_ref(), right.inner.ty.as_ref())
+                        .expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Mod, large, range, left, right);
                     Value::Hardware(result)
                 }
@@ -2469,28 +2425,12 @@ pub fn eval_binary_expression(
                         .map_err(|_| diags.report_internal_error(exp.span, "got negative exp start"))?;
                     let exp_end_inc = BigUint::try_from(&exp.inner.ty.end_inc)
                         .map_err(|_| diags.report_internal_error(exp.span, "got negative exp end"))?;
-
-                    let mut result_min = min(
-                        base.inner.ty.start_inc.clone().pow(&exp_start_inc),
-                        base.inner.ty.start_inc.clone().pow(&exp_end_inc),
-                    );
-                    let mut result_max = max(
-                        base.inner.ty.start_inc.clone().pow(&exp_end_inc),
-                        base.inner.ty.end_inc.clone().pow(&exp_end_inc),
-                    );
-
-                    // If base is negative, even/odd powers can cause extremes.
-                    // To guard this, try the next highest exponent too if it exists.
-                    if exp_end_inc > BigUint::ZERO {
-                        let end_exp_sub_one = BigUint::try_from(exp_end_inc.sub(&BigUint::ONE)).unwrap();
-                        result_min = min(result_min, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
-                        result_max = max(result_max, base.inner.ty.start_inc.clone().pow(&end_exp_sub_one));
-                    }
-
-                    let range = ClosedIncRange {
-                        start_inc: result_min,
-                        end_inc: result_max,
+                    let exp_range = ClosedIncRange {
+                        start_inc: &exp_start_inc,
+                        end_inc: &exp_end_inc,
                     };
+
+                    let range = range_binary_pow(base.inner.ty.as_ref(), exp_range).expect("already checked for 0**0");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Pow, large, range, base, exp);
                     Value::Hardware(result)
                 }

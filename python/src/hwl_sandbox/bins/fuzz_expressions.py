@@ -74,7 +74,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
         ty_a1 = f"int({rb.start}..={rb.end_inc})"
 
         ty_inputs = [ty_a0, ty_a1]
-        operator = rng.choice(["+", "-", "*", "/"])#, "%"]) #, "**"])
+        operator = rng.choice(["+", "-", "*", "/", "%"])  # , "**"])
         expression = f"a0 {operator} a1"
 
         # check expression validness and extract the return type
