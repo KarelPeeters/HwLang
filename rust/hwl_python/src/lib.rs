@@ -680,9 +680,8 @@ impl Module {
                     .arg("-fPIC")
                     // TODO improve backend so these are no longer needed?
                     .arg("-Wno-widthexpand")
-                    .arg("-Wno-cmpconst")
                     .arg("-Wno-widthtrunc")
-                    .arg("-Wno-unsigned")
+                    .arg("-Wno-alwnever")
                     .arg("+1364-2001ext+v")
                     .arg("--trace")
                     .arg("--top-module")
