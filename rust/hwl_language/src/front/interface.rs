@@ -1,3 +1,4 @@
+use crate::front::block::ExitStack;
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{FlowCompile, FlowRoot};
@@ -101,9 +102,10 @@ impl CompileRefs<'_, '_> {
         ctx.compile_elaborate_extra_list(
             &mut scope_ports,
             &mut flow,
+            &ExitStack::new_empty(),
             port_types,
-            &mut |ctx, scope_params, flow, &(port_id, ty)| {
-                let ty_eval = ctx.eval_expression_as_ty(scope_params, flow, ty).and_then(|ty| {
+            &mut |ctx, scope_params, flow, stack, &(port_id, ty)| {
+                let ty_eval = ctx.eval_expression_as_ty(scope_params, flow, stack, ty).and_then(|ty| {
                     match ty.inner.as_hardware_type(self) {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                         Err(_) => Err(diags.report_simple(
@@ -151,8 +153,9 @@ impl CompileRefs<'_, '_> {
             ctx.compile_elaborate_extra_list(
                 &mut scope_ports,
                 &mut flow,
+                &ExitStack::new_empty(),
                 port_dirs,
-                &mut (|_, _, _, (port_id, dir)| {
+                &mut (|_, _, _, _, (port_id, dir)| {
                     if let Some(port_index) = port_map.get_index_of(port_id.str(source)) {
                         let slot = &mut port_dir_vec[port_index];
                         if let Some(prev) = &*slot {

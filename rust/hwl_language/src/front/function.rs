@@ -1,4 +1,4 @@
-use crate::front::block::{BlockEnd, BlockEndReturn};
+use crate::front::block::{BlockEnd, BlockEndReturn, ExitStack};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -641,45 +641,57 @@ impl CompileItemContext<'_, '_> {
             NamedRule::PositionalAndNamed,
         )?;
 
-        self.compile_elaborate_extra_list(&mut scope, flow, &params.items, &mut |ctx, scope, flow, param| {
-            let &Parameter {
-                span: _,
-                id,
-                ty,
-                default,
-            } = param;
+        self.compile_elaborate_extra_list(
+            &mut scope,
+            flow,
+            &ExitStack::new_empty(),
+            &params.items,
+            &mut |ctx, scope, flow, stack, param| {
+                let &Parameter {
+                    span: _,
+                    id,
+                    ty,
+                    default,
+                } = param;
 
-            let ty = ctx.eval_expression_as_ty(scope, flow, ty)?;
-            let default = default
-                .as_ref()
-                .map(|&default| {
-                    let value =
-                        ctx.eval_expression_as_compile(scope, flow, &ty.inner, default, "parameter default value")?;
-                    Ok(value.map_inner(Value::Compile))
-                })
-                .transpose()?;
+                let ty = ctx.eval_expression_as_ty(scope, flow, stack, ty)?;
+                let default = default
+                    .as_ref()
+                    .map(|&default| {
+                        let value = ctx.eval_expression_as_compile(
+                            scope,
+                            flow,
+                            stack,
+                            &ty.inner,
+                            default,
+                            "parameter default value",
+                        )?;
+                        Ok(value.map_inner(Value::Compile))
+                    })
+                    .transpose()?;
 
-            let value = matcher.resolve_param(id, ty.as_ref(), default);
+                let value = matcher.resolve_param(id, ty.as_ref(), default);
 
-            // record value into vec
-            if let Ok(value) = &value {
-                param_values.push((param.id, value.inner.clone()));
-            }
+                // record value into vec
+                if let Ok(value) = &value {
+                    param_values.push((param.id, value.inner.clone()));
+                }
 
-            // declare param in scope
-            let param_var = flow.var_new_immutable_init(
-                MaybeIdentifier::Identifier(param.id),
-                param.id.span,
-                value.map(|v| v.inner),
-            );
-            let entry = DeclaredValueSingle::Value {
-                span: param.id.span,
-                value: ScopedEntry::Named(NamedValue::Variable(param_var)),
-            };
-            scope.declare_already_checked(param.id.str(source).to_owned(), entry);
+                // declare param in scope
+                let param_var = flow.var_new_immutable_init(
+                    MaybeIdentifier::Identifier(param.id),
+                    param.id.span,
+                    value.map(|v| v.inner),
+                );
+                let entry = DeclaredValueSingle::Value {
+                    span: param.id.span,
+                    value: ScopedEntry::Named(NamedValue::Variable(param_var)),
+                };
+                scope.declare_already_checked(param.id.str(source).to_owned(), entry);
 
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
         matcher.finish()?;
 
         // run the body
@@ -688,14 +700,17 @@ impl CompileItemContext<'_, '_> {
             match &body.inner {
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                     // evaluate return type
+                    let stack_empty = ExitStack::new_empty();
                     let ret_ty = ret_ty
-                        .map(|ret_ty| s.eval_expression_as_ty(&scope, flow, ret_ty))
+                        .map(|ret_ty| s.eval_expression_as_ty(&scope, flow, &stack_empty, ret_ty))
                         .transpose()?;
 
                     // evaluate block
                     let ty_unit = Type::unit();
                     let expected_ret_ty = ret_ty.as_ref().map_or(&ty_unit, |ty| &ty.inner);
-                    let end = s.elaborate_block(&scope, flow, Some(expected_ret_ty), body)?;
+
+                    let mut stack = ExitStack::new_in_function(expected_ret_ty);
+                    let end = s.elaborate_block(&scope, flow, &mut stack, body)?;
 
                     // check return type and extract value
                     check_function_return_value(diags, body.span, &ret_ty, end)

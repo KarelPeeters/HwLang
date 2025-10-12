@@ -1,3 +1,4 @@
+use crate::front::block::ExitStack;
 use crate::front::check::{TypeContainsReason, check_type_contains_compile_value, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
@@ -49,7 +50,13 @@ enum BlockKind {
 
 impl CompileItemContext<'_, '_> {
     // TODO this probably needs yet another refactor, there's a lot of semi-duplicate code here
-    pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult {
+    pub fn elaborate_assignment(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        stack: &ExitStack,
+        stmt: &Assignment,
+    ) -> DiagResult {
         let diags = self.refs.diags;
         let &Assignment {
             span: _,
@@ -59,7 +66,7 @@ impl CompileItemContext<'_, '_> {
         } = stmt;
 
         // evaluate target
-        let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
+        let target = self.eval_expression_as_assign_target(scope, flow, stack, target_expr)?;
         let AssignmentTarget {
             base: target_base,
             array_steps: target_steps,
@@ -90,7 +97,7 @@ impl CompileItemContext<'_, '_> {
         } else {
             &target_expected_ty
         };
-        let right_eval = self.eval_expression_with_implications(scope, flow, right_expected_ty, right_expr)?;
+        let right_eval = self.eval_expression_with_implications(scope, flow, stack, right_expected_ty, right_expr)?;
 
         // figure out if we need a compile or hardware assignment
         let target_base_signal = match target_base.inner {

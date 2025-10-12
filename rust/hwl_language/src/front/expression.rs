@@ -32,6 +32,7 @@ use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
+use crate::front::block::ExitStack;
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
 use crate::front::range::{
@@ -67,6 +68,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         id: GeneralIdentifier,
     ) -> DiagResult<Spanned<ArcOrRef<'a, str>>> {
         let diags = self.refs.diags;
@@ -75,7 +77,7 @@ impl<'a> CompileItemContext<'a, '_> {
         match id {
             GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(ArcOrRef::Ref)),
             GeneralIdentifier::FromString(span, expr) => {
-                let value = self.eval_expression_as_compile(scope, flow, &Type::String, expr, "id string")?;
+                let value = self.eval_expression_as_compile(scope, flow, stack, &Type::String, expr, "id string")?;
                 let value = check_type_is_string(diags, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(span, ArcOrRef::Arc(value)))
@@ -87,12 +89,13 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         id: MaybeIdentifier<GeneralIdentifier>,
     ) -> DiagResult<MaybeIdentifier<Spanned<ArcOrRef<'a, str>>>> {
         match id {
             MaybeIdentifier::Dummy { span } => Ok(MaybeIdentifier::Dummy { span }),
             MaybeIdentifier::Identifier(id) => {
-                let id = self.eval_general_id(scope, flow, id)?;
+                let id = self.eval_general_id(scope, flow, stack, id)?;
                 Ok(MaybeIdentifier::Identifier(id))
             }
         }
@@ -124,11 +127,12 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<Value>> {
         Ok(self
-            .eval_expression_with_implications(scope, flow, expected_ty, expr)?
+            .eval_expression_with_implications(scope, flow, stack, expected_ty, expr)?
             .map_inner(ValueWithImplications::into_value))
     }
 
@@ -136,10 +140,11 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
-        let value = self.eval_expression_inner(scope, flow, expected_ty, expr)?;
+        let value = self.eval_expression_inner(scope, flow, stack, expected_ty, expr)?;
         match value {
             ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
             ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_simple(
@@ -160,6 +165,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<ValueInner> {
@@ -181,7 +187,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::TypeFunction => Value::Compile(CompileValue::Type(Type::Function)),
             ExpressionKind::Builtin => Value::Compile(CompileValue::Builtin),
             &ExpressionKind::Wrapped(inner) => {
-                return self.eval_expression_inner(scope, flow, expected_ty, inner);
+                return self.eval_expression_inner(scope, flow, stack, expected_ty, inner);
             }
             ExpressionKind::Block(block_expr) => {
                 let &BlockExpression {
@@ -191,14 +197,14 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
-                // TODO propagate return type?
-                let end = self.elaborate_block_statements(&mut scope_inner, flow, None, statements)?;
+                let end = self.elaborate_block_statements(&mut scope_inner, flow, stack, statements)?;
                 end.unwrap_outside_function_and_loop(diags)?;
 
-                self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
+                self.eval_expression(&scope_inner, flow, stack, expected_ty, expression)?
+                    .inner
             }
             &ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, flow, id)?;
+                let id = self.eval_general_id(scope, flow, stack, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
@@ -276,7 +282,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             s.push_str(escaped.as_ref());
                         }
                         StringPiece::Substitute(value) => {
-                            let value = self.eval_expression(scope, flow, &Type::Any, value)?;
+                            let value = self.eval_expression(scope, flow, stack, &Type::Any, value)?;
 
                             let value_inner = match value.inner {
                                 Value::Compile(v) => v,
@@ -318,13 +324,19 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Compile(CompileValue::String(Arc::new(s)))
             }
             ExpressionKind::ArrayLiteral(values) => {
-                self.eval_array_literal(scope, flow, expected_ty, expr.span, values)?
+                self.eval_array_literal(scope, flow, stack, expected_ty, expr.span, values)?
             }
-            ExpressionKind::TupleLiteral(values) => self.eval_tuple_literal(scope, flow, expected_ty, values)?,
+            ExpressionKind::TupleLiteral(values) => self.eval_tuple_literal(scope, flow, stack, expected_ty, values)?,
             ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: Expression, bound_name: &'static str, op_span: Span| {
-                    let bound =
-                        self.eval_expression_as_compile(scope, flow, &Type::Int(IncRange::OPEN), bound, bound_name)?;
+                    let bound = self.eval_expression_as_compile(
+                        scope,
+                        flow,
+                        stack,
+                        &Type::Int(IncRange::OPEN),
+                        bound,
+                        bound_name,
+                    )?;
                     let reason = TypeContainsReason::Operator(op_span);
                     check_type_is_int_compile(diags, reason, bound)
                 };
@@ -384,7 +396,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     _ => &Type::Any,
                 };
 
-                let iter_eval = self.eval_expression_as_for_iterator(scope, flow, iter)?;
+                let iter_eval = self.eval_expression_as_for_iterator(scope, flow, stack, iter)?;
 
                 // this is only a lower bound,
                 //   there might be spread elements in the literal which expand to multiple values
@@ -415,7 +427,9 @@ impl<'a> CompileItemContext<'a, '_> {
                     );
 
                     let value = body
-                        .map_inner(|body_expr| self.eval_expression(&scope_body, flow, expected_ty_inner, body_expr))
+                        .map_inner(|body_expr| {
+                            self.eval_expression(&scope_body, flow, stack, expected_ty_inner, body_expr)
+                        })
                         .transpose()?;
                     values.push(value);
                 }
@@ -425,7 +439,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             &ExpressionKind::UnaryOp(op, operand) => match op.inner {
                 UnaryOp::Plus => {
-                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
+                    let operand = self.eval_expression_with_implications(scope, flow, stack, &Type::Any, operand)?;
                     let _ = check_type_is_int(
                         diags,
                         TypeContainsReason::Operator(op.span),
@@ -434,7 +448,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     return Ok(ValueInner::Value(operand.inner));
                 }
                 UnaryOp::Neg => {
-                    let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
+                    let operand = self.eval_expression(scope, flow, stack, &Type::Any, operand)?;
                     let operand_int = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
 
                     match operand_int.inner {
@@ -458,7 +472,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 }
                 UnaryOp::Not => {
-                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
+                    let operand = self.eval_expression_with_implications(scope, flow, stack, &Type::Any, operand)?;
 
                     check_type_contains_value(
                         diags,
@@ -492,13 +506,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             },
             &ExpressionKind::BinaryOp(op, left, right) => {
-                let left = self.eval_expression_with_implications(scope, flow, &Type::Any, left);
-                let right = self.eval_expression_with_implications(scope, flow, &Type::Any, right);
+                let left = self.eval_expression_with_implications(scope, flow, stack, &Type::Any, left);
+                let right = self.eval_expression_with_implications(scope, flow, stack, &Type::Any, right);
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
             }
             &ExpressionKind::ArrayIndex(base, ref indices) => {
-                self.eval_array_index_expression(scope, flow, base, indices)?
+                self.eval_array_index_expression(scope, flow, stack, base, indices)?
             }
             &ExpressionKind::ArrayType(ref lens, base) => {
                 let lens = lens
@@ -515,13 +529,19 @@ impl<'a> CompileItemContext<'a, '_> {
                             start_inc: Some(BigInt::ZERO),
                             end_inc: None,
                         });
-                        let len =
-                            self.eval_expression_as_compile(scope, flow, &len_expected_ty, len, "array type length")?;
+                        let len = self.eval_expression_as_compile(
+                            scope,
+                            flow,
+                            stack,
+                            &len_expected_ty,
+                            len,
+                            "array type length",
+                        )?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, reason, len)
                     })
                     .try_collect_all_vec();
-                let base = self.eval_expression_as_ty(scope, flow, base);
+                let base = self.eval_expression_as_ty(scope, flow, stack, base);
 
                 let lengths = lens?;
                 let base = base?;
@@ -535,10 +555,10 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
-                    return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
+                    return self.eval_dot_id_index(scope, flow, stack, expected_ty, expr.span, base, index);
                 }
                 DotIndexKind::Int { span: index_span } => {
-                    let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
+                    let base_eval = self.eval_expression_inner(scope, flow, stack, &Type::Any, base)?;
                     let index = source.span_str(index_span);
 
                     let index_int = BigUint::from_str_radix(index, 10)
@@ -601,11 +621,11 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
-                let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
+                let target = self.eval_expression_as_compile(scope, flow, stack, &Type::Any, target, "call target")?;
 
                 // handle typeof operator, special-cased because it does not actually evaluate its args
                 if target.inner == CompileValue::Type(Type::Type) {
-                    let ty = self.eval_type_of(scope, flow, expr.span, args)?;
+                    let ty = self.eval_type_of(scope, flow, stack, expr.span, args)?;
                     let value = Value::Compile(CompileValue::Type(ty));
                     return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
                 }
@@ -616,7 +636,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .iter()
                     .map(|arg| {
                         // TODO pass an actual expected type in cases where we know it (eg. struct/enum construction)
-                        let arg_value = self.eval_expression(scope, flow, &Type::Any, arg.value)?;
+                        let arg_value = self.eval_expression(scope, flow, stack, &Type::Any, arg.value)?;
 
                         Ok(Arg {
                             span: arg.span,
@@ -667,11 +687,11 @@ impl<'a> CompileItemContext<'a, '_> {
                     // evaluate the value with disabled domain checks
                     // (the whole point of this operation is to bypass domain checking)
                     let mut flow_hw_inner = flow_hw.new_child_scoped_without_domain_checks();
-                    self.eval_expression(scope, &mut flow_hw_inner, expected_ty, value)
+                    self.eval_expression(scope, &mut flow_hw_inner, stack, expected_ty, value)
                 };
 
                 let mut flow_domain = flow.new_child_compile(domain.span, "domain");
-                let domain = self.eval_domain(scope, &mut flow_domain, domain);
+                let domain = self.eval_domain(scope, &mut flow_domain, stack, domain);
 
                 let value = value?;
                 let domain = domain?;
@@ -697,8 +717,8 @@ impl<'a> CompileItemContext<'a, '_> {
                 } = reg_delay;
 
                 // eval
-                let value = self.eval_expression(scope, flow, expected_ty, value);
-                let init = self.eval_expression_as_compile(scope, flow, expected_ty, init, "register init");
+                let value = self.eval_expression(scope, flow, stack, expected_ty, value);
+                let init = self.eval_expression_as_compile(scope, flow, stack, expected_ty, init, "register init");
                 let (value, init) = result_pair(value, init)?;
 
                 // figure out type
@@ -809,6 +829,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr_span: Span,
         base: Expression,
@@ -818,7 +839,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let refs = self.refs;
         let diags = self.refs.diags;
 
-        let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
+        let base_eval = self.eval_expression_inner(scope, flow, stack, &Type::Any, base)?;
         let index_str = index.str(self.refs.fixed.source);
 
         // interface fields
@@ -1066,6 +1087,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr_span: Span,
         values: &[ArrayLiteralElement<Expression>],
@@ -1088,7 +1110,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 };
 
-                v.map_inner(|value_inner| self.eval_expression(scope, flow, expected_ty_curr, value_inner))
+                v.map_inner(|value_inner| self.eval_expression(scope, flow, stack, expected_ty_curr, value_inner))
                     .transpose()
             })
             .try_collect_all_vec()?;
@@ -1101,6 +1123,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         values: &Vec<Expression>,
     ) -> DiagResult<Value> {
@@ -1117,7 +1140,7 @@ impl<'a> CompileItemContext<'a, '_> {
             .enumerate()
             .map(|(i, &v)| {
                 let expected_ty_i = expected_tys_inner.map_or(&Type::Any, |tys| &tys[i]);
-                self.eval_expression(scope, flow, expected_ty_i, v)
+                self.eval_expression(scope, flow, stack, expected_ty_i, v)
             })
             .try_collect_all_vec()?;
 
@@ -1188,14 +1211,15 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         base: Expression,
         indices: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
-        let base = self.eval_expression(scope, flow, &Type::Any, base);
+        let base = self.eval_expression(scope, flow, stack, &Type::Any, base);
         let steps = indices
             .inner
             .iter()
-            .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
+            .map(|&index| self.eval_expression_as_array_step(scope, flow, stack, index))
             .try_collect_all_vec();
 
         let base = base?;
@@ -1208,6 +1232,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         index: Expression,
     ) -> DiagResult<Spanned<ArrayStep>> {
         let diags = self.refs.diags;
@@ -1218,7 +1243,7 @@ impl<'a> CompileItemContext<'a, '_> {
         {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
-                .eval_expression(scope, flow, &Type::Any, start)
+                .eval_expression(scope, flow, stack, &Type::Any, start)
                 .and_then(|start| check_type_is_int(diags, reason, start));
 
             let len_expected_ty = Type::Int(IncRange {
@@ -1226,7 +1251,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 end_inc: None,
             });
             let len = self
-                .eval_expression_as_compile(scope, flow, &len_expected_ty, len, "range length")
+                .eval_expression_as_compile(scope, flow, stack, &len_expected_ty, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, reason, len));
 
             let start = start?;
@@ -1237,7 +1262,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Hardware(start) => ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, len }),
             }
         } else {
-            let index_eval = self.eval_expression(scope, flow, &Type::Any, index)?;
+            let index_eval = self.eval_expression(scope, flow, stack, &Type::Any, index)?;
 
             match index_eval.transpose() {
                 Value::Compile(index_or_slice) => match index_or_slice.inner {
@@ -1407,7 +1432,14 @@ impl<'a> CompileItemContext<'a, '_> {
         Err(diags.report(diag))
     }
 
-    fn eval_type_of(&mut self, scope: &Scope, flow: &mut impl Flow, expr_span: Span, args: &Args) -> DiagResult<Type> {
+    fn eval_type_of(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        stack: &ExitStack,
+        expr_span: Span,
+        args: &Args,
+    ) -> DiagResult<Type> {
         let diags = self.refs.diags;
 
         // check single unnamed arg
@@ -1445,7 +1477,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 "tried to pass non-identifier here",
             ));
         };
-        let id = self.eval_general_id(scope, flow, id)?;
+        let id = self.eval_general_id(scope, flow, stack, id)?;
         let value = self
             .eval_named_or_value(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
             .inner;
@@ -1476,6 +1508,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expected_ty: &Type,
         expr: Expression,
         reason: &'static str,
@@ -1485,7 +1518,9 @@ impl<'a> CompileItemContext<'a, '_> {
         // TODO should we allow compile-time writes to the outside?
         //   right now we intentionally don't because that might be confusing in eg. function params or types
         let mut flow_inner = flow.new_child_compile(expr.span, reason);
-        let value_eval = self.eval_expression(scope, &mut flow_inner, expected_ty, expr)?.inner;
+        let value_eval = self
+            .eval_expression(scope, &mut flow_inner, stack, expected_ty, expr)?
+            .inner;
 
         match value_eval {
             Value::Compile(c) => Ok(Spanned {
@@ -1505,13 +1540,14 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expr: Expression,
     ) -> DiagResult<Spanned<Type>> {
         let diags = self.refs.diags;
 
         // TODO unify this message with the one when a normal type-check fails
         match self
-            .eval_expression_as_compile(scope, flow, &Type::Type, expr, "type")?
+            .eval_expression_as_compile(scope, flow, stack, &Type::Type, expr, "type")?
             .inner
         {
             CompileValue::Type(ty) => Ok(Spanned {
@@ -1530,12 +1566,13 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expr: Expression,
         reason: &str,
     ) -> DiagResult<Spanned<HardwareType>> {
         let diags = self.refs.diags;
 
-        let ty = self.eval_expression_as_ty(scope, flow, expr)?.inner;
+        let ty = self.eval_expression_as_ty(scope, flow, stack, expr)?.inner;
         let ty_hw = ty.as_hardware_type(self.refs).map_err(|_| {
             diags.report_simple(
                 format!("{reason} type must be representable in hardware"),
@@ -1554,6 +1591,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expr: Expression,
     ) -> DiagResult<Spanned<AssignmentTarget>> {
         let diags = self.refs.diags;
@@ -1564,7 +1602,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let result = match *self.refs.get_expr(expr) {
             ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, flow, id)?;
+                let id = self.eval_general_id(scope, flow, stack, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 match self.eval_named_or_value(scope, id)?.inner {
@@ -1596,11 +1634,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             }
             ExpressionKind::ArrayIndex(inner_target, ref indices) => {
-                let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
+                let inner_target = self.eval_expression_as_assign_target(scope, flow, stack, inner_target);
                 let array_steps = indices
                     .inner
                     .iter()
-                    .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
+                    .map(|&index| self.eval_expression_as_array_step(scope, flow, stack, index))
                     .try_collect_all_vec();
 
                 let inner_target = inner_target?;
@@ -1624,7 +1662,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     DotIndexKind::Id(index) => {
                         match self.refs.get_expr(base) {
                             &ExpressionKind::Id(base) => {
-                                let base = self.eval_general_id(scope, flow, base)?;
+                                let base = self.eval_general_id(scope, flow, stack, base)?;
                                 let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
                                 match self.eval_named_or_value(scope, base)?.inner {
@@ -1705,12 +1743,13 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expr: Expression,
     ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
             |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{actual}`"));
-        self.try_eval_expression_as_domain_signal(scope, flow, expr, build_err)
+        self.try_eval_expression_as_domain_signal(scope, flow, stack, expr, build_err)
             .map_err(|e| e.into_inner())
     }
 
@@ -1718,6 +1757,7 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         expr: Expression,
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, DiagError>> {
@@ -1731,12 +1771,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 inner,
             ) => {
                 let inner = self
-                    .try_eval_expression_as_domain_signal(scope, flow, inner, build_err)?
+                    .try_eval_expression_as_domain_signal(scope, flow, stack, inner, build_err)?
                     .inner;
                 Ok(inner.invert())
             }
             ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, flow, id).map_err(Either::Right)?;
+                let id = self.eval_general_id(scope, flow, stack, id).map_err(Either::Right)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
@@ -1767,11 +1807,12 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         domain: SyncDomain<Expression>,
     ) -> DiagResult<SyncDomain<DomainSignal>> {
         let SyncDomain { clock, reset } = domain;
-        let clock = self.eval_expression_as_domain_signal(scope, flow, clock);
-        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, flow, reset));
+        let clock = self.eval_expression_as_domain_signal(scope, flow, stack, clock);
+        let reset = reset.map(|reset| self.eval_expression_as_domain_signal(scope, flow, stack, reset));
         Ok(SyncDomain {
             clock: clock?.inner,
             reset: reset.transpose()?.map(|r| r.inner),
@@ -1782,12 +1823,13 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         domain: Spanned<DomainKind<Expression>>,
     ) -> DiagResult<Spanned<DomainKind<DomainSignal>>> {
         let result = match domain.inner {
             DomainKind::Const => Ok(DomainKind::Const),
             DomainKind::Async => Ok(DomainKind::Async),
-            DomainKind::Sync(domain) => self.eval_domain_sync(scope, flow, domain).map(DomainKind::Sync),
+            DomainKind::Sync(domain) => self.eval_domain_sync(scope, flow, stack, domain).map(DomainKind::Sync),
         };
 
         Ok(Spanned {
@@ -1800,10 +1842,11 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         domain: Spanned<DomainKind<Expression>>,
     ) -> DiagResult<Spanned<DomainKind<Polarized<Port>>>> {
         let diags = self.refs.diags;
-        let result = self.eval_domain(scope, flow, domain)?;
+        let result = self.eval_domain(scope, flow, stack, domain)?;
 
         Ok(Spanned {
             span: result.span,
@@ -1827,11 +1870,12 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         iter: Expression,
     ) -> DiagResult<ForIterator> {
         let diags = self.refs.diags;
 
-        let iter = self.eval_expression(scope, flow, &Type::Any, iter)?;
+        let iter = self.eval_expression(scope, flow, stack, &Type::Any, iter)?;
         let iter_span = iter.span;
 
         let result = match iter.inner {
@@ -1891,12 +1935,13 @@ impl<'a> CompileItemContext<'a, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         span_keyword: Span,
         expr: Expression,
     ) -> DiagResult<ElaboratedModule> {
         let diags = self.refs.diags;
 
-        let eval = self.eval_expression_as_compile(scope, flow, &Type::Module, expr, "module")?;
+        let eval = self.eval_expression_as_compile(scope, flow, stack, &Type::Module, expr, "module")?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
         check_type_contains_compile_value(diags, reason, &Type::Module, eval.as_ref(), false)?;

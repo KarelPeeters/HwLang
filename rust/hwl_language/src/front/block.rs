@@ -26,9 +26,48 @@ use crate::util::iter::IterExt;
 use crate::util::{ResultExt, result_pair};
 use annotate_snippets::Level;
 use itertools::{Itertools, zip_eq};
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
+
+// TODO doc
+pub struct ExitStack<'a> {
+    return_type: Option<&'a Type>,
+    loop_stack: RefCell<Vec<LoopEntry>>,
+}
+
+struct LoopEntry {
+    // TODO
+}
+
+impl<'a> ExitStack<'a> {
+    pub fn new_empty() -> Self {
+        Self {
+            return_type: None,
+            loop_stack: RefCell::new(vec![]),
+        }
+    }
+
+    pub fn new_in_function(return_ty: &'a Type) -> Self {
+        Self {
+            return_type: Some(return_ty),
+            loop_stack: RefCell::new(vec![]),
+        }
+    }
+
+    fn with_loop_entry<R>(&self, f: impl FnOnce(&Self) -> R) -> (LoopEntry, R) {
+        let entry = LoopEntry {};
+        self.loop_stack.borrow_mut().push(entry);
+        let r = f(self);
+        let entry = self.loop_stack.borrow_mut().pop().unwrap();
+        (entry, r)
+    }
+
+    fn innermost_loop(&self) -> Option<RefMut<'_, LoopEntry>> {
+        RefMut::filter_map(self.loop_stack.borrow_mut(), |stack| stack.last_mut()).ok()
+    }
+}
 
 #[derive(Debug)]
 #[must_use]
@@ -145,7 +184,8 @@ impl CompileItemContext<'_, '_> {
         let span = span_keyword.join(block.span);
         let mut flow_inner = flow.new_child_compile(span, "const block");
 
-        let block_end = self.elaborate_block(scope, &mut flow_inner, None, block)?;
+        let mut stack = ExitStack::new_empty();
+        let block_end = self.elaborate_block(scope, &mut flow_inner, &mut stack, block)?;
         block_end.unwrap_outside_function_and_loop(diags)?;
 
         Ok(())
@@ -155,7 +195,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope_parent: &Scope,
         flow_parent: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         block: &Block<BlockStatement>,
     ) -> DiagResult<BlockEnd> {
         let &Block { span, ref statements } = block;
@@ -166,11 +206,11 @@ impl CompileItemContext<'_, '_> {
         match flow_parent.kind_mut() {
             FlowKind::Compile(flow_parent) => {
                 let mut flow = flow_parent.new_child_scoped();
-                self.elaborate_block_statements(&mut scope, &mut flow, expected_return_ty, statements)
+                self.elaborate_block_statements(&mut scope, &mut flow, stack, statements)
             }
             FlowKind::Hardware(flow_parent) => {
                 let mut flow = flow_parent.new_child_scoped();
-                self.elaborate_block_statements(&mut scope, &mut flow, expected_return_ty, statements)
+                self.elaborate_block_statements(&mut scope, &mut flow, stack, statements)
             }
         }
     }
@@ -179,7 +219,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &mut Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         statements: &[BlockStatement],
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
@@ -201,12 +241,14 @@ impl CompileItemContext<'_, '_> {
                     } = decl;
 
                     // eval ty
-                    let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose();
+                    let ty = ty
+                        .map(|ty| self.eval_expression_as_ty(scope, flow, stack, ty))
+                        .transpose();
 
                     // eval init
                     let init = ty.as_ref_ok().and_then(|ty| {
                         let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                        init.map(|init| self.eval_expression(scope, flow, init_expected_ty, init))
+                        init.map(|init| self.eval_expression(scope, flow, stack, init_expected_ty, init))
                             .transpose()
                     });
 
@@ -246,16 +288,14 @@ impl CompileItemContext<'_, '_> {
                     BlockEnd::Normal
                 }
                 BlockStatementKind::Assignment(stmt) => {
-                    self.elaborate_assignment(scope, flow, stmt)?;
+                    self.elaborate_assignment(scope, flow, stack, stmt)?;
                     BlockEnd::Normal
                 }
                 &BlockStatementKind::Expression(expr) => {
-                    let _: Spanned<Value> = self.eval_expression(scope, flow, &Type::Any, expr)?;
+                    let _: Spanned<Value> = self.eval_expression(scope, flow, stack, &Type::Any, expr)?;
                     BlockEnd::Normal
                 }
-                BlockStatementKind::Block(inner_block) => {
-                    self.elaborate_block(scope, flow, expected_return_ty, inner_block)?
-                }
+                BlockStatementKind::Block(inner_block) => self.elaborate_block(scope, flow, stack, inner_block)?,
                 BlockStatementKind::If(stmt) => {
                     let IfStatement {
                         span: _,
@@ -264,26 +304,20 @@ impl CompileItemContext<'_, '_> {
                         final_else,
                     } = stmt;
 
-                    self.elaborate_if_statement(
-                        scope,
-                        flow,
-                        expected_return_ty,
-                        Some((initial_if, else_ifs)),
-                        final_else,
-                    )?
+                    self.elaborate_if_statement(scope, flow, stack, Some((initial_if, else_ifs)), final_else)?
                 }
                 BlockStatementKind::Match(stmt) => {
                     let stmt = Spanned::new(stmt_span, stmt);
-                    self.elaborate_match_statement(scope, flow, expected_return_ty, stmt)?
+                    self.elaborate_match_statement(scope, flow, stack, stmt)?
                 }
                 BlockStatementKind::While(stmt) => {
                     let stmt = Spanned::new(stmt_span, stmt);
-                    self.elaborate_while_statement(scope, flow, expected_return_ty, stmt)?
+                    self.elaborate_while_statement(scope, flow, stack, stmt)?
                         .map_stopping(BlockEndStopping::FunctionReturn)
                 }
                 BlockStatementKind::For(stmt) => {
                     let stmt = Spanned::new(stmt_span, stmt);
-                    self.elaborate_for_statement(scope, flow, expected_return_ty, stmt)?
+                    self.elaborate_for_statement(scope, flow, stack, stmt)?
                         .map_stopping(BlockEndStopping::FunctionReturn)
                 }
                 BlockStatementKind::Return(stmt) => {
@@ -292,7 +326,7 @@ impl CompileItemContext<'_, '_> {
                         ref value,
                     } = stmt;
 
-                    let expected_return_ty = expected_return_ty.ok_or_else(|| {
+                    let expected_return_ty = stack.return_type.ok_or_else(|| {
                         diags.report_simple(
                             "return is not allowed outside a function body",
                             span_keyword,
@@ -300,13 +334,43 @@ impl CompileItemContext<'_, '_> {
                         )
                     })?;
                     let value = value
-                        .map(|value| self.eval_expression(scope, flow, expected_return_ty, value))
+                        .map(|value| self.eval_expression(scope, flow, stack, expected_return_ty, value))
                         .transpose()?;
 
                     BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn { span_keyword, value }))
                 }
-                &BlockStatementKind::Break { span } => BlockEnd::Stopping(BlockEndStopping::LoopBreak(span)),
-                &BlockStatementKind::Continue { span } => BlockEnd::Stopping(BlockEndStopping::LoopContinue(span)),
+                &BlockStatementKind::Break { span } => {
+                    match stack.innermost_loop() {
+                        None => {
+                            // TODO allow "break"/"return" for processes?
+                            return Err(diags.report_simple(
+                                "break cannot be used outside a loop",
+                                span,
+                                "break statement here",
+                            ));
+                        }
+                        Some(_) => {
+                            // TODO set flag (maybe only if runtime conditional?)
+                            BlockEnd::Stopping(BlockEndStopping::LoopBreak(span))
+                        }
+                    }
+                }
+                &BlockStatementKind::Continue { span } => {
+                    match stack.innermost_loop() {
+                        None => {
+                            // TODO allow "break"/"return" for processes?
+                            return Err(diags.report_simple(
+                                "continue cannot be used outside a loop",
+                                span,
+                                "continue statement here",
+                            ));
+                        }
+                        Some(_) => {
+                            // TODO set flag (maybe only if runtime conditional?)
+                            BlockEnd::Stopping(BlockEndStopping::LoopBreak(span))
+                        }
+                    }
+                }
             };
 
             match stmt_end {
@@ -322,7 +386,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         ifs: Option<(
             &IfCondBlockPair<Block<BlockStatement>>,
             &[IfCondBlockPair<Block<BlockStatement>>],
@@ -337,7 +401,7 @@ impl CompileItemContext<'_, '_> {
                 return match final_else {
                     None => Ok(BlockEnd::Normal),
                     Some(final_else) => {
-                        return self.elaborate_block(scope, flow, expected_return_ty, final_else);
+                        return self.elaborate_block(scope, flow, stack, final_else);
                     }
                 };
             }
@@ -350,7 +414,7 @@ impl CompileItemContext<'_, '_> {
             ref block,
         } = initial_if;
 
-        let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
+        let cond = self.eval_expression_with_implications(scope, flow, stack, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
         check_type_contains_value(
@@ -372,15 +436,9 @@ impl CompileItemContext<'_, '_> {
 
                 // only visit the selected branch
                 if cond_eval {
-                    self.elaborate_block(scope, flow, expected_return_ty, block)
+                    self.elaborate_block(scope, flow, stack, block)
                 } else {
-                    self.elaborate_if_statement(
-                        scope,
-                        flow,
-                        expected_return_ty,
-                        remaining_ifs.split_first(),
-                        final_else,
-                    )
+                    self.elaborate_if_statement(scope, flow, stack, remaining_ifs.split_first(), final_else)
                 }
             }
             // evaluate the if in hardware, generating IR
@@ -391,8 +449,7 @@ impl CompileItemContext<'_, '_> {
                 // lower then
                 let then_flow = {
                     let mut then_flow_branch = flow.new_child_branch(cond_domain, cond_value.implications.if_true);
-                    let end =
-                        { self.elaborate_block(scope, &mut then_flow_branch.as_flow(), expected_return_ty, block)? };
+                    let end = { self.elaborate_block(scope, &mut then_flow_branch.as_flow(), stack, block)? };
                     end.unwrap_normal_todo_in_conditional(diags, cond.span)?;
                     Ok(then_flow_branch.finish())
                 };
@@ -403,7 +460,7 @@ impl CompileItemContext<'_, '_> {
                     self.elaborate_if_statement(
                         scope,
                         &mut else_flow_branch.as_flow(),
-                        expected_return_ty,
+                        stack,
                         remaining_ifs.split_first(),
                         final_else,
                     )
@@ -438,7 +495,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
@@ -449,7 +506,7 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
 
         // eval target
-        let target = self.eval_expression(scope, flow, &Type::Any, target)?;
+        let target = self.eval_expression(scope, flow, stack, &Type::Any, target)?;
         let target_ty = target.inner.ty();
 
         // track pattern coverage
@@ -497,7 +554,7 @@ impl CompileItemContext<'_, '_> {
                     }
                     &MatchPattern::Equal(value) => {
                         // TODO support tuples, arrays, structs, enums (by value), all recursively
-                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
+                        let value = self.eval_expression_as_compile(scope, flow, stack, &target_ty, value, reason)?;
                         check_type_contains_compile_value(
                             diags,
                             TypeContainsReason::MatchPattern(target.span),
@@ -538,7 +595,7 @@ impl CompileItemContext<'_, '_> {
                             ));
                         }
 
-                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
+                        let value = self.eval_expression_as_compile(scope, flow, stack, &target_ty, value, reason)?;
                         let value = match value.inner {
                             CompileValue::IntRange(range) => range,
                             _ => {
@@ -660,7 +717,7 @@ impl CompileItemContext<'_, '_> {
             Value::Compile(target_inner) => self.elaborate_match_statement_compile(
                 scope,
                 flow,
-                expected_return_ty,
+                stack,
                 stmt.span,
                 target_inner,
                 branches,
@@ -671,7 +728,7 @@ impl CompileItemContext<'_, '_> {
                 self.elaborate_match_statement_hardware(
                     scope,
                     flow,
-                    expected_return_ty,
+                    stack,
                     stmt.span,
                     Spanned::new(target.span, target_inner),
                     branches,
@@ -685,7 +742,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         stmt_span: Span,
         target: CompileValue,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
@@ -754,7 +811,7 @@ impl CompileItemContext<'_, '_> {
                         scope
                     };
 
-                    return self.elaborate_block(scoped_used, flow, expected_return_ty, block);
+                    return self.elaborate_block(scoped_used, flow, stack, block);
                 }
             }
         }
@@ -767,7 +824,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope_parent: &Scope,
         flow: &mut FlowHardware,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         stmt_span: Span,
         target: Spanned<HardwareValue>,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
@@ -916,7 +973,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             // evaluate the child block
-            let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, expected_return_ty, block)?;
+            let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, stack, block)?;
             end.unwrap_normal_todo_in_conditional(diags, stmt_span)?;
 
             // build the if stack
@@ -973,7 +1030,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         stmt: Spanned<&WhileStatement>,
     ) -> DiagResult<BlockEnd<BlockEndReturn>> {
         let &WhileStatement {
@@ -987,7 +1044,8 @@ impl CompileItemContext<'_, '_> {
             self.refs.check_should_stop(span_keyword)?;
 
             // eval cond
-            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
+            let cond =
+                self.eval_expression_as_compile(scope, flow, stack, &Type::Bool, cond, "while loop condition")?;
 
             let reason = TypeContainsReason::WhileCondition(span_keyword);
             check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
@@ -1002,7 +1060,11 @@ impl CompileItemContext<'_, '_> {
             }
 
             // visit body
-            let end = self.elaborate_block(scope, flow, expected_return_ty, body)?;
+            let (entry, end) = stack.with_loop_entry(|stack| self.elaborate_block(scope, flow, stack, body));
+            let end = end?;
+
+            // TODO handle entry
+            let _ = entry;
 
             // handle end
             match end {
@@ -1025,7 +1087,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope_parent: &Scope,
         flow: &mut impl Flow,
-        expected_return_ty: Option<&Type>,
+        stack: &ExitStack,
         stmt: Spanned<&ForStatement<BlockStatement>>,
     ) -> DiagResult<BlockEnd<BlockEndReturn>> {
         let &ForStatement {
@@ -1039,9 +1101,9 @@ impl CompileItemContext<'_, '_> {
 
         // header
         let index_ty = index_ty
-            .map(|index_ty| self.eval_expression_as_ty(scope_parent, flow, index_ty))
+            .map(|index_ty| self.eval_expression_as_ty(scope_parent, flow, stack, index_ty))
             .transpose();
-        let iter = self.eval_expression_as_for_iterator(scope_parent, flow, iter);
+        let iter = self.eval_expression_as_for_iterator(scope_parent, flow, stack, iter);
 
         let index_ty = index_ty?;
         let iter = iter?;
@@ -1076,7 +1138,14 @@ impl CompileItemContext<'_, '_> {
 
             // set index and run body
             flow.var_set(index_var, span_keyword, Ok(index_value));
-            let body_end = self.elaborate_block(&scope_index, flow, expected_return_ty, body)?;
+
+            let (entry, body_end) =
+                stack.with_loop_entry(|stack| self.elaborate_block(&scope_index, flow, stack, body));
+
+            // TODO handle entry
+            let _ = entry;
+
+            let body_end = body_end?;
 
             // handle possible loop termination
             match body_end {
@@ -1096,20 +1165,21 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &mut Scope,
         flow: &mut F,
+        stack: &ExitStack,
         list: &'a ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a I) -> DiagResult,
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &ExitStack, &'a I) -> DiagResult,
     ) -> DiagResult {
         let ExtraList { span: _, items } = list;
         for item in items {
             match item {
-                ExtraItem::Inner(inner) => f(self, scope, flow, inner)?,
+                ExtraItem::Inner(inner) => f(self, scope, flow, stack, inner)?,
                 ExtraItem::Declaration(decl) => {
                     self.eval_and_declare_declaration(scope, flow, decl);
                 }
                 ExtraItem::If(if_stmt) => {
-                    let list_inner = self.compile_if_statement_choose_block(scope, flow, if_stmt)?;
+                    let list_inner = self.compile_if_statement_choose_block(scope, flow, stack, if_stmt)?;
                     if let Some(list_inner) = list_inner {
-                        self.compile_elaborate_extra_list(scope, flow, list_inner, f)?;
+                        self.compile_elaborate_extra_list(scope, flow, stack, list_inner, f)?;
                     }
                 }
             }
@@ -1122,6 +1192,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
+        stack: &ExitStack,
         if_stmt: &'a IfStatement<B>,
     ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
@@ -1140,7 +1211,8 @@ impl CompileItemContext<'_, '_> {
                 ref block,
             } = pair;
 
-            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "compile-time if condition")?;
+            let cond =
+                self.eval_expression_as_compile(scope, flow, stack, &Type::Bool, cond, "compile-time if condition")?;
 
             let reason = TypeContainsReason::IfCondition(span_if);
             let cond = check_type_is_bool_compile(diags, reason, cond)?;
