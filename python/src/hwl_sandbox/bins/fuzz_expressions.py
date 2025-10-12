@@ -25,7 +25,7 @@ class Range:
             return self.start <= item <= self.end_inc
 
 
-def sample_range_edge(rng: random.Random) -> int:
+def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
     t = rng.random()
     if t < 1 / 3:
         return rng.randint(-4, 4)
@@ -35,17 +35,27 @@ def sample_range_edge(rng: random.Random) -> int:
         bits = int(rng.expovariate(0.1))
         mag = rng.randint(0, 2 ** bits)
         sign = rng.randint(0, 1) * 2 - 1
-        return sign * mag
+
+        if max_abs is None or mag <= max_abs:
+            return sign * mag
+        else:
+            # failed, just sample uniformly
+            return rng.randint(-max_abs, max_abs)
 
 
-def sample_range(rng: random.Random, must_contain: Optional[Range] = None) -> Range:
+def sample_range(rng: random.Random, must_contain: Optional[Range] = None, max_abs: Optional[int] = None) -> Range:
     # TODO allow empty ranges?
+    tries = 0
     while True:
-        start = sample_range_edge(rng)
+        if must_contain is not None and tries > 40:
+            return must_contain
+        tries += 1
+
+        start = sample_range_edge(rng, max_abs=max_abs)
         if rng.random() < 0.1:
             end = start + 1
         else:
-            end = sample_range_edge(rng)
+            end = sample_range_edge(rng, max_abs=max_abs)
 
         if start <= end:
             r = Range(start=start, end_inc=end)
@@ -68,34 +78,37 @@ def sample_from_range(rng: random.Random, r: Range) -> int:
 
 
 def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
+    # TODO allow multiple args and returns to increase fuzzing throughput
+    # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
+    #    arrays, conditional statements, variable assignments, ...
+    # TODO add power, add shifts, add bitwise, add binary
+
     while True:
-        # decide types and operations
-        # TODO add "expansion" tests, where the output range is too large, to see if the value is properly re-encoded
-        # TODO allow multiple args and returns to increase fuzzing throughput
-        # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
-        #    arrays, conditional statements, variable assignments, ...
-        ra = sample_range(rng)
+        # decide operator
+        operators = ["+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">="]
+        operator = rng.choice(operators)
+
+        # decide types
+        max_abs = None if operator != "**" else 1024
+        ra = sample_range(rng, max_abs=max_abs)
         if rng.random() < 0.1:
             rb = ra
         else:
-            rb = sample_range(rng)
+            rb = sample_range(rng, max_abs=max_abs)
 
         ty_a0 = f"int({ra.start}..={ra.end_inc})"
         ty_a1 = f"int({rb.start}..={rb.end_inc})"
         ty_inputs = [ty_a0, ty_a1]
 
-        # TODO add power, add shifts, add bitwise, add binary
-        operators = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">="]
-
-        operator = rng.choice(operators)
-        expression = f"a0 {operator} a1"
+        # check that power ranges are not too large
+        max_range_abs = max(abs(ra.start), abs(rb.start), abs(ra.end_inc), abs(rb.end_inc))
+        if operator == "**" and max_range_abs ** max_range_abs > 2 ** 1024:
+            continue
 
         # check expression validness and extract the return type
+        expression = f"a0 {operator} a1"
         try:
             ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
-
-            # TODO check that result type is small enough to avoid power overflows
-
             # success, we've generated a valid expression
             break
         except hwl.DiagnosticException as e:
@@ -177,7 +190,7 @@ def main():
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
 
     # random seed
-    seed = 42
+    seed = 42 + 2
     print(f"Using random seed: {seed}")
 
     # create threads

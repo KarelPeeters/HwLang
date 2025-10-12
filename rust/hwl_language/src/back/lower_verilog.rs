@@ -1285,7 +1285,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 left,
                 right,
             ),
-            IrIntArithmeticOp::Pow => todo!(),
+            IrIntArithmeticOp::Pow => {
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "**", left, right)
+            }
         }
     }
 
