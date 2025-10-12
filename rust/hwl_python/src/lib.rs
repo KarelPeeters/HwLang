@@ -627,9 +627,9 @@ impl Module {
         })
     }
 
-    fn as_verilated(&self, build_dir: &str, py: Python) -> PyResult<ModuleVerilated> {
+    fn as_verilated(&self, build_dir: PathBuf, py: Python) -> PyResult<ModuleVerilated> {
         // check build_dir
-        let build_dir = Path::new(build_dir);
+        let build_dir = build_dir.as_path();
         if !build_dir.exists() {
             return Err(PyIOError::new_err(format!(
                 "build_dir `{}` does not exist",

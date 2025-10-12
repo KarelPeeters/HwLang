@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List, Optional, Any, Iterator
 
 
@@ -75,7 +76,7 @@ class Function:
 class Module:
     def as_verilog(self) -> 'ModuleVerilog': ...
 
-    def as_verilated(self, build_dir: str) -> 'ModuleVerilated': ...
+    def as_verilated(self, build_dir: Path) -> 'ModuleVerilated': ...
 
 
 class ModuleVerilog:
