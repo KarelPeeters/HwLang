@@ -111,6 +111,7 @@ impl<'p> LoweredNameScope<'p> {
         if self.is_used(id) {
             throw!(diags.report_internal_error(span, format!("lowered identifier `{id}` already used its scope")))
         }
+        self.local_used.insert(id.to_owned());
         Ok(LoweredName(id.to_owned()))
     }
 
