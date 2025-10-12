@@ -131,3 +131,8 @@ def test_div_result_pos(tmpdir: Path, op: str):
 def test_div_tricky(tmpdir: Path, op: str):
     e = expression_compile(["int(0..2107)", "int(-8..=-5)"], "int(-59332..=222)", f"a0 {op} a1", tmpdir)
     assert_div_or_mod(e, op, 2106, -6, -351, 0)
+
+
+def test_compare_signed(tmpdir: Path):
+    e = expression_compile(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmpdir)
+    e.eval_assert([-1, 1], True)

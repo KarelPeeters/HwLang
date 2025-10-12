@@ -45,9 +45,9 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
     params = ", ".join(f"a{i}=p{i}" for i in range(len(ty_inputs)))
 
     src = f"""
-    import std.types.[any, int];
+    import std.types.[any, int, bool];
     import std.util.print;
-    fn eval_func({args}) -> int {{
+    fn eval_func({args}) -> any {{
         return {expr};
     }}
     module print_type_mod ports({ports_in}) {{

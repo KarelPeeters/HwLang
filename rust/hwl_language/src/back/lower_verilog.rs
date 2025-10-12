@@ -1096,8 +1096,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             NonZeroWidthRange::new(combined_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
 
                         // lower both operands to that range
-                        let left = self.lower_expression_int_expanded(span, combined_range, left)?;
-                        let right = self.lower_expression_int_expanded(span, combined_range, right)?;
+                        let left_raw = self.lower_expression_int_expanded(span, combined_range, left)?;
+                        let right_raw = self.lower_expression_int_expanded(span, combined_range, right)?;
+
+                        let signed = combined_range.range().start_inc < &BigInt::ZERO;
+                        let left = left_raw.as_signed_maybe(signed);
+                        let right = right_raw.as_signed_maybe(signed);
 
                         // build the final expression
                         let op_str = match op {

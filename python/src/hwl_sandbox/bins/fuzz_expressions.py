@@ -82,9 +82,12 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
         ty_a0 = f"int({ra.start}..={ra.end_inc})"
         ty_a1 = f"int({rb.start}..={rb.end_inc})"
-
         ty_inputs = [ty_a0, ty_a1]
-        operator = rng.choice(["+", "-", "*", "/", "%"])  # , "**"])
+
+        # TODO add power, add shifts, add bitwise, add binary
+        operators = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">="]
+
+        operator = rng.choice(operators)
         expression = f"a0 {operator} a1"
 
         # check expression validness and extract the return type
@@ -109,11 +112,14 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
             raise e
 
     # parse return type and generate a random range that contains it
-    m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
-    assert m
-    range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
-    range_res = sample_range(rng, must_contain=range_res_min)
-    ty_res = f"int({range_res.start}..={range_res.end_inc})"
+    if ty_res_min == "bool":
+        ty_res = "bool"
+    else:
+        m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
+        assert m
+        range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
+        range_res = sample_range(rng, must_contain=range_res_min)
+        ty_res = f"int({range_res.start}..={range_res.end_inc})"
 
     # generate and compile code
     compiled = expression_compile(ty_inputs=ty_inputs, ty_res=ty_res, expr=expression, build_dir=build_dir)
