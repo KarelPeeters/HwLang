@@ -1,4 +1,5 @@
 import shutil
+import textwrap
 from pathlib import Path
 
 
@@ -83,7 +84,13 @@ def main():
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir(parents=True)
-    shutil.copytree(curr_path / "../../../../design/project/std", output_path / "std")
+
+    manifest = """
+    [source]
+    _ = "."
+    std = "../../design/project/std"
+    """
+    (output_path / "hwl.toml").write_text(textwrap.dedent(manifest).lstrip())
 
     with open(output_path / "top.kh", "w") as f:
         f.write(source)
