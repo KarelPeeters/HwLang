@@ -494,7 +494,6 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "parking_lot 0.12.3",
  "path-clean",
  "rand",
  "regex",

@@ -1,10 +1,10 @@
 use crate::util::Never;
 use dashmap::{DashMap, Entry};
-use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
 use std::{collections::VecDeque, num::NonZeroUsize};
 use unwrap_match::unwrap_match;
 
@@ -59,7 +59,7 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         }
 
         // try claiming the entry
-        let guard = self.mutex.lock();
+        let guard = self.mutex.lock().unwrap();
         match self.map.entry(item) {
             Entry::Occupied(_) => return,
             Entry::Vacant(entry) => {
@@ -92,7 +92,7 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         }
 
         // try claiming the entry
-        let mut guard = self.mutex.lock();
+        let mut guard = self.mutex.lock().unwrap();
         enum Next {
             CheckCyclesAndWait,
             DoComputation,
@@ -145,7 +145,7 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
                     (&entry_ref.done_var, entry_ref.state.get())
                 };
                 loop {
-                    cond_var.wait(&mut guard);
+                    guard = cond_var.wait(guard).unwrap();
                     match unsafe { &*state_ptr } {
                         ItemState::Progress(_) => continue,
                         ItemState::Done(result) => break Ok(result),
@@ -325,7 +325,7 @@ impl<T> SharedQueue<T> {
 
     pub fn push(&self, item: T) {
         {
-            let mut inner = self.mutex.lock();
+            let mut inner = self.mutex.lock().unwrap();
             inner.queue.push_back(item);
 
             // TODO this weird behavior was created for the python API, think about a more correct solution
@@ -340,7 +340,7 @@ impl<T> SharedQueue<T> {
 
     pub fn push_batch(&self, items: impl IntoIterator<Item = T>) {
         let delta = {
-            let mut inner = self.mutex.lock();
+            let mut inner = self.mutex.lock().unwrap();
 
             let len_before = inner.queue.len();
             inner.queue.extend(items);
@@ -359,7 +359,7 @@ impl<T> SharedQueue<T> {
     }
 
     pub fn pop(&self) -> Option<T> {
-        let mut inner = self.mutex.lock();
+        let mut inner = self.mutex.lock().unwrap();
 
         loop {
             if inner.done {
@@ -375,7 +375,7 @@ impl<T> SharedQueue<T> {
                 self.cond.notify_all();
                 return None;
             }
-            self.cond.wait(&mut inner);
+            inner = self.cond.wait(inner).unwrap();
             inner.waiting_count -= 1;
         }
     }
