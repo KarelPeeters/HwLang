@@ -1,4 +1,3 @@
-use crate::front::block::ExitStack;
 use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -369,14 +368,10 @@ impl CompileItemContext<'_, '_> {
             CommonDeclarationNamedKind::Const(decl) => {
                 let &ConstDeclaration { span: _, id, ty, value } = decl;
 
-                let stack_empty = ExitStack::new_empty();
-                let ty = ty
-                    .map(|ty| self.eval_expression_as_ty(scope, flow, &stack_empty, ty))
-                    .transpose()?;
+                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
                 let expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                let value =
-                    self.eval_expression_as_compile(scope, flow, &stack_empty, expected_ty, value, "const value")?;
+                let value = self.eval_expression_as_compile(scope, flow, expected_ty, value, "const value")?;
 
                 // check type
                 if let Some(ty) = ty {
@@ -513,10 +508,7 @@ impl CompileItemContext<'_, '_> {
 
         match *body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
-                let stack_empty = ExitStack::new_empty();
-                let result_ty = self
-                    .eval_expression_as_ty(scope_params, flow, &stack_empty, expr)?
-                    .inner;
+                let result_ty = self.eval_expression_as_ty(scope_params, flow, expr)?.inner;
                 Ok(CompileValue::Type(result_ty))
             }
             FunctionItemBody::ModuleInternal(unique, ast_ref) => {
@@ -679,30 +671,29 @@ impl CompileItemContext<'_, '_> {
 
         let mut any_field_err = Ok(());
 
-        let mut visit_field =
-            |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, stack: &ExitStack, field: &StructField| {
-                let &StructField { span: _, id, ty } = field;
+        let mut visit_field = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, field: &StructField| {
+            let &StructField { span: _, id, ty } = field;
 
-                let ty = s.eval_expression_as_ty(scope, flow, stack, ty)?;
+            let ty = s.eval_expression_as_ty(scope, flow, ty)?;
 
-                match fields_eval.entry(id.str(source).to_owned()) {
-                    Entry::Vacant(entry) => {
-                        entry.insert((id, ty));
-                    }
-                    Entry::Occupied(entry) => {
-                        let diag = Diagnostic::new("duplicate struct field name")
-                            .add_info(entry.get().0.span, "previously declared here")
-                            .add_error(id.span, "declared again here")
-                            .finish();
-                        any_field_err = Err(diags.report(diag));
-                    }
+            match fields_eval.entry(id.str(source).to_owned()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((id, ty));
                 }
+                Entry::Occupied(entry) => {
+                    let diag = Diagnostic::new("duplicate struct field name")
+                        .add_info(entry.get().0.span, "previously declared here")
+                        .add_error(id.span, "declared again here")
+                        .finish();
+                    any_field_err = Err(diags.report(diag));
+                }
+            }
 
-                Ok(())
-            };
+            Ok(())
+        };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        self.compile_elaborate_extra_list(&mut scope, flow, &ExitStack::new_empty(), fields, &mut visit_field)?;
+        self.compile_elaborate_extra_list(&mut scope, flow, fields, &mut visit_field)?;
         any_field_err?;
 
         // check if this struct can be represented in hardware
@@ -740,32 +731,31 @@ impl CompileItemContext<'_, '_> {
         let mut variants_eval = IndexMap::new();
         let mut any_variant_err = Ok(());
 
-        let mut visit_variant =
-            |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, stack: &ExitStack, variant: &EnumVariant| {
-                let &EnumVariant { span: _, id, content } = variant;
+        let mut visit_variant = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, variant: &EnumVariant| {
+            let &EnumVariant { span: _, id, content } = variant;
 
-                let content = content
-                    .map(|content| s.eval_expression_as_ty(scope, flow, stack, content))
-                    .transpose()?;
+            let content = content
+                .map(|content| s.eval_expression_as_ty(scope, flow, content))
+                .transpose()?;
 
-                match variants_eval.entry(id.str(source).to_owned()) {
-                    Entry::Vacant(entry) => {
-                        entry.insert((id, content));
-                    }
-                    Entry::Occupied(entry) => {
-                        let diag = Diagnostic::new("duplicate enum variant name")
-                            .add_info(entry.get().0.span, "previously declared here")
-                            .add_error(id.span, "declared again here")
-                            .finish();
-                        any_variant_err = Err(diags.report(diag));
-                    }
+            match variants_eval.entry(id.str(source).to_owned()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((id, content));
                 }
+                Entry::Occupied(entry) => {
+                    let diag = Diagnostic::new("duplicate enum variant name")
+                        .add_info(entry.get().0.span, "previously declared here")
+                        .add_error(id.span, "declared again here")
+                        .finish();
+                    any_variant_err = Err(diags.report(diag));
+                }
+            }
 
-                Ok(())
-            };
+            Ok(())
+        };
 
         let mut scope = Scope::new_child(span_body, scope_params);
-        self.compile_elaborate_extra_list(&mut scope, flow, &ExitStack::new_empty(), variants, &mut visit_variant)?;
+        self.compile_elaborate_extra_list(&mut scope, flow, variants, &mut visit_variant)?;
         any_variant_err?;
 
         // check if this enum can be represented in hardware

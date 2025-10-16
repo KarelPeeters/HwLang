@@ -5,6 +5,7 @@ pub mod check;
 pub mod compile;
 pub mod diagnostic;
 pub mod domain;
+pub mod exit;
 pub mod expression;
 pub mod flow;
 pub mod function;
