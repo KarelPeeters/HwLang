@@ -138,11 +138,9 @@ def test_compare_signed(tmpdir: Path):
     e.eval_assert([-1, 1], True)
 
 
-def test_bool_literal_true(tmpdir: Path):
-    e = expression_compile([], "bool", "true", tmpdir)
-    e.eval_assert([], True)
-
-
-def test_bool_literal_false(tmpdir: Path):
-    e = expression_compile([], "bool", "false", tmpdir)
-    e.eval_assert([], False)
+def test_bool_literals(tmpdir: Path):
+    e_true = expression_compile([], "bool", "true", tmpdir)
+    e_true.eval_assert([], True)
+    
+    e_false = expression_compile([], "bool", "false", tmpdir)
+    e_false.eval_assert([], False)
