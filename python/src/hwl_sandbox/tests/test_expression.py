@@ -136,3 +136,11 @@ def test_div_tricky(tmpdir: Path, op: str):
 def test_compare_signed(tmpdir: Path):
     e = expression_compile(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmpdir)
     e.eval_assert([-1, 1], True)
+
+
+def test_bool_literals(tmpdir: Path):
+    e_true = expression_compile([], "bool", "true", tmpdir)
+    e_true.eval_assert([], True)
+    
+    e_false = expression_compile([], "bool", "false", tmpdir)
+    e_false.eval_assert([], False)

@@ -1058,7 +1058,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         let eval = match expr {
             &IrExpression::Bool(x) => {
-                let s = if x { "1'b0" } else { "1'b1" };
+                let s = if x { "1'b1" } else { "1'b0" };
                 Evaluated::Str(s)
             }
             IrExpression::Int(x) => {
