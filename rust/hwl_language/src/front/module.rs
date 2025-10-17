@@ -434,8 +434,10 @@ impl CompileRefs<'_, '_> {
                 let out_port_ir = ctx.ctx.ports[out_port].ir;
                 let reg_info = &ctx.ctx.registers[reg];
                 let reg_ir = reg_info.ir;
-                let statement =
-                    IrStatement::Assign(IrAssignmentTarget::port(out_port_ir), IrExpression::Register(reg_ir));
+                let statement = IrStatement::Assign(
+                    IrAssignmentTarget::port(out_port_ir),
+                    IrExpression::Signal(IrSignal::Register(reg_ir)),
+                );
                 statements.push(Spanned {
                     span: reg_info.id.span(),
                     inner: statement,
@@ -1595,7 +1597,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                         // build extra wire and process if necessary
                         let connection_signal_ir = if ir_block.statements.is_empty()
-                            && let Some(connection_signal) = connection_value_ir_raw.inner.as_signal()
+                            && let IrExpression::Signal(connection_signal) = connection_value_ir_raw.inner
                         {
                             connection_signal
                         } else {

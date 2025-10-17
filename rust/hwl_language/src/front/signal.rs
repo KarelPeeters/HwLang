@@ -5,7 +5,7 @@ use crate::front::flow::Variable;
 use crate::front::item::ElaboratedInterface;
 use crate::front::types::HardwareType;
 use crate::front::value::{ElaboratedInterfaceView, HardwareValue};
-use crate::mid::ir::{IrAssignmentTargetBase, IrExpression, IrPort, IrRegister, IrWire, IrWireInfo, IrWires};
+use crate::mid::ir::{IrAssignmentTargetBase, IrExpression, IrPort, IrRegister, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -124,7 +124,7 @@ impl PortInfo {
         HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_port_domain(self.domain.inner),
-            expr: IrExpression::Port(self.ir),
+            expr: IrExpression::Signal(IrSignal::Port(self.ir)),
         }
     }
 }
@@ -279,7 +279,7 @@ impl WireInfo {
         Ok(HardwareValue {
             ty: typed.ty.inner.clone(),
             domain,
-            expr: IrExpression::Wire(typed.ir),
+            expr: IrExpression::Signal(IrSignal::Wire(typed.ir)),
         })
     }
 }
@@ -310,7 +310,7 @@ impl RegisterInfo {
         Ok(HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::Sync(domain.inner),
-            expr: IrExpression::Register(self.ir),
+            expr: IrExpression::Signal(IrSignal::Register(self.ir)),
         })
     }
 }

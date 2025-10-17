@@ -43,6 +43,7 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
     args = ", ".join(f"a{i}: {t}" for i, t in enumerate(ty_inputs))
     ports_in = ", ".join(f"p{i}: in async {t}" for i, t in enumerate(ty_inputs))
     params = ", ".join(f"a{i}=p{i}" for i in range(len(ty_inputs)))
+    ports_comma = ", " if ports_in else ""
 
     src = f"""
     import std.types.[any, int, bool];
@@ -56,7 +57,7 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
             print(type(w_res));        
         }}
     }}
-    module eval_mod ports({ports_in}, p_res: out async {ty_res}) {{
+    module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
         comb {{
             p_res = eval_func({params});
         }}
@@ -83,7 +84,9 @@ def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, build_dir: 
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
 
     print(eval_mod.as_verilog().source)
-    eval_mod_inst = eval_mod.as_verilated(str(build_dir)).instance()
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+    eval_mod_inst = eval_mod.as_verilated(build_dir).instance()
 
     return CompiledExpression(
         input_count=len(ty_inputs),

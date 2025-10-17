@@ -418,9 +418,7 @@ impl CodegenBlockContext<'_> {
             // TODO support arbitrary sized ints
             IrExpression::Int(v) => Evaluated::Inline(format!("INT64_C({v})")),
 
-            &IrExpression::Port(s) => self.eval_signal(IrSignal::Port(s), stage_read),
-            &IrExpression::Wire(s) => self.eval_signal(IrSignal::Wire(s), stage_read),
-            &IrExpression::Register(s) => self.eval_signal(IrSignal::Register(s), stage_read),
+            &IrExpression::Signal(s) => self.eval_signal(s, stage_read),
 
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
 

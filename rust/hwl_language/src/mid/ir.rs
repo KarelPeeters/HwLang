@@ -274,16 +274,10 @@ pub type IrLargeArena = Arena<IrExpressionLargeIndex, IrExpressionLarge>;
 // TODO _dropping_ IrExpressions is taking a long time, they should really be stored in an arena per module instead
 #[derive(Debug, Clone)]
 pub enum IrExpression {
-    // constants
     Bool(bool),
     Int(BigInt),
-
-    // "signals"
-    Port(IrPort),
-    Wire(IrWire),
-    Register(IrRegister),
+    Signal(IrSignal),
     Variable(IrVariable),
-
     // expressions that need allocations,
     //   we don't want a web of boxes which is slow to construct and drop
     Large(IrExpressionLargeIndex),
@@ -413,6 +407,77 @@ impl IrType {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum SignalAccess {
+    Read,
+    Write,
+}
+
+impl IrBlock {
+    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+        let IrBlock { statements } = self;
+        for stmt in statements {
+            stmt.inner.visit_signals_accessed(large, f);
+        }
+    }
+}
+
+impl IrStatement {
+    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+        match self {
+            IrStatement::Assign(target, expr) => {
+                target.visit_signals_accessed(large, f);
+                expr.visit_signals_accessed(large, f);
+            }
+            IrStatement::Block(block) => {
+                block.visit_signals_accessed(large, f);
+            }
+            IrStatement::If(if_stmt) => {
+                if_stmt.condition.visit_signals_accessed(large, f);
+                if_stmt.then_block.visit_signals_accessed(large, f);
+                if let Some(else_block) = &if_stmt.else_block {
+                    else_block.visit_signals_accessed(large, f);
+                }
+            }
+            IrStatement::PrintLn(s) => {
+                let _: &String = s;
+            }
+        }
+    }
+}
+
+impl IrAssignmentTarget {
+    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+        let IrAssignmentTarget { base, steps } = self;
+
+        match base {
+            IrAssignmentTargetBase::Port(port) => {
+                f(IrSignal::Port(*port), SignalAccess::Write);
+            }
+            IrAssignmentTargetBase::Register(reg) => {
+                f(IrSignal::Register(*reg), SignalAccess::Write);
+            }
+            IrAssignmentTargetBase::Wire(wire) => {
+                f(IrSignal::Wire(*wire), SignalAccess::Write);
+            }
+            IrAssignmentTargetBase::Variable(_) => {
+                // variables are not signals
+            }
+        }
+
+        for step in steps {
+            match step {
+                IrTargetStep::ArrayIndex(index) => {
+                    index.visit_signals_accessed(large, f);
+                }
+                IrTargetStep::ArraySlice(start, _len) => {
+                    start.visit_signals_accessed(large, f);
+                }
+            }
+        }
+    }
+}
+
 impl IrExpression {
     // TODO avoid clones
     pub fn ty(&self, module: &IrModuleInfo, locals: &IrVariables) -> IrType {
@@ -420,9 +485,11 @@ impl IrExpression {
             IrExpression::Bool(_) => IrType::Bool,
             IrExpression::Int(v) => IrType::Int(ClosedIncRange::single(v.clone())),
 
-            &IrExpression::Port(port) => module.ports[port].ty.clone(),
-            &IrExpression::Wire(wire) => module.wires[wire].ty.clone(),
-            &IrExpression::Register(reg) => module.registers[reg].ty.clone(),
+            &IrExpression::Signal(signal) => match signal {
+                IrSignal::Port(port) => module.ports[port].ty.clone(),
+                IrSignal::Wire(wire) => module.wires[wire].ty.clone(),
+                IrSignal::Register(reg) => module.registers[reg].ty.clone(),
+            },
             &IrExpression::Variable(var) => locals[var].ty.clone(),
 
             &IrExpression::Large(expr) => {
@@ -466,19 +533,21 @@ impl IrExpression {
             IrExpression::Bool(x) => x.to_string(),
             IrExpression::Int(x) => x.to_string(),
 
-            &IrExpression::Port(x) => module.ports[x].name.clone(),
-            &IrExpression::Wire(x) => module.wires[x]
-                .debug_info_id
-                .inner
-                .as_ref()
-                .map_or("_", String::as_ref)
-                .to_owned(),
-            &IrExpression::Register(x) => module.registers[x]
-                .debug_info_id
-                .inner
-                .as_ref()
-                .map_or("_", String::as_ref)
-                .to_owned(),
+            &IrExpression::Signal(signal) => match signal {
+                IrSignal::Port(port) => module.ports[port].name.clone(),
+                IrSignal::Wire(wire) => module.wires[wire]
+                    .debug_info_id
+                    .inner
+                    .as_ref()
+                    .map_or("_", String::as_ref)
+                    .to_owned(),
+                IrSignal::Register(reg) => module.registers[reg]
+                    .debug_info_id
+                    .inner
+                    .as_ref()
+                    .map_or("_", String::as_ref)
+                    .to_owned(),
+            },
             // TODO support printing variables with their real names if in a context where they exist
             &IrExpression::Variable(_) => "_variable".to_owned(),
 
@@ -586,14 +655,16 @@ impl IrExpression {
         }
     }
 
+    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+        if let &IrExpression::Signal(signal) = self {
+            f(signal, SignalAccess::Read);
+        }
+        self.for_each_expression_operand(large, &mut |op| op.visit_signals_accessed(large, f));
+    }
+
     pub fn for_each_expression_operand(&self, large: &IrLargeArena, f: &mut impl FnMut(&IrExpression)) {
         match self {
-            IrExpression::Bool(_)
-            | IrExpression::Int(_)
-            | IrExpression::Port(_)
-            | IrExpression::Wire(_)
-            | IrExpression::Register(_)
-            | IrExpression::Variable(_) => {}
+            IrExpression::Bool(_) | IrExpression::Int(_) | IrExpression::Signal(_) | IrExpression::Variable(_) => {}
 
             &IrExpression::Large(expr) => match &large[expr] {
                 IrExpressionLarge::BoolNot(x) => f(x),
@@ -628,31 +699,12 @@ impl IrExpression {
             },
         }
     }
-
-    pub fn as_signal(&self) -> Option<IrSignal> {
-        match *self {
-            IrExpression::Port(port) => Some(IrSignal::Port(port)),
-            IrExpression::Wire(wire) => Some(IrSignal::Wire(wire)),
-            IrExpression::Register(reg) => Some(IrSignal::Register(reg)),
-            _ => None,
-        }
-    }
-}
-
-impl IrSignal {
-    pub fn as_expression(self) -> IrExpression {
-        match self {
-            IrSignal::Wire(wire) => IrExpression::Wire(wire),
-            IrSignal::Port(port) => IrExpression::Port(port),
-            IrSignal::Register(reg) => IrExpression::Register(reg),
-        }
-    }
 }
 
 impl Polarized<IrSignal> {
     pub fn as_expression(self, large: &mut IrLargeArena) -> IrExpression {
         let Polarized { inverted, signal } = self;
-        let signal = signal.as_expression();
+        let signal = IrExpression::Signal(signal);
         if inverted {
             large.push_expr(IrExpressionLarge::BoolNot(signal))
         } else {
@@ -667,9 +719,5 @@ impl IrWireOrPort {
             IrWireOrPort::Wire(wire) => IrSignal::Wire(wire),
             IrWireOrPort::Port(port) => IrSignal::Port(port),
         }
-    }
-
-    pub fn as_expression(self) -> IrExpression {
-        self.as_signal().as_expression()
     }
 }

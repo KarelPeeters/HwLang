@@ -20,7 +20,7 @@ use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, ElaboratedInterfaceView, HardwareValue, MaybeUndefined, Value};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
-    IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrStatement, IrVariableInfo,
+    IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrSignal, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
     Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind,
@@ -785,7 +785,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
 
                 // do the right shuffle operations
-                let stmt_load = IrStatement::Assign(IrAssignmentTarget::variable(ir_var), IrExpression::Register(reg));
+                let stmt_load = IrStatement::Assign(
+                    IrAssignmentTarget::variable(ir_var),
+                    IrExpression::Signal(IrSignal::Register(reg)),
+                );
                 flow.push_ir_statement(Spanned::new(span_keyword, stmt_load));
                 let stmt_store = IrStatement::Assign(IrAssignmentTarget::register(reg), value.expr);
                 flow.push_ir_statement(Spanned::new(span_keyword, stmt_store));

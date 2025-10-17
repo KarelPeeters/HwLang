@@ -41,14 +41,13 @@ impl IrModuleInfo {
                         signal: clock_signal_inner,
                     } = clock_signal.inner;
 
-                    clock_signal_inner
-                        .as_expression()
-                        .validate(diags, self, no_variables, clock_signal.span)?;
+                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
+                    clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
                     check_type_match(
                         diags,
                         clock_signal.span,
                         &IrType::Bool,
-                        &clock_signal_inner.as_expression().ty(self, no_variables),
+                        &clock_signal_inner_expr.ty(self, no_variables),
                     )?;
                     clock_block.validate(diags, self, locals)?;
 
@@ -62,14 +61,13 @@ impl IrModuleInfo {
                             signal: reset_signal_inner,
                         } = reset_signal.inner;
 
-                        reset_signal_inner
-                            .as_expression()
-                            .validate(diags, self, no_variables, reset_signal.span)?;
+                        let reset_signal_inner_expr = IrExpression::Signal(reset_signal_inner);
+                        reset_signal_inner_expr.validate(diags, self, no_variables, reset_signal.span)?;
                         check_type_match(
                             diags,
                             reset_signal.span,
                             &IrType::Bool,
-                            &reset_signal_inner.as_expression().ty(self, no_variables),
+                            &reset_signal_inner_expr.ty(self, no_variables),
                         )?;
 
                         // TODO check drivers, ie. only driven and reset in one process
@@ -106,7 +104,7 @@ impl IrModuleInfo {
                         let conn_ty = match &connection.inner {
                             IrPortConnection::Input(expr) => {
                                 check_dir_match(diags, connection.span, PortDirection::Input, direction)?;
-                                let inner_expr = expr.inner.as_expression();
+                                let inner_expr = IrExpression::Signal(expr.inner);
                                 inner_expr.validate(diags, self, no_variables, expr.span)?;
                                 inner_expr.ty(self, no_variables)
                             }

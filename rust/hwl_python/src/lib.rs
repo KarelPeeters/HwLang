@@ -681,7 +681,6 @@ impl Module {
                     // TODO improve backend so these are no longer needed?
                     .arg("-Wno-widthexpand")
                     .arg("-Wno-widthtrunc")
-                    .arg("-Wno-alwnever")
                     .arg("-Wno-unsigned")
                     .arg("+1364-2001ext+v")
                     .arg("--trace")
