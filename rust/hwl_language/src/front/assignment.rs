@@ -13,7 +13,7 @@ use crate::front::value::{HardwareValue, Value};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
 };
-use crate::syntax::ast::{AssignBinaryOp, Assignment, MaybeIdentifier, SyncDomain};
+use crate::syntax::ast::{AssignBinaryOp, Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use annotate_snippets::Level;
 
@@ -366,7 +366,7 @@ impl CompileItemContext<'_, '_> {
             if !is_simple_first_assignment {
                 let diag = Diagnostic::new("assignment to immutable variable that has already been initialized")
                     .add_error(target_base.span, "variable assigned to here")
-                    .add_info(target_base_var_info.id.span(), "variable declared as immutable here")
+                    .add_info(target_base_var_info.span_decl, "variable declared as immutable here")
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -380,7 +380,7 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let var_eval = flow.var_eval_unchecked(self, target_base)?;
+                    let var_eval = flow.var_eval_unchecked(diags, &mut self.large, target_base)?;
                     let target_eval = Spanned::new(target_span, ValueWithImplications::simple_version(var_eval));
                     let value_eval = eval_binary_expression(
                         self.refs,
@@ -409,9 +409,15 @@ impl CompileItemContext<'_, '_> {
             let value_stored = match value.inner {
                 Value::Compile(value_inner) => Value::Compile(value_inner),
                 Value::Hardware(value_inner) => {
-                    let id = target_base_info.id;
+                    let debug_info_id = target_base_info.id.str(self.refs.fixed.source).map(str::to_owned);
                     let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
-                    let ir_var = store_ir_expression_in_new_variable(self.refs, flow, id, value_inner)?;
+                    let ir_var = store_ir_expression_in_new_variable(
+                        self.refs,
+                        flow,
+                        target_base.span,
+                        debug_info_id,
+                        value_inner,
+                    )?;
                     Value::Hardware(ir_var.to_general_expression())
                 }
             };
@@ -422,7 +428,10 @@ impl CompileItemContext<'_, '_> {
         }
 
         // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(target_base.span, flow.var_eval_unchecked(self, target_base)?);
+        let target_base_eval = Spanned::new(
+            target_base.span,
+            flow.var_eval_unchecked(diags, &mut self.large, target_base)?,
+        );
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;
@@ -571,7 +580,7 @@ impl CompileItemContext<'_, '_> {
                     target_span,
                     "for the assignment here the variable needs to be converted to hardware",
                 )
-                .add_info(target_var_info.id.span(), "variable declared without a type here")
+                .add_info(target_var_info.span_decl, "variable declared without a type here")
                 .finish();
             diags.report(diag)
         })?;
@@ -593,8 +602,9 @@ impl CompileItemContext<'_, '_> {
 
         let target_base_ir_expr =
             target_base_eval.as_hardware_value(refs, &mut self.large, target_base.span, &target_base_ty_hw)?;
-        let id = target_var_info.id;
-        let result = store_ir_expression_in_new_variable(refs, flow, id, target_base_ir_expr)?;
+
+        let debug_info_id = target_var_info.id.str(refs.fixed.source).map(str::to_owned);
+        let result = store_ir_expression_in_new_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
 
         Ok(HardwareValue {
             ty: Spanned::new(target_base_ty_span, result.ty),
@@ -670,13 +680,14 @@ impl CompileItemContext<'_, '_> {
 pub fn store_ir_expression_in_new_variable(
     refs: CompileRefs,
     flow: &mut FlowHardware,
-    debug_info_id: MaybeIdentifier,
+    span: Span,
+    debug_info_id: Option<String>,
     expr: HardwareValue,
 ) -> DiagResult<HardwareValue<HardwareType, IrVariable>> {
-    let span = debug_info_id.span();
     let var_ir_info = IrVariableInfo {
         ty: expr.ty.as_ir(refs),
-        debug_info_id: debug_info_id.spanned_string(refs.fixed.source),
+        debug_info_span: span,
+        debug_info_id,
     };
 
     let var_ir = flow.new_ir_variable(var_ir_info);

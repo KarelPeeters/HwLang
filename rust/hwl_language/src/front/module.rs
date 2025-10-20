@@ -8,7 +8,7 @@ use crate::front::exit::ExitStack;
 use crate::front::expression::{NamedOrValue, ValueInner};
 use crate::front::flow::{
     ExtraRegisters, Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent,
-    HardwareProcessKind,
+    HardwareProcessKind, VariableId,
 };
 use crate::front::function::CapturedScope;
 use crate::front::interface::ElaboratedInterfacePortInfo;
@@ -1061,7 +1061,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let end = self
             .ctx
             .elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
-        end.unwrap_outside_function_and_loop(diags)?;
+        end.unwrap_outside_function_and_loop(diags, block.span)?;
         let (ir_vars, ir_block) = flow.finish();
 
         // report drivers
@@ -1160,7 +1160,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             let end = self
                 .ctx
                 .elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
-            end.unwrap_outside_function_and_loop(diags)?;
+            end.unwrap_outside_function_and_loop(diags, block.span)?;
 
             let (ir_vars, ir_block) = flow.finish();
 
@@ -1253,7 +1253,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             let mut scope_body = Scope::new_child(index.span().join(body.span), &scope_for);
             let mut flow_body = flow_for.new_child_isolated();
 
-            let index_var = flow_body.var_new_immutable_init(index, span_keyword, Ok(index_value));
+            let index_var =
+                flow_body.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
             scope_body.maybe_declare(
                 diags,
                 Ok(index.spanned_str(source)),

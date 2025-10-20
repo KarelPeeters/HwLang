@@ -20,6 +20,7 @@ impl HardwareType {
 
     pub fn every_bit_pattern_is_valid(&self, refs: CompileRefs) -> bool {
         match self {
+            HardwareType::Undefined => true,
             HardwareType::Bool => true,
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range.as_ref());
@@ -83,6 +84,7 @@ impl HardwareType {
             )
         };
         match (self, value) {
+            (HardwareType::Undefined, CompileValue::Undefined) => Ok(()),
             (HardwareType::Bool, &CompileValue::Bool(v)) => {
                 result.push(v);
                 Ok(())
@@ -148,7 +150,8 @@ impl HardwareType {
 
             // type mismatches
             (
-                HardwareType::Bool
+                HardwareType::Undefined
+                | HardwareType::Bool
                 | HardwareType::Int(_)
                 | HardwareType::Tuple(_)
                 | HardwareType::Array(_, _)
@@ -188,6 +191,7 @@ impl HardwareType {
         };
 
         match self {
+            HardwareType::Undefined => Ok(CompileValue::Undefined),
             HardwareType::Bool => Ok(CompileValue::Bool(bits.next().ok_or_else(err_internal)?)),
             HardwareType::Int(range) => {
                 let repr = IntRepresentation::for_range(range.as_ref());

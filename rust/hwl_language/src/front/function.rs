@@ -1,10 +1,10 @@
-use crate::front::block::{BlockEnd, BlockEndReturn};
+use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
-use crate::front::exit::{ExitStack, ReturnEntry};
-use crate::front::flow::{CapturedValue, FailedCaptureReason};
+use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
+use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
 use crate::front::flow::{Flow, FlowCompile};
 use crate::front::item::{
     ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, HardwareChecked, NonHardwareEnum,
@@ -14,11 +14,11 @@ use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::mid::ir::IrExpressionLarge;
+use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters,
 };
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
@@ -669,7 +669,8 @@ impl CompileItemContext<'_, '_> {
 
             // declare param in scope
             let param_var = flow.var_new_immutable_init(
-                MaybeIdentifier::Identifier(param.id),
+                param.id.span,
+                VariableId::Id(MaybeIdentifier::Identifier(param.id)),
                 param.id.span,
                 value.map(|v| v.inner),
             );
@@ -689,23 +690,52 @@ impl CompileItemContext<'_, '_> {
             match &body.inner {
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
                     // evaluate return type
-                    let ret_ty = ret_ty
+                    let return_type = ret_ty
                         .map(|ret_ty| s.eval_expression_as_ty(&scope, flow, ret_ty))
                         .transpose()?;
 
-                    // evaluate block
-                    let ty_unit = Type::unit();
-                    let expected_ret_ty = ret_ty.as_ref().map_or(&ty_unit, |ty| &ty.inner);
-
-                    let mut return_entry = ReturnEntry {
-                        return_type: expected_ret_ty,
+                    // set up the stack
+                    let return_entry_kind = match flow.kind_mut() {
+                        FlowKind::Compile(_) => ReturnEntryKind::Compile,
+                        FlowKind::Hardware(flow) => {
+                            let return_flag = ExitFlag::new(flow, decl_span, EarlyExitKind::Return);
+                            ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
+                        }
                     };
-                    let mut stack = ExitStack::new_in_function(&mut return_entry);
-                    let end = s.elaborate_block(&scope, flow, &mut stack, body)?;
-                    // TODO handle hardware dynamic return
+                    let return_var = if let Some(return_type) = &return_type
+                        && !return_type.inner.is_unit()
+                    {
+                        let return_var_info = VariableInfo {
+                            span_decl: decl_span,
+                            id: VariableId::Custom("return_value"),
+                            mutable: false,
+                            ty: None,
+                        };
+                        let return_var = flow.var_new(return_var_info);
 
-                    // check return type and extract value
-                    check_function_return_value(diags, body.span, &ret_ty, end)
+                        // As far as the flow is concerned,
+                        //   it might look like not all branches are guaranteed to initialize the return value.
+                        // To avoid wrong error messages and skipped merging, we always start with an initial value.
+                        flow.var_set(return_var, decl_span, Ok(Value::Compile(CompileValue::Undefined)));
+
+                        Some(return_var)
+                    } else {
+                        None
+                    };
+                    let return_entry = ReturnEntry {
+                        span_function_decl: decl_span,
+                        return_type: return_type.as_ref().map(Spanned::as_ref),
+                        return_var,
+                        kind: return_entry_kind,
+                    };
+                    let mut stack = ExitStack::new_in_function(return_entry);
+
+                    // evaluate block
+                    let end = s.elaborate_block(&scope, flow, &mut stack, body)?;
+
+                    // check end and extract return value
+                    let return_entry = stack.return_info_option().unwrap();
+                    check_function_end(diags, flow, &mut s.large, body.span, return_entry, end)
                 }
                 FunctionBody::ItemBody(item_body) => {
                     // unwrap compile, we checked that these values are compile-time during argument matching
@@ -832,85 +862,83 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn check_function_return_value(
+pub fn check_function_return_type_and_set_value(
     diags: &Diagnostics,
+    flow: &mut impl Flow,
+    entry: &ReturnEntry,
+    span_stmt: Span,
+    span_keyword: Span,
+    value: Option<Spanned<Value>>,
+) -> DiagResult {
+    let ty = entry.return_type;
+
+    match (ty, value) {
+        (None, None) => {}
+        (Some(ret_ty), Some(value)) => {
+            let reason = TypeContainsReason::Return {
+                span_keyword,
+                span_return_ty: ret_ty.span,
+            };
+            let result_ty = check_type_contains_value(diags, reason, ret_ty.inner, value.as_ref(), true, false);
+
+            if let Some(return_var) = entry.return_var {
+                flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner));
+            }
+
+            result_ty?;
+        }
+        _ => todo!(),
+    }
+
+    Ok(())
+}
+
+fn check_function_end(
+    diags: &Diagnostics,
+    flow: &mut impl Flow,
+    large: &mut IrLargeArena,
     body_span: Span,
-    ret_ty: &Option<Spanned<Type>>,
+    return_entry: &ReturnEntry,
     end: BlockEnd,
 ) -> DiagResult<Value> {
-    match end.unwrap_normal_or_return_in_function(diags)? {
-        BlockEnd::Normal => {
-            // no return, only allowed for unit-returning functions
-            match ret_ty {
-                None => Ok(Value::Compile(CompileValue::unit())),
-                Some(ret_ty) => {
-                    if ret_ty.inner.is_unit() {
-                        Ok(Value::Compile(CompileValue::unit()))
-                    } else {
-                        let diag = Diagnostic::new("control flow reaches end of function with return type")
-                            .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
-                            .add_info(
-                                ret_ty.span,
-                                format!("return type `{}` declared here", ret_ty.inner.diagnostic_string()),
-                            )
-                            .finish();
-                        Err(diags.report(diag))
-                    }
-                }
+    // some of these should be impossible, but checking again here is redundant
+    let is_certain_return = match end {
+        BlockEnd::CompileExit(end) => match end {
+            EarlyExitKind::Return => true,
+            EarlyExitKind::Break => false,
+            EarlyExitKind::Continue => false,
+        },
+        BlockEnd::Normal => false,
+        BlockEnd::HardwareExit => false,
+        BlockEnd::HardwareMaybeExit => false,
+    };
+
+    let value = if is_certain_return {
+        if let Some(var) = return_entry.return_var {
+            // normal return, get the value
+            flow.var_eval_unchecked(diags, large, Spanned::new(body_span, var))
+                .map_err(|_: DiagError| diags.report_internal_error(body_span, "failed to evaluate return value"))?
+        } else {
+            // normal return with unit return type, return unit
+            Value::Compile(CompileValue::unit())
+        }
+    } else {
+        // the end of the body might be reachable, this is only okay for functions without a return type
+        match return_entry.return_type {
+            None => Value::Compile(CompileValue::unit()),
+            Some(return_type) => {
+                let diag = Diagnostic::new("missing return in function")
+                    .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
+                    .add_info(
+                        return_type.span,
+                        format!("return type `{}` declared here", return_type.inner.diagnostic_string()),
+                    )
+                    .finish();
+                return Err(diags.report(diag));
             }
         }
-        BlockEnd::Stopping(BlockEndReturn { span_keyword, value }) => {
-            // return, check type
-            match (ret_ty, value) {
-                (None, None) => Ok(Value::Compile(CompileValue::unit())),
-                (Some(ret_ty), None) => {
-                    if ret_ty.inner.is_unit() {
-                        Ok(Value::Compile(CompileValue::unit()))
-                    } else {
-                        let diag = Diagnostic::new("missing return value in function with return type")
-                            .add_error(span_keyword, "return here without value")
-                            .add_info(
-                                ret_ty.span,
-                                format!(
-                                    "function return type `{}` declared here",
-                                    ret_ty.inner.diagnostic_string()
-                                ),
-                            )
-                            .finish();
-                        Err(diags.report(diag))
-                    }
-                }
-                (None, Some(ret_value)) => {
-                    let as_unit = match ret_value.inner {
-                        Value::Compile(v) => {
-                            if v.is_unit() {
-                                Some(v)
-                            } else {
-                                None
-                            }
-                        }
-                        Value::Hardware(_) => None,
-                    };
-                    if let Some(unit) = as_unit {
-                        Ok(Value::Compile(unit))
-                    } else {
-                        let diag = Diagnostic::new("return value in function without return type")
-                            .add_error(ret_value.span, "return value here")
-                            .finish();
-                        Err(diags.report(diag))
-                    }
-                }
-                (Some(ret_ty), Some(value)) => {
-                    let reason = TypeContainsReason::Return {
-                        span_keyword,
-                        span_return_ty: ret_ty.span,
-                    };
-                    check_type_contains_value(diags, reason, &ret_ty.inner, value.as_ref(), true, true)?;
-                    Ok(value.inner)
-                }
-            }
-        }
-    }
+    };
+    Ok(value.into_value())
 }
 
 impl CapturedScope {
@@ -1015,8 +1043,12 @@ impl CapturedScope {
                         CapturedValue::Value(value) => {
                             // TODO this can be simplified, identifiers can be stored by value now
                             let id_recreated = MaybeIdentifier::Identifier(Identifier { span });
-                            let var =
-                                flow.var_new_immutable_init(id_recreated, span, Ok(Value::Compile(value.clone())));
+                            let var = flow.var_new_immutable_init(
+                                id_recreated.span(),
+                                VariableId::Id(id_recreated),
+                                span,
+                                Ok(Value::Compile(value.clone())),
+                            );
                             DeclaredValueSingle::Value {
                                 span,
                                 value: ScopedEntry::Named(NamedValue::Variable(var)),

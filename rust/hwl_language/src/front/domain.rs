@@ -84,8 +84,17 @@ impl ValueDomain {
         // TODO expand signal equality check, eg. make it look through wire assignments
         match (self, other) {
             (ValueDomain::CompileTime, other) | (other, ValueDomain::CompileTime) => other,
-            (ValueDomain::Sync(left), ValueDomain::Sync(right)) if left == right => ValueDomain::Sync(left),
-            _ => ValueDomain::Async,
+            (ValueDomain::Const, other) | (other, ValueDomain::Const) => other,
+            (ValueDomain::Sync(left), ValueDomain::Sync(right)) => {
+                if left == right {
+                    ValueDomain::Sync(left)
+                } else {
+                    ValueDomain::Async
+                }
+            }
+            (ValueDomain::Async | ValueDomain::Clock, _) | (_, ValueDomain::Async | ValueDomain::Clock) => {
+                ValueDomain::Async
+            }
         }
     }
 

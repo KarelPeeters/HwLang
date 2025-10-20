@@ -7,7 +7,7 @@ use crate::front::check::{
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::flow::{ExtraRegisters, ValueVersion};
+use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationOp, ValueWithImplications,
@@ -194,7 +194,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let mut stack = ExitStack::new_in_block_expression(expr.span);
                 let end = self.elaborate_block_statements(&mut scope_inner, flow, &mut stack, statements)?;
-                end.unwrap_outside_function_and_loop(diags)?;
+                end.unwrap_outside_function_and_loop(diags, expr.span)?;
 
                 self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
             }
@@ -207,7 +207,9 @@ impl<'a> CompileItemContext<'a, '_> {
                         return Ok(ValueInner::Value(ValueWithImplications::simple(Value::Compile(value))));
                     }
                     NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => flow.var_eval_unchecked(self, Spanned::new(expr.span, var))?,
+                        NamedValue::Variable(var) => {
+                            flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(expr.span, var))?
+                        }
                         NamedValue::Port(port) => {
                             let flow = flow.check_hardware(expr.span, "port access")?;
                             Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
@@ -405,7 +407,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.refs.check_should_stop(expr.span)?;
 
                     let index_value = index_value.to_maybe_compile(&mut self.large);
-                    let index_var = flow.var_new_immutable_init(index, span_keyword, Ok(index_value));
+                    let index_var =
+                        flow.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
@@ -730,10 +733,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     .transpose()?;
 
                 // create variable to hold the result
-                let debug_info_id = || Spanned::new(span_keyword, None);
                 let var_info = IrVariableInfo {
                     ty: ty_hw.as_ir(refs),
-                    debug_info_id: debug_info_id(),
+                    debug_info_span: span_keyword,
+                    debug_info_id: Some("reg_delay".to_owned()),
                 };
                 let ir_var = flow.new_ir_variable(var_info);
 
@@ -742,7 +745,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     flow.check_clocked_block(span_keyword, "register expression")?;
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
-                    debug_info_id: debug_info_id(),
+                    debug_info_id: Spanned::new(span_keyword, None),
                     debug_info_ty: ty_hw.clone(),
                     debug_info_domain: clocked_domain.inner.diagnostic_string(self),
                 };
@@ -1456,7 +1459,7 @@ impl<'a> CompileItemContext<'a, '_> {
             NamedOrValue::ItemValue(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
-                    let info = flow.var_eval_unchecked(self, Spanned::new(arg.span, var))?;
+                    let info = flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(arg.span, var))?;
                     info.into_value().ty()
                 }
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),

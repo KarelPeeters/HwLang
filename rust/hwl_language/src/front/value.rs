@@ -291,6 +291,8 @@ impl CompileValue {
         }
     }
 
+    // TODO now that we have separate undefined IrExpressions, we can simplify this
+    //   think about how undefined register values should be implemented, do we want to skip the entire reset?
     pub fn as_ir_expression_or_undefined(
         &self,
         refs: CompileRefs,
@@ -313,8 +315,8 @@ impl CompileValue {
         span: Span,
         ty_hw: &HardwareType,
     ) -> DiagResult<MaybeUndefined<HardwareValue>> {
-        let hw_value = self.as_ir_expression_or_undefined(refs, large, span, ty_hw)?;
-        let typed_expr = hw_value.map_inner(|expr| HardwareValue {
+        let expr = self.as_ir_expression_or_undefined(refs, large, span, ty_hw)?;
+        let typed_expr = expr.map_inner(|expr| HardwareValue {
             ty: ty_hw.clone(),
             domain: ValueDomain::CompileTime,
             expr,
@@ -329,15 +331,15 @@ impl CompileValue {
         span: Span,
         ty_hw: &HardwareType,
     ) -> DiagResult<HardwareValue> {
-        let diags = refs.diags;
-        match self.as_hardware_value_or_undefined(refs, large, span, ty_hw)? {
-            MaybeUndefined::Defined(ir_expr) => Ok(ir_expr),
-            MaybeUndefined::Undefined => Err(diags.report_simple(
-                "undefined values are not allowed here",
-                span,
-                format!("undefined value `{}` here", self.diagnostic_string()),
-            )),
-        }
+        let expr = match self.as_ir_expression_or_undefined(refs, large, span, ty_hw)? {
+            MaybeUndefined::Undefined => large.push_expr(IrExpressionLarge::Undefined(ty_hw.as_ir(refs))),
+            MaybeUndefined::Defined(expr) => expr,
+        };
+        Ok(HardwareValue {
+            ty: ty_hw.clone(),
+            domain: ValueDomain::CompileTime,
+            expr,
+        })
     }
 
     pub fn diagnostic_string(&self) -> String {

@@ -9,7 +9,7 @@ from hwl_sandbox.common.util import compile_custom
 
 # TODO also include the result of the C++ backend once that's properly integrated
 @dataclass
-class CompiledExpression:
+class CompiledCompare:
     input_count: int
 
     compile: hwl.Compile
@@ -39,7 +39,7 @@ class CompiledExpression:
         assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
 
 
-def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Compile:
+def compare_codegen(ty_inputs: List[str], ty_res: str, body: str) -> hwl.Compile:
     args = ", ".join(f"a{i}: {t}" for i, t in enumerate(ty_inputs))
     ports_in = ", ".join(f"p{i}: in async {t}" for i, t in enumerate(ty_inputs))
     params = ", ".join(f"a{i}=p{i}" for i in range(len(ty_inputs)))
@@ -49,7 +49,7 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
     import std.types.[any, int, bool];
     import std.util.print;
     fn eval_func({args}) -> any {{
-        return {expr};
+        {body}
     }}
     module print_type_mod ports({ports_in}) {{
         wire w_res = eval_func({params});
@@ -69,8 +69,8 @@ def expression_codegen(ty_inputs: List[str], ty_res: str, expr: str) -> hwl.Comp
     return compile_custom(src)
 
 
-def expression_get_type(ty_inputs: List[str], expr: str) -> str:
-    c = expression_codegen(ty_inputs, "dummy", expr)
+def compare_get_type(ty_inputs: List[str], body: str) -> str:
+    c = compare_codegen(ty_inputs, "dummy", body)
     with c.capture_prints() as capture:
         c.resolve("top.print_type_mod")
 
@@ -78,8 +78,8 @@ def expression_get_type(ty_inputs: List[str], expr: str) -> str:
     return capture.prints[0]
 
 
-def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, build_dir: Path) -> CompiledExpression:
-    c = expression_codegen(ty_inputs, ty_res, expr)
+def compare_compile(ty_inputs: List[str], ty_res: str, body: str, build_dir: Path) -> CompiledCompare:
+    c = compare_codegen(ty_inputs, ty_res, body)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
 
@@ -88,7 +88,7 @@ def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, build_dir: 
     build_dir.mkdir(parents=True, exist_ok=True)
     eval_mod_inst = eval_mod.as_verilated(build_dir).instance()
 
-    return CompiledExpression(
+    return CompiledCompare(
         input_count=len(ty_inputs),
         compile=c,
         eval_func=eval_func,

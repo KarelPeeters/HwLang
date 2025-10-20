@@ -799,6 +799,7 @@ fn lower_port_connections<S: AsRef<str>>(
 }
 
 // TODO blocks with variables must be named
+// TODO initialize all variables to ensure we're not accidentally creating registers
 fn declare_locals(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
@@ -809,9 +810,13 @@ fn declare_locals(
     let mut result = IndexMap::new();
 
     for (variable, variable_info) in locals {
-        let IrVariableInfo { ty, debug_info_id } = variable_info;
+        let &IrVariableInfo {
+            ref ty,
+            debug_info_span,
+            ref debug_info_id,
+        } = variable_info;
 
-        let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_id.span, ty)? {
+        let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_span, ty)? {
             Ok(ty) => ty,
             Err(ZeroWidth) => {
                 // skip zero-width variables
@@ -820,7 +825,8 @@ fn declare_locals(
         };
         let ty_verilog_prefix = ty_verilog.to_prefix();
 
-        let name = module_name_scope.make_unique_maybe_id(diags, maybe_id_as_ref(debug_info_id))?;
+        let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
+        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
         newline.start_item(f);
         swriteln!(f, "{I}{I}reg {ty_verilog_prefix}{name};");
@@ -1030,14 +1036,16 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 then_block,
                 else_block,
             }) => {
+                // TODO re-merge else-if chains to reduce indentation if there are no other statements in the else block?
+                // TODO skip entirely if both blocks are empty
                 let cond = self.lower_expression_non_zero_width(stmt.span, condition, "condition")?;
                 swriteln!(self.f, "{indent}if ({cond}) begin");
                 self.lower_block_indented(then_block)?;
                 swrite!(self.f, "{indent}end");
 
-                // TODO skip empty else blocks here or in a common IR optimization pass?
-                // TODO re-merge else-if chains to reduce indentation if there are no other statements in the else block?
-                if let Some(else_block) = else_block {
+                if let Some(else_block) = else_block
+                    && !else_block.statements.is_empty()
+                {
                     swriteln!(self.f, " else begin");
                     self.lower_block_indented(else_block)?;
                     swrite!(self.f, "{indent}end");
@@ -1083,6 +1091,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
+                    IrExpressionLarge::Undefined(_) => {
+                        let width = result_ty_verilog.width();
+                        Evaluated::String(format!("{}'bx", width))
+                    }
                     IrExpressionLarge::BoolNot(inner) => {
                         let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
                         Evaluated::String(format!("(!{inner})"))
@@ -1586,6 +1598,7 @@ enum OperatorDivMod {
     Mod,
 }
 
+// TODO is this distinction actually useful?
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum VerilogType {
     /// Single bit value.
@@ -1596,6 +1609,13 @@ enum VerilogType {
 }
 
 impl VerilogType {
+    pub fn width(self) -> NonZeroU32 {
+        match self {
+            VerilogType::Bit => NonZeroU32::new(1).unwrap(),
+            VerilogType::Array(w) => w,
+        }
+    }
+
     pub fn new_array(diags: &Diagnostics, span: Span, w: BigUint) -> DiagResult<Result<VerilogType, ZeroWidth>> {
         let w = diag_big_int_to_u32(diags, span, &w.into(), "array width too large")?;
         match NonZeroU32::new(w) {

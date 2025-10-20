@@ -40,6 +40,7 @@ pub enum Type {
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
+    Undefined,
     Bool,
     Int(ClosedIncRange<BigInt>),
     Tuple(Arc<Vec<HardwareType>>),
@@ -231,6 +232,7 @@ impl Type {
     // TODO centralize error messages for this, everyone is just doing them manually for now
     pub fn as_hardware_type(&self, refs: CompileRefs) -> Result<HardwareType, NonHardwareType> {
         match self {
+            Type::Undefined => Ok(HardwareType::Undefined),
             Type::Bool => Ok(HardwareType::Bool),
             Type::Int(range) => match range.clone().try_into_closed() {
                 Ok(closed_range) => Ok(HardwareType::Int(closed_range)),
@@ -260,7 +262,6 @@ impl Type {
             }
             Type::Type
             | Type::Any
-            | Type::Undefined
             | Type::String
             | Type::Range
             | Type::Function
@@ -313,6 +314,7 @@ impl Type {
 impl HardwareType {
     pub fn as_type(&self) -> Type {
         match self {
+            HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(range.clone().into_range()),
             HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
@@ -324,6 +326,7 @@ impl HardwareType {
 
     pub fn as_ir(&self, refs: CompileRefs) -> IrType {
         match self {
+            HardwareType::Undefined => IrType::Tuple(vec![]),
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.clone()),
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),

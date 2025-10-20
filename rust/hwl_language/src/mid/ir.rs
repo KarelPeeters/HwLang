@@ -114,7 +114,8 @@ pub struct IrWireInfo {
 pub struct IrVariableInfo {
     pub ty: IrType,
 
-    pub debug_info_id: Spanned<Option<String>>,
+    pub debug_info_span: Span,
+    pub debug_info_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +286,8 @@ pub enum IrExpression {
 
 #[derive(Debug, Clone)]
 pub enum IrExpressionLarge {
+    Undefined(IrType),
+
     // actual expressions
     BoolNot(IrExpression),
     BoolBinary(IrBoolBinaryOp, IrExpression, IrExpression),
@@ -494,6 +497,7 @@ impl IrExpression {
 
             &IrExpression::Large(expr) => {
                 match &module.large[expr] {
+                    IrExpressionLarge::Undefined(ty) => ty.clone(),
                     IrExpressionLarge::BoolNot(_) => IrType::Bool,
                     IrExpressionLarge::BoolBinary(_, left, _) => left.ty(module, locals),
                     IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
@@ -552,6 +556,7 @@ impl IrExpression {
             &IrExpression::Variable(_) => "_variable".to_owned(),
 
             &IrExpression::Large(expr) => match &module.large[expr] {
+                IrExpressionLarge::Undefined(ty) => format!("undefined({})", ty.diagnostic_string()),
                 IrExpressionLarge::BoolNot(x) => format!("!({})", x.diagnostic_string(module)),
                 IrExpressionLarge::BoolBinary(op, left, right) => {
                     let op_str = match op {
@@ -667,6 +672,7 @@ impl IrExpression {
             IrExpression::Bool(_) | IrExpression::Int(_) | IrExpression::Signal(_) | IrExpression::Variable(_) => {}
 
             &IrExpression::Large(expr) => match &large[expr] {
+                IrExpressionLarge::Undefined(_ty) => {}
                 IrExpressionLarge::BoolNot(x) => f(x),
                 IrExpressionLarge::BoolBinary(_op, left, right) => {
                     f(left);

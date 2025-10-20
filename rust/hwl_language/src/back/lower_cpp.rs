@@ -198,7 +198,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
 
                 //   declare locals
                 for (var, var_info) in locals {
-                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span, &var_info.ty)?;
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
@@ -222,7 +222,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     next_temporary_index: 0,
                 };
                 for (var, var_info) in locals {
-                    let ty_str = type_to_cpp(diags, var_info.debug_info_id.span, &var_info.ty)?;
+                    let ty_str = type_to_cpp(diags, var_info.debug_info_span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
                 }
@@ -411,7 +411,7 @@ impl CodegenBlockContext<'_> {
     }
 
     fn eval(&mut self, indent: Indent, span: Span, expr: &IrExpression, stage_read: Stage) -> DiagResult<Evaluated> {
-        let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
+        // let todo = |kind: &str| self.diags.report_todo(span, format!("simulator IrExpression::{kind}"));
 
         let result = match expr {
             &IrExpression::Bool(b) => Evaluated::Inline(format!("{b}")),
@@ -423,6 +423,10 @@ impl CodegenBlockContext<'_> {
             &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
 
             &IrExpression::Large(expr_large) => match &self.module_info.large[expr_large] {
+                IrExpressionLarge::Undefined(_) => {
+                    // TODO set undef mask once there is one
+                    Evaluated::Inline("0".to_owned())
+                }
                 IrExpressionLarge::BoolNot(inner) => {
                     let inner_eval = self.eval(indent, span, inner, stage_read)?;
                     Evaluated::Inline(format!("!({inner_eval})"))
@@ -438,14 +442,14 @@ impl CodegenBlockContext<'_> {
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
                 }
                 IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
-                    // TODO types are  wrong
+                    // TODO types and even the power operator are wrong
                     let op_str = match op {
                         IrIntArithmeticOp::Add => "+",
                         IrIntArithmeticOp::Sub => "-",
                         IrIntArithmeticOp::Mul => "*",
                         IrIntArithmeticOp::Div => "/",
                         IrIntArithmeticOp::Mod => "%",
-                        IrIntArithmeticOp::Pow => return Err(todo("codegen power operator")),
+                        IrIntArithmeticOp::Pow => "**",
                     };
                     let left_eval = self.eval(indent, span, left, stage_read)?;
                     let right_eval = self.eval(indent, span, right, stage_read)?;
@@ -891,11 +895,7 @@ fn reg_str(reg: IrRegister, reg_info: &IrRegisterInfo) -> String {
 }
 
 fn var_str(var: IrVariable, var_info: &IrVariableInfo) -> String {
-    name_str(
-        "var",
-        var.inner(),
-        var_info.debug_info_id.inner.as_ref().map(String::as_ref),
-    )
+    name_str("var", var.inner(), var_info.debug_info_id.as_ref().map(String::as_ref))
 }
 
 fn name_str(prefix: &str, index: Idx, id: Option<&str>) -> String {

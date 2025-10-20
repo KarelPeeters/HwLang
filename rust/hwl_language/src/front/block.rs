@@ -4,9 +4,11 @@ use crate::front::check::{
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::exit::ExitStack;
-use crate::front::flow::{Flow, FlowHardware};
+use crate::front::domain::ValueDomain;
+use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
+use crate::front::flow::{Flow, FlowHardware, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
+use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
@@ -26,85 +28,39 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::{ResultExt, result_pair};
 use annotate_snippets::Level;
-use itertools::{Itertools, zip_eq};
+use itertools::{Itertools, enumerate, zip_eq};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
+use unwrap_match::unwrap_match;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[must_use]
-pub enum BlockEnd<S = BlockEndStopping> {
+pub enum BlockEnd {
+    /// No early exit, proceed normally.
     Normal,
-    Stopping(S),
+    /// Definite early exit, known at compile time.
+    CompileExit(EarlyExitKind),
+    /// Definite early exit, but the specific kind of exit depends on hardware conditions.
+    HardwareExit,
+    /// Maybe early exit, depends on hardware conditions.
+    HardwareMaybeExit,
 }
 
-#[derive(Debug)]
-pub enum BlockEndStopping {
-    FunctionReturn(BlockEndReturn),
-    LoopBreak(Span),
-    LoopContinue(Span),
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum EarlyExitKind {
+    Return,
+    Break,
+    Continue,
 }
 
-#[derive(Debug)]
-pub struct BlockEndReturn {
-    pub span_keyword: Span,
-    pub value: Option<Spanned<Value>>,
-}
-
-impl<S> BlockEnd<S> {
-    pub fn map_stopping<T>(self, f: impl FnOnce(S) -> T) -> BlockEnd<T> {
-        match self {
-            BlockEnd::Normal => BlockEnd::Normal,
-            BlockEnd::Stopping(end) => BlockEnd::Stopping(f(end)),
-        }
-    }
-}
-
-// TODO remove all of these functions
-impl BlockEnd<BlockEndStopping> {
-    pub fn unwrap_normal_todo_in_conditional(self, diags: &Diagnostics, span_cond: Span) -> DiagResult {
+impl BlockEnd {
+    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics, span: Span) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
-            BlockEnd::Stopping(end) => {
-                let (span, kind) = match end {
-                    BlockEndStopping::FunctionReturn(ret) => (ret.span_keyword, "return"),
-                    BlockEndStopping::LoopBreak(span) => (span, "break"),
-                    BlockEndStopping::LoopContinue(span) => (span, "continue"),
-                };
-
-                let diag = Diagnostic::new_todo(format!("{kind} in conditional statement with runtime condition"))
-                    .add_error(span, "used here")
-                    .add_info(span_cond, "runtime condition here")
-                    .finish();
-                Err(diags.report(diag))
+            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit | BlockEnd::HardwareMaybeExit => {
+                Err(diags.report_internal_error(span, "unexpected early exit"))
             }
-        }
-    }
-
-    pub fn unwrap_normal_or_return_in_function(self, diags: &Diagnostics) -> DiagResult<BlockEnd<BlockEndReturn>> {
-        match self {
-            BlockEnd::Normal => Ok(BlockEnd::Normal),
-            BlockEnd::Stopping(end) => match end {
-                BlockEndStopping::FunctionReturn(ret) => Ok(BlockEnd::Stopping(BlockEndReturn {
-                    span_keyword: ret.span_keyword,
-                    value: ret.value,
-                })),
-                BlockEndStopping::LoopBreak(span) => Err(diags.report_internal_error(span, "unexpected break")),
-                BlockEndStopping::LoopContinue(span) => Err(diags.report_internal_error(span, "unexpected continue")),
-            },
-        }
-    }
-
-    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics) -> DiagResult {
-        match self {
-            BlockEnd::Normal => Ok(()),
-            BlockEnd::Stopping(end) => match end {
-                BlockEndStopping::FunctionReturn(ret) => {
-                    Err(diags.report_internal_error(ret.span_keyword, "unexpected return"))
-                }
-                BlockEndStopping::LoopBreak(span) => Err(diags.report_internal_error(span, "unexpected break")),
-                BlockEndStopping::LoopContinue(span) => Err(diags.report_internal_error(span, "unexpected continue")),
-            },
         }
     }
 }
@@ -141,7 +97,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut stack = ExitStack::new_root();
         let block_end = self.elaborate_block(scope, &mut flow_inner, &mut stack, block)?;
-        block_end.unwrap_outside_function_and_loop(diags)?;
+        block_end.unwrap_outside_function_and_loop(diags, block.span)?;
 
         Ok(())
     }
@@ -177,12 +133,75 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         statements: &[BlockStatement],
     ) -> DiagResult<BlockEnd> {
-        // TODO support dynamic block ends
-        for stmt in statements {
-            let stmt_end = self.elaborate_statement(scope, flow, stack, stmt)?;
-            match stmt_end {
+        let span = if statements.is_empty() {
+            return Ok(BlockEnd::Normal);
+        } else {
+            statements
+                .first()
+                .unwrap()
+                .span()
+                .join(statements.last().unwrap().span())
+        };
+
+        let end = if let Some((exit_domain, exit_cond)) = stack.early_exit_condition(&mut self.large) {
+            let flow = flow.check_hardware(span, "hardware exit conditions")?;
+
+            let mut run_flow = flow.new_child_branch(Spanned::new(span, exit_domain), vec![]);
+            let run_end =
+                self.elaborate_block_statements_without_exit_check(scope, &mut run_flow.as_flow(), stack, statements)?;
+            let run_flow = run_flow.finish();
+
+            let skip_flow = flow.new_child_branch(Spanned::new(span, exit_domain), vec![]).finish();
+
+            let (run_block, skip_block) =
+                flow.join_child_branches_pair(self.refs, &mut self.large, span, (run_flow, skip_flow))?;
+
+            let if_stmt = IrIfStatement {
+                condition: self.large.push_expr(IrExpressionLarge::BoolNot(exit_cond)),
+                then_block: run_block,
+                else_block: Some(skip_block),
+            };
+            flow.push_ir_statement(Spanned::new(span, IrStatement::If(if_stmt)));
+
+            // we don't need to join ends here: if we got here,
+            //   this means that the run branch will be taken and it's only that end case that counts
+            run_end
+        } else {
+            self.elaborate_block_statements_without_exit_check(scope, flow, stack, statements)?
+        };
+
+        Ok(end)
+    }
+
+    pub fn elaborate_block_statements_without_exit_check(
+        &mut self,
+        scope: &mut Scope,
+        flow: &mut impl Flow,
+        stack: &mut ExitStack,
+        statements: &[BlockStatement],
+    ) -> DiagResult<BlockEnd> {
+        for (stmt_index, stmt) in enumerate(statements) {
+            let end = self.elaborate_statement(scope, flow, stack, stmt)?;
+
+            match end {
                 BlockEnd::Normal => {}
-                BlockEnd::Stopping(end) => return Ok(BlockEnd::Stopping(end)),
+                BlockEnd::CompileExit(end) => return Ok(BlockEnd::CompileExit(end)),
+                BlockEnd::HardwareExit => return Ok(BlockEnd::HardwareExit),
+                BlockEnd::HardwareMaybeExit => {
+                    // a potential hardware exit has happened,
+                    //   we need to re-check the exit conditions before elaborating the remaining statements
+                    let statements_rest = &statements[stmt_index + 1..];
+                    let end_rest = self.elaborate_block_statements(scope, flow, stack, statements_rest)?;
+
+                    // combine both ends
+                    let end_combined = match end_rest {
+                        BlockEnd::Normal => BlockEnd::HardwareMaybeExit,
+                        BlockEnd::CompileExit(kind) => BlockEnd::CompileExit(kind),
+                        BlockEnd::HardwareExit => BlockEnd::HardwareExit,
+                        BlockEnd::HardwareMaybeExit => BlockEnd::HardwareMaybeExit,
+                    };
+                    return Ok(end_combined);
+                }
             }
         }
 
@@ -236,7 +255,12 @@ impl CompileItemContext<'_, '_> {
                     }
 
                     // build variable
-                    let info = VariableInfo { id, mutable, ty };
+                    let info = VariableInfo {
+                        span_decl: id.span(),
+                        id: VariableId::Id(id),
+                        mutable,
+                        ty,
+                    };
                     let var = flow.var_new(info);
 
                     // store initial value if there is one
@@ -245,7 +269,8 @@ impl CompileItemContext<'_, '_> {
                     if let Some(init) = init {
                         let init = init.inner.try_map_hardware(|init_inner| {
                             let flow = flow.check_hardware(init.span, "hardware value")?;
-                            store_ir_expression_in_new_variable(self.refs, flow, id, init_inner)
+                            let debug_info_id = id.spanned_string(self.refs.fixed.source).inner;
+                            store_ir_expression_in_new_variable(self.refs, flow, id.span(), debug_info_id, init_inner)
                                 .map(HardwareValue::to_general_expression)
                         })?;
                         flow.var_set(var, decl.span, Ok(init));
@@ -284,38 +309,39 @@ impl CompileItemContext<'_, '_> {
             BlockStatementKind::While(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
                 self.elaborate_while_statement(scope, flow, stack, stmt)?
-                    .map_stopping(BlockEndStopping::FunctionReturn)
             }
             BlockStatementKind::For(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
                 self.elaborate_for_statement(scope, flow, stack, stmt)?
-                    .map_stopping(BlockEndStopping::FunctionReturn)
             }
             BlockStatementKind::Return(stmt) => {
                 let &ReturnStatement { span_return, ref value } = stmt;
 
-                let return_info = stack.return_info(diags, span_return)?;
+                let entry = stack.return_info(diags, span_return)?;
+
+                let type_unit = Type::unit();
+                let expected_ty = entry.return_type.map_or(&type_unit, |ty| ty.inner);
                 let value = value
-                    .map(|value| self.eval_expression(scope, flow, return_info.return_type, value))
+                    .map(|value| self.eval_expression(scope, flow, expected_ty, value))
                     .transpose()?;
 
-                BlockEnd::Stopping(BlockEndStopping::FunctionReturn(BlockEndReturn {
-                    span_keyword: span_return,
-                    value,
-                }))
+                check_function_return_type_and_set_value(diags, flow, entry, stmt_span, span_return, value)?;
+
+                BlockEnd::CompileExit(EarlyExitKind::Return)
             }
             &BlockStatementKind::Break { span } => {
                 let _ = stack.innermost_loop(diags, span, "break")?;
-                BlockEnd::Stopping(BlockEndStopping::LoopBreak(span))
+                BlockEnd::CompileExit(EarlyExitKind::Break)
             }
             &BlockStatementKind::Continue { span } => {
                 let _ = stack.innermost_loop(diags, span, "continue")?;
-                BlockEnd::Stopping(BlockEndStopping::LoopContinue(span))
+                BlockEnd::CompileExit(EarlyExitKind::Continue)
             }
         };
         Ok(end)
     }
 
+    // TODO make this non-recursive for very deep if chains?
     fn elaborate_if_statement(
         &mut self,
         scope: &Scope,
@@ -381,17 +407,15 @@ impl CompileItemContext<'_, '_> {
                 let cond_domain = Spanned::new(cond.span, cond_value.value.domain);
 
                 // lower then
-                // TODO handle conditional ends
-                let then_flow = {
+                let then_result = {
                     let mut then_flow_branch = flow.new_child_branch(cond_domain, cond_value.implications.if_true);
-                    let end = { self.elaborate_block(scope, &mut then_flow_branch.as_flow(), stack, block)? };
-                    end.unwrap_normal_todo_in_conditional(diags, cond.span)?;
-                    Ok(then_flow_branch.finish())
+
+                    self.elaborate_block(scope, &mut then_flow_branch.as_flow(), stack, block)
+                        .map(|end| (then_flow_branch.finish(), end))
                 };
 
                 // lower else
-                // TODO handle conditional ends
-                let else_flow = {
+                let else_result = {
                     let mut else_flow_branch = flow.new_child_branch(cond_domain, cond_value.implications.if_false);
                     self.elaborate_if_statement(
                         scope,
@@ -400,20 +424,26 @@ impl CompileItemContext<'_, '_> {
                         remaining_ifs.split_first(),
                         final_else,
                     )
-                    .and_then(|end| end.unwrap_normal_todo_in_conditional(diags, cond.span))
-                    .map(|()| else_flow_branch.finish())
+                    .map(|end| (else_flow_branch.finish(), end))
                 };
 
-                let then_flow = then_flow?;
-                let else_flow = else_flow?;
+                let (then_flow, then_end) = then_result?;
+                let (else_flow, else_end) = else_result?;
 
                 // join flows
-                let blocks =
-                    flow.join_child_branches(self.refs, &mut self.large, span_if, vec![then_flow, else_flow])?;
-                assert_eq!(blocks.len(), 2);
-                let (then_block, else_block) = blocks.into_iter().collect_tuple().unwrap();
+                let (mut then_block, mut else_block) =
+                    flow.join_child_branches_pair(self.refs, &mut self.large, span_if, (then_flow, else_flow))?;
+                // join ends
+                let end = join_block_ends(
+                    stack,
+                    span_if,
+                    &mut [&mut then_block, &mut else_block],
+                    &[then_end, else_end],
+                    cond_domain.inner,
+                );
 
                 // build the if statement
+                // TODO skip empty blocks? or do that in a separate optimization stage?
                 let ir_if = IrStatement::If(IrIfStatement {
                     condition: cond_value.value.expr,
                     then_block,
@@ -422,7 +452,7 @@ impl CompileItemContext<'_, '_> {
                 // TODO is this span correct?
                 flow.push_ir_statement(Spanned::new(span_if, ir_if));
 
-                Ok(BlockEnd::Normal)
+                Ok(end)
             }
         }
     }
@@ -735,8 +765,12 @@ impl CompileItemContext<'_, '_> {
                     let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope);
 
                     let scoped_used = if let Some((declare_id, declare_value)) = declare {
-                        let var =
-                            flow.var_new_immutable_init(declare_id, pattern_span, Ok(Value::Compile(declare_value)));
+                        let var = flow.var_new_immutable_init(
+                            declare_id.span(),
+                            VariableId::Id(declare_id),
+                            pattern_span,
+                            Ok(Value::Compile(declare_value)),
+                        );
                         scope_inner.maybe_declare(
                             diags,
                             Ok(declare_id.spanned_str(self.refs.fixed.source)),
@@ -897,7 +931,8 @@ impl CompileItemContext<'_, '_> {
             let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope_parent);
             if let Some((declare_id, declare_value)) = declare {
                 let var = flow_branch_flow.var_new_immutable_init(
-                    declare_id,
+                    declare_id.span(),
+                    VariableId::Id(declare_id),
                     pattern_span,
                     Ok(Value::Hardware(declare_value)),
                 );
@@ -909,9 +944,11 @@ impl CompileItemContext<'_, '_> {
             };
 
             // evaluate the child block
-            // TODO handle conditional ends
             let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, stack, block)?;
-            end.unwrap_normal_todo_in_conditional(diags, stmt_span)?;
+            match end {
+                BlockEnd::Normal => {}
+                _ => todo!(),
+            }
 
             // build the if stack
             let (cond, fully_covered) = match cond {
@@ -969,7 +1006,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         stack: &mut ExitStack,
         stmt: Spanned<&WhileStatement>,
-    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
+    ) -> DiagResult<BlockEnd> {
         let &WhileStatement {
             span_keyword,
             cond,
@@ -977,45 +1014,51 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
         let diags = self.refs.diags;
 
-        loop {
-            self.refs.check_should_stop(span_keyword)?;
+        let entry = LoopEntry::new(flow, span_keyword);
+        stack.with_loop_entry(entry, |stack| {
+            loop {
+                self.refs.check_should_stop(span_keyword)?;
 
-            // eval cond
-            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
+                // eval and check condition
+                let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
 
-            let reason = TypeContainsReason::WhileCondition(span_keyword);
-            check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
-            let cond = match &cond.inner {
-                &CompileValue::Bool(b) => b,
-                _ => throw!(diags.report_internal_error(cond.span, "expected bool, should have been checked already")),
-            };
+                let reason = TypeContainsReason::WhileCondition(span_keyword);
+                check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
+                let cond = match &cond.inner {
+                    &CompileValue::Bool(b) => b,
+                    _ => throw!(
+                        diags.report_internal_error(cond.span, "expected bool, should have been checked already")
+                    ),
+                };
+                if !cond {
+                    break;
+                }
 
-            // check cond
-            if !cond {
-                break;
+                // clear continue flag
+                if let FlowKind::Hardware(flow) = flow.kind_mut() {
+                    let entry =
+                        unwrap_match!(stack.innermost_loop_option().unwrap(), LoopEntry::Hardware(entry) => entry);
+                    entry.continue_flag.clear(flow, span_keyword);
+                }
+
+                // elaborate body
+                let end = self.elaborate_block(scope, flow, stack, body)?;
+
+                // handle end
+                match end {
+                    BlockEnd::Normal => {}
+                    BlockEnd::CompileExit(exit) => match exit {
+                        EarlyExitKind::Return => return Ok(BlockEnd::CompileExit(EarlyExitKind::Return)),
+                        EarlyExitKind::Break => break,
+                        EarlyExitKind::Continue => continue,
+                    },
+                    BlockEnd::HardwareExit => todo!(),
+                    BlockEnd::HardwareMaybeExit => todo!(),
+                }
             }
 
-            // visit body
-            let (entry, end) = stack.with_loop_entry(|stack| self.elaborate_block(scope, flow, stack, body));
-            let end = end?;
-
-            // TODO handle entry
-            let _ = entry;
-
-            // handle end
-            match end {
-                BlockEnd::Normal => {}
-                BlockEnd::Stopping(end) => match end {
-                    BlockEndStopping::FunctionReturn(ret) => {
-                        return Ok(BlockEnd::Stopping(ret));
-                    }
-                    BlockEndStopping::LoopBreak(_span) => break,
-                    BlockEndStopping::LoopContinue(_span) => continue,
-                },
-            }
-        }
-
-        Ok(BlockEnd::Normal)
+            Ok(BlockEnd::Normal)
+        })
     }
 
     // TODO code reuse between this and module
@@ -1025,7 +1068,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         stack: &mut ExitStack,
         stmt: Spanned<&ForStatement<BlockStatement>>,
-    ) -> DiagResult<BlockEnd<BlockEndReturn>> {
+    ) -> DiagResult<BlockEnd> {
         let &ForStatement {
             span_keyword,
             index: index_id,
@@ -1046,7 +1089,8 @@ impl CompileItemContext<'_, '_> {
 
         // create variable and scope for the index
         let index_var = flow.var_new(VariableInfo {
-            id: index_id,
+            span_decl: index_id.span(),
+            id: VariableId::Id(index_id),
             mutable: false,
             ty: None,
         });
@@ -1057,44 +1101,62 @@ impl CompileItemContext<'_, '_> {
             Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
         );
 
-        // loop
-        for index_value in iter {
-            self.refs.check_should_stop(span_keyword)?;
-            let index_value = index_value.to_maybe_compile(&mut self.large);
+        // setup stack
+        let entry = LoopEntry::new(flow, span_keyword);
+        stack.with_loop_entry(entry, |stack| {
+            let mut any_maybe_exit = false;
 
-            // typecheck index
-            if let Some(index_ty) = &index_ty {
-                let curr_spanned = Spanned {
-                    span: stmt.inner.iter.span,
-                    inner: &index_value,
-                };
-                let reason = TypeContainsReason::ForIndexType(index_ty.span);
-                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
+            for index_value in iter {
+                self.refs.check_should_stop(span_keyword)?;
+                let index_value = index_value.to_maybe_compile(&mut self.large);
+
+                // typecheck index
+                if let Some(index_ty) = &index_ty {
+                    let curr_spanned = Spanned {
+                        span: stmt.inner.iter.span,
+                        inner: &index_value,
+                    };
+                    let reason = TypeContainsReason::ForIndexType(index_ty.span);
+                    check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
+                }
+
+                // set index
+                flow.var_set(index_var, span_keyword, Ok(index_value));
+
+                // clear continue flag
+                if let FlowKind::Hardware(flow) = flow.kind_mut() {
+                    let entry =
+                        unwrap_match!(stack.innermost_loop_option().unwrap(), LoopEntry::Hardware(entry) => entry);
+                    entry.continue_flag.clear(flow, span_keyword);
+                }
+
+                // elaborate body
+                let end = self.elaborate_block(&scope_index, flow, stack, body)?;
+
+                // handle end
+                match end {
+                    // no certain exit yet, we need to continue elaborating
+                    BlockEnd::Normal => {}
+                    BlockEnd::HardwareMaybeExit => {
+                        any_maybe_exit = true;
+                    }
+
+                    // fully known early exit
+                    BlockEnd::CompileExit(exit) => match exit {
+                        EarlyExitKind::Return => return Ok(BlockEnd::CompileExit(EarlyExitKind::Return)),
+                        EarlyExitKind::Break => break,
+                        EarlyExitKind::Continue => continue,
+                    },
+                    BlockEnd::HardwareExit => return Ok(BlockEnd::HardwareExit),
+                }
             }
 
-            // set index and run body
-            flow.var_set(index_var, span_keyword, Ok(index_value));
-
-            let (entry, body_end) =
-                stack.with_loop_entry(|stack| self.elaborate_block(&scope_index, flow, stack, body));
-
-            // TODO handle entry
-            let _ = entry;
-
-            let body_end = body_end?;
-
-            // handle possible loop termination
-            match body_end {
-                BlockEnd::Normal => {}
-                BlockEnd::Stopping(end) => match end {
-                    BlockEndStopping::FunctionReturn(end) => return Ok(BlockEnd::Stopping(end)),
-                    BlockEndStopping::LoopBreak(_span) => break,
-                    BlockEndStopping::LoopContinue(_span) => continue,
-                },
+            if any_maybe_exit {
+                Ok(BlockEnd::HardwareMaybeExit)
+            } else {
+                Ok(BlockEnd::Normal)
             }
-        }
-
-        Ok(BlockEnd::Normal)
+        })
     }
 
     pub fn compile_elaborate_extra_list<'a, F: Flow, I: HasSpan>(
@@ -1162,5 +1224,81 @@ impl CompileItemContext<'_, '_> {
             }
         }
         Ok(final_else.as_ref())
+    }
+}
+
+fn join_block_ends(
+    stack: &mut ExitStack,
+    span: Span,
+    blocks: &mut [&mut IrBlock],
+    ends: &[BlockEnd],
+    cond_domain: ValueDomain,
+) -> BlockEnd {
+    // handle simple cases
+    match ends.iter().all_equal_value() {
+        // all ends are the same, just return that
+        Ok(&end) => return end,
+        // array is empty, this shouldn't really happen and if it does it doesn't matter what we return here
+        Err(None) => return BlockEnd::Normal,
+        // different ends found, fallthrough into hardware merge
+        Err(Some((_, _))) => {}
+    }
+
+    // hardware merge
+    let mut all_certain_exit = true;
+    for (block, &end) in zip_eq(blocks, ends) {
+        let (flag, is_certain_exit) = match end {
+            BlockEnd::Normal => {
+                // not an exit, so don't set the flags
+                (None, false)
+            }
+            BlockEnd::CompileExit(exit) => {
+                // we're merging into a mixed exit for the first time, so set the right flag
+                let flag = match exit {
+                    EarlyExitKind::Return => {
+                        let entry = stack
+                            .return_info_option()
+                            .expect("accepted return means there is a return entry");
+                        let entry = unwrap_match!(&mut entry.kind, ReturnEntryKind::Hardware(entry) => entry);
+                        &mut entry.return_flag
+                    }
+                    EarlyExitKind::Break => {
+                        let entry = stack
+                            .innermost_loop_option()
+                            .expect("accepted break means there is a loop");
+                        let entry = unwrap_match!(entry, LoopEntry::Hardware(entry) => entry);
+                        &mut entry.break_flag
+                    }
+                    EarlyExitKind::Continue => {
+                        let entry = stack
+                            .innermost_loop_option()
+                            .expect("accepted break means there is a loop");
+                        let entry = unwrap_match!(entry, LoopEntry::Hardware(entry) => entry);
+                        &mut entry.continue_flag
+                    }
+                };
+                (Some(flag), true)
+            }
+            BlockEnd::HardwareExit => {
+                // already a mixed exit, so the flags are already set
+                (None, true)
+            }
+            BlockEnd::HardwareMaybeExit => {
+                // already a mixed exit, so the flags are already set
+                (None, false)
+            }
+        };
+
+        all_certain_exit &= is_certain_exit;
+
+        if let Some(flag) = flag {
+            flag.set(cond_domain, block, span);
+        }
+    }
+
+    if all_certain_exit {
+        BlockEnd::HardwareExit
+    } else {
+        BlockEnd::HardwareMaybeExit
     }
 }

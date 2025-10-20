@@ -14,7 +14,8 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
@@ -24,7 +25,6 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -122,22 +122,25 @@ pub trait Flow: FlowPrivate {
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
 
     /// Evaluate the variable without checking if this allowed in the current context.
-    fn var_eval_unchecked(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
-        let diags = ctx.refs.diags;
-
+    fn var_eval_unchecked(
+        &self,
+        diags: &Diagnostics,
+        large: &mut IrLargeArena,
+        var: Spanned<Variable>,
+    ) -> DiagResult<ValueWithVersion> {
         match self.var_get_maybe(var)? {
             MaybeAssignedValue::Assigned(value) => Ok(value.value_with_version.clone().map_hardware(|v| {
                 let v = v.map_version(|index| ValueVersion {
                     signal: SignalOrVariable::Variable(var.inner),
                     index,
                 });
-                self.apply_implications(&mut ctx.large, v)
+                self.apply_implications(large, v)
             })),
             MaybeAssignedValue::NotYetAssigned => {
                 let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value")
                     .add_error(var.span, "variable used here")
-                    .add_info(var_info.id.span(), "variable declared here")
+                    .add_info(var_info.span_decl, "variable declared here")
                     .finish();
                 Err(diags.report(diag))
             }
@@ -145,7 +148,7 @@ pub trait Flow: FlowPrivate {
                 let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
                     .add_error(var.span, "variable used here")
-                    .add_info(var_info.id.span(), "variable declared here")
+                    .add_info(var_info.span_decl, "variable declared here")
                     .finish();
                 Err(diags.report(diag))
             }
@@ -153,8 +156,15 @@ pub trait Flow: FlowPrivate {
         }
     }
 
-    fn var_new_immutable_init(&mut self, id: MaybeIdentifier, assign_span: Span, value: DiagResult<Value>) -> Variable {
+    fn var_new_immutable_init(
+        &mut self,
+        span_decl: Span,
+        id: VariableId,
+        assign_span: Span,
+        value: DiagResult<Value>,
+    ) -> Variable {
         let info = VariableInfo {
+            span_decl,
             id,
             mutable: false,
             ty: None,
@@ -679,7 +689,7 @@ impl Flow for FlowHardware<'_> {
         }
     }
 
-    fn check_hardware<'s>(&'s mut self, _: Span, _: &str) -> DiagResult<&'s mut FlowHardware<'s>> {
+    fn check_hardware(&mut self, _: Span, _: &str) -> DiagResult<&mut FlowHardware<'_>> {
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
         Ok(slf)
     }
@@ -840,6 +850,25 @@ impl<'p> FlowHardware<'p> {
         result
     }
 
+    pub fn join_child_branches_pair(
+        &mut self,
+        refs: CompileRefs,
+        large: &mut IrLargeArena,
+        span_merge: Span,
+        branches: (FlowHardwareBranchContent, FlowHardwareBranchContent),
+    ) -> DiagResult<(IrBlock, IrBlock)> {
+        let (branch_0, branch_1) = branches;
+        let branches = vec![branch_0, branch_1];
+
+        let result = self.join_child_branches(refs, large, span_merge, branches)?;
+
+        assert_eq!(result.len(), 2);
+        let mut result = result.into_iter();
+        let block_0 = result.next().unwrap();
+        let block_1 = result.next().unwrap();
+        Ok((block_0, block_1))
+    }
+
     pub fn join_child_branches(
         &mut self,
         refs: CompileRefs,
@@ -874,11 +903,13 @@ impl<'p> FlowHardware<'p> {
                 check: self.root.check,
                 index: var,
             };
-            let var_id_span = self.var_info(Spanned::new(span_merge, var))?.id.span();
+            let var_info = self.var_info(Spanned::new(span_merge, var))?;
+            let var_span_decl = var_info.span_decl;
 
             let value_merged = merge_branch_values(refs, large, self, span_merge, var, &mut branches)
                 .unwrap_or_else(VariableValue::Error);
-            self.var_set_maybe(var, var_id_span, value_merged);
+
+            self.var_set_maybe(var, var_span_decl, value_merged);
         }
 
         // merge signals
@@ -1185,9 +1216,26 @@ struct VariableIndex(NonZeroUsize);
 
 #[derive(Debug)]
 pub struct VariableInfo {
-    pub id: MaybeIdentifier,
+    pub span_decl: Span,
+    pub id: VariableId,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum VariableId {
+    Id(MaybeIdentifier),
+    Custom(&'static str),
+}
+
+impl VariableId {
+    pub fn str(self, source: &SourceDatabase) -> Option<&str> {
+        match self {
+            VariableId::Id(MaybeIdentifier::Identifier(id)) => Some(id.str(source)),
+            VariableId::Id(MaybeIdentifier::Dummy { span: _ }) => None,
+            VariableId::Custom(s) => Some(s),
+        }
+    }
 }
 
 type VariableValue =
@@ -1382,7 +1430,7 @@ fn merge_branch_values(
                     ty.as_hardware_type(refs).map_err(|_| {
                         let ty_str = ty.diagnostic_string();
                         let diag = Diagnostic::new("merging if assignments needs hardware type")
-                            .add_info(var_info.id.span(), "for this variable")
+                            .add_info(var_info.span_decl, "for this variable")
                             .add_info(
                                 branch_value.last_assignment_span,
                                 format!(
@@ -1409,7 +1457,7 @@ fn merge_branch_values(
         let ty_str = ty.diagnostic_string();
 
         let mut diag = Diagnostic::new("merging if assignments needs hardware type")
-            .add_info(var_info.id.span(), "for this variable")
+            .add_info(var_info.span_decl, "for this variable")
             .add_error(
                 span_merge,
                 format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
@@ -1443,7 +1491,8 @@ fn merge_branch_values(
     // create result variable
     let var_ir_info = IrVariableInfo {
         ty: ty.as_ir(refs),
-        debug_info_id: var_info.id.spanned_string(refs.fixed.source),
+        debug_info_span: var_info.span_decl,
+        debug_info_id: var_info.id.str(refs.fixed.source).map(str::to_owned),
     };
     let var_ir = parent_flow.new_ir_variable(var_ir_info);
 
@@ -1453,9 +1502,10 @@ fn merge_branch_values(
 
     let mut build_store = |value: VariableValueRef| {
         let value = unwrap_branch_value(value);
+
         let value = match &value.value_with_version {
             Value::Compile(v) => v.as_hardware_value(refs, large, value.last_assignment_span, &ty)?,
-            Value::Hardware(v) => v.value.clone(),
+            Value::Hardware(v) => v.value.clone().soft_expand_to_type(large, &ty),
         };
 
         domain = domain.join(value.domain);

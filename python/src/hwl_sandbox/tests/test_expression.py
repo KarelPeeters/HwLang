@@ -1,8 +1,14 @@
 from pathlib import Path
+from typing import List
 
 import pytest
 
-from hwl_sandbox.common.expression import expression_compile, CompiledExpression
+from hwl_sandbox.common.compare import compare_compile, CompiledCompare
+
+
+def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, tmp_dir: Path) -> CompiledCompare:
+    body = f"return {expr};"
+    return compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=tmp_dir)
 
 
 def test_expand_pos(tmp_dir: Path):
@@ -69,7 +75,7 @@ def test_large_port(tmp_dir: Path):
     e.eval_assert([2 ** 128 - 1, 0], 2 ** 128 - 1)
 
 
-def assert_div_or_mod(e: CompiledExpression, op: str, a: int, b: int, c_div: int, c_mod: int):
+def assert_div_or_mod(e: CompiledCompare, op: str, a: int, b: int, c_div: int, c_mod: int):
     assert a // b == c_div
     assert a % b == c_mod
 
