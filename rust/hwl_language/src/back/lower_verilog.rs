@@ -1041,15 +1041,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 else_block,
             }) => {
                 // TODO re-merge else-if chains to reduce indentation if there are no other statements in the else block?
-                // TODO skip entirely if both blocks are empty
                 let cond = self.lower_expression_non_zero_width(stmt.span, condition, "condition")?;
                 swriteln!(self.f, "{indent}if ({cond}) begin");
                 self.lower_block_indented(then_block)?;
                 swrite!(self.f, "{indent}end");
 
-                if let Some(else_block) = else_block
-                    && !else_block.statements.is_empty()
-                {
+                if let Some(else_block) = else_block {
                     swriteln!(self.f, " else begin");
                     self.lower_block_indented(else_block)?;
                     swrite!(self.f, "{indent}end");
