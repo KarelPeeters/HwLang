@@ -385,6 +385,16 @@ impl CompileValue {
     }
 }
 
+impl<V, T> HardwareValue<V, T> {
+    pub fn map_type<U>(self, f: impl FnOnce(V) -> U) -> HardwareValue<U, T> {
+        HardwareValue {
+            ty: f(self.ty),
+            domain: self.domain,
+            expr: self.expr,
+        }
+    }
+}
+
 impl<E> Typed for HardwareValue<HardwareType, E> {
     fn ty(&self) -> Type {
         self.ty.as_type()

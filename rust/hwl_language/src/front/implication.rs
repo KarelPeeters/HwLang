@@ -1,5 +1,5 @@
 use crate::front::flow::ValueVersion;
-use crate::front::types::{ClosedIncRange, Type, Typed};
+use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
@@ -25,19 +25,19 @@ pub enum ImplicationOp {
     Gt,
 }
 
-pub type ValueWithVersion = Value<CompileValue, HardwareValueWithVersion>;
-pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
+pub type ValueWithVersion<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithVersion<ValueVersion, T>>;
+pub type ValueWithImplications<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithImplications<T>>;
 pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithVersion<V = ValueVersion> {
-    pub value: HardwareValue,
+pub struct HardwareValueWithVersion<V = ValueVersion, T = HardwareType> {
+    pub value: HardwareValue<T>,
     pub version: V,
 }
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithImplications {
-    pub value: HardwareValue,
+pub struct HardwareValueWithImplications<T = HardwareType> {
+    pub value: HardwareValue<T>,
     pub version: Option<ValueVersion>,
     pub implications: BoolImplications,
 }
@@ -82,22 +82,22 @@ impl ValueWithVersion {
     }
 }
 
-impl ValueWithImplications {
-    pub fn simple(value: Value) -> Self {
+impl<C, T> ValueWithImplications<C, T> {
+    pub fn simple(value: Value<C, HardwareValue<T>>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple)
     }
 
-    pub fn simple_version(value: ValueWithVersion) -> Self {
+    pub fn simple_version(value: ValueWithVersion<C, T>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple_version)
     }
 
-    pub fn into_value(self) -> Value {
+    pub fn into_value(self) -> Value<C, HardwareValue<T>> {
         self.map_hardware(|v| v.value)
     }
 }
 
-impl HardwareValueWithImplications {
-    pub fn simple(value: HardwareValue) -> Self {
+impl<T> HardwareValueWithImplications<T> {
+    pub fn simple(value: HardwareValue<T>) -> Self {
         Self {
             value,
             version: None,
@@ -105,11 +105,19 @@ impl HardwareValueWithImplications {
         }
     }
 
-    pub fn simple_version(value: HardwareValueWithVersion) -> Self {
+    pub fn simple_version(value: HardwareValueWithVersion<ValueVersion, T>) -> Self {
         Self {
             value: value.value,
             version: Some(value.version),
             implications: BoolImplications::default(),
+        }
+    }
+
+    pub fn map_type<U>(self, f: impl FnOnce(T) -> U) -> HardwareValueWithImplications<U> {
+        HardwareValueWithImplications {
+            value: self.value.map_type(f),
+            version: self.version,
+            implications: self.implications,
         }
     }
 }

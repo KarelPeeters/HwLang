@@ -1,13 +1,13 @@
 use crate::front::block::EarlyExitKind;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::domain::ValueDomain;
-use crate::front::flow::{Flow, FlowHardware, FlowKind, Variable};
-use crate::front::types::Type;
-use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrLargeArena, IrStatement, IrType,
-    IrVariable, IrVariableInfo,
-};
+use crate::front::expression::eval_binary_bool_typed;
+use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
+use crate::front::implication::ValueWithImplications;
+use crate::front::types::{HardwareType, Type};
+use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena};
 use crate::syntax::pos::{Span, Spanned};
+use unwrap_match::unwrap_match;
 
 pub struct ExitStack<'r> {
     inside_block_expression: Option<InsideBlockExpression>,
@@ -53,11 +53,7 @@ pub struct LoopEntryHardware {
 
 #[derive(Debug)]
 pub struct ExitFlag {
-    var: IrVariable,
-    domain: ValueDomain,
-
-    counter_set: u64,
-    counter_clear: u64,
+    var: Variable,
 }
 
 impl LoopEntry {
@@ -78,56 +74,61 @@ impl LoopEntry {
 }
 
 impl ExitFlag {
-    pub fn new(flow: &mut FlowHardware, span: Span, kind: EarlyExitKind) -> ExitFlag {
+    pub fn new(flow: &mut impl Flow, span: Span, kind: EarlyExitKind) -> ExitFlag {
         // crate variable
         let name = match kind {
             EarlyExitKind::Return => "flag_function_return",
             EarlyExitKind::Break => "flag_loop_break",
             EarlyExitKind::Continue => "flag_loop_continue",
         };
-        let info = IrVariableInfo {
-            ty: IrType::Bool,
-            debug_info_span: span,
-            debug_info_id: Some(name.to_owned()),
+        let info = VariableInfo {
+            span_decl: span,
+            id: VariableId::Custom(name),
+            mutable: true,
+            ty: Some(Spanned::new(span, Type::Bool)),
         };
-        let var = flow.new_ir_variable(info);
+        let var = flow.var_new(info);
 
-        // initialize variable
-        let stmt = IrStatement::Assign(IrAssignmentTarget::variable(var), IrExpression::Bool(false));
-        flow.push_ir_statement(Spanned::new(span, stmt));
+        // initialize to false
+        flow.var_set(var, span, Ok(Value::Compile(CompileValue::Bool(false))));
 
-        // construct wrapper
-        Self {
-            var,
-            domain: ValueDomain::Const,
-            counter_set: 0,
-            counter_clear: 0,
-        }
+        Self { var }
     }
 
-    pub fn clear(&mut self, flow: &mut FlowHardware, span: Span) {
-        if self.counter_set > self.counter_clear {
-            let stmt = IrStatement::Assign(IrAssignmentTarget::variable(self.var), IrExpression::Bool(false));
-            flow.push_ir_statement(Spanned::new(span, stmt));
-
-            self.counter_clear = self.counter_set;
-        }
+    pub fn clear(&mut self, flow: &mut impl Flow, span: Span) {
+        flow.var_set(self.var, span, Ok(Value::Compile(CompileValue::Bool(false))));
     }
 
-    pub fn set(&mut self, cond_domain: ValueDomain, block: &mut IrBlock, span: Span) {
-        let stmt = IrStatement::Assign(IrAssignmentTarget::variable(self.var), IrExpression::Bool(true));
-        block.statements.push(Spanned::new(span, stmt));
-
-        self.domain = self.domain.join(cond_domain);
-
-        self.counter_set += 1;
+    pub fn set(&mut self, flow: &mut impl Flow, span: Span) {
+        flow.var_set(self.var, span, Ok(Value::Compile(CompileValue::Bool(true))));
     }
 
-    pub fn get(&self) -> Option<(ValueDomain, IrVariable)> {
-        if self.counter_set > self.counter_clear {
-            Some((self.domain, self.var))
-        } else {
-            None
+    pub fn get(
+        &self,
+        diags: &Diagnostics,
+        large: &mut IrLargeArena,
+        flow: &mut impl Flow,
+        span: Span,
+    ) -> DiagResult<Value<bool, HardwareValue<()>>> {
+        match flow.var_eval_unchecked(diags, large, Spanned::new(span, self.var)) {
+            Ok(value) => {
+                let value = match value.into_value() {
+                    Value::Compile(value) => {
+                        let value = unwrap_match!(value, CompileValue::Bool(value) => value);
+                        Value::Compile(value)
+                    }
+                    Value::Hardware(value) => {
+                        assert_eq!(value.ty, HardwareType::Bool);
+                        Value::Hardware(HardwareValue {
+                            ty: (),
+                            domain: value.domain,
+                            expr: value.expr,
+                        })
+                    }
+                };
+                Ok(value)
+            }
+            Err(_) => Err(diags.report_internal_error(span, "flag evaluation should never fail")),
         }
     }
 }
@@ -157,32 +158,35 @@ impl<'r> ExitStack<'r> {
         }
     }
 
-    pub fn early_exit_condition(&mut self, large: &mut IrLargeArena) -> Option<(ValueDomain, IrExpression)> {
-        // collect early-exit flags
-        let mut exit_domain = ValueDomain::Const;
-        let mut exit_flags = vec![];
-        let mut add_flag = |flag: &ExitFlag| {
-            if let Some((domain, flag)) = flag.get() {
-                exit_domain = exit_domain.join(domain);
-                exit_flags.push(flag);
-            }
+    pub fn early_exit_condition(
+        &mut self,
+        diags: &Diagnostics,
+        large: &mut IrLargeArena,
+        flow: &mut impl Flow,
+        span: Span,
+    ) -> DiagResult<ValueWithImplications<bool, ()>> {
+        let mut add_flag = |c: ValueWithImplications<bool, ()>, flag: &ExitFlag| {
+            let flag = flag.get(diags, large, flow, span)?;
+            Ok(eval_binary_bool_typed(
+                large,
+                IrBoolBinaryOp::Or,
+                c,
+                ValueWithImplications::simple(flag),
+            ))
         };
+
+        let mut exit_cond = ValueWithImplications::<bool, ()>::Compile(false);
         if let Some(entry) = self.return_info_option()
             && let ReturnEntryKind::Hardware(entry) = &entry.kind
         {
-            add_flag(&entry.return_flag);
+            exit_cond = add_flag(exit_cond, &entry.return_flag)?;
         }
         if let Some(LoopEntry::Hardware(entry)) = self.innermost_loop_option() {
-            add_flag(&entry.break_flag);
-            add_flag(&entry.continue_flag);
+            exit_cond = add_flag(exit_cond, &entry.break_flag)?;
+            exit_cond = add_flag(exit_cond, &entry.continue_flag)?;
         }
 
-        // if any flags are set, reduce to single boolean expression
-        let exit_expression = exit_flags
-            .into_iter()
-            .map(IrExpression::Variable)
-            .reduce(|a, b| large.push_expr(IrExpressionLarge::BoolBinary(IrBoolBinaryOp::Or, a, b)));
-        exit_expression.map(|expr| (exit_domain, expr))
+        Ok(exit_cond)
     }
 
     pub fn with_loop_entry<R>(&mut self, entry: LoopEntry, f: impl FnOnce(&mut ExitStack) -> R) -> R {

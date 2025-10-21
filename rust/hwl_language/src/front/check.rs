@@ -1,6 +1,7 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
 use crate::front::domain::ValueDomain;
+use crate::front::implication::ValueWithImplications;
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::syntax::ast::SyncDomain;
@@ -368,9 +369,10 @@ pub fn check_type_is_uint_compile(
 pub fn check_type_is_bool(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<Value>,
-) -> DiagResult<Spanned<Value<bool, HardwareValue<()>>>> {
-    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref(), false, false)?;
+    value: Spanned<ValueWithImplications>,
+) -> DiagResult<Spanned<ValueWithImplications<bool, ()>>> {
+    let value_simple = value.as_ref().map_inner(|v| v.clone().into_value());
+    check_type_contains_value(diags, reason, &Type::Bool, value_simple.as_ref(), false, false)?;
 
     match value.inner {
         Value::Compile(value_inner) => match value_inner {
@@ -380,14 +382,10 @@ pub fn check_type_is_bool(
             }),
             _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
         },
-        Value::Hardware(value_inner) => match value_inner.ty {
+        Value::Hardware(value_inner) => match value_inner.value.ty {
             HardwareType::Bool => Ok(Spanned {
                 span: value.span,
-                inner: Value::Hardware(HardwareValue {
-                    ty: (),
-                    domain: value_inner.domain,
-                    expr: value_inner.expr,
-                }),
+                inner: Value::Hardware(value_inner.map_type(|_| ())),
             }),
             _ => Err(diags.report_internal_error(value.span, "expected bool type, should have already been checked")),
         },

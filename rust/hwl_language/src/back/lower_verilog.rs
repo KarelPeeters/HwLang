@@ -822,14 +822,11 @@ fn declare_locals(
                 continue;
             }
         };
-        let ty_verilog_width = ty_verilog.width();
-        let ty_verilog_prefix = ty_verilog.to_prefix();
-
         let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
         let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
         newline.start_item(f);
-        swriteln!(f, "{I}{I}reg {ty_verilog_prefix}{name} = {ty_verilog_width}'d0;");
+        declare_local(f, ty_verilog, &name);
 
         result.insert_first(variable, name);
     }
@@ -877,9 +874,7 @@ fn declare_temporaries(f: &mut String, offset: usize, temporaries: GrowVec<Tempo
     let mut any = false;
     for tmp in temporaries.into_vec() {
         let TemporaryInfo { name, ty } = *tmp;
-        let ty_width = ty.width();
-        let ty_prefix = ty.to_prefix();
-        swriteln!(f_inner, "{I}{I}reg {ty_prefix}{name} = {ty_width}'d0;");
+        declare_local(&mut f_inner, ty, &name);
         any = true;
     }
 
@@ -888,6 +883,13 @@ fn declare_temporaries(f: &mut String, offset: usize, temporaries: GrowVec<Tempo
     }
 
     f.insert_str(offset, &f_inner);
+}
+
+fn declare_local(f: &mut String, ty: VerilogType, name: &LoweredName) {
+    // x-initialize all locals to avoid inferring latches
+    let ty_prefix = ty.to_prefix();
+    let ty_width = ty.width();
+    swriteln!(f, "{I}{I}reg {ty_prefix}{name} = {ty_width}'dx;");
 }
 
 #[derive(Debug, Copy, Clone, Default)]
