@@ -5,7 +5,7 @@ use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
 use crate::front::implication::ValueWithImplications;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena};
+use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
 
@@ -81,11 +81,25 @@ impl ExitFlag {
             EarlyExitKind::Break => "flag_loop_break",
             EarlyExitKind::Continue => "flag_loop_continue",
         };
+
+        let use_ir_variable = match flow.kind_mut() {
+            FlowKind::Compile(_) => None,
+            FlowKind::Hardware(flow) => {
+                let info = IrVariableInfo {
+                    ty: IrType::Bool,
+                    debug_info_span: span,
+                    debug_info_id: Some(name.to_owned()),
+                };
+                Some(flow.new_ir_variable(info))
+            }
+        };
+
         let info = VariableInfo {
             span_decl: span,
             id: VariableId::Custom(name),
             mutable: true,
             ty: Some(Spanned::new(span, Type::Bool)),
+            use_ir_variable,
         };
         let var = flow.var_new(info);
 

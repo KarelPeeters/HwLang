@@ -2,7 +2,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ValueWithVersion, join_implications,
+    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
@@ -44,42 +44,67 @@ trait FlowPrivate: Sized {
 
     fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
 
-    fn apply_implications(
-        &self,
-        large: &mut IrLargeArena,
-        value: HardwareValueWithVersion,
-    ) -> HardwareValueWithVersion {
-        if let HardwareType::Int(ty) = &value.value.ty {
-            let mut range = ClosedIncRangeMulti::from_range(ty.clone());
-            self.for_each_implication(value.version, |implication| {
-                let &Implication { version, op, ref right } = implication;
-                assert_eq!(value.version, version);
-                range.apply_implication(op, right);
-            });
+    fn apply_implications(&self, large: &mut IrLargeArena, value: HardwareValueWithVersion) -> ValueWithVersion {
+        match &value.value.ty {
+            HardwareType::Bool => {
+                let mut known_false = false;
+                let mut known_true = false;
+                self.for_each_implication(value.version, |implication| {
+                    let &Implication { version, ref kind } = implication;
+                    assert_eq!(value.version, version);
 
-            match range.to_range() {
-                // TODO support never type or maybe specifically empty ranges
-                // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
-                None => value,
-                Some(range) => {
-                    if &range == ty {
-                        value
-                    } else {
-                        let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
-                        let value_constr = HardwareValue {
-                            ty: HardwareType::Int(range),
-                            domain: value.value.domain,
-                            expr: large.push_expr(expr_constr),
-                        };
-                        HardwareValueWithVersion {
-                            value: value_constr,
-                            version: value.version,
+                    if let &ImplicationKind::BoolEq(value) = kind {
+                        match value {
+                            true => known_true = true,
+                            false => known_false = true,
+                        }
+                    }
+                });
+
+                match (known_false, known_true) {
+                    (false, false) => Value::Hardware(value),
+                    (true, false) => Value::Compile(CompileValue::Bool(false)),
+                    (false, true) => Value::Compile(CompileValue::Bool(true)),
+                    (true, true) => {
+                        // TODO support never type or maybe specifically empty ranges
+                        // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
+                        Value::Hardware(value)
+                    }
+                }
+            }
+            HardwareType::Int(ty) => {
+                let mut range = ClosedIncRangeMulti::from_range(ty.clone());
+                self.for_each_implication(value.version, |implication| {
+                    let &Implication { version, ref kind } = implication;
+                    assert_eq!(value.version, version);
+                    if let &ImplicationKind::IntOp(op, ref right) = kind {
+                        range.apply_implication(op, right);
+                    }
+                });
+
+                match range.to_range() {
+                    // TODO support never type or maybe specifically empty ranges
+                    // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
+                    None => Value::Hardware(value),
+                    Some(range) => {
+                        if &range == ty {
+                            Value::Hardware(value)
+                        } else {
+                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
+                            let value_constr = HardwareValue {
+                                ty: HardwareType::Int(range),
+                                domain: value.value.domain,
+                                expr: large.push_expr(expr_constr),
+                            };
+                            Value::Hardware(HardwareValueWithVersion {
+                                value: value_constr,
+                                version: value.version,
+                            })
                         }
                     }
                 }
             }
-        } else {
-            value
+            _ => Value::Hardware(value),
         }
     }
 
@@ -122,6 +147,7 @@ pub trait Flow: FlowPrivate {
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
 
     /// Evaluate the variable without checking if this allowed in the current context.
+    /// TODO rename or clarify what still needs to be checked by the caller
     fn var_eval_unchecked(
         &self,
         diags: &Diagnostics,
@@ -129,13 +155,16 @@ pub trait Flow: FlowPrivate {
         var: Spanned<Variable>,
     ) -> DiagResult<ValueWithVersion> {
         match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => Ok(value.value_with_version.clone().map_hardware(|v| {
-                let v = v.map_version(|index| ValueVersion {
-                    signal: SignalOrVariable::Variable(var.inner),
-                    index,
-                });
-                self.apply_implications(large, v)
-            })),
+            MaybeAssignedValue::Assigned(value) => match value.value_with_version.clone() {
+                Value::Compile(v) => Ok(Value::Compile(v)),
+                Value::Hardware(v) => {
+                    let v = v.map_version(|index| ValueVersion {
+                        signal: SignalOrVariable::Variable(var.inner),
+                        index,
+                    });
+                    Ok(self.apply_implications(large, v))
+                }
+            },
             MaybeAssignedValue::NotYetAssigned => {
                 let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value")
@@ -168,6 +197,7 @@ pub trait Flow: FlowPrivate {
             id,
             mutable: false,
             ty: None,
+            use_ir_variable: None,
         };
         let var = self.var_new(info);
         self.var_set(var, assign_span, value);
@@ -1080,11 +1110,7 @@ impl<'p> FlowHardware<'p> {
         }
     }
 
-    pub fn signal_eval(
-        &self,
-        ctx: &mut CompileItemContext,
-        signal: Spanned<Signal>,
-    ) -> DiagResult<HardwareValueWithVersion> {
+    pub fn signal_eval(&self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
         let value_raw = signal.inner.as_hardware_value(ctx, signal.span)?;
 
         // For clocked blocks, check read domain validness.
@@ -1220,6 +1246,7 @@ pub struct VariableInfo {
     pub id: VariableId,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
+    pub use_ir_variable: Option<IrVariable>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1489,12 +1516,17 @@ fn merge_branch_values(
     })?;
 
     // create result variable
-    let var_ir_info = IrVariableInfo {
-        ty: ty.as_ir(refs),
-        debug_info_span: var_info.span_decl,
-        debug_info_id: var_info.id.str(refs.fixed.source).map(str::to_owned),
+    let var_ir = match var_info.use_ir_variable {
+        Some(var_ir) => var_ir,
+        None => {
+            let var_ir_info = IrVariableInfo {
+                ty: ty.as_ir(refs),
+                debug_info_span: var_info.span_decl,
+                debug_info_id: var_info.id.str(refs.fixed.source).map(str::to_owned),
+            };
+            parent_flow.new_ir_variable(var_ir_info)
+        }
     };
-    let var_ir = parent_flow.new_ir_variable(var_ir_info);
 
     // store values into that variable
     let mut domain = ValueDomain::CompileTime;
@@ -1510,22 +1542,30 @@ fn merge_branch_values(
 
         domain = domain.join(value.domain);
 
-        let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
-        Ok(Spanned::new(span_merge, store))
+        if matches!(value.expr, IrExpression::Variable(value_var) if value_var == var_ir) {
+            Ok(None)
+        } else {
+            let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
+            Ok(Some(Spanned::new(span_merge, store)))
+        }
     };
 
     for branch in &mut *branches {
         if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
             assert!(branch_combined.info.is_none());
             let branch_value = branch_combined.value.as_ref().unwrap();
-            branch.common.statements.push(build_store(branch_value.as_ref())?);
+            if let Some(store) = build_store(branch_value.as_ref())? {
+                branch.common.statements.push(store);
+            }
         }
         domain_cond = domain_cond.join(branch.cond_domain.inner);
     }
     if used_value_parent {
         // re-borrow parent_value
         let parent_value = parent_flow.var_get_maybe(var_spanned)?;
-        parent_flow.push_ir_statement(build_store(parent_value)?);
+        if let Some(store) = build_store(parent_value)? {
+            parent_flow.push_ir_statement(store);
+        }
     }
     domain = domain.join(domain_cond);
 

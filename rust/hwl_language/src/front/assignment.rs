@@ -4,7 +4,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, Variable};
-use crate::front::implication::{BoolImplications, HardwareValueWithImplications, ValueWithImplications};
+use crate::front::implication::ValueWithImplications;
 use crate::front::scope::Scope;
 use crate::front::signal::{Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
@@ -160,22 +160,14 @@ impl CompileItemContext<'_, '_> {
                 let target_base_eval = flow.signal_eval(self, target_base_signal)?;
 
                 let target_eval = if target_steps.is_empty() {
-                    HardwareValueWithImplications {
-                        value: target_base_eval.value,
-                        version: Some(target_base_eval.version),
-                        implications: BoolImplications::default(),
-                    }
+                    ValueWithImplications::simple_version(target_base_eval)
                 } else {
-                    let target_eval = target_steps.apply_to_hardware_value(
+                    let target_eval = target_steps.apply_to_value(
                         self.refs,
                         &mut self.large,
-                        Spanned::new(target.span, target_base_eval.value),
+                        Spanned::new(target_base.span, target_base_eval.into_value()),
                     )?;
-                    HardwareValueWithImplications {
-                        value: target_eval,
-                        version: None,
-                        implications: BoolImplications::default(),
-                    }
+                    ValueWithImplications::simple(target_eval)
                 };
 
                 let value_eval = eval_binary_expression(
@@ -183,7 +175,7 @@ impl CompileItemContext<'_, '_> {
                     &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner.to_binary_op()),
-                    Spanned::new(target.span, Value::Hardware(target_eval)),
+                    Spanned::new(target.span, target_eval),
                     right_eval,
                 )?;
                 let value_eval = match value_eval {

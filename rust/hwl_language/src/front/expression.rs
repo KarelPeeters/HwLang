@@ -10,7 +10,7 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{
-    BoolImplications, HardwareValueWithImplications, Implication, ImplicationOp, ValueWithImplications,
+    BoolImplications, HardwareValueWithImplications, Implication, ImplicationIntOp, ValueWithImplications,
 };
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -212,11 +212,11 @@ impl<'a> CompileItemContext<'a, '_> {
                         }
                         NamedValue::Port(port) => {
                             let flow = flow.check_hardware(expr.span, "port access")?;
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
                         }
                         NamedValue::Wire(wire) => {
                             let flow = flow.check_hardware(expr.span, "wire access")?;
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
                         }
                         NamedValue::Register(reg) => {
                             let flow = flow.check_hardware(expr.span, "register access")?;
@@ -226,7 +226,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
                             }
 
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?
                         }
                         NamedValue::PortInterface(interface) => {
                             // we don't need a hardware context yet, only when we actually access an actual port
@@ -848,9 +848,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.check_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
-                return Ok(ValueInner::Value(Value::Hardware(
-                    HardwareValueWithImplications::simple_version(port_eval),
-                )));
+                return Ok(ValueInner::Value(ValueWithImplications::simple_version(port_eval)));
             }
             ValueInner::WireInterface(wire_interface) => {
                 let wire_interface_info = &self.wire_interfaces[wire_interface];
@@ -872,9 +870,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.check_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
-                return Ok(ValueInner::Value(Value::Hardware(
-                    HardwareValueWithImplications::simple_version(wire_eval),
-                )));
+                return Ok(ValueInner::Value(ValueWithImplications::simple_version(wire_eval)));
             }
             ValueInner::Value(base_eval) => base_eval,
         };
@@ -2528,7 +2524,7 @@ pub fn eval_binary_bool_typed(
                     if_true: vec![],
                     if_false: vec_concat([left.implications.if_false, right.implications.if_false]),
                 },
-                IrBoolBinaryOp::Xor => BoolImplications::default(),
+                IrBoolBinaryOp::Xor => BoolImplications::new(None),
             };
 
             ValueWithImplications::Hardware(HardwareValueWithImplications {
@@ -2661,12 +2657,20 @@ fn implications_lt(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc));
-        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc - 1));
+        if_true.push(Implication::new_int(left, ImplicationIntOp::Lt, right_range.end_inc));
+        if_false.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Gt,
+            right_range.start_inc - 1,
+        ));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc));
-        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc + 1));
+        if_true.push(Implication::new_int(right, ImplicationIntOp::Gt, left_range.start_inc));
+        if_false.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Lt,
+            left_range.end_inc + 1,
+        ));
     }
 
     BoolImplications { if_true, if_false }
@@ -2682,12 +2686,20 @@ fn implications_lte(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc + 1));
-        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Lt,
+            right_range.end_inc + 1,
+        ));
+        if_false.push(Implication::new_int(left, ImplicationIntOp::Gt, right_range.start_inc));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc - 1));
-        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Gt,
+            left_range.start_inc - 1,
+        ));
+        if_false.push(Implication::new_int(right, ImplicationIntOp::Lt, left_range.end_inc));
     }
 
     BoolImplications { if_true, if_false }
@@ -2703,20 +2715,36 @@ fn implications_eq(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, &right_range.end_inc + 1));
-        if_true.push(Implication::new(left, ImplicationOp::Gt, &right_range.start_inc - 1));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Lt,
+            &right_range.end_inc + 1,
+        ));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Gt,
+            &right_range.start_inc - 1,
+        ));
 
         if let Some(right) = right_range.as_single() {
-            if_false.push(Implication::new(left, ImplicationOp::Neq, right.clone()));
+            if_false.push(Implication::new_int(left, ImplicationIntOp::Neq, right.clone()));
         }
     }
 
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Lt, &left_range.end_inc + 1));
-        if_true.push(Implication::new(right, ImplicationOp::Gt, &left_range.start_inc - 1));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Lt,
+            &left_range.end_inc + 1,
+        ));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Gt,
+            &left_range.start_inc - 1,
+        ));
 
         if let Some(left) = left_range.as_single() {
-            if_false.push(Implication::new(right, ImplicationOp::Neq, left.clone()));
+            if_false.push(Implication::new_int(right, ImplicationIntOp::Neq, left.clone()));
         }
     }
 
