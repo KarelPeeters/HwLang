@@ -48,3 +48,26 @@ def test_return_loop(tmp_dir: Path):
     e = compare_compile(["bool"], "int(0..=4)", src, tmp_dir)
     e.eval_assert([False], 0)
     e.eval_assert([True], 4)
+
+
+def test_mix_all(tmp_dir: Path):
+    src = """
+    var count = 0;
+    for (i in 0..4) {
+        if (i == a0) { break; }     
+        if (i == a1) { continue; }
+        if (i == a2) { return -1; }
+        count += 1;      
+    }
+    return count;
+    """
+    e = compare_compile(
+        ["int(-1..4)", "int(-1..4)", "int(-1..4)"],
+        "int(-1..=4)",
+        src,
+        tmp_dir,
+    )
+    e.eval_assert([-1, -1, -1], 4)
+    e.eval_assert([2, -1, -1], 2)
+    e.eval_assert([-1, 2, -1], 3)
+    e.eval_assert([-1, -1, 2], -1)
