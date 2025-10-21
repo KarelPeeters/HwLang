@@ -14,7 +14,7 @@ use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::{Span, Spanned};
 use crate::throw;
 use crate::util::arena::Arena;
-use crate::util::big_int::{BigInt, BigUint};
+use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::{Indent, separator_non_trailing};
@@ -1521,7 +1521,19 @@ fn lower_int_constant(ty: NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> {
 
     match repr.signed() {
         Signed::Unsigned => Evaluated::String(format!("{bits}'d{x}")),
-        Signed::Signed => Evaluated::SignedString(format!("{bits}'sd{x}")),
+        Signed::Signed => {
+            let s = match x.sign() {
+                Sign::Negative => {
+                    // Verilog does not actually have negative literals, it's just the unary not operator.
+                    // For the most negative value this fails though, the absolute value already underflows,
+                    //   so we should skip the preceding negative sign in that case.
+                    let prefix_sign = if x == &repr.range().start_inc { "" } else { "-" };
+                    format!("{prefix_sign}{bits}'sd{}", x.abs())
+                }
+                Sign::Zero | Sign::Positive => format!("{bits}'sd{x}"),
+            };
+            Evaluated::SignedString(s)
+        }
     }
 }
 

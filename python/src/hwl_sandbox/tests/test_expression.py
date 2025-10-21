@@ -11,6 +11,19 @@ def expression_compile(ty_inputs: List[str], ty_res: str, expr: str, tmp_dir: Pa
     return compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=tmp_dir)
 
 
+@pytest.mark.parametrize("v", [False, True])
+def test_bool_literal(tmp_dir: Path, v: bool):
+    e_true = expression_compile([], "bool", str(v).lower(), tmp_dir)
+    e_true.eval_assert([], v)
+
+
+# include both extremes
+@pytest.mark.parametrize("v", [-4, -1, 0, 1, 3])
+def test_int_literal(tmp_dir: Path, v: int):
+    e_rz = expression_compile([], "int(-4..4)", str(v), tmp_dir)
+    e_rz.eval_assert([], v)
+
+
 def test_expand_pos(tmp_dir: Path):
     e = expression_compile(["int(0..13)"], "int(0..25)", "a0", tmp_dir)
     for v in range(13):
@@ -142,11 +155,3 @@ def test_div_tricky(tmp_dir: Path, op: str):
 def test_compare_signed(tmp_dir: Path):
     e = expression_compile(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmp_dir)
     e.eval_assert([-1, 1], True)
-
-
-def test_bool_literals(tmp_dir: Path):
-    e_true = expression_compile([], "bool", "true", tmp_dir / "true")
-    e_true.eval_assert([], True)
-
-    e_false = expression_compile([], "bool", "false", tmp_dir / "false")
-    e_false.eval_assert([], False)
