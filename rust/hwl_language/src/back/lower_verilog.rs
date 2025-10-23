@@ -7,8 +7,8 @@ use crate::mid::ir::{
     IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
-    IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
-    SignalAccess, ir_modules_topological_sort,
+    IrSignalOrVariable, IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort, ValueAccess, ir_modules_topological_sort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::{Span, Spanned};
@@ -17,7 +17,7 @@ use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
-use crate::util::{Indent, separator_non_trailing};
+use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
 use itertools::enumerate;
@@ -207,7 +207,7 @@ struct NameMap<'n> {
     wires: &'n IndexMap<IrWire, LoweredName>,
     regs_shadowed: &'n IndexMap<IrRegister, LoweredName>,
     regs_outer: &'n IndexMap<IrRegister, LoweredName>,
-    variables: &'n IndexMap<IrVariable, LoweredName>,
+    variables: &'n IndexMap<IrVariable, Result<LoweredName, NotRead>>,
 }
 
 impl<'n> NameMap<'n> {
@@ -225,8 +225,8 @@ impl<'n> NameMap<'n> {
             .unwrap_or_else(|| self.regs_outer.get(&reg).unwrap())
     }
 
-    pub fn map_var(self, var: IrVariable) -> &'n LoweredName {
-        self.variables.get(&var).unwrap()
+    pub fn map_var(self, var: IrVariable) -> Result<&'n LoweredName, NotRead> {
+        self.variables.get(&var).unwrap().as_ref_ok()
     }
 }
 
@@ -472,25 +472,27 @@ fn lower_module_statements(
         match &child.inner {
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
-                swrite!(f, "{I}always @(");
+                let (variables_read, any_signals_read) = collect_variables_read_and_any_signal_read(large, block);
 
                 // processes with empty sensitivity lists never run, not even at startup
                 //   to avoid this, we make them sensitive to a dummy signal that is assigned to
-                let mut any_signals_read = false;
-                block.visit_signals_accessed(large, &mut |_, access| match access {
-                    SignalAccess::Read => any_signals_read = true,
-                    SignalAccess::Write => {}
-                });
+                swrite!(f, "{I}always @(");
                 if any_signals_read {
                     swrite!(f, "*");
                 } else {
                     swrite!(f, "{dummy_name}");
                 }
-
                 swriteln!(f, ") begin");
 
                 let mut newline_process = NewlineGenerator::new();
-                let variables = declare_locals(diags, module_name_scope, locals, &mut newline_process, f)?;
+                let variables = declare_locals(
+                    diags,
+                    f,
+                    &mut newline_process,
+                    module_name_scope,
+                    locals,
+                    variables_read,
+                )?;
 
                 let temporaries = GrowVec::new();
                 let temporaries_offset = f.len();
@@ -562,16 +564,23 @@ fn lower_module_statements(
                 let mut newline_process = NewlineGenerator::new();
 
                 // declare locals and shadow registers
-                let variables = declare_locals(diags, module_name_scope, locals, &mut newline_process, f)?;
+                let (variables_read, shadow_regs) = collect_variables_read_and_shadow_registers(large, clock_block);
+                let variables = declare_locals(
+                    diags,
+                    f,
+                    &mut newline_process,
+                    module_name_scope,
+                    locals,
+                    variables_read,
+                )?;
 
-                let shadow_regs = collect_shadow_registers(large, clock_block);
                 let reg_name_map_shadowed = declare_shadow_registers(
                     diags,
+                    f,
+                    &mut newline_process,
                     module_name_scope,
                     registers,
                     &shadow_regs,
-                    &mut newline_process,
-                    f,
                 )?;
 
                 let temporaries = GrowVec::new();
@@ -798,35 +807,46 @@ fn lower_port_connections<S: AsRef<str>>(
     Ok(())
 }
 
+#[derive(Debug, Copy, Clone)]
+struct NotRead;
+
 // TODO blocks with variables must be named
+/// Declare local variables.
+/// We skip declaring variables that never read, any potential writes to them will also be skipped.
 fn declare_locals(
     diags: &Diagnostics,
+    f: &mut String,
+    newline: &mut NewlineGenerator,
     module_name_scope: &mut LoweredNameScope,
     locals: &IrVariables,
-    newline: &mut NewlineGenerator,
-    f: &mut String,
-) -> DiagResult<IndexMap<IrVariable, LoweredName>> {
+    variables_read: IndexSet<IrVariable>,
+) -> DiagResult<IndexMap<IrVariable, Result<LoweredName, NotRead>>> {
     let mut result = IndexMap::new();
 
     for (variable, variable_info) in locals {
-        let &IrVariableInfo {
-            ref ty,
-            debug_info_span,
-            ref debug_info_id,
-        } = variable_info;
+        let name = if variables_read.contains(&variable) {
+            let &IrVariableInfo {
+                ref ty,
+                debug_info_span,
+                ref debug_info_id,
+            } = variable_info;
 
-        let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_span, ty)? {
-            Ok(ty) => ty,
-            Err(ZeroWidth) => {
-                // skip zero-width variables
-                continue;
-            }
+            let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_span, ty)? {
+                Ok(ty) => ty,
+                Err(ZeroWidth) => {
+                    // skip zero-width variables
+                    continue;
+                }
+            };
+            let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
+            let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+            newline.start_item(f);
+            declare_local(f, ty_verilog, &name);
+            Ok(name)
+        } else {
+            Err(NotRead)
         };
-        let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
-        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
-
-        newline.start_item(f);
-        declare_local(f, ty_verilog, &name);
 
         result.insert_first(variable, name);
     }
@@ -836,11 +856,11 @@ fn declare_locals(
 
 fn declare_shadow_registers(
     diags: &Diagnostics,
+    f: &mut String,
+    newline: &mut NewlineGenerator,
     module_name_scope: &mut LoweredNameScope,
     registers: &Arena<IrRegister, IrRegisterInfo>,
     shadow_regs: &IndexMap<IrRegister, AccessInfo>,
-    newline: &mut NewlineGenerator,
-    f: &mut String,
 ) -> DiagResult<IndexMap<IrRegister, LoweredName>> {
     let mut shadowing_reg_name_map = IndexMap::new();
 
@@ -898,23 +918,47 @@ struct AccessInfo {
     any_write: bool,
 }
 
-fn collect_shadow_registers(large: &IrLargeArena, block: &IrBlock) -> IndexMap<IrRegister, AccessInfo> {
-    // collect all registers that are accessed
-    let mut result: IndexMap<IrRegister, AccessInfo> = IndexMap::new();
-    block.visit_signals_accessed(large, &mut |signal, access| {
-        if let IrSignal::Register(reg) = signal {
-            let entry = result.entry(reg).or_default();
+fn collect_variables_read_and_any_signal_read(large: &IrLargeArena, block: &IrBlock) -> (IndexSet<IrVariable>, bool) {
+    let mut variables_read = IndexSet::new();
+    let mut any_signals_read = false;
+
+    block.visit_values_accessed(large, &mut |v, a| match (v, a) {
+        (IrSignalOrVariable::Signal(_), ValueAccess::Read) => {
+            any_signals_read = true;
+        }
+        (IrSignalOrVariable::Variable(v), ValueAccess::Read) => {
+            variables_read.insert(v);
+        }
+        (_, _) => {}
+    });
+    (variables_read, any_signals_read)
+}
+
+fn collect_variables_read_and_shadow_registers(
+    large: &IrLargeArena,
+    block: &IrBlock,
+) -> (IndexSet<IrVariable>, IndexMap<IrRegister, AccessInfo>) {
+    let mut variables_read = IndexSet::new();
+    let mut shadow_regs: IndexMap<IrRegister, AccessInfo> = IndexMap::new();
+
+    block.visit_values_accessed(large, &mut |signal, access| match (signal, access) {
+        (IrSignalOrVariable::Variable(v), ValueAccess::Read) => {
+            variables_read.insert(v);
+        }
+        (IrSignalOrVariable::Signal(IrSignal::Register(reg)), access) => {
+            let entry = shadow_regs.entry(reg).or_default();
             match access {
-                SignalAccess::Read => entry.any_read = true,
-                SignalAccess::Write => entry.any_write = true,
+                ValueAccess::Read => entry.any_read = true,
+                ValueAccess::Write => entry.any_write = true,
             }
         }
+        _ => {}
     });
 
     // we only need to shadow registers that are written to
-    result.retain(|_, k| k.any_write);
+    shadow_regs.retain(|_, k| k.any_write);
 
-    result
+    (variables_read, shadow_regs)
 }
 
 #[derive(Debug)]
@@ -1023,7 +1067,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let target = self.lower_assign_target(stmt.span, target)?;
+                let target = match self.lower_assign_target(stmt.span, target)? {
+                    Ok(target) => target,
+                    Err(NotRead) => return Ok(()),
+                };
                 let source = self.lower_expression(stmt.span, source)?;
                 match source {
                     Ok(source) => swriteln!(self.f, "{indent}{target} = {source};"),
@@ -1088,7 +1135,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
 
             &IrExpression::Signal(s) => Evaluated::Name(name_map.map_signal(s)),
-            &IrExpression::Variable(v) => Evaluated::Name(name_map.map_var(v)),
+            &IrExpression::Variable(v) => Evaluated::Name(
+                name_map
+                    .map_var(v)
+                    .map_err(|_: NotRead| self.diags.report_internal_error(span, "reading from not-read variable"))?,
+            ),
 
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
@@ -1431,7 +1482,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(value)
     }
 
-    fn lower_assign_target(&mut self, span: Span, target: &IrAssignmentTarget) -> DiagResult<Evaluated<'n>> {
+    fn lower_assign_target(
+        &mut self,
+        span: Span,
+        target: &IrAssignmentTarget,
+    ) -> DiagResult<Result<Evaluated<'n>, NotRead>> {
         // TODO this is probably wrong, we might need intermediate variables for the base and after each step
         let IrAssignmentTarget { base, steps } = target;
 
@@ -1440,12 +1495,15 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             IrAssignmentTargetBase::Port(s) => name_map.map_signal(IrSignal::Port(s)),
             IrAssignmentTargetBase::Wire(s) => name_map.map_signal(IrSignal::Wire(s)),
             IrAssignmentTargetBase::Register(s) => name_map.map_signal(IrSignal::Register(s)),
-            IrAssignmentTargetBase::Variable(r) => name_map.map_var(r),
+            IrAssignmentTargetBase::Variable(r) => match name_map.map_var(r) {
+                Ok(name) => name,
+                Err(NotRead) => return Ok(Err(NotRead)),
+            },
         };
 
         // early exit to avoid string allocation
         if steps.is_empty() {
-            return Ok(Evaluated::Name(base));
+            return Ok(Ok(Evaluated::Name(base)));
         }
 
         let mut g = String::new();
@@ -1471,7 +1529,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
         }
 
-        Ok(Evaluated::String(g))
+        Ok(Ok(Evaluated::String(g)))
     }
 
     fn new_temporary(&mut self, span: Span, ty: VerilogType) -> DiagResult<Temporary<'n>> {

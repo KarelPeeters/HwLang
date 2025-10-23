@@ -182,6 +182,12 @@ pub enum IrPortConnection {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub enum IrSignalOrVariable {
+    Signal(IrSignal),
+    Variable(IrVariable),
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum IrSignal {
     Wire(IrWire),
     Port(IrPort),
@@ -411,35 +417,35 @@ impl IrType {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum SignalAccess {
+pub enum ValueAccess {
     Read,
     Write,
 }
 
 impl IrBlock {
-    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+    pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         let IrBlock { statements } = self;
         for stmt in statements {
-            stmt.inner.visit_signals_accessed(large, f);
+            stmt.inner.visit_values_accessed(large, f);
         }
     }
 }
 
 impl IrStatement {
-    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+    pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         match self {
             IrStatement::Assign(target, expr) => {
-                target.visit_signals_accessed(large, f);
-                expr.visit_signals_accessed(large, f);
+                target.visit_values_accessed(large, f);
+                expr.visit_values_accessed(large, f);
             }
             IrStatement::Block(block) => {
-                block.visit_signals_accessed(large, f);
+                block.visit_values_accessed(large, f);
             }
             IrStatement::If(if_stmt) => {
-                if_stmt.condition.visit_signals_accessed(large, f);
-                if_stmt.then_block.visit_signals_accessed(large, f);
+                if_stmt.condition.visit_values_accessed(large, f);
+                if_stmt.then_block.visit_values_accessed(large, f);
                 if let Some(else_block) = &if_stmt.else_block {
-                    else_block.visit_signals_accessed(large, f);
+                    else_block.visit_values_accessed(large, f);
                 }
             }
             IrStatement::PrintLn(s) => {
@@ -450,31 +456,31 @@ impl IrStatement {
 }
 
 impl IrAssignmentTarget {
-    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
+    pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         let IrAssignmentTarget { base, steps } = self;
 
-        match base {
+        match *base {
             IrAssignmentTargetBase::Port(port) => {
-                f(IrSignal::Port(*port), SignalAccess::Write);
+                f(IrSignalOrVariable::Signal(IrSignal::Port(port)), ValueAccess::Write);
             }
             IrAssignmentTargetBase::Register(reg) => {
-                f(IrSignal::Register(*reg), SignalAccess::Write);
+                f(IrSignalOrVariable::Signal(IrSignal::Register(reg)), ValueAccess::Write);
             }
             IrAssignmentTargetBase::Wire(wire) => {
-                f(IrSignal::Wire(*wire), SignalAccess::Write);
+                f(IrSignalOrVariable::Signal(IrSignal::Wire(wire)), ValueAccess::Write);
             }
-            IrAssignmentTargetBase::Variable(_) => {
-                // variables are not signals
+            IrAssignmentTargetBase::Variable(var) => {
+                f(IrSignalOrVariable::Variable(var), ValueAccess::Write);
             }
         }
 
         for step in steps {
             match step {
                 IrTargetStep::ArrayIndex(index) => {
-                    index.visit_signals_accessed(large, f);
+                    index.visit_values_accessed(large, f);
                 }
                 IrTargetStep::ArraySlice(start, _len) => {
-                    start.visit_signals_accessed(large, f);
+                    start.visit_values_accessed(large, f);
                 }
             }
         }
@@ -660,11 +666,18 @@ impl IrExpression {
         }
     }
 
-    pub fn visit_signals_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignal, SignalAccess)) {
-        if let &IrExpression::Signal(signal) = self {
-            f(signal, SignalAccess::Read);
+    pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
+        match self {
+            &IrExpression::Signal(signal) => {
+                f(IrSignalOrVariable::Signal(signal), ValueAccess::Read);
+            }
+            &IrExpression::Variable(var) => {
+                f(IrSignalOrVariable::Variable(var), ValueAccess::Read);
+            }
+            _ => {}
         }
-        self.for_each_expression_operand(large, &mut |op| op.visit_signals_accessed(large, f));
+
+        self.for_each_expression_operand(large, &mut |op| op.visit_values_accessed(large, f));
     }
 
     pub fn for_each_expression_operand(&self, large: &IrLargeArena, f: &mut impl FnMut(&IrExpression)) {
