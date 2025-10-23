@@ -2,9 +2,9 @@ use crate::front::block::EarlyExitKind;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
 use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
-use crate::front::implication::ValueWithImplications;
+use crate::front::implication::{HardwareValueWithVersion, ValueWithImplications, ValueWithVersion};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{CompileValue, Value};
 use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
@@ -123,20 +123,19 @@ impl ExitFlag {
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
         span: Span,
-    ) -> DiagResult<Value<bool, HardwareValue<()>>> {
+    ) -> DiagResult<ValueWithVersion<bool, ()>> {
         match flow.var_eval_unchecked(diags, large, Spanned::new(span, self.var)) {
             Ok(value) => {
-                let value = match value.into_value() {
+                let value = match value {
                     Value::Compile(value) => {
                         let value = unwrap_match!(value, CompileValue::Bool(value) => value);
                         Value::Compile(value)
                     }
                     Value::Hardware(value) => {
-                        assert_eq!(value.ty, HardwareType::Bool);
-                        Value::Hardware(HardwareValue {
-                            ty: (),
-                            domain: value.domain,
-                            expr: value.expr,
+                        assert_eq!(value.value.ty, HardwareType::Bool);
+                        Value::Hardware(HardwareValueWithVersion {
+                            value: value.value.map_type(|_| ()),
+                            version: value.version,
                         })
                     }
                 };
@@ -185,7 +184,7 @@ impl<'r> ExitStack<'r> {
                 large,
                 IrBoolBinaryOp::Or,
                 c,
-                ValueWithImplications::simple(flag),
+                ValueWithImplications::simple_version(flag),
             ))
         };
 
