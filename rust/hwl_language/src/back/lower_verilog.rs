@@ -898,7 +898,7 @@ fn declare_temporaries(f: &mut String, offset: usize, temporaries: GrowVec<Tempo
         any = true;
     }
 
-    if any && !&f[offset..].starts_with("\n\n") {
+    if any && !&f[offset..].starts_with("\n") {
         f_inner.push('\n');
     }
 
