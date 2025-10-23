@@ -111,6 +111,8 @@ trait FlowPrivate: Sized {
     fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue);
 
     fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>>;
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo>;
 }
 
 #[allow(private_bounds)]
@@ -144,7 +146,14 @@ pub trait Flow: FlowPrivate {
         self.var_set_maybe(var, assignment_span, assigned);
     }
 
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
+    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
+        assert_eq!(var.inner.check, self.root().check);
+        self.try_var_info(var.inner.index).ok_or_else(|| {
+            self.root()
+                .diags
+                .report_internal_error(var.span, "failed to find variable")
+        })
+    }
 
     /// Evaluate the variable without checking if this allowed in the current context.
     /// TODO rename or clarify what still needs to be checked by the caller
@@ -404,6 +413,21 @@ impl FlowPrivate for FlowCompile<'_> {
             }
         }
     }
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
+        let mut curr = self;
+        loop {
+            if let Some(slot) = curr.variable_slots.get(&var) {
+                return Some(&slot.info);
+            }
+            curr = match &curr.kind {
+                FlowCompileKind::Root => return None,
+                FlowCompileKind::IsolatedCompile(parent) => parent,
+                FlowCompileKind::ScopedCompile(parent) => parent,
+                FlowCompileKind::ScopedHardware(parent) => return parent.try_var_info(var),
+            }
+        }
+    }
 }
 
 impl Flow for FlowCompile<'_> {
@@ -444,24 +468,6 @@ impl Flow for FlowCompile<'_> {
         self.variable_slots.insert_first(var.index, slot);
 
         var
-    }
-
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
-        let mut curr = self;
-        loop {
-            if let Some(slot) = curr.variable_slots.get(&var.inner.index) {
-                return Ok(&slot.info);
-            }
-            curr = match &curr.kind {
-                FlowCompileKind::Root => {
-                    let diags = self.root.diags;
-                    return Err(diags.report_internal_error(var.span, "failed to find variable info"));
-                }
-                FlowCompileKind::IsolatedCompile(parent) => parent,
-                FlowCompileKind::ScopedCompile(parent) => parent,
-                FlowCompileKind::ScopedHardware(parent) => return parent.var_info(var),
-            }
-        }
     }
 }
 
@@ -586,7 +592,7 @@ struct FlowHardwareCommon {
 }
 
 struct FlowHardwareVariables {
-    // We store both the info and the value as a signle combined entry, to avoid duplicate map lookups and insertions.
+    // We store both the info and the value as a single combined entry, to avoid duplicate map lookups and insertions.
     combined: IndexMap<VariableIndex, VariableInfoAndValue>,
 }
 
@@ -704,6 +710,27 @@ impl FlowPrivate for FlowHardware<'_> {
             };
         }
     }
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
+        // TODO fix code duplication
+        let mut curr = self;
+        loop {
+            let (variables, next) = match &curr.kind {
+                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
+                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
+                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
+            };
+            if let Some(info) = variables.combined.get(&var)
+                && let Some(info) = &info.info
+            {
+                return Some(info);
+            }
+            curr = match next {
+                Either::Left(root) => return root.parent.try_var_info(var),
+                Either::Right(next) => next,
+            };
+        }
+    }
 }
 
 impl Flow for FlowHardware<'_> {
@@ -744,27 +771,6 @@ impl Flow for FlowHardware<'_> {
         variables.combined.insert_first(var.index, combined);
 
         var
-    }
-
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
-        // TODO fix code duplication
-        let mut curr = self;
-        loop {
-            let (variables, next) = match &curr.kind {
-                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
-                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
-                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
-            };
-            if let Some(info) = variables.combined.get(&var.inner.index)
-                && let Some(info) = &info.info
-            {
-                return Ok(info);
-            }
-            curr = match next {
-                Either::Left(root) => return root.parent.var_info(var),
-                Either::Right(next) => next,
-            };
-        }
     }
 }
 
@@ -918,7 +924,7 @@ impl<'p> FlowHardware<'p> {
         for branch in &branches {
             assert_eq!(self.root.check, branch.check);
             for &var in branch.common.variables.combined.keys() {
-                if branch.common.variables.combined.contains_key(&var) {
+                if self.try_var_info(var).is_some() {
                     merged_vars.insert(var);
                 }
             }

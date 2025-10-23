@@ -71,3 +71,24 @@ def test_mix_all(tmp_dir: Path):
     e.eval_assert([2, -1, -1], 2)
     e.eval_assert([-1, 2, -1], 3)
     e.eval_assert([-1, -1, 2], -1)
+
+
+def test_nested_loop_break(tmp_dir: Path):
+    src = """
+    var count = 0;
+    for (i0 in 0..4) {
+        if (i0 == a0) { break; }
+        for (i1 in 0..3) {
+            if (i0 == a1) { break; }
+            if (i1 == a2) { break; }
+            count += 1;
+        }
+    }
+    return count;
+    """
+    ar = "int(-1..4)"
+    e = compare_compile([ar, ar, ar], "int(0..=16)", src, tmp_dir)
+    e.eval_assert([-1, -1, -1], 12)
+    e.eval_assert([2, -1, -1], 6)
+    e.eval_assert([-1, 2, -1], 9)
+    e.eval_assert([-1, -1, 2], 8)
