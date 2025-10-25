@@ -15,7 +15,7 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{
-    IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrStatement,
+    IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
 };
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, Identifier,
@@ -28,7 +28,7 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::{ResultExt, result_pair};
 use annotate_snippets::Level;
-use itertools::{Itertools, enumerate, zip_eq};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -1081,34 +1081,33 @@ impl CompileItemContext<'_, '_> {
         let end = join_block_ends_branches(&if_branch_ends);
 
         // build complete if chain
+        // TODO generate if/elseif/else to keep the generated RTL shallow
         let mut else_ir_block = None;
-        for (curr_cond, curr_ir_block) in zip_eq(
+        for ((curr_cond, curr_ir_block), is_last_branch) in zip_eq(
             if_branch_conditions.into_iter().rev(),
             if_branch_blocks.into_iter().rev(),
-        ) {
-            let else_next = match else_ir_block {
-                Some(else_ir_block) => {
-                    // build if statement
-                    // TODO use same simplification logic as used in if statements
-                    //   (maybe even handle constant true/false)
-                    let if_stmt = IrIfStatement {
-                        condition: curr_cond,
-                        then_block: curr_ir_block,
-                        else_block: Some(else_ir_block),
-                    };
-                    let if_stmt = Spanned::new(stmt_span, IrStatement::If(if_stmt));
-                    IrBlock {
-                        statements: vec![if_stmt],
+        )
+        .with_first()
+        {
+            else_ir_block = if is_last_branch {
+                // this is the final branch, which means that the condition can be ignored
+                //   (this is easier to reason about for var merging and synthesis tools)
+                // TODO double check this, it's a bit sketchy that we have this "unchecked tail",
+                //   maybe we should add an assert
+                let _ = curr_cond;
+                Some(curr_ir_block)
+            } else {
+                build_ir_if_statement(&mut self.large, curr_cond, Some(curr_ir_block), else_ir_block).map(|if_stmt| {
+                    match if_stmt {
+                        Either::Left(if_stmt) => if_stmt,
+                        Either::Right(if_stmt) => {
+                            let if_stmt = Spanned::new(stmt_span, IrStatement::If(if_stmt));
+                            let statements = vec![if_stmt];
+                            IrBlock { statements }
+                        }
                     }
-                }
-                None => {
-                    // this is the final branch, which means that the condition can be ignored
-                    //   (this is easier to reason about for var merging and synthesis tools)
-                    let _ = curr_cond;
-                    curr_ir_block
-                }
+                })
             };
-            else_ir_block = Some(else_next);
         }
 
         // push the complete if statement
@@ -1295,34 +1294,19 @@ impl CompileItemContext<'_, '_> {
         let (then_block, else_block) =
             flow.join_child_branches_pair(self.refs, &mut self.large, span, (then_flow, else_flow))?;
 
-        // build if, rewriting it to remove empty blocks
-        let ir_if = match (then_block.statements.is_empty(), else_block.statements.is_empty()) {
-            // both empty, emit nothing
-            (true, true) => None,
-            // only then, drop else
-            (false, true) => Some(IrIfStatement {
-                condition: cond.inner.value.expr,
-                then_block,
-                else_block: None,
-            }),
-            // only else, drop then and invert condition
-            (true, false) => {
-                let inverted_cond = self.large.push_expr(IrExpressionLarge::BoolNot(cond.inner.value.expr));
-                Some(IrIfStatement {
-                    condition: inverted_cond,
-                    then_block: else_block,
-                    else_block: None,
-                })
-            }
-            // both, emit the full if
-            (false, false) => Some(IrIfStatement {
-                condition: cond.inner.value.expr,
-                then_block,
-                else_block: Some(else_block),
-            }),
-        };
+        // build if
+        let ir_if = build_ir_if_statement(
+            &mut self.large,
+            cond.inner.value.expr,
+            Some(then_block),
+            Some(else_block),
+        );
         if let Some(ir_if) = ir_if {
-            flow.push_ir_statement(Spanned::new(span, IrStatement::If(ir_if)));
+            let ir_if = match ir_if {
+                Either::Left(ir_if) => IrStatement::Block(ir_if),
+                Either::Right(ir_if) => IrStatement::If(ir_if),
+            };
+            flow.push_ir_statement(Spanned::new(span, ir_if));
         }
 
         Ok((then_result?, else_result?))
@@ -1434,4 +1418,50 @@ fn join_block_ends_branches(ends: &[BlockEnd]) -> BlockEnd {
     }
 
     BlockEnd::new(all_certain, any_mask)
+}
+
+fn build_ir_if_statement(
+    large: &mut IrLargeArena,
+    condition: IrExpression,
+    then_block: Option<IrBlock>,
+    else_block: Option<IrBlock>,
+) -> Option<Either<IrBlock, IrIfStatement>> {
+    // discard empty blocks
+    let then_block = then_block.filter(|b| !b.statements.is_empty());
+    let else_block = else_block.filter(|b| !b.statements.is_empty());
+
+    // simplify constant condition
+    if let IrExpression::Bool(condition) = condition {
+        let block = if condition { then_block } else { else_block };
+        return block.map(Either::Left);
+    }
+
+    // simplify if/else setup
+    let res = match (then_block, else_block) {
+        // both empty, emit nothing
+        (None, None) => None,
+        // only then, drop else
+        (Some(then_block), None) => Some(IrIfStatement {
+            condition,
+            then_block,
+            else_block: None,
+        }),
+        // only else, drop then and invert condition
+        (None, Some(else_block)) => {
+            let inverted_cond = large.push_expr(IrExpressionLarge::BoolNot(condition));
+            Some(IrIfStatement {
+                condition: inverted_cond,
+                then_block: else_block,
+                else_block: None,
+            })
+        }
+        // both, emit the full if
+        (Some(then_block), Some(else_block)) => Some(IrIfStatement {
+            condition,
+            then_block,
+            else_block: Some(else_block),
+        }),
+    };
+
+    res.map(Either::Right)
 }
