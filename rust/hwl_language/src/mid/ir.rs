@@ -6,6 +6,7 @@ use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use derive_more::From;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::sync::Arc;
@@ -63,9 +64,9 @@ pub enum IrType {
 
 new_index_type!(pub IrModule);
 new_index_type!(pub IrPort);
-new_index_type!(pub IrVariable);
-new_index_type!(pub IrRegister);
 new_index_type!(pub IrWire);
+new_index_type!(pub IrRegister);
+new_index_type!(pub IrVariable);
 
 #[derive(Debug, Clone)]
 pub struct IrModuleInfo {
@@ -182,23 +183,23 @@ pub enum IrPortConnection {
     Output(Option<IrWireOrPort>),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, From)]
 pub enum IrSignalOrVariable {
     Signal(IrSignal),
     Variable(IrVariable),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, From)]
 pub enum IrSignal {
-    Wire(IrWire),
     Port(IrPort),
+    Wire(IrWire),
     Register(IrRegister),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, From)]
 pub enum IrWireOrPort {
-    Wire(IrWire),
     Port(IrPort),
+    Wire(IrWire),
 }
 
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
@@ -229,41 +230,17 @@ pub struct IrIfStatement {
 
 #[derive(Debug, Clone)]
 pub struct IrAssignmentTarget {
-    pub base: IrAssignmentTargetBase,
+    pub base: IrSignalOrVariable,
     pub steps: Vec<IrTargetStep>,
 }
 
 impl IrAssignmentTarget {
-    pub fn simple(base: IrAssignmentTargetBase) -> Self {
+    pub fn simple(base: IrSignalOrVariable) -> Self {
         IrAssignmentTarget {
             base,
             steps: Vec::new(),
         }
     }
-
-    pub fn wire(wire: IrWire) -> Self {
-        IrAssignmentTarget::simple(IrAssignmentTargetBase::Wire(wire))
-    }
-
-    pub fn port(port: IrPort) -> Self {
-        IrAssignmentTarget::simple(IrAssignmentTargetBase::Port(port))
-    }
-
-    pub fn register(reg: IrRegister) -> Self {
-        IrAssignmentTarget::simple(IrAssignmentTargetBase::Register(reg))
-    }
-
-    pub fn variable(var: IrVariable) -> Self {
-        IrAssignmentTarget::simple(IrAssignmentTargetBase::Variable(var))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum IrAssignmentTargetBase {
-    Port(IrPort),
-    Register(IrRegister),
-    Wire(IrWire),
-    Variable(IrVariable),
 }
 
 // TODO re-use from frontend?
@@ -458,22 +435,9 @@ impl IrStatement {
 
 impl IrAssignmentTarget {
     pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
-        let IrAssignmentTarget { base, steps } = self;
+        let &IrAssignmentTarget { base, ref steps } = self;
 
-        match *base {
-            IrAssignmentTargetBase::Port(port) => {
-                f(IrSignalOrVariable::Signal(IrSignal::Port(port)), ValueAccess::Write);
-            }
-            IrAssignmentTargetBase::Register(reg) => {
-                f(IrSignalOrVariable::Signal(IrSignal::Register(reg)), ValueAccess::Write);
-            }
-            IrAssignmentTargetBase::Wire(wire) => {
-                f(IrSignalOrVariable::Signal(IrSignal::Wire(wire)), ValueAccess::Write);
-            }
-            IrAssignmentTargetBase::Variable(var) => {
-                f(IrSignalOrVariable::Variable(var), ValueAccess::Write);
-            }
-        }
+        f(base, ValueAccess::Write);
 
         for step in steps {
             match step {
@@ -739,5 +703,32 @@ impl IrWireOrPort {
             IrWireOrPort::Wire(wire) => IrSignal::Wire(wire),
             IrWireOrPort::Port(port) => IrSignal::Port(port),
         }
+    }
+}
+
+impl IrSignalOrVariable {
+    pub fn as_expression(self) -> IrExpression {
+        match self {
+            IrSignalOrVariable::Signal(s) => IrExpression::Signal(s),
+            IrSignalOrVariable::Variable(v) => IrExpression::Variable(v),
+        }
+    }
+}
+
+impl From<IrPort> for IrSignalOrVariable {
+    fn from(value: IrPort) -> Self {
+        IrSignalOrVariable::Signal(value.into())
+    }
+}
+
+impl From<IrWire> for IrSignalOrVariable {
+    fn from(value: IrWire) -> Self {
+        IrSignalOrVariable::Signal(value.into())
+    }
+}
+
+impl From<IrRegister> for IrSignalOrVariable {
+    fn from(value: IrRegister) -> Self {
+        IrSignalOrVariable::Signal(value.into())
     }
 }

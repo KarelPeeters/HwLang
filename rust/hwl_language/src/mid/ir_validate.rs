@@ -1,10 +1,9 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrClockedProcess,
-    IrDatabase, IrExpression, IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables,
-    IrWireOrPort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
+    IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance,
+    IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
@@ -196,12 +195,7 @@ fn assignment_target_ty<'a>(
 ) -> Cow<'a, IrType> {
     let IrAssignmentTarget { base, steps } = target;
 
-    let base_ty = match *base {
-        IrAssignmentTargetBase::Port(port) => Cow::Borrowed(&module.ports[port].ty),
-        IrAssignmentTargetBase::Register(reg) => Cow::Borrowed(&module.registers[reg].ty),
-        IrAssignmentTargetBase::Wire(wire) => Cow::Borrowed(&module.wires[wire].ty),
-        IrAssignmentTargetBase::Variable(var) => Cow::Borrowed(&locals[var].ty),
-    };
+    let base_ty = Cow::Owned(base.as_expression().ty(module, locals));
 
     let mut curr_ty = base_ty;
     let mut slice_lens = vec![];

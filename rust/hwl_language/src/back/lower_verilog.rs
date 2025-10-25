@@ -3,27 +3,28 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
-    IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
-    IrSignalOrVariable, IrStatement, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    ValueAccess, ir_modules_topological_sort,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
+    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp,
+    IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrModules,
+    IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, ValueAccess,
+    ir_modules_topological_sort,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::{Span, Spanned};
-use crate::throw;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
+use crate::{throw, try_inner};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, enumerate};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
+use unwrap_match::unwrap_match;
 
 const I: &str = Indent::I;
 
@@ -204,6 +205,13 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult 
 }
 
 impl<'n> NameMap<'n> {
+    pub fn map_signal_or_var(&self, v: IrSignalOrVariable) -> Result<&'n LoweredName, Either<ZeroWidth, NotRead>> {
+        match v {
+            IrSignalOrVariable::Signal(v) => self.map_signal(v).map_err(Either::Left),
+            IrSignalOrVariable::Variable(v) => self.map_var(v),
+        }
+    }
+
     pub fn map_signal(&self, signal: IrSignal) -> Result<&'n LoweredName, ZeroWidth> {
         match signal {
             IrSignal::Port(port) => self.ports.get(&port).unwrap().as_ref_ok(),
@@ -1285,26 +1293,44 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
+
+                        let base_len =
+                            unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
+                        let index_range = ClosedIncRange {
+                            start_inc: BigInt::ZERO,
+                            end_inc: base_len - 1,
+                        };
+                        let index_range =
+                            NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+
                         let base = match self.lower_expression(span, base)? {
                             Ok(base) => base,
                             Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
                         };
-                        let Ok(index) = self.lower_expression(span, index)? else {
-                            todo!("handle zero-width indexing");
-                        };
+                        let index = self.lower_expression_int_expanded(span, index_range, index)?;
+
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO this is probably incorrect in general, we need to store the array in a variable first
                         // TODO we're incorrectly using array indices as bit indices here
+
+                        let base_len =
+                            unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
+                        let start_range = ClosedIncRange {
+                            start_inc: BigInt::ZERO,
+                            end_inc: base_len.into(),
+                        };
+                        let start_range =
+                            NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+
                         let base = match self.lower_expression(span, base)? {
                             Ok(base) => base,
                             Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
                         };
-                        let Ok(start) = self.lower_expression(span, start)? else {
-                            todo!("handle zero-width indexing");
-                        };
+                        let start = self.lower_expression_int_expanded(span, start_range, start)?;
                         let len = lower_uint_str(len);
+
                         Evaluated::String(format!("({base}[{start}+:{len}])"))
                     }
 
@@ -1513,22 +1539,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         target: &IrAssignmentTarget,
     ) -> DiagResult<Result<Evaluated<'n>, Either<ZeroWidth, NotRead>>> {
         // TODO this is probably wrong, we might need intermediate variables for the base and after each step
-        let IrAssignmentTarget { base, steps } = target;
+        let &IrAssignmentTarget { base, ref steps } = target;
 
-        let name_map = self.name_map;
-        let base = match *base {
-            IrAssignmentTargetBase::Port(s) => name_map.map_signal(IrSignal::Port(s)),
-            IrAssignmentTargetBase::Wire(s) => name_map.map_signal(IrSignal::Wire(s)),
-            IrAssignmentTargetBase::Register(s) => name_map.map_signal(IrSignal::Register(s)),
-            IrAssignmentTargetBase::Variable(r) => match name_map.map_var(r) {
-                Ok(name) => Ok(name),
-                Err(e) => return Ok(Err(e)),
-            },
-        };
-        let base = match base {
-            Ok(base) => base,
-            Err(e) => return Ok(Err(Either::Left(e))),
-        };
+        let base_ty = base.as_expression().ty(self.module, self.locals);
+        let base = try_inner!(self.name_map.map_signal_or_var(base));
 
         // early exit to avoid string allocation
         if steps.is_empty() {
@@ -1540,19 +1554,35 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         // TODO both of these are wrong, we're not taking element type sizes into account
         // TODO this entire thing should just be flattened to a single slice
+        // TODO handle non-consecutive slicing, probably similar to how the C++ backend does it
+        let mut next_ty = base_ty;
         for step in steps {
+            let (curr_inner, curr_len) =
+                unwrap_match!(next_ty, IrType::Array(curr_inner, curr_len) => (curr_inner, curr_len));
+            next_ty = *curr_inner;
+
             match step {
-                IrTargetStep::ArrayIndex(start) => {
-                    let Ok(start) = self.lower_expression(span, start)? else {
-                        todo!("handle zero-width indexing");
+                IrTargetStep::ArrayIndex(index) => {
+                    let index_range = ClosedIncRange {
+                        start_inc: BigInt::ZERO,
+                        end_inc: curr_len - 1,
                     };
-                    swrite!(g, "[{start}]");
+                    let index_range =
+                        NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+                    let index = self.lower_expression_int_expanded(span, index_range, index)?;
+                    swrite!(g, "[{index}]");
                 }
                 IrTargetStep::ArraySlice(start, len) => {
-                    let Ok(start) = self.lower_expression(span, start)? else {
-                        todo!("handle zero-width indexing");
+                    let start_range = ClosedIncRange {
+                        start_inc: BigInt::ZERO,
+                        end_inc: curr_len.into(),
                     };
+                    let start_range =
+                        NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+
+                    let start = self.lower_expression_int_expanded(span, start_range, start)?;
                     let len = lower_uint_str(len);
+
                     swrite!(g, "[{start}+:{len}]");
                 }
             }

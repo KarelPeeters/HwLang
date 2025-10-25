@@ -10,9 +10,7 @@ use crate::front::signal::{Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, Value};
-use crate::mid::ir::{
-    IrAssignmentTarget, IrAssignmentTargetBase, IrExpression, IrStatement, IrVariable, IrVariableInfo,
-};
+use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{AssignBinaryOp, Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use annotate_snippets::Level;
@@ -231,7 +229,10 @@ impl CompileItemContext<'_, '_> {
 
         // get ir target
         let target_ir = IrAssignmentTarget {
-            base: target_base_signal.inner.as_ir_target_base(self, target_base.span)?,
+            base: target_base_signal
+                .inner
+                .as_ir_target_base(self, target_base.span)?
+                .into(),
             steps: target_steps_ir,
         };
 
@@ -484,7 +485,7 @@ impl CompileItemContext<'_, '_> {
                 .inner
                 .as_hardware_value(self.refs, &mut self.large, value.span, &target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
-                base: IrAssignmentTargetBase::Variable(target_base_ir_var),
+                base: target_base_ir_var.into(),
                 steps: target_steps_ir,
             };
             let stmt_store = IrStatement::Assign(target_ir, value_ir.expr);
@@ -684,7 +685,8 @@ pub fn store_ir_expression_in_new_variable(
 
     let var_ir = flow.new_ir_variable(var_ir_info);
 
-    let stmt_store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), expr.expr);
+    let target = IrAssignmentTarget::simple(var_ir.into());
+    let stmt_store = IrStatement::Assign(target, expr.expr);
     flow.push_ir_statement(Spanned::new(span, stmt_store));
 
     Ok(HardwareValue {

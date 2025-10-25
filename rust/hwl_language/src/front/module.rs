@@ -436,7 +436,7 @@ impl CompileRefs<'_, '_> {
                 let reg_info = &ctx.ctx.registers[reg];
                 let reg_ir = reg_info.ir;
                 let statement = IrStatement::Assign(
-                    IrAssignmentTarget::port(out_port_ir),
+                    IrAssignmentTarget::simple(out_port_ir.into()),
                     IrExpression::Signal(IrSignal::Register(reg_ir)),
                 );
                 statements.push(Spanned {
@@ -721,7 +721,7 @@ impl ChildClockedProcess {
                             .into_iter()
                             .map(|init| {
                                 let ExtraRegisterInit { span, reg, init } = init;
-                                let stmt = IrStatement::Assign(IrAssignmentTarget::register(reg), init);
+                                let stmt = IrStatement::Assign(IrAssignmentTarget::simple(reg.into()), init);
                                 Spanned::new(span, stmt)
                             })
                             .collect_vec();
@@ -1621,7 +1621,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             ir_block.statements.push(Spanned {
                                 span: connection.span,
                                 inner: IrStatement::Assign(
-                                    IrAssignmentTarget::wire(extra_ir_wire),
+                                    IrAssignmentTarget::simple(extra_ir_wire.into()),
                                     connection_value_ir_raw.inner,
                                 ),
                             });
@@ -2216,7 +2216,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             value.span,
                             wire_info_typed.ty.inner,
                         )?;
-                        let target = IrAssignmentTarget::wire(wire_info_typed.ir);
+                        let target = IrAssignmentTarget::simple(wire_info_typed.ir.into());
 
                         let stmt = IrStatement::Assign(target, value_hw.expr);
                         ir_block.statements.push(Spanned::new(decl_span, stmt));

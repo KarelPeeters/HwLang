@@ -2,10 +2,10 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAssignmentTargetBase, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp,
-    IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrStatement, IrTargetStep, IrType, IrVariable,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
+    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp,
+    IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo,
+    IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrTargetStep, IrType, IrVariable,
     IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort, ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
@@ -795,19 +795,19 @@ impl CodegenBlockContext<'_> {
         let IrAssignmentTarget { base, steps } = target;
 
         let base_str = match *base {
-            IrAssignmentTargetBase::Port(port) => {
+            IrSignalOrVariable::Signal(IrSignal::Port(port)) => {
                 let port_str = port_str(port, &self.module_info.ports[port]);
                 format!("*{next}_ports.{port_str}")
             }
-            IrAssignmentTargetBase::Register(reg) => {
+            IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
                 let reg_str = reg_str(reg, &self.module_info.registers[reg]);
                 format!("{next}_signals.{reg_str}")
             }
-            IrAssignmentTargetBase::Wire(wire) => {
+            IrSignalOrVariable::Signal(IrSignal::Wire(wire)) => {
                 let wire_str = wire_str(wire, &self.module_info.wires[wire]);
                 format!("{next}_signals.{wire_str}")
             }
-            IrAssignmentTargetBase::Variable(var) => var_str(var, &self.locals[var]),
+            IrSignalOrVariable::Variable(var) => var_str(var, &self.locals[var]),
         };
 
         let mut curr_str = base_str;

@@ -5,7 +5,7 @@ use crate::front::flow::Variable;
 use crate::front::item::ElaboratedInterface;
 use crate::front::types::HardwareType;
 use crate::front::value::{ElaboratedInterfaceView, HardwareValue};
-use crate::mid::ir::{IrAssignmentTargetBase, IrExpression, IrPort, IrRegister, IrSignal, IrWire, IrWireInfo, IrWires};
+use crate::mid::ir::{IrExpression, IrPort, IrRegister, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -460,13 +460,14 @@ impl Signal {
         }
     }
 
-    pub fn as_ir_target_base(self, ctx: &mut CompileItemContext, use_span: Span) -> DiagResult<IrAssignmentTargetBase> {
+    pub fn as_ir_target_base(self, ctx: &mut CompileItemContext, use_span: Span) -> DiagResult<IrSignal> {
         match self {
-            Signal::Port(port) => Ok(IrAssignmentTargetBase::Port(ctx.ports[port].ir)),
-            Signal::Wire(wire) => Ok(IrAssignmentTargetBase::Wire(
-                ctx.wires[wire].typed(ctx.refs, &ctx.wire_interfaces, use_span)?.ir,
-            )),
-            Signal::Register(reg) => Ok(IrAssignmentTargetBase::Register(ctx.registers[reg].ir)),
+            Signal::Port(port) => Ok(ctx.ports[port].ir.into()),
+            Signal::Wire(wire) => Ok(ctx.wires[wire]
+                .typed(ctx.refs, &ctx.wire_interfaces, use_span)?
+                .ir
+                .into()),
+            Signal::Register(reg) => Ok(IrSignal::Register(ctx.registers[reg].ir)),
         }
     }
 

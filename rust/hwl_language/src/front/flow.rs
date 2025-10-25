@@ -1551,7 +1551,7 @@ fn merge_branch_values(
         if matches!(value.expr, IrExpression::Variable(value_var) if value_var == var_ir) {
             Ok(None)
         } else {
-            let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
+            let store = IrStatement::Assign(IrAssignmentTarget::simple(var_ir.into()), value.expr);
             Ok(Some(Spanned::new(span_merge, store)))
         }
     };

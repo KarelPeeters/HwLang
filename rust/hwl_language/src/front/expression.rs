@@ -790,11 +790,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // do the right shuffle operations
                 let stmt_load = IrStatement::Assign(
-                    IrAssignmentTarget::variable(ir_var),
+                    IrAssignmentTarget::simple(ir_var.into()),
                     IrExpression::Signal(IrSignal::Register(reg)),
                 );
                 flow.push_ir_statement(Spanned::new(span_keyword, stmt_load));
-                let stmt_store = IrStatement::Assign(IrAssignmentTarget::register(reg), value.expr);
+                let stmt_store = IrStatement::Assign(IrAssignmentTarget::simple(reg.into()), value.expr);
                 flow.push_ir_statement(Spanned::new(span_keyword, stmt_store));
 
                 // return the variable, now containing the previous value of the register
