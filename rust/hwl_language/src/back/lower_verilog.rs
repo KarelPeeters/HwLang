@@ -241,6 +241,9 @@ struct NameMap<'n> {
     variables: &'n IndexMap<IrVariable, Result<LoweredName, Either<ZeroWidth, NotRead>>>,
 }
 
+const SENSITIVITY_DUMMY_NAME_SIGNAL: &str = "dummy";
+const SENSITIVITY_DUMMY_NAME_VAR: &str = "dummy_var";
+
 fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredModule> {
     let diags = ctx.diags;
     assert!(!ctx.module_map.contains_key(&module));
@@ -289,8 +292,13 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     )?;
 
     // declare dummy signal, used to ensure combinatorial block sensitivity lists are never empty
-    // TODO only declare when actually used
-    let dummy_name = module_name_scope.make_unique_str(diags, module_info.debug_info_id.span, "dummy", false)?;
+    // TODO only declare when actually used?
+    let dummy_name = module_name_scope.make_unique_str(
+        diags,
+        module_info.debug_info_id.span,
+        SENSITIVITY_DUMMY_NAME_SIGNAL,
+        false,
+    )?;
     newline_module.start_item(&mut f);
     swriteln!(f, "{I}wire {dummy_name} = 1'b0;");
 
@@ -490,30 +498,29 @@ fn lower_module_statements(
         match &child.inner {
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
-                let (variables_read, any_signals_read) = collect_variables_read_and_any_signal_read(large, block);
+                let variables_read = collect_variables_read_and_shadow_registers(large, block, None);
 
-                // processes with empty sensitivity lists never run, not even at startup
-                //   to avoid this, we make them sensitive to a dummy signal that is assigned to
-                swrite!(f, "{I}always @(");
-                if any_signals_read {
-                    swrite!(f, "*");
-                } else {
-                    swrite!(f, "{dummy_name}");
-                }
-                swriteln!(f, ") begin");
+                swriteln!(f, "{I}always @(*) begin");
+                let indent = Indent::new(2);
+
+                // Processes with empty sensitivity lists never run, not even at startup
+                //   to avoid this, we make all combinatorial processes sensitive to a dummy signal.
+                //   Determining when this can be skipped is tricky,
+                //   not all IRSignals that are used actually end up being used in the generated verilog.
+                let mut name_scope = module_name_scope.new_child();
+                let dummy_name_internal =
+                    name_scope.make_unique_str(diags, child.span, SENSITIVITY_DUMMY_NAME_VAR, false)?;
+                swriteln!(f, "{indent}reg {dummy_name_internal};");
 
                 let mut newline_process = NewlineGenerator::new();
-                let variables = declare_locals(
-                    diags,
-                    f,
-                    &mut newline_process,
-                    module_name_scope,
-                    locals,
-                    variables_read,
-                )?;
+                let variables =
+                    declare_locals(diags, f, &mut newline_process, &mut name_scope, locals, variables_read)?;
 
                 let temporaries = GrowVec::new();
                 let temporaries_offset = f.len();
+
+                newline_process.start_item(f);
+                swriteln!(f, "{indent}{dummy_name_internal} = {dummy_name};");
 
                 let name_map = NameMap {
                     ports: port_name_map,
@@ -529,9 +536,9 @@ fn lower_module_statements(
                     module,
                     locals,
                     name_map,
-                    name_scope: module_name_scope.new_child(),
+                    name_scope: &mut name_scope,
                     temporaries: &temporaries,
-                    indent: Indent::new(2),
+                    indent,
                     newline: &mut newline_process,
                     f,
                 };
@@ -580,26 +587,17 @@ fn lower_module_statements(
                 }
 
                 let mut newline_process = NewlineGenerator::new();
+                let mut name_scope = module_name_scope.new_child();
 
                 // declare locals and shadow registers
-                let (variables_read, shadow_regs) = collect_variables_read_and_shadow_registers(large, clock_block);
-                let variables = declare_locals(
-                    diags,
-                    f,
-                    &mut newline_process,
-                    module_name_scope,
-                    locals,
-                    variables_read,
-                )?;
+                let mut shadow_regs = IndexMap::new();
+                let variables_read =
+                    collect_variables_read_and_shadow_registers(large, clock_block, Some(&mut shadow_regs));
 
-                let reg_name_map_shadowed = declare_shadow_registers(
-                    diags,
-                    f,
-                    &mut newline_process,
-                    module_name_scope,
-                    registers,
-                    &shadow_regs,
-                )?;
+                let variables =
+                    declare_locals(diags, f, &mut newline_process, &mut name_scope, locals, variables_read)?;
+                let reg_name_map_shadowed =
+                    declare_shadow_registers(diags, f, &mut newline_process, &mut name_scope, registers, &shadow_regs)?;
 
                 let temporaries = GrowVec::new();
                 let temporaries_offset = f.len();
@@ -621,14 +619,13 @@ fn lower_module_statements(
                                 Err(ZeroWidth) => continue,
                             };
 
-                            // TODO is this correct, are we not accidentally clearing name scopes?
                             let mut ctx_reset = LowerBlockContext {
                                 diags,
                                 large,
                                 module,
                                 locals,
                                 name_map: outer_name_map,
-                                name_scope: module_name_scope.new_child(),
+                                name_scope: &mut name_scope,
                                 temporaries: &temporaries,
                                 indent: indent_inner,
                                 newline: &mut newline_process,
@@ -673,7 +670,7 @@ fn lower_module_statements(
                     module,
                     locals,
                     name_map: inner_name_map,
-                    name_scope: module_name_scope.new_child(),
+                    name_scope: &mut name_scope,
                     temporaries: &temporaries,
                     indent: indent_clocked,
                     newline: &mut newline_process,
@@ -848,7 +845,7 @@ fn declare_locals(
     diags: &Diagnostics,
     f: &mut String,
     newline: &mut NewlineGenerator,
-    module_name_scope: &mut LoweredNameScope,
+    name_scope: &mut LoweredNameScope,
     locals: &IrVariables,
     variables_read: IndexSet<IrVariable>,
 ) -> DiagResult<IndexMap<IrVariable, Result<LoweredName, Either<ZeroWidth, NotRead>>>> {
@@ -865,7 +862,7 @@ fn declare_locals(
             match VerilogType::new_from_ir(diags, debug_info_span, ty)? {
                 Ok(ty_verilog) => {
                     let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
-                    let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+                    let name = name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
                     newline.start_item(f);
                     declare_local(f, ty_verilog, &name);
@@ -947,47 +944,35 @@ struct AccessInfo {
     any_write: bool,
 }
 
-fn collect_variables_read_and_any_signal_read(large: &IrLargeArena, block: &IrBlock) -> (IndexSet<IrVariable>, bool) {
-    let mut variables_read = IndexSet::new();
-    let mut any_signals_read = false;
-
-    block.visit_values_accessed(large, &mut |v, a| match (v, a) {
-        (IrSignalOrVariable::Signal(_), ValueAccess::Read) => {
-            any_signals_read = true;
-        }
-        (IrSignalOrVariable::Variable(v), ValueAccess::Read) => {
-            variables_read.insert(v);
-        }
-        (_, _) => {}
-    });
-    (variables_read, any_signals_read)
-}
-
 fn collect_variables_read_and_shadow_registers(
     large: &IrLargeArena,
     block: &IrBlock,
-) -> (IndexSet<IrVariable>, IndexMap<IrRegister, AccessInfo>) {
+    mut shadow_regs: Option<&mut IndexMap<IrRegister, AccessInfo>>,
+) -> IndexSet<IrVariable> {
     let mut variables_read = IndexSet::new();
-    let mut shadow_regs: IndexMap<IrRegister, AccessInfo> = IndexMap::new();
 
     block.visit_values_accessed(large, &mut |signal, access| match (signal, access) {
         (IrSignalOrVariable::Variable(v), ValueAccess::Read) => {
             variables_read.insert(v);
         }
         (IrSignalOrVariable::Signal(IrSignal::Register(reg)), access) => {
-            let entry = shadow_regs.entry(reg).or_default();
-            match access {
-                ValueAccess::Read => entry.any_read = true,
-                ValueAccess::Write => entry.any_write = true,
+            if let Some(shadow_regs) = &mut shadow_regs {
+                let entry = shadow_regs.entry(reg).or_default();
+                match access {
+                    ValueAccess::Read => entry.any_read = true,
+                    ValueAccess::Write => entry.any_write = true,
+                }
             }
         }
         _ => {}
     });
 
-    // we only need to shadow registers that are written to
-    shadow_regs.retain(|_, k| k.any_write);
+    if let Some(shadow_regs) = &mut shadow_regs {
+        // we only need to shadow registers that are written to
+        shadow_regs.retain(|_, k| k.any_write);
+    }
 
-    (variables_read, shadow_regs)
+    variables_read
 }
 
 #[derive(Debug)]
@@ -1061,7 +1046,7 @@ struct LowerBlockContext<'a, 'n> {
     locals: &'a IrVariables,
 
     name_map: NameMap<'n>,
-    name_scope: LoweredNameScope<'a>,
+    name_scope: &'a mut LoweredNameScope<'n>,
     temporaries: &'n GrowVec<TemporaryInfo>,
 
     indent: Indent,
