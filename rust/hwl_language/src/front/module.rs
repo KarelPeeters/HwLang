@@ -1061,7 +1061,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let end = self
             .ctx
             .elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
-        end.unwrap_outside_function_and_loop(diags, block.span)?;
+        end.unwrap_normal(diags, block.span)?;
         let (ir_vars, ir_block) = flow.finish();
 
         // report drivers
@@ -1160,7 +1160,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             let end = self
                 .ctx
                 .elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
-            end.unwrap_outside_function_and_loop(diags, block.span)?;
+            end.unwrap_normal(diags, block.span)?;
 
             let (ir_vars, ir_block) = flow.finish();
 

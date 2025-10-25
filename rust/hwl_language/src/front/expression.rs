@@ -194,7 +194,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let mut stack = ExitStack::new_in_block_expression(expr.span);
                 let end = self.elaborate_block_statements(&mut scope_inner, flow, &mut stack, statements)?;
-                end.unwrap_outside_function_and_loop(diags, expr.span)?;
+                end.unwrap_normal(diags, expr.span)?;
 
                 self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
             }

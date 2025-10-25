@@ -41,10 +41,12 @@ pub enum BlockEnd {
     Normal,
     /// Definite early exit, known at compile time.
     CompileExit(EarlyExitKind),
-    /// Definite early exit, but the specific kind of exit depends on hardware conditions.
-    HardwareExit,
-    /// Maybe early exit, depends on hardware conditions.
-    HardwareMaybeExit,
+    /// Definite early exit, but the kind depends on hardware conditions.
+    /// The mask indicates which kinds of exits are possible.
+    HardwareExit(ExitMask<2>),
+    /// Maybe early exit, but the kind and whether there is actually an exit depends on hardware conditions.
+    /// The mask indicates which kinds of exits are possible.
+    HardwareMaybeExit(ExitMask<1>),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -54,14 +56,146 @@ pub enum EarlyExitKind {
     Continue,
 }
 
+/// A set of possible exit kinds.
+/// The const generic [N] indicates the minimum number of exit kinds that are set.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct ExitMask<const N: u8> {
+    can_return: bool,
+    can_break: bool,
+    can_continue: bool,
+}
+
 impl BlockEnd {
-    pub fn unwrap_outside_function_and_loop(self, diags: &Diagnostics, span: Span) -> DiagResult {
+    /// Construct the correct [BlockEnd] from `certain_exit` and `mask`.
+    ///
+    /// * `certain_exit` is whether we know for sure there has been an early exit.
+    /// * `mask` is the set of possible early exists that can have happened.
+    fn new(certain_exit: bool, mask: ExitMask<0>) -> BlockEnd {
+        #[allow(clippy::collapsible_else_if)]
+        if certain_exit {
+            if let Some(mask) = ExitMask::<2>::from_base(mask) {
+                BlockEnd::HardwareExit(mask)
+            } else {
+                if mask.can_return {
+                    BlockEnd::CompileExit(EarlyExitKind::Return)
+                } else if mask.can_break {
+                    BlockEnd::CompileExit(EarlyExitKind::Break)
+                } else if mask.can_continue {
+                    BlockEnd::CompileExit(EarlyExitKind::Continue)
+                } else {
+                    BlockEnd::Normal
+                }
+            }
+        } else {
+            if let Some(mask) = ExitMask::<1>::from_base(mask) {
+                BlockEnd::HardwareMaybeExit(mask)
+            } else {
+                BlockEnd::Normal
+            }
+        }
+    }
+
+    pub fn is_certain_exit(self) -> bool {
+        match self {
+            BlockEnd::Normal | BlockEnd::HardwareMaybeExit(_) => false,
+            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => true,
+        }
+    }
+
+    pub fn possible_exit_mask(self) -> ExitMask<0> {
+        match self {
+            BlockEnd::Normal => ExitMask::default(),
+            BlockEnd::CompileExit(kind) => ExitMask::from_kind(kind).into_base(),
+            BlockEnd::HardwareExit(mask) => mask.into_base(),
+            BlockEnd::HardwareMaybeExit(mask) => mask.into_base(),
+        }
+    }
+
+    pub fn unwrap_normal(self, diags: &Diagnostics, span: Span) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
-            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit | BlockEnd::HardwareMaybeExit => {
+            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) | BlockEnd::HardwareMaybeExit(_) => {
                 Err(diags.report_internal_error(span, "unexpected early exit"))
             }
         }
+    }
+
+    pub fn remove(self, mask_remove: ExitMask<0>) -> BlockEnd {
+        let mask_self = self.possible_exit_mask();
+        let mask_result = ExitMask {
+            can_return: mask_self.can_return & !mask_remove.can_return,
+            can_break: mask_self.can_break & !mask_remove.can_break,
+            can_continue: mask_self.can_continue & !mask_remove.can_continue,
+        };
+        Self::new(self.is_certain_exit(), mask_result)
+    }
+}
+
+impl<const N: u8> ExitMask<N> {
+    pub fn into_base(self) -> ExitMask<0> {
+        ExitMask {
+            can_return: self.can_return,
+            can_break: self.can_break,
+            can_continue: self.can_continue,
+        }
+    }
+
+    pub fn from_base(mask: ExitMask<0>) -> Option<Self> {
+        let count = mask.can_return as u8 + mask.can_break as u8 + mask.can_continue as u8;
+        if count >= N {
+            Some(ExitMask {
+                can_return: mask.can_return,
+                can_break: mask.can_break,
+                can_continue: mask.can_continue,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn absorb_loop(self) -> ExitMask<0> {
+        ExitMask {
+            can_return: self.can_return,
+            can_break: false,
+            can_continue: false,
+        }
+    }
+}
+
+impl<const N: u8> std::ops::BitOr for ExitMask<N> {
+    type Output = ExitMask<N>;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        ExitMask {
+            can_return: self.can_return || rhs.can_return,
+            can_break: self.can_break || rhs.can_break,
+            can_continue: self.can_continue || rhs.can_continue,
+        }
+    }
+}
+
+impl Default for ExitMask<0> {
+    fn default() -> Self {
+        ExitMask {
+            can_return: false,
+            can_break: false,
+            can_continue: false,
+        }
+    }
+}
+
+impl ExitMask<1> {
+    pub fn from_kind(kind: EarlyExitKind) -> Self {
+        let mut res = ExitMask {
+            can_return: false,
+            can_break: false,
+            can_continue: false,
+        };
+        match kind {
+            EarlyExitKind::Return => res.can_return = true,
+            EarlyExitKind::Break => res.can_break = true,
+            EarlyExitKind::Continue => res.can_continue = true,
+        }
+        res
     }
 }
 
@@ -97,7 +231,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut stack = ExitStack::new_root();
         let block_end = self.elaborate_block(scope, &mut flow_inner, &mut stack, block)?;
-        block_end.unwrap_outside_function_and_loop(diags, block.span)?;
+        block_end.unwrap_normal(diags, block.span)?;
 
         Ok(())
     }
@@ -149,7 +283,7 @@ impl CompileItemContext<'_, '_> {
                 if exit_cond {
                     todo!("internal error")
                 }
-                self.elaborate_block_statements_without_exit_check(scope, flow, stack, statements)?
+                self.elaborate_block_statements_without_immediate_exit_check(scope, flow, stack, statements)?
             }
             Value::Hardware(exit_cond) => {
                 let flow = flow.check_hardware(span, "hardware exit conditions")?;
@@ -162,7 +296,12 @@ impl CompileItemContext<'_, '_> {
                             Ok(BlockEnd::Normal)
                         } else {
                             // not exiting, actually run the statements
-                            slf.elaborate_block_statements_without_exit_check(scope, branch_flow, stack, statements)
+                            slf.elaborate_block_statements_without_immediate_exit_check(
+                                scope,
+                                branch_flow,
+                                stack,
+                                statements,
+                            )
                         }
                     })?;
 
@@ -174,39 +313,37 @@ impl CompileItemContext<'_, '_> {
         Ok(end)
     }
 
-    pub fn elaborate_block_statements_without_exit_check(
+    pub fn elaborate_block_statements_without_immediate_exit_check(
         &mut self,
         scope: &mut Scope,
         flow: &mut impl Flow,
         stack: &mut ExitStack,
         statements: &[BlockStatement],
     ) -> DiagResult<BlockEnd> {
+        let mut end_joined = BlockEnd::Normal;
+
         for (stmt_index, stmt) in enumerate(statements) {
-            let end = self.elaborate_statement(scope, flow, stack, stmt)?;
+            let end_curr = self.elaborate_statement(scope, flow, stack, stmt)?;
+            end_joined = join_block_ends_sequence(end_joined, end_curr);
 
-            match end {
-                BlockEnd::Normal => {}
-                BlockEnd::CompileExit(end) => return Ok(BlockEnd::CompileExit(end)),
-                BlockEnd::HardwareExit => return Ok(BlockEnd::HardwareExit),
-                BlockEnd::HardwareMaybeExit => {
-                    // a potential hardware exit has happened,
-                    //   we need to re-check the exit conditions before elaborating the remaining statements
-                    let statements_rest = &statements[stmt_index + 1..];
-                    let end_rest = self.elaborate_block_statements(scope, flow, stack, statements_rest)?;
+            if end_joined.is_certain_exit() {
+                break;
+            }
 
-                    // combine both ends
-                    let end_combined = match end_rest {
-                        BlockEnd::Normal => BlockEnd::HardwareMaybeExit,
-                        BlockEnd::CompileExit(kind) => BlockEnd::CompileExit(kind),
-                        BlockEnd::HardwareExit => BlockEnd::HardwareExit,
-                        BlockEnd::HardwareMaybeExit => BlockEnd::HardwareMaybeExit,
-                    };
-                    return Ok(end_combined);
-                }
+            let recheck_exit = match end_curr {
+                BlockEnd::Normal | BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => false,
+                BlockEnd::HardwareMaybeExit(_) => true,
+            };
+            if recheck_exit {
+                let statements_rest = &statements[stmt_index + 1..];
+                let end_rest = self.elaborate_block_statements(scope, flow, stack, statements_rest)?;
+                return Ok(join_block_ends_sequence(end_joined, end_rest));
+            } else {
+                continue;
             }
         }
 
-        Ok(BlockEnd::Normal)
+        Ok(end_joined)
     }
 
     fn elaborate_statement(
@@ -423,7 +560,7 @@ impl CompileItemContext<'_, '_> {
                     })?;
 
                 // join ends
-                let end = join_block_ends(&[then_end, else_end]);
+                let end = join_block_ends_branches(&[then_end, else_end]);
                 Ok(end)
             }
         }
@@ -986,14 +1123,16 @@ impl CompileItemContext<'_, '_> {
         } = stmt.inner;
         let diags = self.refs.diags;
 
-        let entry = LoopEntry::new(flow, span_keyword);
-        stack.with_loop_entry(entry, |stack| {
-            loop {
-                self.refs.check_should_stop(span_keyword)?;
+        self.elaborate_loop(
+            flow,
+            stack,
+            span_keyword,
+            std::iter::repeat(()),
+            |slf, flow, stack, ()| {
+                // eval condition
+                let cond = slf.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
 
-                // eval and check condition
-                let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "while loop condition")?;
-
+                // typecheck condition
                 let reason = TypeContainsReason::WhileCondition(span_keyword);
                 check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
                 let cond = match &cond.inner {
@@ -1002,35 +1141,16 @@ impl CompileItemContext<'_, '_> {
                         diags.report_internal_error(cond.span, "expected bool, should have been checked already")
                     ),
                 };
+
+                // check condition
                 if !cond {
-                    break;
+                    return Ok(BlockEnd::CompileExit(EarlyExitKind::Break));
                 }
 
-                // clear continue flag
-                if let FlowKind::Hardware(flow) = flow.kind_mut() {
-                    let entry =
-                        unwrap_match!(stack.innermost_loop_option().unwrap(), LoopEntry::Hardware(entry) => entry);
-                    entry.continue_flag.clear(flow, span_keyword);
-                }
-
-                // elaborate body
-                let end = self.elaborate_block(scope, flow, stack, body)?;
-
-                // handle end
-                match end {
-                    BlockEnd::Normal => {}
-                    BlockEnd::CompileExit(exit) => match exit {
-                        EarlyExitKind::Return => return Ok(BlockEnd::CompileExit(EarlyExitKind::Return)),
-                        EarlyExitKind::Break => break,
-                        EarlyExitKind::Continue => continue,
-                    },
-                    BlockEnd::HardwareExit => todo!(),
-                    BlockEnd::HardwareMaybeExit => todo!(),
-                }
-            }
-
-            Ok(BlockEnd::Normal)
-        })
+                // elaborate body itself
+                slf.elaborate_block(scope, flow, stack, body)
+            },
+        )
     }
 
     // TODO code reuse between this and module
@@ -1074,27 +1194,41 @@ impl CompileItemContext<'_, '_> {
             Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
         );
 
-        // setup stack
+        self.elaborate_loop(flow, stack, span_keyword, iter, |slf, flow, stack, index_value| {
+            let index_value = index_value.to_maybe_compile(&mut slf.large);
+
+            // typecheck index
+            if let Some(index_ty) = &index_ty {
+                let curr_spanned = Spanned {
+                    span: stmt.inner.iter.span,
+                    inner: &index_value,
+                };
+                let reason = TypeContainsReason::ForIndexType(index_ty.span);
+                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
+            }
+
+            // set index
+            flow.var_set(index_var, span_keyword, Ok(index_value));
+
+            // elaborate body
+            slf.elaborate_block(&scope_index, flow, stack, body)
+        })
+    }
+
+    fn elaborate_loop<F: Flow, T>(
+        &mut self,
+        flow: &mut F,
+        stack: &mut ExitStack,
+        span_keyword: Span,
+        iter: impl Iterator<Item = T>,
+        mut body: impl FnMut(&mut Self, &mut F, &mut ExitStack, T) -> DiagResult<BlockEnd>,
+    ) -> DiagResult<BlockEnd> {
         let entry = LoopEntry::new(flow, span_keyword);
         stack.with_loop_entry(entry, |stack| {
-            let mut any_maybe_exit = false;
+            let mut end_joined = BlockEnd::Normal;
 
-            for index_value in iter {
+            for iter_item in iter {
                 self.refs.check_should_stop(span_keyword)?;
-                let index_value = index_value.to_maybe_compile(&mut self.large);
-
-                // typecheck index
-                if let Some(index_ty) = &index_ty {
-                    let curr_spanned = Spanned {
-                        span: stmt.inner.iter.span,
-                        inner: &index_value,
-                    };
-                    let reason = TypeContainsReason::ForIndexType(index_ty.span);
-                    check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
-                }
-
-                // set index
-                flow.var_set(index_var, span_keyword, Ok(index_value));
 
                 // clear continue flag
                 if let FlowKind::Hardware(flow) = flow.kind_mut() {
@@ -1104,31 +1238,27 @@ impl CompileItemContext<'_, '_> {
                 }
 
                 // elaborate body
-                let end = self.elaborate_block(&scope_index, flow, stack, body)?;
+                //   the body is responsible for checking the exit flags, that's typically handled in elaborate_block
+                let end_body_raw = body(self, flow, stack, iter_item)?;
 
-                // handle end
-                match end {
-                    // no certain exit yet, we need to continue elaborating
-                    BlockEnd::Normal => {}
-                    BlockEnd::HardwareMaybeExit => {
-                        any_maybe_exit = true;
-                    }
+                // stop continue, those don't leak out of the loop or into the next iteration
+                let end_body = end_body_raw.remove(ExitMask::from_kind(EarlyExitKind::Continue).into_base());
 
-                    // fully known early exit
-                    BlockEnd::CompileExit(exit) => match exit {
-                        EarlyExitKind::Return => return Ok(BlockEnd::CompileExit(EarlyExitKind::Return)),
-                        EarlyExitKind::Break => break,
-                        EarlyExitKind::Continue => continue,
-                    },
-                    BlockEnd::HardwareExit => return Ok(BlockEnd::HardwareExit),
+                // handle end and stop elaborating if possible
+                // TODO absorb continue
+                end_joined = join_block_ends_sequence(end_joined, end_body);
+                if end_joined.is_certain_exit() {
+                    break;
                 }
             }
 
-            if any_maybe_exit {
-                Ok(BlockEnd::HardwareMaybeExit)
-            } else {
-                Ok(BlockEnd::Normal)
-            }
+            // stop break/continue, they don't leak out of the loop
+            let mask_loop = ExitMask {
+                can_break: true,
+                can_continue: true,
+                can_return: false,
+            };
+            Ok(end_joined.remove(mask_loop))
         })
     }
 
@@ -1256,7 +1386,18 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn join_block_ends(ends: &[BlockEnd]) -> BlockEnd {
+fn join_block_ends_sequence(first: BlockEnd, second: BlockEnd) -> BlockEnd {
+    if first.is_certain_exit() {
+        first
+    } else {
+        BlockEnd::new(
+            second.is_certain_exit(),
+            first.possible_exit_mask() | second.possible_exit_mask(),
+        )
+    }
+}
+
+fn join_block_ends_branches(ends: &[BlockEnd]) -> BlockEnd {
     // handle simple cases
     match ends.iter().all_equal_value() {
         // all ends are the same, just return that
@@ -1268,20 +1409,19 @@ fn join_block_ends(ends: &[BlockEnd]) -> BlockEnd {
     }
 
     // hardware merge
-    let mut all_certain_exit = true;
+    let mut all_certain = true;
+    let mut any_mask = ExitMask::<0>::default();
+
     for &end in ends {
-        let is_certain_exit = match end {
-            BlockEnd::Normal => false,
-            BlockEnd::CompileExit(_) => true,
-            BlockEnd::HardwareExit => true,
-            BlockEnd::HardwareMaybeExit => false,
+        let (is_certain, mask) = match end {
+            BlockEnd::Normal => (false, ExitMask::default()),
+            BlockEnd::CompileExit(kind) => (true, ExitMask::from_kind(kind).into_base()),
+            BlockEnd::HardwareExit(mask) => (true, mask.into_base()),
+            BlockEnd::HardwareMaybeExit(mask) => (false, mask.into_base()),
         };
-        all_certain_exit &= is_certain_exit;
+        all_certain &= is_certain;
+        any_mask = any_mask | mask;
     }
 
-    if all_certain_exit {
-        BlockEnd::HardwareExit
-    } else {
-        BlockEnd::HardwareMaybeExit
-    }
+    BlockEnd::new(all_certain, any_mask)
 }

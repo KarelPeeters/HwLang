@@ -3,6 +3,14 @@ from pathlib import Path
 from hwl_sandbox.common.compare import compare_compile
 
 
+def test_simple_return(tmp_dir: Path):
+    src = """
+    return 2;
+    """
+    e = compare_compile([], "int(0..8)", src, tmp_dir)
+    e.eval_assert([], 2)
+
+
 def test_break_compile(tmp_dir: Path):
     src = """
     var result = 0;
@@ -25,10 +33,27 @@ def test_break_hardware(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile(["int(0..=8)"], "int(0..8)", src, tmp_dir)
+    e = compare_compile(["int(-1..=8)"], "int(0..8)", src, tmp_dir)
+    e.eval_assert([-1], 7)
     e.eval_assert([0], 0)
     e.eval_assert([4], 4)
     e.eval_assert([8], 7)
+
+
+def test_continue_hardware(tmp_dir: Path):
+    src = """
+    var result = 0;
+    for (i in 0..8) {
+        if (i == a0) { continue; }     
+        result += 1;
+    }
+    return result;
+    """
+    e = compare_compile(["int(-1..=8)"], "int(0..=8)", src, tmp_dir)
+    e.eval_assert([-1], 8)
+    e.eval_assert([0], 7)
+    e.eval_assert([4], 7)
+    e.eval_assert([8], 8)
 
 
 def test_return_select(tmp_dir: Path):

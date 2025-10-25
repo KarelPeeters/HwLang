@@ -910,8 +910,8 @@ fn check_function_end(
             EarlyExitKind::Continue => false,
         },
         BlockEnd::Normal => false,
-        BlockEnd::HardwareExit => false,
-        BlockEnd::HardwareMaybeExit => false,
+        BlockEnd::HardwareExit(_) => false,
+        BlockEnd::HardwareMaybeExit(_) => false,
     };
 
     let value = if is_certain_return {
