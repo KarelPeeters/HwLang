@@ -1512,13 +1512,18 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         })
     }
 
-    // TODO doc
     fn lower_expression_int_expanded(
         &mut self,
         span: Span,
         range: NonZeroWidthRange,
         value: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
+        // skip separate expansion step for integer constants
+        if let IrExpression::Int(value) = value {
+            return Ok(lower_int_constant(range, value));
+        }
+
+        // general case
         let value_ty = value.ty(self.module, self.locals);
         let value_ty = value_ty.unwrap_int();
 
