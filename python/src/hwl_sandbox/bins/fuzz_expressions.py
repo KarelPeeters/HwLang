@@ -8,7 +8,7 @@ from typing import Union, Optional
 
 import hwl
 
-from hwl_sandbox.common.compare import expression_compile, expression_get_type
+from hwl_sandbox.common.compare import compare_compile, compare_get_type
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
@@ -107,8 +107,9 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
         # check expression validness and extract the return type
         expression = f"a0 {operator} a1"
+        body = f"return {expression};"
         try:
-            ty_res_min = expression_get_type(ty_inputs=ty_inputs, expr=expression)
+            ty_res_min = compare_get_type(ty_inputs=ty_inputs, body=body)
             # success, we've generated a valid expression
             break
         except hwl.DiagnosticException as e:
@@ -135,7 +136,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
         ty_res = f"int({range_res.start}..={range_res.end_inc})"
 
     # generate and compile code
-    compiled = expression_compile(ty_inputs=ty_inputs, ty_res=ty_res, expr=expression, build_dir=build_dir)
+    compiled = compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=build_dir)
 
     # put through some random values
     for _ in range(sample_count):
@@ -190,14 +191,15 @@ def main():
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
 
     # random seed
-    seed = 42 + 2
+    seed = 42 + 3
+    start_iter = 0
     print(f"Using random seed: {seed}")
 
     # create threads
     common = Common(
         stopped=False,
         counter_lock=threading.Lock(),
-        counter_next=0,
+        counter_next=start_iter,
     )
     threads = [
         threading.Thread(target=main_thread, args=(common, build_dir_base, sample_count, seed,))
