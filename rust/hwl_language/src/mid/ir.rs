@@ -668,11 +668,11 @@ impl IrExpression {
     }
 
     pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
-        match self {
-            &IrExpression::Signal(signal) => {
+        match *self {
+            IrExpression::Signal(signal) => {
                 f(IrSignalOrVariable::Signal(signal), ValueAccess::Read);
             }
-            &IrExpression::Variable(var) => {
+            IrExpression::Variable(var) => {
                 f(IrSignalOrVariable::Variable(var), ValueAccess::Read);
             }
             _ => {}
