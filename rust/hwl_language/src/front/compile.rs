@@ -273,7 +273,7 @@ pub struct CompileItemContext<'a, 's> {
     pub large: IrLargeArena,
 
     pub origin: Option<AstRefItem>,
-    pub stack: Vec<StackEntry>,
+    pub call_stack: Vec<StackEntry>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -315,22 +315,22 @@ impl<'a, 's> CompileItemContext<'a, 's> {
             registers: Arena::new(),
             large: IrLargeArena::new(),
             origin,
-            stack: vec![],
+            call_stack: vec![],
         }
     }
 
     pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> DiagResult<R> {
-        if self.stack.len() > MAX_STACK_ENTRIES {
-            return Err(self.refs.diags.report(stack_overflow_diagnostic(&self.stack)));
+        if self.call_stack.len() > MAX_STACK_ENTRIES {
+            return Err(self.refs.diags.report(stack_overflow_diagnostic(&self.call_stack)));
         }
 
-        self.stack.push(entry);
-        let len = self.stack.len();
+        self.call_stack.push(entry);
+        let len = self.call_stack.len();
 
         let result = f(self);
 
-        assert_eq!(self.stack.len(), len);
-        self.stack.pop().unwrap();
+        assert_eq!(self.call_stack.len(), len);
+        self.call_stack.pop().unwrap();
 
         Ok(result)
     }
@@ -340,7 +340,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         let stack_entry = StackEntry::ItemEvaluation(item_span);
 
         self.recurse(stack_entry, |s| {
-            let origin = s.origin.map(|origin| (origin, s.stack.clone()));
+            let origin = s.origin.map(|origin| (origin, s.call_stack.clone()));
             let f_compute = || {
                 let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
                 ctx.eval_item_new(item)

@@ -1,7 +1,7 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::flow::{Flow, FlowCompile, FlowRoot};
+use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
@@ -452,7 +452,12 @@ impl CompileItemContext<'_, '_> {
                 let decl_span = kind.span();
 
                 let entry = self.eval_declaration_named(scope, flow, kind).map(|v| {
-                    let var = flow.var_new_immutable_init(decl_id, decl_span, Ok(Value::Compile(v)));
+                    let var = flow.var_new_immutable_init(
+                        decl_id.span(),
+                        VariableId::Id(decl_id),
+                        decl_span,
+                        Ok(Value::Compile(v)),
+                    );
                     ScopedEntry::Named(NamedValue::Variable(var))
                 });
                 scope.maybe_declare(diags, Ok(decl_id.spanned_str(self.refs.fixed.source)), entry);
@@ -670,6 +675,7 @@ impl CompileItemContext<'_, '_> {
         let mut fields_eval = IndexMap::new();
 
         let mut any_field_err = Ok(());
+
         let mut visit_field = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, field: &StructField| {
             let &StructField { span: _, id, ty } = field;
 

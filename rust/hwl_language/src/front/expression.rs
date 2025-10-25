@@ -7,10 +7,10 @@ use crate::front::check::{
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::flow::{ExtraRegisters, ValueVersion};
+use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{
-    BoolImplications, HardwareValueWithImplications, Implication, ImplicationOp, ValueWithImplications,
+    BoolImplications, HardwareValueWithImplications, Implication, ImplicationIntOp, ValueWithImplications,
 };
 use crate::front::item::{ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -32,6 +32,7 @@ use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
+use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, FlowKind, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
 use crate::front::range::{
@@ -191,9 +192,9 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let mut scope_inner = Scope::new_child(expr.span, scope);
 
-                // TODO propagate return type?
-                let end = self.elaborate_block_statements(&mut scope_inner, flow, None, statements)?;
-                end.unwrap_outside_function_and_loop(diags)?;
+                let mut stack = ExitStack::new_in_block_expression(expr.span);
+                let end = self.elaborate_block_statements(&mut scope_inner, flow, &mut stack, statements)?;
+                end.unwrap_normal(diags, expr.span)?;
 
                 self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
             }
@@ -206,14 +207,16 @@ impl<'a> CompileItemContext<'a, '_> {
                         return Ok(ValueInner::Value(ValueWithImplications::simple(Value::Compile(value))));
                     }
                     NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => flow.var_eval_unchecked(self, Spanned::new(expr.span, var))?,
+                        NamedValue::Variable(var) => {
+                            flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(expr.span, var))?
+                        }
                         NamedValue::Port(port) => {
                             let flow = flow.check_hardware(expr.span, "port access")?;
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
                         }
                         NamedValue::Wire(wire) => {
                             let flow = flow.check_hardware(expr.span, "wire access")?;
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
                         }
                         NamedValue::Register(reg) => {
                             let flow = flow.check_hardware(expr.span, "register access")?;
@@ -223,7 +226,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
                             }
 
-                            Value::Hardware(flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?)
+                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?
                         }
                         NamedValue::PortInterface(interface) => {
                             // we don't need a hardware context yet, only when we actually access an actual port
@@ -404,7 +407,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.refs.check_should_stop(expr.span)?;
 
                     let index_value = index_value.to_maybe_compile(&mut self.large);
-                    let index_var = flow.var_new_immutable_init(index, span_keyword, Ok(index_value));
+                    let index_var =
+                        flow.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
@@ -729,10 +733,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     .transpose()?;
 
                 // create variable to hold the result
-                let debug_info_id = || Spanned::new(span_keyword, None);
                 let var_info = IrVariableInfo {
                     ty: ty_hw.as_ir(refs),
-                    debug_info_id: debug_info_id(),
+                    debug_info_span: span_keyword,
+                    debug_info_id: Some("reg_delay".to_owned()),
                 };
                 let ir_var = flow.new_ir_variable(var_info);
 
@@ -741,7 +745,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     flow.check_clocked_block(span_keyword, "register expression")?;
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
-                    debug_info_id: debug_info_id(),
+                    debug_info_id: Spanned::new(span_keyword, None),
                     debug_info_ty: ty_hw.clone(),
                     debug_info_domain: clocked_domain.inner.diagnostic_string(self),
                 };
@@ -844,9 +848,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.check_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
-                return Ok(ValueInner::Value(Value::Hardware(
-                    HardwareValueWithImplications::simple_version(port_eval),
-                )));
+                return Ok(ValueInner::Value(ValueWithImplications::simple_version(port_eval)));
             }
             ValueInner::WireInterface(wire_interface) => {
                 let wire_interface_info = &self.wire_interfaces[wire_interface];
@@ -868,9 +870,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.check_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
-                return Ok(ValueInner::Value(Value::Hardware(
-                    HardwareValueWithImplications::simple_version(wire_eval),
-                )));
+                return Ok(ValueInner::Value(ValueWithImplications::simple_version(wire_eval)));
             }
             ValueInner::Value(base_eval) => base_eval,
         };
@@ -1455,7 +1455,7 @@ impl<'a> CompileItemContext<'a, '_> {
             NamedOrValue::ItemValue(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
-                    let info = flow.var_eval_unchecked(self, Spanned::new(arg.span, var))?;
+                    let info = flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(arg.span, var))?;
                     info.into_value().ty()
                 }
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
@@ -2477,93 +2477,86 @@ fn eval_binary_bool(
     right: Spanned<ValueWithImplications>,
     op: IrBoolBinaryOp,
 ) -> DiagResult<ValueWithImplications> {
-    fn build_bool_gate(
-        f: impl Fn(bool) -> bool,
-        large: &mut IrLargeArena,
-        inner_eval: HardwareValueWithImplications,
-        inner_ir: HardwareValue<()>,
-    ) -> ValueWithImplications {
-        match (f(false), f(true)) {
-            // constants
-            (false, false) => ValueWithImplications::simple(Value::Compile(CompileValue::Bool(false))),
-            (true, true) => ValueWithImplications::simple(Value::Compile(CompileValue::Bool(true))),
-            // pass gate
-            (false, true) => ValueWithImplications::Hardware(inner_eval),
-            // not gate
-            (true, false) => ValueWithImplications::Hardware(HardwareValueWithImplications {
-                value: HardwareValue {
-                    ty: HardwareType::Bool,
-                    domain: inner_ir.domain,
-                    expr: large.push_expr(IrExpressionLarge::BoolNot(inner_ir.expr)),
-                },
-                version: None,
-                implications: inner_eval.implications.invert(),
-            }),
-        }
-    }
+    let left = check_type_is_bool(diags, op_reason, left);
+    let right = check_type_is_bool(diags, op_reason, right);
 
-    let left_value = check_type_is_bool(
-        diags,
-        op_reason,
-        left.clone().map_inner(ValueWithImplications::into_value),
-    );
-    let right_value = check_type_is_bool(
-        diags,
-        op_reason,
-        right.clone().map_inner(ValueWithImplications::into_value),
-    );
+    let left = left?;
+    let right = right?;
 
-    let left_value = left_value?;
-    let right_value = right_value?;
+    let result = match eval_binary_bool_typed(large, op, left.inner, right.inner) {
+        Value::Compile(v) => Value::Compile(CompileValue::Bool(v)),
+        Value::Hardware(v) => Value::Hardware(v.map_type(|()| HardwareType::Bool)),
+    };
+    Ok(result)
+}
 
-    match (left_value.inner, right_value.inner) {
+pub fn eval_binary_bool_typed(
+    large: &mut IrLargeArena,
+    op: IrBoolBinaryOp,
+    left: ValueWithImplications<bool, ()>,
+    right: ValueWithImplications<bool, ()>,
+) -> ValueWithImplications<bool, ()> {
+    match (left, right) {
         // full compile-tim eval
         (Value::Compile(left), Value::Compile(right)) => {
-            let result = CompileValue::Bool(op.eval(left, right));
-            Ok(ValueWithImplications::simple(Value::Compile(result)))
+            let result = op.eval(left, right);
+            ValueWithImplications::simple(Value::Compile(result))
         }
-        // partial compile-time eval
-        (Value::Compile(left_value), Value::Hardware(right_value)) => Ok(build_bool_gate(
-            |b| op.eval(left_value, b),
-            large,
-            right.inner.unwrap_hardware(),
-            right_value,
-        )),
-        (Value::Hardware(left_value), Value::Compile(right_value)) => Ok(build_bool_gate(
-            |b| op.eval(b, right_value),
-            large,
-            left.inner.unwrap_hardware(),
-            left_value,
-        )),
-        // full hardware
-        (Value::Hardware(left_value), Value::Hardware(right_value)) => {
-            let expr = HardwareValue {
-                ty: HardwareType::Bool,
-                domain: left_value.domain.join(right_value.domain),
-                expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left_value.expr, right_value.expr)),
-            };
 
-            let left_inner = left.inner.unwrap_hardware();
-            let right_inner = right.inner.unwrap_hardware();
+        // partial compile-time eval
+        (Value::Compile(left), Value::Hardware(right)) => build_unary_bool_gate(large, right, |b| op.eval(left, b)),
+        (Value::Hardware(left), Value::Compile(right)) => build_unary_bool_gate(large, left, |b| op.eval(b, right)),
+
+        // full hardware
+        (Value::Hardware(left), Value::Hardware(right)) => {
+            let expr = HardwareValue {
+                ty: (),
+                domain: left.value.domain.join(right.value.domain),
+                expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left.value.expr, right.value.expr)),
+            };
 
             let implications = match op {
                 IrBoolBinaryOp::And => BoolImplications {
-                    if_true: vec_concat([left_inner.implications.if_true, right_inner.implications.if_true]),
+                    if_true: vec_concat([left.implications.if_true, right.implications.if_true]),
                     if_false: vec![],
                 },
                 IrBoolBinaryOp::Or => BoolImplications {
                     if_true: vec![],
-                    if_false: vec_concat([left_inner.implications.if_false, right_inner.implications.if_false]),
+                    if_false: vec_concat([left.implications.if_false, right.implications.if_false]),
                 },
-                IrBoolBinaryOp::Xor => BoolImplications::default(),
+                IrBoolBinaryOp::Xor => BoolImplications::new(None),
             };
 
-            Ok(ValueWithImplications::Hardware(HardwareValueWithImplications {
+            ValueWithImplications::Hardware(HardwareValueWithImplications {
                 value: expr,
                 version: None,
                 implications,
-            }))
+            })
         }
+    }
+}
+
+fn build_unary_bool_gate(
+    large: &mut IrLargeArena,
+    value: HardwareValueWithImplications<()>,
+    op: impl Fn(bool) -> bool,
+) -> ValueWithImplications<bool, ()> {
+    match (op(false), op(true)) {
+        // constants
+        (false, false) => ValueWithImplications::simple(Value::Compile(false)),
+        (true, true) => ValueWithImplications::simple(Value::Compile(true)),
+        // pass gate
+        (false, true) => ValueWithImplications::Hardware(value),
+        // not gate
+        (true, false) => ValueWithImplications::Hardware(HardwareValueWithImplications {
+            value: HardwareValue {
+                ty: (),
+                domain: value.value.domain,
+                expr: large.push_expr(IrExpressionLarge::BoolNot(value.value.expr)),
+            },
+            version: None,
+            implications: value.implications.invert(),
+        }),
     }
 }
 
@@ -2664,12 +2657,20 @@ fn implications_lt(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc));
-        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc - 1));
+        if_true.push(Implication::new_int(left, ImplicationIntOp::Lt, right_range.end_inc));
+        if_false.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Gt,
+            right_range.start_inc - 1,
+        ));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc));
-        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc + 1));
+        if_true.push(Implication::new_int(right, ImplicationIntOp::Gt, left_range.start_inc));
+        if_false.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Lt,
+            left_range.end_inc + 1,
+        ));
     }
 
     BoolImplications { if_true, if_false }
@@ -2685,12 +2686,20 @@ fn implications_lte(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, right_range.end_inc + 1));
-        if_false.push(Implication::new(left, ImplicationOp::Gt, right_range.start_inc));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Lt,
+            right_range.end_inc + 1,
+        ));
+        if_false.push(Implication::new_int(left, ImplicationIntOp::Gt, right_range.start_inc));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Gt, left_range.start_inc - 1));
-        if_false.push(Implication::new(right, ImplicationOp::Lt, left_range.end_inc));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Gt,
+            left_range.start_inc - 1,
+        ));
+        if_false.push(Implication::new_int(right, ImplicationIntOp::Lt, left_range.end_inc));
     }
 
     BoolImplications { if_true, if_false }
@@ -2706,20 +2715,36 @@ fn implications_eq(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new(left, ImplicationOp::Lt, &right_range.end_inc + 1));
-        if_true.push(Implication::new(left, ImplicationOp::Gt, &right_range.start_inc - 1));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Lt,
+            &right_range.end_inc + 1,
+        ));
+        if_true.push(Implication::new_int(
+            left,
+            ImplicationIntOp::Gt,
+            &right_range.start_inc - 1,
+        ));
 
         if let Some(right) = right_range.as_single() {
-            if_false.push(Implication::new(left, ImplicationOp::Neq, right.clone()));
+            if_false.push(Implication::new_int(left, ImplicationIntOp::Neq, right.clone()));
         }
     }
 
     if let Some(right) = right {
-        if_true.push(Implication::new(right, ImplicationOp::Lt, &left_range.end_inc + 1));
-        if_true.push(Implication::new(right, ImplicationOp::Gt, &left_range.start_inc - 1));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Lt,
+            &left_range.end_inc + 1,
+        ));
+        if_true.push(Implication::new_int(
+            right,
+            ImplicationIntOp::Gt,
+            &left_range.start_inc - 1,
+        ));
 
         if let Some(left) = left_range.as_single() {
-            if_false.push(Implication::new(right, ImplicationOp::Neq, left.clone()));
+            if_false.push(Implication::new_int(right, ImplicationIntOp::Neq, left.clone()));
         }
     }
 

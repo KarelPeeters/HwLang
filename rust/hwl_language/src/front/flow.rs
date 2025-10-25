@@ -2,7 +2,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ValueWithVersion, join_implications,
+    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
@@ -14,7 +14,8 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
@@ -24,7 +25,6 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -44,48 +44,75 @@ trait FlowPrivate: Sized {
 
     fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
 
-    fn apply_implications(
-        &self,
-        large: &mut IrLargeArena,
-        value: HardwareValueWithVersion,
-    ) -> HardwareValueWithVersion {
-        if let HardwareType::Int(ty) = &value.value.ty {
-            let mut range = ClosedIncRangeMulti::from_range(ty.clone());
-            self.for_each_implication(value.version, |implication| {
-                let &Implication { version, op, ref right } = implication;
-                assert_eq!(value.version, version);
-                range.apply_implication(op, right);
-            });
+    fn apply_implications(&self, large: &mut IrLargeArena, value: HardwareValueWithVersion) -> ValueWithVersion {
+        match &value.value.ty {
+            HardwareType::Bool => {
+                let mut known_false = false;
+                let mut known_true = false;
+                self.for_each_implication(value.version, |implication| {
+                    let &Implication { version, ref kind } = implication;
+                    assert_eq!(value.version, version);
 
-            match range.to_range() {
-                // TODO support never type or maybe specifically empty ranges
-                // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
-                None => value,
-                Some(range) => {
-                    if &range == ty {
-                        value
-                    } else {
-                        let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
-                        let value_constr = HardwareValue {
-                            ty: HardwareType::Int(range),
-                            domain: value.value.domain,
-                            expr: large.push_expr(expr_constr),
-                        };
-                        HardwareValueWithVersion {
-                            value: value_constr,
-                            version: value.version,
+                    if let &ImplicationKind::BoolEq(value) = kind {
+                        match value {
+                            true => known_true = true,
+                            false => known_false = true,
+                        }
+                    }
+                });
+
+                match (known_false, known_true) {
+                    (false, false) => Value::Hardware(value),
+                    (true, false) => Value::Compile(CompileValue::Bool(false)),
+                    (false, true) => Value::Compile(CompileValue::Bool(true)),
+                    (true, true) => {
+                        // TODO support never type or maybe specifically empty ranges
+                        // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
+                        Value::Hardware(value)
+                    }
+                }
+            }
+            HardwareType::Int(ty) => {
+                let mut range = ClosedIncRangeMulti::from_range(ty.clone());
+                self.for_each_implication(value.version, |implication| {
+                    let &Implication { version, ref kind } = implication;
+                    assert_eq!(value.version, version);
+                    if let &ImplicationKind::IntOp(op, ref right) = kind {
+                        range.apply_implication(op, right);
+                    }
+                });
+
+                match range.to_range() {
+                    // TODO support never type or maybe specifically empty ranges
+                    // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
+                    None => Value::Hardware(value),
+                    Some(range) => {
+                        if &range == ty {
+                            Value::Hardware(value)
+                        } else {
+                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
+                            let value_constr = HardwareValue {
+                                ty: HardwareType::Int(range),
+                                domain: value.value.domain,
+                                expr: large.push_expr(expr_constr),
+                            };
+                            Value::Hardware(HardwareValueWithVersion {
+                                value: value_constr,
+                                version: value.version,
+                            })
                         }
                     }
                 }
             }
-        } else {
-            value
+            _ => Value::Hardware(value),
         }
     }
 
     fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue);
 
     fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>>;
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo>;
 }
 
 #[allow(private_bounds)]
@@ -119,25 +146,39 @@ pub trait Flow: FlowPrivate {
         self.var_set_maybe(var, assignment_span, assigned);
     }
 
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo>;
+    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
+        assert_eq!(var.inner.check, self.root().check);
+        self.try_var_info(var.inner.index).ok_or_else(|| {
+            self.root()
+                .diags
+                .report_internal_error(var.span, "failed to find variable")
+        })
+    }
 
     /// Evaluate the variable without checking if this allowed in the current context.
-    fn var_eval_unchecked(&self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithVersion> {
-        let diags = ctx.refs.diags;
-
+    /// TODO rename or clarify what still needs to be checked by the caller
+    fn var_eval_unchecked(
+        &self,
+        diags: &Diagnostics,
+        large: &mut IrLargeArena,
+        var: Spanned<Variable>,
+    ) -> DiagResult<ValueWithVersion> {
         match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => Ok(value.value_with_version.clone().map_hardware(|v| {
-                let v = v.map_version(|index| ValueVersion {
-                    signal: SignalOrVariable::Variable(var.inner),
-                    index,
-                });
-                self.apply_implications(&mut ctx.large, v)
-            })),
+            MaybeAssignedValue::Assigned(value) => match value.value_with_version.clone() {
+                Value::Compile(v) => Ok(Value::Compile(v)),
+                Value::Hardware(v) => {
+                    let v = v.map_version(|index| ValueVersion {
+                        signal: SignalOrVariable::Variable(var.inner),
+                        index,
+                    });
+                    Ok(self.apply_implications(large, v))
+                }
+            },
             MaybeAssignedValue::NotYetAssigned => {
                 let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value")
                     .add_error(var.span, "variable used here")
-                    .add_info(var_info.id.span(), "variable declared here")
+                    .add_info(var_info.span_decl, "variable declared here")
                     .finish();
                 Err(diags.report(diag))
             }
@@ -145,7 +186,7 @@ pub trait Flow: FlowPrivate {
                 let var_info = self.var_info(var)?;
                 let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
                     .add_error(var.span, "variable used here")
-                    .add_info(var_info.id.span(), "variable declared here")
+                    .add_info(var_info.span_decl, "variable declared here")
                     .finish();
                 Err(diags.report(diag))
             }
@@ -153,11 +194,19 @@ pub trait Flow: FlowPrivate {
         }
     }
 
-    fn var_new_immutable_init(&mut self, id: MaybeIdentifier, assign_span: Span, value: DiagResult<Value>) -> Variable {
+    fn var_new_immutable_init(
+        &mut self,
+        span_decl: Span,
+        id: VariableId,
+        assign_span: Span,
+        value: DiagResult<Value>,
+    ) -> Variable {
         let info = VariableInfo {
+            span_decl,
             id,
             mutable: false,
             ty: None,
+            use_ir_variable: None,
         };
         let var = self.var_new(info);
         self.var_set(var, assign_span, value);
@@ -364,6 +413,21 @@ impl FlowPrivate for FlowCompile<'_> {
             }
         }
     }
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
+        let mut curr = self;
+        loop {
+            if let Some(slot) = curr.variable_slots.get(&var) {
+                return Some(&slot.info);
+            }
+            curr = match &curr.kind {
+                FlowCompileKind::Root => return None,
+                FlowCompileKind::IsolatedCompile(parent) => parent,
+                FlowCompileKind::ScopedCompile(parent) => parent,
+                FlowCompileKind::ScopedHardware(parent) => return parent.try_var_info(var),
+            }
+        }
+    }
 }
 
 impl Flow for FlowCompile<'_> {
@@ -404,24 +468,6 @@ impl Flow for FlowCompile<'_> {
         self.variable_slots.insert_first(var.index, slot);
 
         var
-    }
-
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
-        let mut curr = self;
-        loop {
-            if let Some(slot) = curr.variable_slots.get(&var.inner.index) {
-                return Ok(&slot.info);
-            }
-            curr = match &curr.kind {
-                FlowCompileKind::Root => {
-                    let diags = self.root.diags;
-                    return Err(diags.report_internal_error(var.span, "failed to find variable info"));
-                }
-                FlowCompileKind::IsolatedCompile(parent) => parent,
-                FlowCompileKind::ScopedCompile(parent) => parent,
-                FlowCompileKind::ScopedHardware(parent) => return parent.var_info(var),
-            }
-        }
     }
 }
 
@@ -546,7 +592,7 @@ struct FlowHardwareCommon {
 }
 
 struct FlowHardwareVariables {
-    // We store both the info and the value as a signle combined entry, to avoid duplicate map lookups and insertions.
+    // We store both the info and the value as a single combined entry, to avoid duplicate map lookups and insertions.
     combined: IndexMap<VariableIndex, VariableInfoAndValue>,
 }
 
@@ -664,6 +710,27 @@ impl FlowPrivate for FlowHardware<'_> {
             };
         }
     }
+
+    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
+        // TODO fix code duplication
+        let mut curr = self;
+        loop {
+            let (variables, next) = match &curr.kind {
+                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
+                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
+                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
+            };
+            if let Some(info) = variables.combined.get(&var)
+                && let Some(info) = &info.info
+            {
+                return Some(info);
+            }
+            curr = match next {
+                Either::Left(root) => return root.parent.try_var_info(var),
+                Either::Right(next) => next,
+            };
+        }
+    }
 }
 
 impl Flow for FlowHardware<'_> {
@@ -679,7 +746,7 @@ impl Flow for FlowHardware<'_> {
         }
     }
 
-    fn check_hardware<'s>(&'s mut self, _: Span, _: &str) -> DiagResult<&'s mut FlowHardware<'s>> {
+    fn check_hardware(&mut self, _: Span, _: &str) -> DiagResult<&mut FlowHardware<'_>> {
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
         Ok(slf)
     }
@@ -704,27 +771,6 @@ impl Flow for FlowHardware<'_> {
         variables.combined.insert_first(var.index, combined);
 
         var
-    }
-
-    fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
-        // TODO fix code duplication
-        let mut curr = self;
-        loop {
-            let (variables, next) = match &curr.kind {
-                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
-                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
-                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
-            };
-            if let Some(info) = variables.combined.get(&var.inner.index)
-                && let Some(info) = &info.info
-            {
-                return Ok(info);
-            }
-            curr = match next {
-                Either::Left(root) => return root.parent.var_info(var),
-                Either::Right(next) => next,
-            };
-        }
     }
 }
 
@@ -840,6 +886,25 @@ impl<'p> FlowHardware<'p> {
         result
     }
 
+    pub fn join_child_branches_pair(
+        &mut self,
+        refs: CompileRefs,
+        large: &mut IrLargeArena,
+        span_merge: Span,
+        branches: (FlowHardwareBranchContent, FlowHardwareBranchContent),
+    ) -> DiagResult<(IrBlock, IrBlock)> {
+        let (branch_0, branch_1) = branches;
+        let branches = vec![branch_0, branch_1];
+
+        let result = self.join_child_branches(refs, large, span_merge, branches)?;
+
+        assert_eq!(result.len(), 2);
+        let mut result = result.into_iter();
+        let block_0 = result.next().unwrap();
+        let block_1 = result.next().unwrap();
+        Ok((block_0, block_1))
+    }
+
     pub fn join_child_branches(
         &mut self,
         refs: CompileRefs,
@@ -859,7 +924,7 @@ impl<'p> FlowHardware<'p> {
         for branch in &branches {
             assert_eq!(self.root.check, branch.check);
             for &var in branch.common.variables.combined.keys() {
-                if branch.common.variables.combined.contains_key(&var) {
+                if self.try_var_info(var).is_some() {
                     merged_vars.insert(var);
                 }
             }
@@ -874,11 +939,13 @@ impl<'p> FlowHardware<'p> {
                 check: self.root.check,
                 index: var,
             };
-            let var_id_span = self.var_info(Spanned::new(span_merge, var))?.id.span();
+            let var_info = self.var_info(Spanned::new(span_merge, var))?;
+            let var_span_decl = var_info.span_decl;
 
             let value_merged = merge_branch_values(refs, large, self, span_merge, var, &mut branches)
                 .unwrap_or_else(VariableValue::Error);
-            self.var_set_maybe(var, var_id_span, value_merged);
+
+            self.var_set_maybe(var, var_span_decl, value_merged);
         }
 
         // merge signals
@@ -1049,11 +1116,7 @@ impl<'p> FlowHardware<'p> {
         }
     }
 
-    pub fn signal_eval(
-        &self,
-        ctx: &mut CompileItemContext,
-        signal: Spanned<Signal>,
-    ) -> DiagResult<HardwareValueWithVersion> {
+    pub fn signal_eval(&self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
         let value_raw = signal.inner.as_hardware_value(ctx, signal.span)?;
 
         // For clocked blocks, check read domain validness.
@@ -1185,9 +1248,27 @@ struct VariableIndex(NonZeroUsize);
 
 #[derive(Debug)]
 pub struct VariableInfo {
-    pub id: MaybeIdentifier,
+    pub span_decl: Span,
+    pub id: VariableId,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
+    pub use_ir_variable: Option<IrVariable>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum VariableId {
+    Id(MaybeIdentifier),
+    Custom(&'static str),
+}
+
+impl VariableId {
+    pub fn str(self, source: &SourceDatabase) -> Option<&str> {
+        match self {
+            VariableId::Id(MaybeIdentifier::Identifier(id)) => Some(id.str(source)),
+            VariableId::Id(MaybeIdentifier::Dummy { span: _ }) => None,
+            VariableId::Custom(s) => Some(s),
+        }
+    }
 }
 
 type VariableValue =
@@ -1382,7 +1463,7 @@ fn merge_branch_values(
                     ty.as_hardware_type(refs).map_err(|_| {
                         let ty_str = ty.diagnostic_string();
                         let diag = Diagnostic::new("merging if assignments needs hardware type")
-                            .add_info(var_info.id.span(), "for this variable")
+                            .add_info(var_info.span_decl, "for this variable")
                             .add_info(
                                 branch_value.last_assignment_span,
                                 format!(
@@ -1409,7 +1490,7 @@ fn merge_branch_values(
         let ty_str = ty.diagnostic_string();
 
         let mut diag = Diagnostic::new("merging if assignments needs hardware type")
-            .add_info(var_info.id.span(), "for this variable")
+            .add_info(var_info.span_decl, "for this variable")
             .add_error(
                 span_merge,
                 format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
@@ -1441,11 +1522,17 @@ fn merge_branch_values(
     })?;
 
     // create result variable
-    let var_ir_info = IrVariableInfo {
-        ty: ty.as_ir(refs),
-        debug_info_id: var_info.id.spanned_string(refs.fixed.source),
+    let var_ir = match var_info.use_ir_variable {
+        Some(var_ir) => var_ir,
+        None => {
+            let var_ir_info = IrVariableInfo {
+                ty: ty.as_ir(refs),
+                debug_info_span: var_info.span_decl,
+                debug_info_id: var_info.id.str(refs.fixed.source).map(str::to_owned),
+            };
+            parent_flow.new_ir_variable(var_ir_info)
+        }
     };
-    let var_ir = parent_flow.new_ir_variable(var_ir_info);
 
     // store values into that variable
     let mut domain = ValueDomain::CompileTime;
@@ -1453,29 +1540,38 @@ fn merge_branch_values(
 
     let mut build_store = |value: VariableValueRef| {
         let value = unwrap_branch_value(value);
+
         let value = match &value.value_with_version {
             Value::Compile(v) => v.as_hardware_value(refs, large, value.last_assignment_span, &ty)?,
-            Value::Hardware(v) => v.value.clone(),
+            Value::Hardware(v) => v.value.clone().soft_expand_to_type(large, &ty),
         };
 
         domain = domain.join(value.domain);
 
-        let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
-        Ok(Spanned::new(span_merge, store))
+        if matches!(value.expr, IrExpression::Variable(value_var) if value_var == var_ir) {
+            Ok(None)
+        } else {
+            let store = IrStatement::Assign(IrAssignmentTarget::variable(var_ir), value.expr);
+            Ok(Some(Spanned::new(span_merge, store)))
+        }
     };
 
     for branch in &mut *branches {
         if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
             assert!(branch_combined.info.is_none());
             let branch_value = branch_combined.value.as_ref().unwrap();
-            branch.common.statements.push(build_store(branch_value.as_ref())?);
+            if let Some(store) = build_store(branch_value.as_ref())? {
+                branch.common.statements.push(store);
+            }
         }
         domain_cond = domain_cond.join(branch.cond_domain.inner);
     }
     if used_value_parent {
         // re-borrow parent_value
         let parent_value = parent_flow.var_get_maybe(var_spanned)?;
-        parent_flow.push_ir_statement(build_store(parent_value)?);
+        if let Some(store) = build_store(parent_value)? {
+            parent_flow.push_ir_statement(store);
+        }
     }
     domain = domain.join(domain_cond);
 

@@ -1,43 +1,48 @@
 use crate::front::flow::ValueVersion;
-use crate::front::types::{ClosedIncRange, Type, Typed};
+use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
 
-#[derive(Default, Debug, Clone)]
-pub struct BoolImplications {
-    pub if_true: Vec<Implication>,
-    pub if_false: Vec<Implication>,
+#[derive(Debug, Clone)]
+pub struct BoolImplications<V = ValueVersion> {
+    pub if_true: Vec<Implication<V>>,
+    pub if_false: Vec<Implication<V>>,
 }
 
 // TODO rename the concept "implication" to "type narrowing" everywhere
 #[derive(Debug, Clone)]
-pub struct Implication {
-    pub version: ValueVersion,
-    pub op: ImplicationOp,
-    pub right: BigInt,
+pub struct Implication<V = ValueVersion> {
+    pub version: V,
+    pub kind: ImplicationKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImplicationKind {
+    BoolEq(bool),
+    IntOp(ImplicationIntOp, BigInt),
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum ImplicationOp {
+pub enum ImplicationIntOp {
     Neq,
     Lt,
     Gt,
 }
 
-pub type ValueWithVersion = Value<CompileValue, HardwareValueWithVersion>;
-pub type ValueWithImplications = Value<CompileValue, HardwareValueWithImplications>;
+pub type ValueWithVersion<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithVersion<ValueVersion, T>>;
+pub type ValueWithImplications<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithImplications<T>>;
 pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithVersion<V = ValueVersion> {
-    pub value: HardwareValue,
+pub struct HardwareValueWithVersion<V = ValueVersion, T = HardwareType> {
+    pub value: HardwareValue<T>,
     pub version: V,
 }
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithImplications {
-    pub value: HardwareValue,
+pub struct HardwareValueWithImplications<T = HardwareType> {
+    pub value: HardwareValue<T>,
     pub version: Option<ValueVersion>,
     pub implications: BoolImplications,
 }
@@ -52,6 +57,18 @@ impl<V> HardwareValueWithVersion<V> {
 }
 
 impl BoolImplications {
+    pub fn new(version: Option<ValueVersion>) -> Self {
+        let mut result = BoolImplications {
+            if_true: vec![],
+            if_false: vec![],
+        };
+        if let Some(version) = version {
+            result.if_true.push(Implication::new_bool(version, true));
+            result.if_false.push(Implication::new_bool(version, false));
+        }
+        result
+    }
+
     pub fn invert(self) -> Self {
         Self {
             if_true: self.if_false,
@@ -67,11 +84,17 @@ pub fn join_implications(branch_implications: &[Vec<Implication>]) -> Vec<Implic
 }
 
 impl Implication {
-    pub fn new(value: ValueVersion, op: ImplicationOp, right: BigInt) -> Self {
+    pub fn new_int(value: ValueVersion, op: ImplicationIntOp, right: BigInt) -> Self {
         Self {
             version: value,
-            op,
-            right,
+            kind: ImplicationKind::IntOp(op, right),
+        }
+    }
+
+    pub fn new_bool(value: ValueVersion, equal: bool) -> Self {
+        Self {
+            version: value,
+            kind: ImplicationKind::BoolEq(equal),
         }
     }
 }
@@ -82,34 +105,42 @@ impl ValueWithVersion {
     }
 }
 
-impl ValueWithImplications {
-    pub fn simple(value: Value) -> Self {
+impl<C, T> ValueWithImplications<C, T> {
+    pub fn simple(value: Value<C, HardwareValue<T>>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple)
     }
 
-    pub fn simple_version(value: ValueWithVersion) -> Self {
+    pub fn simple_version(value: ValueWithVersion<C, T>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple_version)
     }
 
-    pub fn into_value(self) -> Value {
+    pub fn into_value(self) -> Value<C, HardwareValue<T>> {
         self.map_hardware(|v| v.value)
     }
 }
 
-impl HardwareValueWithImplications {
-    pub fn simple(value: HardwareValue) -> Self {
+impl<T> HardwareValueWithImplications<T> {
+    pub fn simple(value: HardwareValue<T>) -> Self {
         Self {
             value,
             version: None,
-            implications: BoolImplications::default(),
+            implications: BoolImplications::new(None),
         }
     }
 
-    pub fn simple_version(value: HardwareValueWithVersion) -> Self {
+    pub fn simple_version(value: HardwareValueWithVersion<ValueVersion, T>) -> Self {
         Self {
             value: value.value,
             version: Some(value.version),
-            implications: BoolImplications::default(),
+            implications: BoolImplications::new(Some(value.version)),
+        }
+    }
+
+    pub fn map_type<U>(self, f: impl FnOnce(T) -> U) -> HardwareValueWithImplications<U> {
+        HardwareValueWithImplications {
+            value: self.value.map_type(f),
+            version: self.version,
+            implications: self.implications,
         }
     }
 }
@@ -140,9 +171,9 @@ impl ClosedIncRangeMulti {
         })
     }
 
-    pub fn apply_implication(&mut self, op: ImplicationOp, right: &BigInt) {
+    pub fn apply_implication(&mut self, op: ImplicationIntOp, right: &BigInt) {
         match op {
-            ImplicationOp::Lt => {
+            ImplicationIntOp::Lt => {
                 for i in 0..self.ranges.len() {
                     let range = &mut self.ranges[i];
                     if &range.start_inc >= right {
@@ -154,7 +185,7 @@ impl ClosedIncRangeMulti {
                     }
                 }
             }
-            ImplicationOp::Gt => {
+            ImplicationIntOp::Gt => {
                 for i in (0..self.ranges.len()).rev() {
                     let range = &mut self.ranges[i];
                     if &range.end_inc <= right {
@@ -166,7 +197,7 @@ impl ClosedIncRangeMulti {
                     }
                 }
             }
-            ImplicationOp::Neq => {
+            ImplicationIntOp::Neq => {
                 for i in 0..self.ranges.len() {
                     let range = &self.ranges[i];
                     if range.contains(right) {

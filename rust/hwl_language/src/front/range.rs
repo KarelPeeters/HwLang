@@ -65,23 +65,23 @@ pub fn range_binary_div(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) 
     if right_positive {
         Some(ClosedIncRange {
             start_inc: min(
-                (&a.start_inc).div_floor(&b.end_inc).unwrap(),
-                (&a.start_inc).div_floor(&b.start_inc).unwrap(),
+                a.start_inc.div_floor(b.end_inc).unwrap(),
+                a.start_inc.div_floor(b.start_inc).unwrap(),
             ),
             end_inc: max(
-                (&a.end_inc).div_floor(&b.end_inc).unwrap(),
-                (&a.end_inc).div_floor(&b.start_inc).unwrap(),
+                a.end_inc.div_floor(b.end_inc).unwrap(),
+                a.end_inc.div_floor(b.start_inc).unwrap(),
             ),
         })
     } else {
         Some(ClosedIncRange {
             start_inc: min(
-                (&a.end_inc).div_floor(&b.end_inc).unwrap(),
-                (&a.end_inc).div_floor(&b.start_inc).unwrap(),
+                a.end_inc.div_floor(b.end_inc).unwrap(),
+                a.end_inc.div_floor(b.start_inc).unwrap(),
             ),
             end_inc: max(
-                (&a.start_inc).div_floor(&b.end_inc).unwrap(),
-                (&a.start_inc).div_floor(&b.start_inc).unwrap(),
+                a.start_inc.div_floor(b.end_inc).unwrap(),
+                a.start_inc.div_floor(b.start_inc).unwrap(),
             ),
         })
     }
@@ -115,11 +115,8 @@ pub fn range_binary_pow(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigUint>)
         return None;
     }
 
-    let mut result_min = min(
-        a.start_inc.clone().pow(&b.start_inc),
-        a.start_inc.clone().pow(&b.end_inc),
-    );
-    let mut result_max = max(a.start_inc.clone().pow(&b.end_inc), a.end_inc.clone().pow(&b.end_inc));
+    let mut result_min = min(a.start_inc.clone().pow(b.start_inc), a.start_inc.clone().pow(b.end_inc));
+    let mut result_max = max(a.start_inc.clone().pow(b.end_inc), a.end_inc.clone().pow(b.end_inc));
 
     // If base is negative, even/odd powers can cause extremes.
     // To guard this, try the second highest exponent too if it exists.

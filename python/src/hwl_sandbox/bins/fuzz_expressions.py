@@ -8,7 +8,7 @@ from typing import Union, Optional
 
 import hwl
 
-from hwl_sandbox.common.expression import expression_compile, expression_get_type
+from hwl_sandbox.common.compare import expression_compile, expression_get_type
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
