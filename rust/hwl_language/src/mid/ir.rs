@@ -166,6 +166,7 @@ pub struct IrModuleInternalInstance {
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
+// TODO ensure this works for zero-width ports
 #[derive(Debug, Clone)]
 pub struct IrModuleExternalInstance {
     pub name: Option<String>,
