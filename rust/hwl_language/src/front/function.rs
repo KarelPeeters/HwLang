@@ -875,12 +875,12 @@ pub fn check_function_return_type_and_set_value(
 
     match (ty, value) {
         (None, None) => {}
-        (Some(ret_ty), Some(value)) => {
+        (Some(ty), Some(value)) => {
             let reason = TypeContainsReason::Return {
                 span_keyword,
-                span_return_ty: ret_ty.span,
+                span_return_ty: ty.span,
             };
-            let result_ty = check_type_contains_value(diags, reason, ret_ty.inner, value.as_ref(), true, false);
+            let result_ty = check_type_contains_value(diags, reason, ty.inner, value.as_ref(), true, false);
 
             if let Some(return_var) = entry.return_var {
                 flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner));
@@ -888,7 +888,23 @@ pub fn check_function_return_type_and_set_value(
 
             result_ty?;
         }
-        _ => todo!(),
+        (Some(ty), None) => {
+            let diag = Diagnostic::new("missing return value in function with return type")
+                .add_error(span_keyword, "return without value here")
+                .add_info(
+                    ty.span,
+                    format!("function return type `{}` declared here", ty.inner.diagnostic_string()),
+                )
+                .finish();
+            return Err(diags.report(diag));
+        }
+        (None, Some(value)) => {
+            let diag = Diagnostic::new("return value in function without return type")
+                .add_error(value.span, "return value here")
+                .add_info(entry.span_function_decl, "function declared without return type here")
+                .finish();
+            return Err(diags.report(diag));
+        }
     }
 
     Ok(())
