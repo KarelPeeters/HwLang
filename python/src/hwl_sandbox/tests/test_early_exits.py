@@ -117,3 +117,17 @@ def test_nested_loop_break(tmp_dir: Path):
     e.eval_assert([2, -1, -1], 6)
     e.eval_assert([-1, 2, -1], 9)
     e.eval_assert([-1, -1, 2], 8)
+
+
+def test_match_return(tmp_dir: Path):
+    src = """
+    match (a0) {
+        0 => {}
+        1 => { return 1; }
+        _ => {}
+    }
+    return 0;
+    """
+    e = compare_compile(["int(0..=1)"], "int(0..=1)", src, tmp_dir)
+    e.eval_assert([0], 0)
+    e.eval_assert([1], 1)

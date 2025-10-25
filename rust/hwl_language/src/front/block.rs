@@ -281,7 +281,8 @@ impl CompileItemContext<'_, '_> {
         let end = match stack.early_exit_condition(diags, &mut self.large, flow, span)? {
             Value::Compile(exit_cond) => {
                 if exit_cond {
-                    todo!("internal error")
+                    return Err(diags
+                        .report_internal_error(span, "compile-time early exit condition should be handled elsewhere"));
                 }
                 self.elaborate_block_statements_without_immediate_exit_check(scope, flow, stack, statements)?
             }
@@ -899,6 +900,7 @@ impl CompileItemContext<'_, '_> {
         Err(diags.report_internal_error(stmt_span, "reached end of match statement"))
     }
 
+    // TODO write some tests for this
     fn elaborate_match_statement_hardware(
         &mut self,
         scope_parent: &Scope,
@@ -913,6 +915,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut if_branch_conditions = vec![];
         let mut if_branch_flows = vec![];
+        let mut if_branch_ends = vec![];
 
         for (branch, pattern) in zip_eq(branches, branch_patterns) {
             let MatchBranch {
@@ -1054,10 +1057,6 @@ impl CompileItemContext<'_, '_> {
 
             // evaluate the child block
             let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, stack, block)?;
-            match end {
-                BlockEnd::Normal => {}
-                _ => todo!(),
-            }
 
             // build the if stack
             let (cond, fully_covered) = match cond {
@@ -1066,6 +1065,8 @@ impl CompileItemContext<'_, '_> {
             };
             if_branch_conditions.push(cond);
             if_branch_flows.push(flow_branch.finish());
+            if_branch_ends.push(end);
+
             if fully_covered {
                 break;
             }
@@ -1075,12 +1076,21 @@ impl CompileItemContext<'_, '_> {
         assert_eq!(if_branch_conditions.len(), if_branch_flows.len());
         let if_branch_blocks = flow.join_child_branches(self.refs, &mut self.large, stmt_span, if_branch_flows)?;
 
+        // merge ends
+        assert_eq!(if_branch_conditions.len(), if_branch_ends.len());
+        let end = join_block_ends_branches(&if_branch_ends);
+
         // build complete if chain
         let mut else_ir_block = None;
-        for (curr_cond, curr_ir_block) in zip_eq(if_branch_conditions, if_branch_blocks) {
+        for (curr_cond, curr_ir_block) in zip_eq(
+            if_branch_conditions.into_iter().rev(),
+            if_branch_blocks.into_iter().rev(),
+        ) {
             let else_next = match else_ir_block {
                 Some(else_ir_block) => {
                     // build if statement
+                    // TODO use same simplification logic as used in if statements
+                    //   (maybe even handle constant true/false)
                     let if_stmt = IrIfStatement {
                         condition: curr_cond,
                         then_block: curr_ir_block,
@@ -1106,7 +1116,7 @@ impl CompileItemContext<'_, '_> {
             flow.push_ir_statement(Spanned::new(stmt_span, IrStatement::Block(else_ir_block)));
         }
 
-        Ok(BlockEnd::Normal)
+        Ok(end)
     }
 
     fn elaborate_while_statement(
