@@ -227,12 +227,18 @@ hardware within that language. This has the major benefit of immediately making 
 language available for parametrization and code reuse. One major downside is that this heavily constraints the syntax
 and semantics to those of the host language.
 
-* [Chisel](https://www.chisel-lang.org/): Uses Scala as a host language.
-* [MyHDL](https://www.myhdl.org/): Uses Python as a host language.
+* [MyHDL](https://www.myhdl.org/): Uses Python as a host syntax, but compiles the AST into hardware from scratch.
+* [Chisel](https://www.chisel-lang.org/): Uses Scala as a host language to build hardware graphs.
+* [migen](https://github.com/m-labs/migen): Uses python as a host language to build hardware graphs.
 
-[Veryl](https://veryl-lang.org/) is a deviated hardware description language, which is more similar to the approach
-taken here.
+Other projects are building a standalone RTL language, more similar to the approach taken by this project:
 
-[CIRCT](https://circt.llvm.org/) which uses MLIR to define a common intermediate representation for
-hardware. This is similar (but much more feature complete) to the IR defined in this project, at some point it might
-make sense to switch to CIRCT for better interoperability with other tools.
+* [Veryl](https://veryl-lang.org/)
+* [PipelineC](https://github.com/JulianKemmerer/PipelineC)
+
+There is also ongoing work on the supporting infrastructure necessary to make future EDA tooling and RTL language
+development easier:
+
+* [CIRCT](https://circt.llvm.org/) which uses MLIR to define a common intermediate representation for
+  hardware. This is similar (but much more feature complete) to the IR defined in this project, at some point it might
+  make sense to switch to CIRCT for better interoperability with other tools.
