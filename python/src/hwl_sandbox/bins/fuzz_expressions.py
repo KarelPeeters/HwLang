@@ -4,7 +4,7 @@ import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, List
 
 import hwl
 
@@ -77,12 +77,16 @@ def sample_from_range(rng: random.Random, r: Range) -> int:
     return rng.randint(r.start, r.end_inc)
 
 
-def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
-    # TODO allow multiple args and returns to increase fuzzing throughput
-    # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
-    #    arrays, conditional statements, variable assignments, ...
-    # TODO add power, add shifts, add bitwise, add binary
+@dataclass
+class SampledCode:
+    input_ranges: List[Range]
+    input_tys: List[str]
+    res_ty: str
+    body: str
 
+
+# TODO expand this to sample multi-variable expressions
+def sample_code(rng: random.Random) -> SampledCode:
     while True:
         # decide operator
         operators = ["+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">="]
@@ -96,22 +100,19 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
         else:
             rb = sample_range(rng, max_abs=max_abs)
 
-        ty_a0 = f"int({ra.start}..={ra.end_inc})"
-        ty_a1 = f"int({rb.start}..={rb.end_inc})"
-        ty_inputs = [ty_a0, ty_a1]
-
         # check that power ranges are not too large
         max_range_abs = max(abs(ra.start), abs(rb.start), abs(ra.end_inc), abs(rb.end_inc))
         if operator == "**" and max_range_abs ** max_range_abs > 2 ** 1024:
             continue
 
+        input_ranges = [ra, rb]
+        input_tys = [f"int({r.start}..={r.end_inc})" for r in input_ranges]
+
         # check expression validness and extract the return type
         expression = f"a0 {operator} a1"
         body = f"return {expression};"
         try:
-            ty_res_min = compare_get_type(ty_inputs=ty_inputs, body=body)
-            # success, we've generated a valid expression
-            break
+            ty_res_min = compare_get_type(ty_inputs=input_tys, body=body)
         except hwl.DiagnosticException as e:
             # check that this is once of the expected failure modes
             allowed_messages = [
@@ -121,30 +122,48 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
             ]
             if len(e.messages) == 1 and any(m in e.messages[0] for m in allowed_messages):
                 continue
-
             # unexpected error
             raise e
 
-    # parse return type and generate a random range that contains it
-    if ty_res_min == "bool":
-        ty_res = "bool"
-    else:
-        m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
-        assert m
-        range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
-        range_res = sample_range(rng, must_contain=range_res_min)
-        ty_res = f"int({range_res.start}..={range_res.end_inc})"
+        # success, we've generated a valid expression
+        # parse return type and generate a random range that contains it
+        if ty_res_min == "bool":
+            res_ty = "bool"
+        else:
+            m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
+            assert m
+            range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
+            range_res = sample_range(rng, must_contain=range_res_min)
+            res_ty = f"int({range_res.start}..={range_res.end_inc})"
+
+        return SampledCode(input_ranges=input_ranges, input_tys=input_tys, res_ty=res_ty, body=body)
+
+    # help pycharm type checker
+    #   https://youtrack.jetbrains.com/issue/PY-81480/
+    assert False, "while(true) does not end"
+
+
+def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
+    # TODO allow multiple args and returns to increase fuzzing throughput
+    # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
+    #    arrays, conditional statements, variable assignments, ...
+    # TODO add power, add shifts, add bitwise, add binary
+
+    sampled_code = sample_code(rng)
 
     # generate and compile code
-    compiled = compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=build_dir)
+    compiled = compare_compile(
+        ty_inputs=sampled_code.input_tys,
+        ty_res=sampled_code.res_ty,
+        body=sampled_code.body,
+        build_dir=build_dir
+    )
 
     # put through some random values
     for _ in range(sample_count):
-        val_a = sample_from_range(rng, ra)
-        val_b = sample_from_range(rng, rb)
-
-        res_func, res_mod = compiled.eval([val_a, val_b])
-        assert res_func == res_mod, f"Mismatch for types `{ty_a0}`, `{ty_a1}`, `{ty_res}`, expression `{expression}`, values `{val_a}` `{val_b}`: function {res_func} != module {res_mod}"
+        values = [sample_from_range(rng, r) for r in sampled_code.input_ranges]
+        res_func, res_mod = compiled.eval(values)
+        assert res_func == res_mod, f"Mismatch for code {sampled_code}, values `{values}`: function {res_func} != module {res_mod}"
 
 
 def main_iteration(build_dir_base: Path, sample_count: int, seed_base: int, i: int):
