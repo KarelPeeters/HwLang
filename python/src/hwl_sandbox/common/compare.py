@@ -45,23 +45,25 @@ def compare_codegen(ty_inputs: List[str], ty_res: str, body: str) -> hwl.Compile
     params = ", ".join(f"a{i}=p{i}" for i in range(len(ty_inputs)))
     ports_comma = ", " if ports_in else ""
 
+    body_indented = "\n".join("    " + s for s in body.splitlines())
+
     src = f"""
-    import std.types.[any, int, bool];
-    import std.util.print;
-    fn eval_func({args}) -> any {{
-        {body}
+import std.types.[any, int, bool];
+import std.util.print;
+fn eval_func({args}) -> any {{
+{body_indented}
+}}
+module print_type_mod ports({ports_in}) {{
+    wire w_res = eval_func({params});
+    const {{
+        print(type(w_res));        
     }}
-    module print_type_mod ports({ports_in}) {{
-        wire w_res = eval_func({params});
-        const {{
-            print(type(w_res));        
-        }}
+}}
+module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
+    comb {{
+        p_res = eval_func({params});
     }}
-    module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
-        comb {{
-            p_res = eval_func({params});
-        }}
-    }}
+}}
     """
 
     print(src)
@@ -82,8 +84,6 @@ def compare_compile(ty_inputs: List[str], ty_res: str, body: str, build_dir: Pat
     c = compare_codegen(ty_inputs, ty_res, body)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
-
-    print(eval_mod.as_verilog().source)
 
     build_dir.mkdir(parents=True, exist_ok=True)
     eval_mod_inst = eval_mod.as_verilated(build_dir).instance()

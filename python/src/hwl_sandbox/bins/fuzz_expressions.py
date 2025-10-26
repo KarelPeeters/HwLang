@@ -63,7 +63,10 @@ def sample_range(rng: random.Random, must_contain: Optional[Range] = None, max_a
                 return r
 
 
-def sample_from_range(rng: random.Random, r: Range) -> int:
+def sample_from_range(rng: random.Random, r: Optional[Range]) -> int:
+    if r is None:
+        return rng.random() < .5
+
     if rng.random() < 0.3:
         choices = []
         for a in [0, r.start, r.end_inc]:
@@ -79,38 +82,87 @@ def sample_from_range(rng: random.Random, r: Range) -> int:
 
 @dataclass
 class SampledCode:
-    input_ranges: List[Range]
+    # "None" means this is a boolean input
+    # TODO replace this with hwl Type instances once those are convenient enough
+    input_ranges: List[Range | None]
     input_tys: List[str]
     res_ty: str
     body: str
 
 
 def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
-    # decide operator
-    operators = ["+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">="]
-    operator = rng.choice(operators)
+    input_ranges = []
+    next_var_index = 0
+    available_values_int = []
+    available_values_bool = []
+    body = ""
 
-    # decide types
-    max_abs = None if operator != "**" else 1024
-    ra = sample_range(rng, max_abs=max_abs)
-    if rng.random() < 0.1:
-        rb = ra
-    else:
-        rb = sample_range(rng, max_abs=max_abs)
+    def sample_value(ty_int_not_bool: bool, depth: int) -> str:
+        nonlocal next_var_index, body
 
-    # check that power ranges are not too large
-    max_range_abs = max(abs(ra.start), abs(rb.start), abs(ra.end_inc), abs(rb.end_inc))
-    if operator == "**" and max_range_abs ** max_range_abs > 2 ** 1024:
-        return None
+        if depth > 8 or (depth > 0 and rng.random() < 0.5):
+            # reuse an existing value (if possible)
+            if rng.random() < .5:
+                if ty_int_not_bool and available_values_int:
+                    return rng.choice(available_values_int)
+                if not ty_int_not_bool and available_values_bool:
+                    return rng.choice(available_values_bool)
 
-    input_ranges = [ra, rb]
-    input_tys = [f"int({r.start}..={r.end_inc})" for r in input_ranges]
+            # create a new input
+            input_str = f"a{len(input_ranges)}"
+            if ty_int_not_bool:
+                r = sample_range(rng, max_abs=None)
+                input_ranges.append(r)
+                available_values_int.append(input_str)
+            else:
+                input_ranges.append(None)
+                available_values_bool.append(input_str)
+
+            return input_str
+
+        # create a new expression
+        # pick operator
+        if ty_int_not_bool:
+            # int result
+            # TODO include power, unary minus
+            operators = ["+", "-", "*", "/", "%"]
+            operand_int_not_bool = True
+        else:
+            # bool result
+            if rng.random() < 0.8:
+                # int operands
+                operators = ["==", "!=", "<", "<=", ">", ">="]
+                operand_int_not_bool = True
+            else:
+                # bool operands
+                # TODO add all binary bool operators
+                operators = ["&&", "||", "^^", "&", "|", "^"]
+                operand_int_not_bool = False
+
+        operator = rng.choice(operators)
+
+        # pick operands
+        operand_a = sample_value(ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
+        if rng.random() < 0.1:
+            operand_b = operand_a
+        else:
+            operand_b = sample_value(ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
+
+        # build expression
+        var_index = next_var_index
+        next_var_index += 1
+
+        body += f"val v_{var_index} = {operand_a} {operator} {operand_b};\n"
+        return f"v_{var_index}"
+
+    # sample the final return value
+    return_value = sample_value(ty_int_not_bool=rng.random() < 0.8, depth=0)
+    body += f"return {return_value};"
 
     # check expression validness and extract the return type
-    expression = f"a0 {operator} a1"
-    body = f"return {expression};"
+    input_types = [f"int({r.start}..={r.end_inc})" if r is not None else "bool" for r in input_ranges]
     try:
-        ty_res_min = compare_get_type(ty_inputs=input_tys, body=body)
+        ty_res_min = compare_get_type(ty_inputs=input_types, body=body)
     except hwl.DiagnosticException as e:
         # check that this is once of the expected failure modes
         allowed_messages = [
@@ -118,7 +170,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
             "modulo by zero is not allowed",
             "invalid power operation",
         ]
-        if len(e.messages) == 1 and any(m in e.messages[0] for m in allowed_messages):
+        if all(any(a in m for a in allowed_messages) for m in e.messages):
             return None
 
         # unexpected error
@@ -135,7 +187,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
         range_res = sample_range(rng, must_contain=range_res_min)
         res_ty = f"int({range_res.start}..={range_res.end_inc})"
 
-    return SampledCode(input_ranges=input_ranges, input_tys=input_tys, res_ty=res_ty, body=body)
+    return SampledCode(input_ranges=input_ranges, input_tys=input_types, res_ty=res_ty, body=body)
 
 
 def sample_code(rng: random.Random) -> SampledCode:
