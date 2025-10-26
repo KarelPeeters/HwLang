@@ -149,11 +149,18 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
             operand_b = sample_value(ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
 
         # build expression
-        var_index = next_var_index
-        next_var_index += 1
+        expr = f"{operand_a} {operator} {operand_b}"
 
-        body += f"val v_{var_index} = {operand_a} {operator} {operand_b};\n"
-        return f"v_{var_index}"
+        # maybe store in variable
+        if rng.random() < 0.8:
+            var_index = next_var_index
+            next_var_index += 1
+
+            val_str = f"v_{var_index}"
+            body += f"val {val_str} = {expr};\n"
+            return val_str
+        else:
+            return f"({expr})"
 
     # sample the final return value
     return_value = sample_value(ty_int_not_bool=rng.random() < 0.8, depth=0)
