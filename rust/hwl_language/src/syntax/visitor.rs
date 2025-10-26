@@ -11,7 +11,7 @@ use crate::syntax::ast::{
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
-use crate::syntax::pos::{HasSpan, Pos, Span};
+use crate::syntax::pos::{HasSpan, Span};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::regex::RegexDfa;
@@ -36,18 +36,27 @@ pub fn syntax_visit<V: SyntaxVisitor>(
     ctx.visit_file(items)
 }
 
+// TODO document all of this
 pub trait SyntaxVisitor {
     type Break;
-    const DECLARE: bool;
+    const SCOPE_DECLARE: bool;
 
-    fn filter_by_pos(&self) -> Option<Pos>;
+    fn should_visit_span(&self, span: Span) -> bool;
 
-    fn report_id_usage(
+    fn report_id_declare(&mut self, id: GeneralIdentifier) -> ControlFlow<Self::Break, ()> {
+        let _ = id;
+        ControlFlow::Continue(())
+    }
+
+    fn report_id_use(
         &mut self,
         scope: &DeclScope<'_>,
         id: GeneralIdentifier,
         id_eval: impl Fn(&SourceDatabase, GeneralIdentifier) -> EvaluatedId<&str>,
-    ) -> ControlFlow<Self::Break, ()>;
+    ) -> ControlFlow<Self::Break, ()> {
+        let _ = (scope, id, id_eval);
+        ControlFlow::Continue(())
+    }
 
     // TODO call these
     fn report_fold_range(&mut self, range: Span) {
@@ -217,9 +226,7 @@ impl<'p> DeclScope<'p> {
 
 macro_rules! check_skip {
     ($ctx: expr, $span: expr) => {
-        if let Some(pos) = $ctx.visitor.filter_by_pos()
-            && !$span.touches_pos(pos)
-        {
+        if !$ctx.visitor.should_visit_span($span) {
             return ControlFlow::Continue(());
         }
     };
@@ -227,54 +234,45 @@ macro_rules! check_skip {
 
 impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     fn visit_file(&mut self, items: &[Item]) -> ControlFlow<V::Break> {
-        // declare all items in scope
+        // first pass: declare all items in scope
+        // TODO should we filter based on span here or not? maybe make an enum for how declarations should behave
+        //   at least document this properly
         let mut scope = DeclScope::new_root();
-        if V::DECLARE {
-            for item in items {
-                if let Some(info) = item.info().declaration {
-                    self.scope_declare(&mut scope, Conditional::No, info.id.into());
-                }
+        for item in items {
+            if let Some(info) = item.info().declaration {
+                self.scope_declare(&mut scope, Conditional::No, info.id.into())?;
+            }
 
-                if let Item::Import(item) = item {
-                    let mut visit_entry = |entry: &ImportEntry| {
-                        let &ImportEntry { span: _, id, as_ } = entry;
-                        let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
-                        self.scope_declare(&mut scope, Conditional::Yes, final_id.into());
-                    };
-                    match &item.entry.inner {
-                        ImportFinalKind::Single(entry) => {
-                            visit_entry(entry);
-                        }
-                        ImportFinalKind::Multi(entries) => {
-                            for entry in entries {
-                                visit_entry(entry);
-                            }
+            if let Item::Import(item) = item {
+                let mut visit_entry = |entry: &ImportEntry| {
+                    let &ImportEntry { span: _, id, as_ } = entry;
+                    let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
+                    self.scope_declare(&mut scope, Conditional::Yes, final_id.into())
+                };
+                match &item.entry.inner {
+                    ImportFinalKind::Single(entry) => {
+                        visit_entry(entry)?;
+                    }
+                    ImportFinalKind::Multi(entries) => {
+                        for entry in entries {
+                            visit_entry(entry)?;
                         }
                     }
                 }
             }
         }
 
-        // filter items by pos if asked
-        let items_filtered = match self.visitor.filter_by_pos() {
-            None => items,
-            Some(pos) => {
-                let item_index = match items.binary_search_by(|item| item.info().span_full.cmp_touches_pos(pos)) {
-                    Ok(index) => index,
-                    Err(_) => return ControlFlow::Continue(()),
-                };
-                std::slice::from_ref(&items[item_index])
-            }
-        };
-
-        // visit the relevant items
-        for item in items_filtered {
+        // second pass: visit the items themselves
+        for item in items {
             self.visit_file_item(&scope, item)?;
         }
+
         ControlFlow::Continue(())
     }
 
     fn visit_file_item(&mut self, scope_file: &DeclScope, item: &Item) -> ControlFlow<V::Break> {
+        check_skip!(self, item.info().span_full);
+
         match item {
             Item::Import(_) => {
                 // TODO implement "go to definition" for paths, entries, ...
@@ -306,7 +304,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 })?;
 
                 let mut scope_body = scope_ports.new_child();
-                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body);
+                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body)?;
 
                 self.visit_block_module_inner(&mut scope_body, body)?;
                 ControlFlow::Continue(())
@@ -355,7 +353,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     port_types,
                     &mut |slf, scope_body, &(port_name, port_ty)| {
                         slf.visit_expression(scope_body, port_ty)?;
-                        slf.scope_declare(scope_body, Conditional::No, port_name.into());
+                        slf.scope_declare(scope_body, Conditional::No, port_name.into())?;
                         ControlFlow::Continue(())
                     },
                 )?;
@@ -373,7 +371,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             slf.visit_id_usage(scope_body, port_name.into())
                         },
                     )?;
-                    self.scope_declare(&mut scope_body, Conditional::No, id.into());
+                    self.scope_declare(&mut scope_body, Conditional::No, id.into())?;
                 }
 
                 ControlFlow::Continue(())
@@ -402,7 +400,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         self.visit_expression(scope_ports, interface)?;
                     }
                 }
-                self.scope_declare(scope_ports, Conditional::No, id.into());
+                self.scope_declare(scope_ports, Conditional::No, id.into())?;
                 ControlFlow::Continue(())
             }
             ModulePortItem::Block(block) => {
@@ -422,7 +420,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             slf.visit_expression(scope_ports, interface)?;
                         }
                     }
-                    slf.scope_declare(scope_ports, Conditional::No, id.into());
+                    slf.scope_declare(scope_ports, Conditional::No, id.into())?;
                     ControlFlow::Continue(())
                 })?;
 
@@ -553,7 +551,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     }
                 };
 
-                self.scope_declare(scope_parent, Conditional::No, id.into());
+                self.scope_declare(scope_parent, Conditional::No, id.into())?;
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -578,7 +576,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             if let Some(default) = default {
                 slf.visit_expression(scope, default)?;
             }
-            slf.scope_declare(scope, Conditional::No, id.into());
+            slf.scope_declare(scope, Conditional::No, id.into())?;
             ControlFlow::Continue(())
         })
     }
@@ -667,7 +665,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         }
 
         let mut scope_inner = scope.new_child();
-        self.scope_declare(&mut scope_inner, Conditional::No, index.into());
+        self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
 
         f(self, &scope_inner, body)?;
 
@@ -679,7 +677,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         scope_parents: &DeclScope,
         block: &Block<BlockStatement>,
     ) -> ControlFlow<V::Break> {
-        let Block { span, statements } = block;
+        let &Block { span, ref statements } = block;
 
         // declarations inside a block can't leak outside, so we can skip here
         check_skip!(self, span);
@@ -712,7 +710,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 if let Some(init) = init {
                     self.visit_expression(scope, init)?;
                 }
-                self.scope_declare(scope, Conditional::No, id.into());
+                self.scope_declare(scope, Conditional::No, id.into())?;
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -751,7 +749,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     match &pattern.inner {
                         MatchPattern::Wildcard => {}
                         &MatchPattern::Val(id) => {
-                            self.scope_declare(&mut scope_inner, Conditional::No, id.into());
+                            self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                         }
                         &MatchPattern::Equal(expr) => {
                             self.visit_expression(scope, expr)?;
@@ -761,7 +759,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         }
                         &MatchPattern::EnumVariant(_variant, id) => {
                             if let Some(id) = id {
-                                self.scope_declare(&mut scope_inner, Conditional::No, id.into());
+                                self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                             }
                         }
                     }
@@ -800,12 +798,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         scope_body: &mut DeclScope,
         cond: Conditional,
         curr_block: &Block<ModuleStatement>,
-    ) {
+    ) -> ControlFlow<V::Break> {
         for stmt in &curr_block.statements {
             match &stmt.inner {
                 // control flow
                 ModuleStatementKind::Block(block) => {
-                    self.collect_module_body_pub_declarations(scope_body, cond, block);
+                    self.collect_module_body_pub_declarations(scope_body, cond, block)?;
                 }
                 ModuleStatementKind::If(if_stmt) => {
                     let IfStatement {
@@ -821,7 +819,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         cond: _,
                         block,
                     } = initial_if;
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
 
                     for else_if in else_ifs {
                         let IfCondBlockPair {
@@ -830,11 +828,11 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             cond: _,
                             block,
                         } = else_if;
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
                     }
 
                     if let Some(final_else) = final_else {
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else);
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else)?;
                     }
                 }
                 ModuleStatementKind::For(for_stmt) => {
@@ -846,7 +844,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         body,
                     } = for_stmt;
 
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body);
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body)?;
                 }
 
                 // potentially public declarations
@@ -859,7 +857,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         init: _,
                     } = decl;
                     match vis {
-                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
                         Visibility::Private => {}
                     }
                 }
@@ -871,7 +869,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         kind: _,
                     } = decl;
                     match vis {
-                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
                         Visibility::Private => {}
                     }
                 }
@@ -884,6 +882,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ModuleStatementKind::Instance(_) => {}
             }
         }
+
+        ControlFlow::Continue(())
     }
 
     fn visit_block_module(
@@ -900,7 +900,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         scope: &mut DeclScope,
         block: &Block<ModuleStatement>,
     ) -> ControlFlow<V::Break> {
-        let Block { span, statements } = block;
+        let &Block { span, ref statements } = block;
         check_skip!(self, span);
 
         // match the two-pass system from the main compiler
@@ -927,7 +927,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_maybe_general(scope, id)?;
                     match vis {
                         Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.scope_declare(scope, Conditional::No, id),
+                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
@@ -974,7 +974,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_maybe_general(scope, id)?;
                     match vis {
                         Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.scope_declare(scope, Conditional::No, id),
+                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                     }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
@@ -1135,7 +1135,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, iter)?;
 
                 let mut scope_inner = scope.new_child();
-                self.scope_declare(&mut scope_inner, Conditional::No, index.into());
+                self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
 
                 self.visit_array_literal_element(&scope_inner, body)?;
             }
@@ -1230,24 +1230,32 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 // report the id usage itself
-                self.visitor.report_id_usage(scope, id, |source, id| {
+                self.visitor.report_id_use(scope, id, |source, id| {
                     eval_general_id(source, self.arena_expressions, id)
                 })
             }
         }
     }
 
-    fn scope_declare(&mut self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
-        if !V::DECLARE {
-            return;
-        }
+    fn scope_declare(
+        &mut self,
+        scope: &mut DeclScope,
+        cond: Conditional,
+        id: MaybeGeneralIdentifier,
+    ) -> ControlFlow<V::Break> {
         match id {
             MaybeGeneralIdentifier::Dummy { .. } => {}
             MaybeGeneralIdentifier::Identifier(id) => {
-                let id_eval = eval_general_id(self.source, self.arena_expressions, id);
-                scope.declare(cond, id.span(), id_eval);
+                self.visitor.report_id_declare(id)?;
+
+                if V::SCOPE_DECLARE {
+                    let id_eval = eval_general_id(self.source, self.arena_expressions, id);
+                    scope.declare(cond, id.span(), id_eval);
+                }
             }
         }
+
+        ControlFlow::Continue(())
     }
 }
 

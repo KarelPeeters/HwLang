@@ -44,16 +44,15 @@ struct FindDeclarationVisitor<'a> {
     pos: Pos,
 }
 
-// TODO mode function bodies here instead of in the parent
 impl SyntaxVisitor for FindDeclarationVisitor<'_> {
     type Break = Vec<Span>;
-    const DECLARE: bool = true;
+    const SCOPE_DECLARE: bool = true;
 
-    fn filter_by_pos(&self) -> Option<Pos> {
-        Some(self.pos)
+    fn should_visit_span(&self, span: Span) -> bool {
+        span.touches_pos(self.pos)
     }
 
-    fn report_id_usage(
+    fn report_id_use(
         &mut self,
         scope: &DeclScope<'_>,
         id: GeneralIdentifier,
