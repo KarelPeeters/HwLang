@@ -117,6 +117,7 @@ trait FlowPrivate: Sized {
 
 #[allow(private_bounds)]
 pub trait Flow: FlowPrivate {
+    #[allow(clippy::needless_lifetimes)]
     fn new_child_compile<'s>(&'s mut self, span: Span, reason: &'static str) -> FlowCompile<'s>;
 
     // TODO find a better name
@@ -126,6 +127,7 @@ pub trait Flow: FlowPrivate {
 
     fn var_new(&mut self, info: VariableInfo) -> Variable;
 
+    // TODO maybe we should only allow setting IR variables, so they're more clearly owned by flow and we're free to reuse them during merging
     fn var_set(&mut self, var: Variable, assignment_span: Span, value: DiagResult<Value>) {
         let assigned = match value {
             Ok(value) => {
@@ -1326,6 +1328,15 @@ pub enum FailedCaptureReason {
     NotFullyInitialized,
 }
 
+// TODO re-use IR variables where possible to reduce noise in the generated RTL
+//   conditions where this is possible:
+//   * the previous value is already in a IR variable for the corresponding high-level variable
+//   * the IRVariable is not itself still used elsewhere
+//       Can we somehow guarantee that? not really, if we hand out ir variables during variable eval,
+//       callers might hold on to them for a while.
+//       Maybe we should just make the convention that variables are not valid access calls to flow.join.
+//   Once we add this we can remove the hardcoded special case for exit flags,
+//       and maybe even remove the "unused variable" optimization from lower_verilog
 fn merge_branch_values(
     refs: CompileRefs,
     large: &mut IrLargeArena,
@@ -1371,7 +1382,7 @@ fn merge_branch_values(
         // check if we need to do a merge
         //   we don't stop once we know we need to merge, because later unassigned values might remove that requirement again
         let merged_new = match (merged_value, branch_value) {
-            // once we need a hardware merge and we get more normal values, we will steeds need a hardware merge
+            // once we need a hardware merge and we get more normal values, we will still need a hardware merge
             (MaybeAssignedValue::Assigned(Err(e)), MaybeAssignedValue::Assigned(_)) => {
                 MaybeAssignedValue::Assigned(Err(e))
             }
