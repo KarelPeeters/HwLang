@@ -1230,3 +1230,30 @@ impl HasSpan for CommonDeclarationNamedKind {
         }
     }
 }
+
+impl From<Identifier> for GeneralIdentifier {
+    fn from(value: Identifier) -> Self {
+        GeneralIdentifier::Simple(value)
+    }
+}
+
+impl<I> From<I> for MaybeIdentifier<I> {
+    fn from(i: I) -> Self {
+        MaybeIdentifier::Identifier(i)
+    }
+}
+
+impl From<Identifier> for MaybeGeneralIdentifier {
+    fn from(value: Identifier) -> Self {
+        MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(value))
+    }
+}
+
+impl From<MaybeIdentifier> for MaybeGeneralIdentifier {
+    fn from(value: MaybeIdentifier) -> Self {
+        match value {
+            MaybeIdentifier::Dummy { span } => MaybeGeneralIdentifier::Dummy { span },
+            MaybeIdentifier::Identifier(id) => MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(id)),
+        }
+    }
+}

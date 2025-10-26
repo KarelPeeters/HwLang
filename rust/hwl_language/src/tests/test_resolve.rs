@@ -23,7 +23,6 @@ fn test_resolve(src: &str, pos: usize, expected: FindDefinition<&[Range<usize>]>
             FindDefinition::Found(spans)
         }
         FindDefinition::PosNotOnIdentifier => FindDefinition::PosNotOnIdentifier,
-        FindDefinition::DefinitionNotFound => FindDefinition::DefinitionNotFound,
     };
 
     assert_eq!(expected, actual_spans);

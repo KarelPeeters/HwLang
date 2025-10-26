@@ -125,7 +125,7 @@ impl RequestHandler<GotoDefinition> for ServerState {
                     .collect_vec();
                 Some(GotoDefinitionResponse::Array(spans_lsp))
             }
-            FindDefinition::PosNotOnIdentifier | FindDefinition::DefinitionNotFound => None,
+            FindDefinition::PosNotOnIdentifier => None,
         };
 
         Ok(result)

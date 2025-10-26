@@ -20,6 +20,7 @@ pub mod pos;
 pub mod resolve;
 pub mod source;
 pub mod token;
+pub mod visitor;
 
 #[allow(clippy::all)]
 mod grammar_wrapper {
