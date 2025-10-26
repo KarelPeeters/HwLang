@@ -10,7 +10,6 @@
   * also allow non-contiguous ranges, switch to non-inclusive ranges, add int range tracking to match
   * implication fixes (if empty drop the block instead of stopping)
 
-* allow hardware return/break/continue
 * pass expected type to struct constructors
 * add functions to structs/enums/interfaces
   * static (without self param), used for constructors and to replicate generic packages
@@ -34,7 +33,7 @@
 # Backend fixes
 
 * fix verilog backend
-  * array/tuple indexing, bit widths, signedness, zero-width signals, ...
+  * array/tuple indexing
 * fuzz testing for expressions?
 
 * proper Python/Rust/C++ simulation setup
