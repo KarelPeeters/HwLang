@@ -17,6 +17,11 @@ use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::arena::Arena;
 use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
+use std::ops::ControlFlow;
+
+// TODO document the bigger-picture approach taken, visit the entire AST with early existing,
+//   build scopes by declaring everything on the way,
+//   and when we finally encounter the identifier look it up in the current scopes
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum FindDefinition<S = Vec<Span>> {
@@ -25,7 +30,11 @@ pub enum FindDefinition<S = Vec<Span>> {
     DefinitionNotFound,
 }
 
-type FindDefinitionResult = Result<(), FindDefinition>;
+/// Control-flow representation of the result of the [find_definition] operation.
+/// * [ControlFlow::Continue] means the relevant position has not yet been encountered,
+///   and we should continue searching.
+/// * [ControlFlow::Break] means we've visited the relevant position and we now know the result.
+type FindControl = ControlFlow<FindDefinition>;
 
 // TODO implement the opposite direction, "find usages"
 // TODO follow imports instead of jumping to them
@@ -47,9 +56,8 @@ pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> 
     };
 
     match ctx.visit_file_items(items) {
-        // TODO maybe this should be an internal error?
-        Ok(()) => FindDefinition::PosNotOnIdentifier,
-        Err(e) => e,
+        ControlFlow::Continue(()) => FindDefinition::PosNotOnIdentifier,
+        ControlFlow::Break(e) => e,
     }
 }
 
@@ -62,7 +70,7 @@ struct ResolveContext<'a> {
 macro_rules! check_skip {
     ($ctx: expr, $span: expr) => {
         if !$span.touches_pos($ctx.pos) {
-            return Ok(());
+            return ControlFlow::Continue(());
         }
     };
 }
@@ -234,11 +242,11 @@ impl<'p> DeclScope<'p> {
 
 impl ResolveContext<'_> {
     // TODO variant without early exits that finds all usages
-    fn visit_file_items(&self, items: &[Item]) -> FindDefinitionResult {
+    fn visit_file_items(&self, items: &[Item]) -> FindControl {
         // find item containing the pos
         let item_index = match items.binary_search_by(|item| item.info().span_full.cmp_touches_pos(self.pos)) {
             Ok(index) => index,
-            Err(_) => return Ok(()),
+            Err(_) => return ControlFlow::Continue(()),
         };
 
         // declare all items in scope
@@ -271,7 +279,7 @@ impl ResolveContext<'_> {
         match &items[item_index] {
             Item::Import(_) => {
                 // TODO implement "go to definition" for paths, entries, ...
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::CommonDeclaration(decl) => {
                 // we don't need a real scope here, the declaration has already happened in the first pass
@@ -295,14 +303,14 @@ impl ResolveContext<'_> {
 
                 let mut scope_ports = DeclScope::new_child(&scope_params);
                 self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |scope_ports, port| {
-                    self.visit_port_item(scope_ports, port)?
+                    self.visit_port_item(scope_ports, port)
                 })?;
 
                 let mut scope_body = DeclScope::new_child(&scope_ports);
                 self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body);
 
                 self.visit_block_module_inner(&mut scope_body, body)?;
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::ModuleExternal(decl) => {
                 let ItemDefModuleExternal {
@@ -321,10 +329,10 @@ impl ResolveContext<'_> {
 
                 let mut scope_ports = DeclScope::new_child(&scope_params);
                 self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |scope_ports, port| {
-                    self.visit_port_item(scope_ports, port)?
+                    self.visit_port_item(scope_ports, port)
                 })?;
 
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::Interface(decl) => {
                 let ItemDefInterface {
@@ -346,7 +354,7 @@ impl ResolveContext<'_> {
                 self.visit_extra_list(&mut scope_body, port_types, &mut |scope_body, &(port_name, port_ty)| {
                     self.visit_expression(scope_body, port_ty)?;
                     scope_body.declare(self.source, Conditional::No, port_name);
-                    Ok(())
+                    ControlFlow::Continue(())
                 })?;
 
                 for view in views {
@@ -363,17 +371,13 @@ impl ResolveContext<'_> {
                     scope_body.maybe_declare(self.source, Conditional::No, id);
                 }
 
-                Ok(())
+                ControlFlow::Continue(())
             }
         }
     }
 
-    fn visit_port_item(
-        &self,
-        scope_ports: &mut DeclScope,
-        port: &ModulePortItem,
-    ) -> Result<FindDefinitionResult, FindDefinition> {
-        Ok(match port {
+    fn visit_port_item(&self, scope_ports: &mut DeclScope, port: &ModulePortItem) -> FindControl {
+        match port {
             ModulePortItem::Single(port) => {
                 let &ModulePortSingle { span: _, id, ref kind } = port;
                 match kind {
@@ -394,7 +398,7 @@ impl ResolveContext<'_> {
                     }
                 }
                 scope_ports.declare(self.source, Conditional::No, id);
-                Ok(())
+                ControlFlow::Continue(())
             }
             ModulePortItem::Block(block) => {
                 let ModulePortBlock { span: _, domain, ports } = block;
@@ -414,36 +418,32 @@ impl ResolveContext<'_> {
                         }
                     }
                     scope_ports.declare(self.source, Conditional::No, id);
-                    Ok(())
+                    ControlFlow::Continue(())
                 })?;
 
-                Ok(())
+                ControlFlow::Continue(())
             }
-        })
+        }
     }
 
-    fn visit_domain(&self, scope: &DeclScope, domain: DomainKind<Expression>) -> FindDefinitionResult {
+    fn visit_domain(&self, scope: &DeclScope, domain: DomainKind<Expression>) -> FindControl {
         match domain {
-            DomainKind::Const => Ok(()),
-            DomainKind::Async => Ok(()),
+            DomainKind::Const => ControlFlow::Continue(()),
+            DomainKind::Async => ControlFlow::Continue(()),
             DomainKind::Sync(domain) => self.visit_domain_sync(scope, domain),
         }
     }
 
-    fn visit_domain_sync(&self, scope: &DeclScope, domain: SyncDomain<Expression>) -> FindDefinitionResult {
+    fn visit_domain_sync(&self, scope: &DeclScope, domain: SyncDomain<Expression>) -> FindControl {
         let SyncDomain { clock, reset } = domain;
         self.visit_expression(scope, clock)?;
         if let Some(reset) = reset {
             self.visit_expression(scope, reset)?;
         }
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_common_declaration<V>(
-        &self,
-        scope_parent: &mut DeclScope,
-        decl: &CommonDeclaration<V>,
-    ) -> FindDefinitionResult {
+    fn visit_common_declaration<V>(&self, scope_parent: &mut DeclScope, decl: &CommonDeclaration<V>) -> FindControl {
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
@@ -490,7 +490,7 @@ impl ResolveContext<'_> {
                         self.visit_extra_list(&mut scope_params, fields, &mut |_, field| {
                             let &StructField { span: _, id: _, ty } = field;
                             self.visit_expression(scope_parent, ty)?;
-                            Ok(())
+                            ControlFlow::Continue(())
                         })?;
 
                         id
@@ -518,7 +518,7 @@ impl ResolveContext<'_> {
                             if let Some(content) = content {
                                 self.visit_expression(scope_params, content)?;
                             }
-                            Ok(())
+                            ControlFlow::Continue(())
                         })?;
 
                         id
@@ -551,10 +551,10 @@ impl ResolveContext<'_> {
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_parameters(&self, scope: &mut DeclScope, params: &Parameters) -> FindDefinitionResult {
+    fn visit_parameters(&self, scope: &mut DeclScope, params: &Parameters) -> FindControl {
         let Parameters { span: _, items } = params;
 
         self.visit_extra_list(scope, items, &mut |scope, param| {
@@ -569,7 +569,7 @@ impl ResolveContext<'_> {
                 self.visit_expression(scope, default)?;
             }
             scope.declare(self.source, Conditional::No, id);
-            Ok(())
+            ControlFlow::Continue(())
         })
     }
 
@@ -577,8 +577,8 @@ impl ResolveContext<'_> {
         &self,
         scope_parent: &mut DeclScope,
         extra: &ExtraList<I>,
-        f: &mut impl FnMut(&mut DeclScope, &I) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
+        f: &mut impl FnMut(&mut DeclScope, &I) -> FindControl,
+    ) -> FindControl {
         let ExtraList { span: _, items } = extra;
 
         for item in items {
@@ -595,15 +595,15 @@ impl ResolveContext<'_> {
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn visit_if_stmt<I>(
         &self,
         scope: &mut DeclScope,
         if_stmt: &IfStatement<I>,
-        f: &mut impl FnMut(&mut DeclScope, &I) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
+        f: &mut impl FnMut(&mut DeclScope, &I) -> FindControl,
+    ) -> FindControl {
         let mut visit_pair = |pair: &IfCondBlockPair<I>| {
             let &IfCondBlockPair {
                 span: _,
@@ -615,7 +615,7 @@ impl ResolveContext<'_> {
             self.visit_expression(scope, cond)?;
             f(scope, block)?;
 
-            Ok(())
+            ControlFlow::Continue(())
         };
 
         let IfStatement {
@@ -631,15 +631,15 @@ impl ResolveContext<'_> {
         if let Some(final_else) = final_else {
             f(scope, final_else)?;
         }
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn visit_for_stmt<S>(
         &self,
         scope: &DeclScope,
         stmt: &ForStatement<S>,
-        f: impl FnOnce(&DeclScope, &Block<S>) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
+        f: impl FnOnce(&DeclScope, &Block<S>) -> FindControl,
+    ) -> FindControl {
         let &ForStatement {
             span_keyword: _,
             index,
@@ -658,10 +658,10 @@ impl ResolveContext<'_> {
 
         f(&scope_inner, body)?;
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_block_statements(&self, scope_parents: &DeclScope, block: &Block<BlockStatement>) -> FindDefinitionResult {
+    fn visit_block_statements(&self, scope_parents: &DeclScope, block: &Block<BlockStatement>) -> FindControl {
         let Block { span, statements } = block;
 
         // declarations inside a block can't leak outside, so we can skip here
@@ -672,10 +672,10 @@ impl ResolveContext<'_> {
             self.visit_statement(&mut scope, stmt)?;
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_statement(&self, scope: &mut DeclScope, stmt: &BlockStatement) -> FindDefinitionResult {
+    fn visit_statement(&self, scope: &mut DeclScope, stmt: &BlockStatement) -> FindControl {
         let stmt_span = stmt.span;
         match &stmt.inner {
             BlockStatementKind::CommonDeclaration(decl) => {
@@ -775,7 +775,7 @@ impl ResolveContext<'_> {
             BlockStatementKind::Break { span: _ } | BlockStatementKind::Continue { span: _ } => {}
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn collect_module_body_pub_declarations(
@@ -869,12 +869,12 @@ impl ResolveContext<'_> {
         }
     }
 
-    fn visit_block_module(&self, scope_parent: &DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
+    fn visit_block_module(&self, scope_parent: &DeclScope, block: &Block<ModuleStatement>) -> FindControl {
         let mut scope = DeclScope::new_child(scope_parent);
         self.visit_block_module_inner(&mut scope, block)
     }
 
-    fn visit_block_module_inner(&self, scope: &mut DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
+    fn visit_block_module_inner(&self, scope: &mut DeclScope, block: &Block<ModuleStatement>) -> FindControl {
         let Block { span, statements } = block;
         check_skip!(self, span);
 
@@ -1024,21 +1024,17 @@ impl ResolveContext<'_> {
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_array_literal_element(
-        &self,
-        scope: &DeclScope,
-        elem: ArrayLiteralElement<Expression>,
-    ) -> FindDefinitionResult {
+    fn visit_array_literal_element(&self, scope: &DeclScope, elem: ArrayLiteralElement<Expression>) -> FindControl {
         match elem {
             ArrayLiteralElement::Single(elem) => self.visit_expression(scope, elem),
             ArrayLiteralElement::Spread(_, elem) => self.visit_expression(scope, elem),
         }
     }
 
-    fn visit_expression(&self, scope: &DeclScope, expr: Expression) -> FindDefinitionResult {
+    fn visit_expression(&self, scope: &DeclScope, expr: Expression) -> FindControl {
         // expressions can't contain declarations that leak outside, so we can skip here
         check_skip!(self, expr.span);
 
@@ -1173,10 +1169,10 @@ impl ResolveContext<'_> {
             | ExpressionKind::BoolLiteral(_) => {}
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_maybe_general(&self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> FindDefinitionResult {
+    fn visit_maybe_general(&self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> FindControl {
         match id {
             MaybeGeneralIdentifier::Dummy { span: _ } => {}
             MaybeGeneralIdentifier::Identifier(id) => match id {
@@ -1187,7 +1183,7 @@ impl ResolveContext<'_> {
             },
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
@@ -1200,12 +1196,14 @@ impl ResolveContext<'_> {
         }
     }
 
-    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
+    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindControl {
         check_skip!(self, id.span);
-        Err(scope.find(&EvaluatedId::Simple(id.str(self.source))))
+        ControlFlow::Break(scope.find(&EvaluatedId::Simple(id.str(self.source))))
     }
 
-    fn visit_general_id_usage(&self, scope: &DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
+    fn visit_general_id_usage(&self, scope: &DeclScope, id: GeneralIdentifier) -> FindControl {
+        check_skip!(self, id.span());
+
         // visit inner expressions first
         match id {
             GeneralIdentifier::Simple(_id) => {}
@@ -1215,8 +1213,7 @@ impl ResolveContext<'_> {
         }
 
         // find the id itself
-        check_skip!(self, id.span());
-        Err(scope.find(&self.eval_general(id).inner))
+        ControlFlow::Break(scope.find(&self.eval_general(id).inner))
     }
 
     fn eval_general(&self, id: GeneralIdentifier) -> Spanned<EvaluatedId<&str>> {
