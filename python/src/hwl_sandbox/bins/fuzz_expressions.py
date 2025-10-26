@@ -85,62 +85,67 @@ class SampledCode:
     body: str
 
 
-# TODO expand this to sample multi-variable expressions
+def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
+    # decide operator
+    operators = ["+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">="]
+    operator = rng.choice(operators)
+
+    # decide types
+    max_abs = None if operator != "**" else 1024
+    ra = sample_range(rng, max_abs=max_abs)
+    if rng.random() < 0.1:
+        rb = ra
+    else:
+        rb = sample_range(rng, max_abs=max_abs)
+
+    # check that power ranges are not too large
+    max_range_abs = max(abs(ra.start), abs(rb.start), abs(ra.end_inc), abs(rb.end_inc))
+    if operator == "**" and max_range_abs ** max_range_abs > 2 ** 1024:
+        return None
+
+    input_ranges = [ra, rb]
+    input_tys = [f"int({r.start}..={r.end_inc})" for r in input_ranges]
+
+    # check expression validness and extract the return type
+    expression = f"a0 {operator} a1"
+    body = f"return {expression};"
+    try:
+        ty_res_min = compare_get_type(ty_inputs=input_tys, body=body)
+    except hwl.DiagnosticException as e:
+        # check that this is once of the expected failure modes
+        allowed_messages = [
+            "division by zero is not allowed",
+            "modulo by zero is not allowed",
+            "invalid power operation",
+        ]
+        if len(e.messages) == 1 and any(m in e.messages[0] for m in allowed_messages):
+            return None
+
+        # unexpected error
+        raise e
+
+    # success, we've generated a valid expression
+    # parse return type and generate a random range that contains it
+    if ty_res_min == "bool":
+        res_ty = "bool"
+    else:
+        m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
+        assert m
+        range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
+        range_res = sample_range(rng, must_contain=range_res_min)
+        res_ty = f"int({range_res.start}..={range_res.end_inc})"
+
+    return SampledCode(input_ranges=input_ranges, input_tys=input_tys, res_ty=res_ty, body=body)
+
+
 def sample_code(rng: random.Random) -> SampledCode:
+    iter_count = 0
     while True:
-        # decide operator
-        operators = ["+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">="]
-        operator = rng.choice(operators)
-
-        # decide types
-        max_abs = None if operator != "**" else 1024
-        ra = sample_range(rng, max_abs=max_abs)
-        if rng.random() < 0.1:
-            rb = ra
-        else:
-            rb = sample_range(rng, max_abs=max_abs)
-
-        # check that power ranges are not too large
-        max_range_abs = max(abs(ra.start), abs(rb.start), abs(ra.end_inc), abs(rb.end_inc))
-        if operator == "**" and max_range_abs ** max_range_abs > 2 ** 1024:
-            continue
-
-        input_ranges = [ra, rb]
-        input_tys = [f"int({r.start}..={r.end_inc})" for r in input_ranges]
-
-        # check expression validness and extract the return type
-        expression = f"a0 {operator} a1"
-        body = f"return {expression};"
-        try:
-            ty_res_min = compare_get_type(ty_inputs=input_tys, body=body)
-        except hwl.DiagnosticException as e:
-            # check that this is once of the expected failure modes
-            allowed_messages = [
-                "division by zero is not allowed",
-                "modulo by zero is not allowed",
-                "invalid power operation",
-            ]
-            if len(e.messages) == 1 and any(m in e.messages[0] for m in allowed_messages):
-                continue
-            # unexpected error
-            raise e
-
-        # success, we've generated a valid expression
-        # parse return type and generate a random range that contains it
-        if ty_res_min == "bool":
-            res_ty = "bool"
-        else:
-            m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
-            assert m
-            range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
-            range_res = sample_range(rng, must_contain=range_res_min)
-            res_ty = f"int({range_res.start}..={range_res.end_inc})"
-
-        return SampledCode(input_ranges=input_ranges, input_tys=input_tys, res_ty=res_ty, body=body)
-
-    # help pycharm type checker
-    #   https://youtrack.jetbrains.com/issue/PY-81480/
-    assert False, "while(true) does not end"
+        iter_count += 1
+        code = try_sample_code(rng=rng)
+        if code is not None:
+            print(f"Found valid code after {iter_count} attempt(s)")
+            return code
 
 
 def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
