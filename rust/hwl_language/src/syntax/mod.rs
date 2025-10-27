@@ -17,7 +17,6 @@ pub mod hierarchy;
 pub mod manifest;
 pub mod parsed;
 pub mod pos;
-pub mod resolve;
 pub mod source;
 pub mod token;
 pub mod visitor;

@@ -1,9 +1,9 @@
 use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestResult, ServerState};
+use crate::support::find_definition::{PosNotOnIdentifier, find_definition};
 use crate::util::encode::{lsp_to_pos, span_to_lsp};
 use crate::util::uri::uri_to_path;
 use hwl_language::syntax::parse_file_content;
-use hwl_language::syntax::resolve::{FindDefinition, find_definition};
 use hwl_language::syntax::source::SourceDatabase;
 use itertools::Itertools;
 use lsp_types::request::GotoDefinition;
@@ -41,7 +41,7 @@ impl RequestHandler<GotoDefinition> for ServerState {
         // find declarations
         let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
         let result = match find_definition(&source, &ast, pos) {
-            FindDefinition::Found(spans) => {
+            Ok(spans) => {
                 let spans_lsp = spans
                     .into_iter()
                     .map(|span| {
@@ -54,7 +54,7 @@ impl RequestHandler<GotoDefinition> for ServerState {
                     .collect_vec();
                 Some(GotoDefinitionResponse::Array(spans_lsp))
             }
-            FindDefinition::PosNotOnIdentifier => None,
+            Err(PosNotOnIdentifier) => None,
         };
 
         Ok(result)
