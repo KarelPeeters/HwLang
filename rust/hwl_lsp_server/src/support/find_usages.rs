@@ -1,25 +1,32 @@
 use crate::support::PosNotOnIdentifier;
+use crate::support::find_definition::find_definition;
 use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
 use hwl_language::syntax::pos::{HasSpan, Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{DeclScope, EvaluatedId, SyntaxVisitor, syntax_visit};
 use hwl_language::util::Never;
+use indexmap::IndexSet;
 use itertools::Itertools;
 use std::ops::ControlFlow;
 
 // TODO make this cross-file
 pub fn find_usages(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> Result<Vec<Span>, PosNotOnIdentifier> {
-    // find the full span for the current id if any
-    let id_span = syntax_visit(source, ast, &mut FindDeclaredIdVisitor { pos });
-    let id_span = match id_span {
-        ControlFlow::Continue(()) => return Err(PosNotOnIdentifier),
-        ControlFlow::Break(id_span) => id_span,
-    };
+    // decide which id(s) to find the usages of
+    //   prefer found definitions, they're the result of the position being on an identifier usage,
+    //   which can be inside general identifier as an expression
+    let target_ids = find_definition(source, ast, pos)
+        .ok()
+        .or_else(|| {
+            syntax_visit(source, ast, &mut FindDeclaredIdVisitor { pos })
+                .break_value()
+                .map(|v| vec![v])
+        })
+        .ok_or(PosNotOnIdentifier)?;
 
     // find usages of the given id
     let mut usages = vec![];
     let mut visitor = FindUsagesVisitor {
-        target_id_span: id_span,
+        target_ids: target_ids.into_iter().collect(),
         source,
         result: &mut usages,
     };
@@ -50,7 +57,7 @@ impl SyntaxVisitor for FindDeclaredIdVisitor {
 }
 
 struct FindUsagesVisitor<'a> {
-    target_id_span: Span,
+    target_ids: IndexSet<Span>,
     source: &'a SourceDatabase,
     result: &'a mut Vec<GeneralIdentifier>,
 }
@@ -72,7 +79,7 @@ impl SyntaxVisitor for FindUsagesVisitor<'_> {
     ) -> ControlFlow<Self::Break, ()> {
         let found = scope.find(&id_eval(self.source, id));
         for span in found {
-            if span == self.target_id_span {
+            if self.target_ids.contains(&span) {
                 self.result.push(id);
             }
         }
