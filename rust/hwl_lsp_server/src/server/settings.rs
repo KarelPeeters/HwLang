@@ -76,6 +76,7 @@ impl Settings {
                 },
             )),
             definition_provider: Some(OneOf::Left(true)),
+            references_provider: Some(OneOf::Left(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
             ..Default::default()
         };

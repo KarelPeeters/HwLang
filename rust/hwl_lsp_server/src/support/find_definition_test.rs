@@ -1,4 +1,5 @@
-use crate::support::find_definition::{PosNotOnIdentifier, find_definition};
+use crate::support::PosNotOnIdentifier;
+use crate::support::find_definition::find_definition;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;

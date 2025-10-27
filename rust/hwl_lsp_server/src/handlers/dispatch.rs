@@ -34,6 +34,9 @@ impl ServerState {
             request::GotoDefinition::METHOD => {
                 handle_request!(self, params, request::GotoDefinition)
             }
+            request::References::METHOD => {
+                handle_request!(self, params, request::References)
+            }
             request::Formatting::METHOD => {
                 handle_request!(self, params, request::Formatting)
             }

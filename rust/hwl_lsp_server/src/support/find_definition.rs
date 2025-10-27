@@ -1,11 +1,9 @@
+use crate::support::PosNotOnIdentifier;
 use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
 use hwl_language::syntax::pos::{Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{DeclScope, EvaluatedId, SyntaxVisitor, syntax_visit};
 use std::ops::ControlFlow;
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct PosNotOnIdentifier;
 
 pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> Result<Vec<Span>, PosNotOnIdentifier> {
     let mut visitor = FindDeclarationVisitor { source, pos };
