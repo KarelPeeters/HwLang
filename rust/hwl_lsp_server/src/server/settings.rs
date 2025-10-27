@@ -1,4 +1,4 @@
-use crate::server::language::semantic_token_legend;
+use crate::handlers::language::semantic_tokens::semantic_token_legend;
 use lsp_types::{
     InitializeParams, OneOf, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,

@@ -1,5 +1,5 @@
-use crate::server::logger::Logger;
 use crate::server::state::RequestError;
+use crate::util::logger::Logger;
 use crossbeam_channel::Sender;
 use lsp_server::{Message, RequestId, Response};
 use lsp_types::notification::Notification;

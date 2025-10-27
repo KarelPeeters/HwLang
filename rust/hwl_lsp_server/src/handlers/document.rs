@@ -1,7 +1,7 @@
-use crate::engine::vfs::VfsError;
-use crate::server::dispatch::NotificationHandler;
+use crate::handlers::dispatch::NotificationHandler;
 use crate::server::state::{RequestError, RequestResult, ServerState};
-use crate::server::util::uri_to_path;
+use crate::server::vfs::VfsError;
+use crate::util::uri::uri_to_path;
 use hwl_language::throw;
 use hwl_util::io::IoErrorExt;
 use lsp_types::notification::{

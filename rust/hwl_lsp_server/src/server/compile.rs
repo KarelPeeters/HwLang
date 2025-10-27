@@ -1,9 +1,9 @@
-use crate::engine::encode::span_to_lsp;
-use crate::engine::vfs::{Vfs, VfsResult};
-use crate::server::sender::SendErrorOr;
 use crate::server::settings::{PositionEncoding, Settings};
 use crate::server::state::{RequestError, ServerState};
-use crate::server::util::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
+use crate::server::vfs::{Vfs, VfsResult};
+use crate::util::encode::span_to_lsp;
+use crate::util::sender::SendErrorOr;
+use crate::util::uri::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
 use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
