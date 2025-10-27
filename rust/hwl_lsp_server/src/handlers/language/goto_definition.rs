@@ -2,15 +2,12 @@ use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestResult, ServerState};
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_definition::find_definition;
-use crate::util::encode::{lsp_to_pos, span_to_lsp};
+use crate::util::encode::{lsp_to_pos, spans_to_lsp_locations};
 use crate::util::uri::uri_to_path;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
-use itertools::Itertools;
 use lsp_types::request::GotoDefinition;
-use lsp_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location, TextDocumentIdentifier, TextDocumentPositionParams,
-};
+use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, TextDocumentIdentifier, TextDocumentPositionParams};
 
 impl RequestHandler<GotoDefinition> for ServerState {
     fn handle_request(&mut self, params: GotoDefinitionParams) -> RequestResult<Option<GotoDefinitionResponse>> {
@@ -43,16 +40,7 @@ impl RequestHandler<GotoDefinition> for ServerState {
         let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
         let result = match find_definition(&source, &ast, pos) {
             Ok(spans) => {
-                let spans_lsp = spans
-                    .into_iter()
-                    .map(|span| {
-                        let span = span_to_lsp(self.settings.position_encoding, offsets, src, span);
-                        Location {
-                            uri: uri.clone(),
-                            range: span,
-                        }
-                    })
-                    .collect_vec();
+                let spans_lsp = spans_to_lsp_locations(self.settings.position_encoding, &uri, offsets, src, spans);
                 Some(GotoDefinitionResponse::Array(spans_lsp))
             }
             Err(PosNotOnIdentifier) => None,

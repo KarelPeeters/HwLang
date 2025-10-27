@@ -2,11 +2,10 @@ use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestResult, ServerState};
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_usages::find_usages;
-use crate::util::encode::{lsp_to_pos, span_to_lsp};
+use crate::util::encode::{lsp_to_pos, spans_to_lsp_locations};
 use crate::util::uri::uri_to_path;
 use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
-use itertools::Itertools;
 use lsp_types::request::References;
 use lsp_types::{Location, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
@@ -44,19 +43,13 @@ impl RequestHandler<References> for ServerState {
         // find usages
         let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
         let result = match find_usages(&source, &ast, pos) {
-            Ok(spans) => {
-                let spans_lsp = spans
-                    .into_iter()
-                    .map(|span| {
-                        let span = span_to_lsp(self.settings.position_encoding, offsets, src, span);
-                        Location {
-                            uri: uri.clone(),
-                            range: span,
-                        }
-                    })
-                    .collect_vec();
-                Some(spans_lsp)
-            }
+            Ok(spans) => Some(spans_to_lsp_locations(
+                self.settings.position_encoding,
+                &uri,
+                offsets,
+                src,
+                spans,
+            )),
             Err(PosNotOnIdentifier) => None,
         };
 
