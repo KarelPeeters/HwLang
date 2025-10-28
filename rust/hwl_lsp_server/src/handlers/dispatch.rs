@@ -40,6 +40,12 @@ impl ServerState {
             request::Formatting::METHOD => {
                 handle_request!(self, params, request::Formatting)
             }
+            request::SelectionRangeRequest::METHOD => {
+                handle_request!(self, params, request::SelectionRangeRequest)
+            }
+            request::FoldingRangeRequest::METHOD => {
+                handle_request!(self, params, request::FoldingRangeRequest)
+            }
             request::Shutdown::METHOD => {
                 handle_request!(self, params, request::Shutdown)
             }

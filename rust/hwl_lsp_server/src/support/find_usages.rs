@@ -4,7 +4,7 @@ use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
 use hwl_language::syntax::pos::{HasSpan, Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{DeclScope, EvaluatedId, SyntaxVisitor, syntax_visit};
-use hwl_language::util::Never;
+use hwl_language::util::{Never, ResultNeverExt};
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::ops::ControlFlow;
@@ -30,7 +30,7 @@ pub fn find_usages(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> Resu
         source,
         result: &mut usages,
     };
-    let _ = syntax_visit(source, ast, &mut visitor);
+    syntax_visit(source, ast, &mut visitor).remove_never();
 
     Ok(usages.iter().map(|id| id.span()).collect_vec())
 }

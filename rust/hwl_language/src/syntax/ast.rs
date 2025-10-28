@@ -1130,6 +1130,18 @@ impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
 
+impl HasSpan for WhileStatement {
+    fn span(&self) -> Span {
+        self.span_keyword.join(self.body.span)
+    }
+}
+
+impl<S> HasSpan for ForStatement<S> {
+    fn span(&self) -> Span {
+        self.span_keyword.join(self.body.span)
+    }
+}
+
 impl HasSpan for ModulePortItem {
     fn span(&self) -> Span {
         match self {

@@ -11,7 +11,7 @@ use crate::syntax::ast::{
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
-use crate::syntax::pos::{HasSpan, Span};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::regex::RegexDfa;
@@ -36,6 +36,12 @@ pub fn syntax_visit<V: SyntaxVisitor>(
     ctx.visit_file(items)
 }
 
+pub enum FoldRangeKind {
+    Comment,
+    Imports,
+    Region,
+}
+
 // TODO document all of this
 pub trait SyntaxVisitor {
     type Break;
@@ -58,12 +64,8 @@ pub trait SyntaxVisitor {
         ControlFlow::Continue(())
     }
 
-    // TODO call these
-    fn report_fold_range(&mut self, range: Span) {
-        let _ = range;
-    }
-    fn report_select_range(&mut self, range: Span) {
-        let _ = range;
+    fn report_range(&mut self, range: Span, fold: Option<FoldRangeKind>) {
+        let _ = (range, fold);
     }
 }
 
@@ -244,18 +246,23 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             }
 
             if let Item::Import(item) = item {
-                let mut visit_entry = |entry: &ImportEntry| {
-                    let &ImportEntry { span: _, id, as_ } = entry;
+                let mut visit_entry = |slf: &mut VisitContext<V>, entry: &ImportEntry| {
+                    let &ImportEntry { span, id, as_ } = entry;
+                    slf.visitor.report_range(span, None);
                     let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
-                    self.scope_declare(&mut scope, Conditional::Yes, final_id.into())
+                    slf.scope_declare(&mut scope, Conditional::Yes, final_id.into())
                 };
                 match &item.entry.inner {
                     ImportFinalKind::Single(entry) => {
-                        visit_entry(entry)?;
+                        visit_entry(self, entry)?;
                     }
                     ImportFinalKind::Multi(entries) => {
+                        if let (Some(first), Some(last)) = (entries.first(), entries.last()) {
+                            self.visitor.report_range(first.span.join(last.span), None);
+                        }
+
                         for entry in entries {
-                            visit_entry(entry)?;
+                            visit_entry(self, entry)?;
                         }
                     }
                 }
@@ -271,7 +278,17 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 
     fn visit_file_item(&mut self, scope_file: &DeclScope, item: &Item) -> ControlFlow<V::Break> {
-        check_skip!(self, item.info().span_full);
+        let item_span = item.info().span_full;
+        check_skip!(self, item_span);
+
+        // TODO report single fold range for consecutive imports
+        // TODO report single fold range for multi-line comments? that's really more of a token thing, not really AST
+        let fold = if let Item::Import(_) = item {
+            FoldRangeKind::Imports
+        } else {
+            FoldRangeKind::Region
+        };
+        self.visitor.report_range(item_span, Some(fold));
 
         match item {
             Item::Import(_) => {
@@ -360,10 +377,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 for view in views {
                     let &InterfaceView {
-                        span: _,
+                        span,
                         id,
                         ref port_dirs,
                     } = view;
+
+                    self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
                     self.visit_extra_list(
                         &mut scope_body,
                         port_dirs,
@@ -380,6 +400,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 
     fn visit_port_item(&mut self, scope_ports: &mut DeclScope, port: &ModulePortItem) -> ControlFlow<V::Break> {
+        self.visitor.report_range(port.span(), None);
+
         match port {
             ModulePortItem::Single(port) => {
                 let &ModulePortSingle { span: _, id, ref kind } = port;
@@ -387,7 +409,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     ModulePortSingleKind::Port { direction: _, kind } => match kind {
                         PortSingleKindInner::Clock { span_clock: _ } => {}
                         &PortSingleKindInner::Normal { domain, ty } => {
-                            self.visit_domain(scope_ports, domain.inner)?;
+                            self.visit_domain(scope_ports, domain)?;
                             self.visit_expression(scope_ports, ty)?;
                         }
                     },
@@ -396,7 +418,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         domain,
                         interface,
                     } => {
-                        self.visit_domain(scope_ports, domain.inner)?;
+                        self.visit_domain(scope_ports, domain)?;
                         self.visit_expression(scope_ports, interface)?;
                     }
                 }
@@ -404,11 +426,19 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ControlFlow::Continue(())
             }
             ModulePortItem::Block(block) => {
-                let ModulePortBlock { span: _, domain, ports } = block;
+                let &ModulePortBlock {
+                    span,
+                    domain,
+                    ref ports,
+                } = block;
 
-                self.visit_domain(scope_ports, domain.inner)?;
+                self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
+                self.visit_domain(scope_ports, domain)?;
                 self.visit_extra_list(scope_ports, ports, &mut |slf, scope_ports, port| {
-                    let &ModulePortInBlock { span: _, id, ref kind } = port;
+                    let &ModulePortInBlock { span, id, ref kind } = port;
+                    slf.visitor.report_range(span, None);
+
                     match *kind {
                         ModulePortInBlockKind::Port { direction: _, ty } => {
                             slf.visit_expression(scope_ports, ty)?;
@@ -429,8 +459,10 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         }
     }
 
-    fn visit_domain(&mut self, scope: &DeclScope, domain: DomainKind<Expression>) -> ControlFlow<V::Break> {
-        match domain {
+    fn visit_domain(&mut self, scope: &DeclScope, domain: Spanned<DomainKind<Expression>>) -> ControlFlow<V::Break> {
+        self.visitor.report_range(domain.span, None);
+
+        match domain.inner {
             DomainKind::Const => ControlFlow::Continue(()),
             DomainKind::Async => ControlFlow::Continue(()),
             DomainKind::Sync(domain) => self.visit_domain_sync(scope, domain),
@@ -451,6 +483,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         scope_parent: &mut DeclScope,
         decl: &CommonDeclaration<S>,
     ) -> ControlFlow<V::Break> {
+        self.visitor.report_range(decl.span(), Some(FoldRangeKind::Region));
+
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
@@ -517,11 +551,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         }
 
                         self.visit_extra_list(&mut scope_params, variants, &mut |slf, scope_params, variant| {
-                            let &EnumVariant {
-                                span: _,
-                                id: _,
-                                content,
-                            } = variant;
+                            let &EnumVariant { span, id: _, content } = variant;
+                            slf.visitor.report_range(span, None);
+
                             // TODO declare variant name
                             if let Some(content) = content {
                                 slf.visit_expression(scope_params, content)?;
@@ -563,15 +595,14 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 
     fn visit_parameters(&mut self, scope: &mut DeclScope, params: &Parameters) -> ControlFlow<V::Break> {
-        let Parameters { span: _, items } = params;
+        let &Parameters { span, ref items } = params;
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         self.visit_extra_list(scope, items, &mut |slf, scope, param| {
-            let &Parameter {
-                span: _,
-                id,
-                ty,
-                default,
-            } = param;
+            let &Parameter { span, id, ty, default } = param;
+
+            slf.visitor.report_range(span, None);
+
             slf.visit_expression(scope, ty)?;
             if let Some(default) = default {
                 slf.visit_expression(scope, default)?;
@@ -587,7 +618,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         extra: &ExtraList<I>,
         f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
-        let ExtraList { span: _, items } = extra;
+        let &ExtraList { span, ref items } = extra;
+
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         for item in items {
             match item {
@@ -615,7 +648,16 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         if_stmt: &IfStatement<I>,
         f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
-        let mut visit_pair = |pair: &IfCondBlockPair<I>| {
+        let &IfStatement {
+            span,
+            ref initial_if,
+            ref else_ifs,
+            ref final_else,
+        } = if_stmt;
+
+        self.visitor.report_range(span, None);
+
+        let mut visit_pair = |slf: &mut Self, pair: &IfCondBlockPair<I>| {
             let &IfCondBlockPair {
                 span: _,
                 span_if: _,
@@ -623,21 +665,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ref block,
             } = pair;
 
-            self.visit_expression(scope, cond)?;
-            f(self, scope, block)?;
+            slf.visit_expression(scope, cond)?;
+            f(slf, scope, block)?;
 
             ControlFlow::Continue(())
         };
 
-        let IfStatement {
-            span: _,
-            initial_if,
-            else_ifs,
-            final_else,
-        } = if_stmt;
-        visit_pair(initial_if)?;
+        visit_pair(self, initial_if)?;
         for else_if in else_ifs {
-            visit_pair(else_if)?;
+            visit_pair(self, else_if)?;
         }
         if let Some(final_else) = final_else {
             f(self, scope, final_else)?;
@@ -658,6 +694,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             iter,
             ref body,
         } = stmt;
+
+        self.visitor.report_range(stmt.span(), None);
+
         self.visit_expression(scope, iter)?;
 
         if let Some(index_ty) = index_ty {
@@ -682,6 +721,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         // declarations inside a block can't leak outside, so we can skip here
         check_skip!(self, span);
 
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
         let mut scope = scope_parents.new_child();
         for stmt in statements {
             self.visit_statement(&mut scope, stmt)?;
@@ -692,6 +733,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
     fn visit_statement(&mut self, scope: &mut DeclScope, stmt: &BlockStatement) -> ControlFlow<V::Break> {
         let stmt_span = stmt.span;
+
+        self.visitor.report_range(stmt_span, None);
+
         match &stmt.inner {
             BlockStatementKind::CommonDeclaration(decl) => {
                 self.visit_common_declaration(scope, decl)?;
@@ -848,6 +892,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 // potentially public declarations
+                // TODO it's annoying that this messes up visiting order a bit, maybe we should only call the visitor
+                //   for these right next to the non-public visits
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let &RegDeclaration {
                         vis,
@@ -902,9 +948,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     ) -> ControlFlow<V::Break> {
         let &Block { span, ref statements } = block;
         check_skip!(self, span);
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         // match the two-pass system from the main compiler
         for stmt in statements {
+            self.visitor.report_range(stmt.span, None);
+
             match &stmt.inner {
                 ModuleStatementKind::CommonDeclaration(decl) => {
                     self.visit_common_declaration(scope, decl)?;
@@ -947,7 +996,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                                 WireDeclarationDomainTyKind::Clock { span_clock: _ } => {}
                                 WireDeclarationDomainTyKind::Normal { domain, ty } => {
                                     if let Some(domain) = domain {
-                                        self.visit_domain(scope, domain.inner)?;
+                                        self.visit_domain(scope, domain)?;
                                     }
                                     if let Some(ty) = ty {
                                         self.visit_expression(scope, ty)?;
@@ -965,7 +1014,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             interface,
                         } => {
                             if let Some(domain) = domain {
-                                self.visit_domain(scope, domain.inner)?;
+                                self.visit_domain(scope, domain)?;
                             }
                             self.visit_expression(scope, interface)?;
                         }
@@ -1057,6 +1106,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         scope: &DeclScope,
         elem: ArrayLiteralElement<Expression>,
     ) -> ControlFlow<V::Break> {
+        self.visitor.report_range(elem.span(), None);
+
         match elem {
             ArrayLiteralElement::Single(elem) => self.visit_expression(scope, elem),
             ArrayLiteralElement::Spread(_, elem) => self.visit_expression(scope, elem),
@@ -1066,6 +1117,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     fn visit_expression(&mut self, scope: &DeclScope, expr: Expression) -> ControlFlow<V::Break> {
         // expressions can't contain declarations that leak outside, so we can skip here
         check_skip!(self, expr.span);
+
+        self.visitor.report_range(expr.span, None);
 
         match &self.arena_expressions[expr.inner] {
             &ExpressionKind::Wrapped(inner) => {
@@ -1086,21 +1139,33 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_id_usage(scope, id.into())?;
             }
             ExpressionKind::StringLiteral(pieces) => {
-                for piece in pieces {
+                for &piece in pieces {
                     match piece {
-                        StringPiece::Literal { span: _ } => {}
-                        &StringPiece::Substitute(expr) => {
+                        StringPiece::Literal { span } => {
+                            self.visitor.report_range(span, None);
+                        }
+                        StringPiece::Substitute(expr) => {
                             self.visit_expression(scope, expr)?;
                         }
                     }
                 }
             }
             ExpressionKind::ArrayLiteral(elems) => {
+                // report extra selection range covering only the inside of the literal
+                if let (Some(first), Some(last)) = (elems.first(), elems.last()) {
+                    self.visitor.report_range(first.span().join(last.span()), None);
+                }
+
                 for &elem in elems {
                     self.visit_array_literal_element(scope, elem)?;
                 }
             }
             ExpressionKind::TupleLiteral(elems) => {
+                // report extra selection range covering only the inside of the literal
+                if let (Some(first), Some(last)) = (elems.first(), elems.last()) {
+                    self.visitor.report_range(first.span().join(last.span()), None);
+                }
+
                 for &elem in elems {
                     self.visit_expression(scope, elem)?;
                 }
@@ -1132,6 +1197,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     span_keyword: _,
                     iter,
                 } = expr;
+
+                self.visitor.report_range(body.span().join(iter.span), None);
+
                 self.visit_expression(scope, iter)?;
 
                 let mut scope_inner = scope.new_child();
@@ -1164,12 +1232,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             }
             &ExpressionKind::Call(target, ref args) => {
                 self.visit_expression(scope, target)?;
+
+                self.visitor.report_range(args.span, None);
+
                 for arg in &args.inner {
-                    let &Arg {
-                        span: _,
-                        ref name,
-                        value,
-                    } = arg;
+                    let &Arg { span, ref name, value } = arg;
+                    self.visitor.report_range(span, None);
                     // TODO try resolving name, needs type info
                     let _ = name;
                     self.visit_expression(scope, value)?;
@@ -1177,7 +1245,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 self.visit_expression(scope, value)?;
-                self.visit_domain(scope, domain.inner)?;
+                self.visit_domain(scope, domain)?;
             }
             ExpressionKind::RegisterDelay(expr) => {
                 let &RegisterDelay {
@@ -1185,6 +1253,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     value,
                     init,
                 } = expr;
+
+                self.visitor.report_range(value.span.join(init.span), None);
+
                 self.visit_expression(scope, value)?;
                 self.visit_expression(scope, init)?;
             }
@@ -1203,6 +1274,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
     // TODO what is the difference between this and visit_id_usage?
     fn visit_maybe_general(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
+        self.visitor.report_range(id.span(), None);
+
         match id {
             MaybeGeneralIdentifier::Dummy { span: _ } => {}
             MaybeGeneralIdentifier::Identifier(id) => match id {
@@ -1218,6 +1291,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
     fn visit_id_usage(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
         check_skip!(self, id.span());
+
+        self.visitor.report_range(id.span(), None);
+
         match id {
             MaybeGeneralIdentifier::Dummy { .. } => ControlFlow::Continue(()),
             MaybeGeneralIdentifier::Identifier(id) => {
