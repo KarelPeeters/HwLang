@@ -790,7 +790,7 @@ fn lower_port_connections<S: AsRef<str>>(
     }
     swriteln!(f);
 
-    let mut first = false;
+    let mut first = true;
 
     for (port_index, connection) in enumerate(port_connections) {
         let port_name = match port_name(port_index) {
