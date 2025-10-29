@@ -1130,6 +1130,18 @@ impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
 
+impl HasSpan for WhileStatement {
+    fn span(&self) -> Span {
+        self.span_keyword.join(self.body.span)
+    }
+}
+
+impl<S> HasSpan for ForStatement<S> {
+    fn span(&self) -> Span {
+        self.span_keyword.join(self.body.span)
+    }
+}
+
 impl HasSpan for ModulePortItem {
     fn span(&self) -> Span {
         match self {
@@ -1227,6 +1239,33 @@ impl HasSpan for CommonDeclarationNamedKind {
             CommonDeclarationNamedKind::Struct(decl) => decl.span,
             CommonDeclarationNamedKind::Enum(decl) => decl.span,
             CommonDeclarationNamedKind::Function(decl) => decl.span,
+        }
+    }
+}
+
+impl From<Identifier> for GeneralIdentifier {
+    fn from(value: Identifier) -> Self {
+        GeneralIdentifier::Simple(value)
+    }
+}
+
+impl<I> From<I> for MaybeIdentifier<I> {
+    fn from(i: I) -> Self {
+        MaybeIdentifier::Identifier(i)
+    }
+}
+
+impl From<Identifier> for MaybeGeneralIdentifier {
+    fn from(value: Identifier) -> Self {
+        MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(value))
+    }
+}
+
+impl From<MaybeIdentifier> for MaybeGeneralIdentifier {
+    fn from(value: MaybeIdentifier) -> Self {
+        match value {
+            MaybeIdentifier::Dummy { span } => MaybeGeneralIdentifier::Dummy { span },
+            MaybeIdentifier::Identifier(id) => MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(id)),
         }
     }
 }

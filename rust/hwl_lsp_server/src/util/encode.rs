@@ -2,6 +2,8 @@ use crate::server::settings::PositionEncoding;
 use hwl_language::syntax::pos::{LineOffsets, Pos, Span};
 use hwl_language::syntax::source::FileId;
 use hwl_language::util::iter::IterExt;
+use itertools::Itertools;
+use lsp_types::{Location, Uri};
 
 pub fn pos_to_lsp(encoding: PositionEncoding, offsets: &LineOffsets, src: &str, pos: Pos) -> lsp_types::Position {
     let pos = offsets.expand_pos(pos);
@@ -55,4 +57,23 @@ pub fn span_to_lsp(encoding: PositionEncoding, offsets: &LineOffsets, src: &str,
         start: pos_to_lsp(encoding, offsets, src, span.start()),
         end: pos_to_lsp(encoding, offsets, src, span.end()),
     }
+}
+
+pub fn spans_to_lsp_locations(
+    encoding: PositionEncoding,
+    uri: &Uri,
+    offsets: &LineOffsets,
+    src: &str,
+    spans: impl IntoIterator<Item = Span>,
+) -> Vec<Location> {
+    spans
+        .into_iter()
+        .map(|span| {
+            let span = span_to_lsp(encoding, offsets, src, span);
+            Location {
+                uri: uri.clone(),
+                range: span,
+            }
+        })
+        .collect_vec()
 }

@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::hash::Hash;
 use std::ops::Range;
 
+// TODO add function to get entry with borrowed key, only cloning the key if necessary
 pub trait IndexMapExt<K, V> {
     // The same as [IndexMap::insert], but asserts that the key is not already present.
     fn insert_first(&mut self, key: K, value: V) -> &mut V;

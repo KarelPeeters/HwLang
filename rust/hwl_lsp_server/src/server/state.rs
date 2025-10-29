@@ -1,6 +1,6 @@
-use crate::engine::vfs::{Vfs, VfsError};
-use crate::server::sender::{SendError, SendErrorOr, ServerSender};
 use crate::server::settings::Settings;
+use crate::server::vfs::{Vfs, VfsError};
+use crate::util::sender::{SendError, SendErrorOr, ServerSender};
 use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;

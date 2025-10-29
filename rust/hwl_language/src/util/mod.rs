@@ -1,11 +1,13 @@
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
+use std::ops::ControlFlow;
 
 pub mod arena;
 pub mod big_int;
 pub mod data;
 pub mod int;
 pub mod iter;
+pub mod regex;
 pub mod store;
 pub mod sync;
 
@@ -23,15 +25,24 @@ impl Never {
 }
 
 pub trait ResultNeverExt<T> {
+    // TODO find a better name
     fn remove_never(self) -> T;
 }
 
 impl<T> ResultNeverExt<T> for Result<T, Never> {
-    // TODO find a better name
     fn remove_never(self) -> T {
         match self {
             Ok(v) => v,
             Err(e) => e.unreachable(),
+        }
+    }
+}
+
+impl<C> ResultNeverExt<C> for ControlFlow<Never, C> {
+    fn remove_never(self) -> C {
+        match self {
+            ControlFlow::Continue(c) => c,
+            ControlFlow::Break(never) => never.unreachable(),
         }
     }
 }

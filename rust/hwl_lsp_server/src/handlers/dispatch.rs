@@ -34,8 +34,17 @@ impl ServerState {
             request::GotoDefinition::METHOD => {
                 handle_request!(self, params, request::GotoDefinition)
             }
+            request::References::METHOD => {
+                handle_request!(self, params, request::References)
+            }
             request::Formatting::METHOD => {
                 handle_request!(self, params, request::Formatting)
+            }
+            request::SelectionRangeRequest::METHOD => {
+                handle_request!(self, params, request::SelectionRangeRequest)
+            }
+            request::FoldingRangeRequest::METHOD => {
+                handle_request!(self, params, request::FoldingRangeRequest)
             }
             request::Shutdown::METHOD => {
                 handle_request!(self, params, request::Shutdown)

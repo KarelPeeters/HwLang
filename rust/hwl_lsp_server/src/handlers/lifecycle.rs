@@ -1,4 +1,4 @@
-use crate::server::dispatch::RequestHandler;
+use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestResult, ServerState};
 use lsp_types::request::Shutdown;
 

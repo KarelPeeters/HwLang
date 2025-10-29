@@ -1,75 +1,82 @@
 use crate::syntax::ast::{
-    Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
+    ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
     BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
-    ExpressionKind, ExpressionKindIndex, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration,
-    GeneralIdentifier, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item,
-    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
-    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
+    ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier,
+    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface,
+    ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier,
+    MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters,
+    PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
-use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
-use crate::util::arena::Arena;
+use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
-use regex_automata::dfa::Automaton;
-use std::collections::HashSet;
+use std::ops::ControlFlow;
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum FindDefinition<S = Vec<Span>> {
-    Found(S),
-    PosNotOnIdentifier,
-    DefinitionNotFound,
-}
-
-type FindDefinitionResult = Result<(), FindDefinition>;
-
-// TODO implement the opposite direction, "find usages"
-// TODO follow imports instead of jumping to them
-// TODO we can do better: in `if(_) { a } else { a }` a is not really conditional any more
-// TODO generalize this "visitor", we also want to collect all usages, find the next selection span, find folding ranges, ...
-// TODO maybe this should be moved to the LSP, the compiler itself really doesn't need this
-// TODO use the real Scope for the file root, to reduce duplication and get a guaranteed match
-pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> FindDefinition {
+pub fn syntax_visit<V: SyntaxVisitor>(
+    source: &SourceDatabase,
+    file: &FileContent,
+    visitor: &mut V,
+) -> ControlFlow<V::Break> {
     let FileContent {
         span: _,
         items,
         arena_expressions,
-    } = ast;
-
-    let ctx = ResolveContext {
-        pos,
-        arena_expressions,
+    } = file;
+    let mut ctx = VisitContext {
         source,
+        arena_expressions,
+        visitor,
     };
+    ctx.visit_file(items)
+}
 
-    match ctx.visit_file_items(items) {
-        // TODO maybe this should be an internal error?
-        Ok(()) => FindDefinition::PosNotOnIdentifier,
-        Err(e) => e,
+pub enum FoldRangeKind {
+    Comment,
+    Imports,
+    Region,
+}
+
+// TODO document all of this
+pub trait SyntaxVisitor {
+    type Break;
+    const SCOPE_DECLARE: bool;
+
+    fn should_visit_span(&self, span: Span) -> bool;
+
+    fn report_id_declare(&mut self, id: GeneralIdentifier) -> ControlFlow<Self::Break, ()> {
+        let _ = id;
+        ControlFlow::Continue(())
+    }
+
+    fn report_id_use(
+        &mut self,
+        scope: &DeclScope<'_>,
+        id: GeneralIdentifier,
+        id_eval: impl Fn(&SourceDatabase, GeneralIdentifier) -> EvaluatedId<&str>,
+    ) -> ControlFlow<Self::Break, ()> {
+        let _ = (scope, id, id_eval);
+        ControlFlow::Continue(())
+    }
+
+    fn report_range(&mut self, range: Span, fold: Option<FoldRangeKind>) {
+        let _ = (range, fold);
     }
 }
 
-struct ResolveContext<'a> {
-    pos: Pos,
-    arena_expressions: &'a Arena<ExpressionKindIndex, ExpressionKind>,
-    source: &'a SourceDatabase,
-}
-
-macro_rules! check_skip {
-    ($ctx: expr, $span: expr) => {
-        if !$span.touches_pos($ctx.pos) {
-            return Ok(());
-        }
-    };
+#[derive(Debug, Copy, Clone)]
+pub enum Conditional {
+    No,
+    Yes,
 }
 
 #[derive(Debug)]
-struct DeclScope<'p> {
+pub struct DeclScope<'p> {
     parent: Option<&'p DeclScope<'p>>,
     content: DeclScopeContent,
 }
@@ -80,21 +87,10 @@ struct DeclScopeContent {
     pattern: Vec<(RegexDfa, Span, Conditional)>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum Conditional {
-    Yes,
-    No,
-}
-
 #[derive(Debug)]
-enum EvaluatedId<S> {
+pub enum EvaluatedId<S> {
     Simple(S),
     Pattern(RegexDfa),
-}
-
-#[derive(Debug)]
-struct RegexDfa {
-    dfa: regex_automata::dfa::sparse::DFA<Vec<u8>>,
 }
 
 impl EvaluatedId<&str> {
@@ -104,6 +100,12 @@ impl EvaluatedId<&str> {
             EvaluatedId::Pattern(regex) => EvaluatedId::Pattern(regex),
         }
     }
+}
+
+struct VisitContext<'a, 'v, V> {
+    source: &'a SourceDatabase,
+    arena_expressions: &'a ArenaExpressions,
+    visitor: &'v mut V,
 }
 
 impl<'p> DeclScope<'p> {
@@ -117,9 +119,9 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn new_child(parent: &'p DeclScope<'p>) -> Self {
+    fn new_child(&'p self) -> Self {
         Self {
-            parent: Some(parent),
+            parent: Some(self),
             content: DeclScopeContent {
                 simple: IndexMap::new(),
                 pattern: vec![],
@@ -146,30 +148,20 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn declare_impl(&mut self, cond: Conditional, id: Spanned<EvaluatedId<String>>) {
-        match id.inner {
-            EvaluatedId::Simple(id_inner) => {
-                self.content.simple.entry(id_inner).or_default().push((id.span, cond));
-            }
-            EvaluatedId::Pattern(pattern) => self.content.pattern.push((pattern, id.span, cond)),
-        }
-    }
-
-    fn declare(&mut self, source: &SourceDatabase, cond: Conditional, id: Identifier) {
-        let id_eval = EvaluatedId::Simple(id.str(source).to_owned());
-        self.declare_impl(cond, Spanned::new(id.span, id_eval));
-    }
-
-    fn maybe_declare(&mut self, source: &SourceDatabase, cond: Conditional, id: MaybeIdentifier) {
+    fn declare(&mut self, cond: Conditional, span: Span, id: EvaluatedId<&str>) {
         match id {
-            MaybeIdentifier::Dummy { span: _ } => {}
-            MaybeIdentifier::Identifier(id) => {
-                self.declare(source, cond, id);
+            EvaluatedId::Simple(id_inner) => {
+                self.content
+                    .simple
+                    .entry(id_inner.to_owned())
+                    .or_default()
+                    .push((span, cond));
             }
+            EvaluatedId::Pattern(pattern) => self.content.pattern.push((pattern, span, cond)),
         }
     }
 
-    fn find(&self, id: &EvaluatedId<&str>) -> FindDefinition {
+    pub fn find(&self, id: &EvaluatedId<&str>) -> Vec<Span> {
         let mut curr = self;
         let mut result = vec![];
 
@@ -230,119 +222,82 @@ impl<'p> DeclScope<'p> {
             }
         }
 
-        if result.is_empty() {
-            FindDefinition::DefinitionNotFound
-        } else {
-            FindDefinition::Found(result)
-        }
+        result
     }
 }
 
-impl RegexDfa {
-    pub fn new(pattern: &str) -> Result<Self, regex_automata::dfa::dense::BuildError> {
-        let dfa = regex_automata::dfa::sparse::DFA::new(pattern)?;
-        Ok(Self { dfa })
-    }
-
-    pub fn could_match_str(&self, input: &str) -> bool {
-        self.dfa
-            .try_search_fwd(&regex_automata::Input::new(input))
-            .unwrap()
-            .is_some()
-    }
-
-    pub fn could_match_pattern(&self, other: &RegexDfa) -> bool {
-        // regex intersection, based on https://users.rust-lang.org/t/detect-regex-conflict/57184/13
-        let dfa_0 = &self.dfa;
-        let dfa_1 = &other.dfa;
-
-        let start_config = regex_automata::util::start::Config::new().anchored(regex_automata::Anchored::Yes);
-        let start_0 = dfa_0.start_state(&start_config).unwrap();
-        let start_1 = dfa_1.start_state(&start_config).unwrap();
-
-        if dfa_0.is_match_state(start_0) && dfa_1.is_match_state(start_1) {
-            return true;
+macro_rules! check_skip {
+    ($ctx: expr, $span: expr) => {
+        if !$ctx.visitor.should_visit_span($span) {
+            return ControlFlow::Continue(());
         }
-
-        let mut visited_states = HashSet::new();
-        let mut to_process = vec![(start_0, start_1)];
-        visited_states.insert((start_0, start_1));
-
-        while let Some((curr_0, curr_1)) = to_process.pop() {
-            let mut handle_next = |next_0, next_1| {
-                if dfa_0.is_match_state(next_0) && dfa_1.is_match_state(next_1) {
-                    return true;
-                }
-                if visited_states.insert((next_0, next_1)) {
-                    to_process.push((next_0, next_1));
-                }
-                false
-            };
-
-            // TODO is there a good way to only iterate over the bytes that appear in either pattern?
-            for input in 0..u8::MAX {
-                let next_0 = dfa_0.next_state(curr_0, input);
-                let next_1 = dfa_1.next_state(curr_1, input);
-                if handle_next(next_0, next_1) {
-                    return true;
-                }
-            }
-
-            let next_0 = dfa_0.next_eoi_state(curr_0);
-            let next_1 = dfa_1.next_eoi_state(curr_1);
-            if handle_next(next_0, next_1) {
-                return true;
-            }
-        }
-
-        false
-    }
+    };
 }
 
-impl ResolveContext<'_> {
-    // TODO variant without early exits that finds all usages
-    fn visit_file_items(&self, items: &[Item]) -> FindDefinitionResult {
-        // find item containing the pos
-        let item_index = match items.binary_search_by(|item| item.info().span_full.cmp_touches_pos(self.pos)) {
-            Ok(index) => index,
-            Err(_) => return Ok(()),
-        };
-
-        // declare all items in scope
-        let mut scope_file = DeclScope::new_root();
+impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
+    fn visit_file(&mut self, items: &[Item]) -> ControlFlow<V::Break> {
+        // first pass: declare all items in scope
+        // TODO should we filter based on span here or not? maybe make an enum for how declarations should behave
+        //   at least document this properly
+        let mut scope = DeclScope::new_root();
         for item in items {
             if let Some(info) = item.info().declaration {
-                scope_file.maybe_declare(self.source, Conditional::No, info.id);
+                self.scope_declare(&mut scope, Conditional::No, info.id.into())?;
             }
 
             if let Item::Import(item) = item {
-                let mut visit_entry = |entry: &ImportEntry| {
-                    let &ImportEntry { span: _, id, as_ } = entry;
-                    let result = as_.unwrap_or(MaybeIdentifier::Identifier(id));
-                    scope_file.maybe_declare(self.source, Conditional::No, result);
+                let mut visit_entry = |slf: &mut VisitContext<V>, entry: &ImportEntry| {
+                    let &ImportEntry { span, id, as_ } = entry;
+                    slf.visitor.report_range(span, None);
+                    let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
+                    slf.scope_declare(&mut scope, Conditional::Yes, final_id.into())
                 };
                 match &item.entry.inner {
                     ImportFinalKind::Single(entry) => {
-                        visit_entry(entry);
+                        visit_entry(self, entry)?;
                     }
                     ImportFinalKind::Multi(entries) => {
+                        if let (Some(first), Some(last)) = (entries.first(), entries.last()) {
+                            self.visitor.report_range(first.span.join(last.span), None);
+                        }
+
                         for entry in entries {
-                            visit_entry(entry);
+                            visit_entry(self, entry)?;
                         }
                     }
                 }
             }
         }
 
-        // visit the relevant item
-        match &items[item_index] {
+        // second pass: visit the items themselves
+        for item in items {
+            self.visit_file_item(&scope, item)?;
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    fn visit_file_item(&mut self, scope_file: &DeclScope, item: &Item) -> ControlFlow<V::Break> {
+        let item_span = item.info().span_full;
+        check_skip!(self, item_span);
+
+        // TODO report single fold range for consecutive imports
+        // TODO report single fold range for multi-line comments? that's really more of a token thing, not really AST
+        let fold = if let Item::Import(_) = item {
+            FoldRangeKind::Imports
+        } else {
+            FoldRangeKind::Region
+        };
+        self.visitor.report_range(item_span, Some(fold));
+
+        match item {
             Item::Import(_) => {
                 // TODO implement "go to definition" for paths, entries, ...
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::CommonDeclaration(decl) => {
-                // we don't need a real scope here, the declaration has already happened in the first pass
-                let mut scope_dummy = DeclScope::new_child(&scope_file);
+                // we don't need a real scope here, the declaration would already have happened in the first pass
+                let mut scope_dummy = scope_file.new_child();
                 self.visit_common_declaration(&mut scope_dummy, &decl.inner)
             }
             Item::ModuleInternal(decl) => {
@@ -355,21 +310,21 @@ impl ResolveContext<'_> {
                     body,
                 } = decl;
 
-                let mut scope_params = DeclScope::new_child(&scope_file);
+                let mut scope_params = scope_file.new_child();
                 if let Some(params) = params {
                     self.visit_parameters(&mut scope_params, params)?;
                 }
 
-                let mut scope_ports = DeclScope::new_child(&scope_params);
-                self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |scope_ports, port| {
-                    self.visit_port_item(scope_ports, port)?
+                let mut scope_ports = scope_params.new_child();
+                self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |slf, scope_ports, port| {
+                    slf.visit_port_item(scope_ports, port)
                 })?;
 
-                let mut scope_body = DeclScope::new_child(&scope_ports);
-                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body);
+                let mut scope_body = scope_ports.new_child();
+                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body)?;
 
                 self.visit_block_module_inner(&mut scope_body, body)?;
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::ModuleExternal(decl) => {
                 let ItemDefModuleExternal {
@@ -381,17 +336,17 @@ impl ResolveContext<'_> {
                     ports,
                 } = decl;
 
-                let mut scope_params = DeclScope::new_child(&scope_file);
+                let mut scope_params = scope_file.new_child();
                 if let Some(params) = params {
                     self.visit_parameters(&mut scope_params, params)?;
                 }
 
-                let mut scope_ports = DeclScope::new_child(&scope_params);
-                self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |scope_ports, port| {
-                    self.visit_port_item(scope_ports, port)?
+                let mut scope_ports = scope_params.new_child();
+                self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |slf, scope_ports, port| {
+                    slf.visit_port_item(scope_ports, port)
                 })?;
 
-                Ok(())
+                ControlFlow::Continue(())
             }
             Item::Interface(decl) => {
                 let ItemDefInterface {
@@ -404,50 +359,57 @@ impl ResolveContext<'_> {
                     views,
                 } = decl;
 
-                let mut scope_params = DeclScope::new_child(&scope_file);
+                let mut scope_params = scope_file.new_child();
                 if let Some(params) = params {
                     self.visit_parameters(&mut scope_params, params)?;
                 }
 
-                let mut scope_body = DeclScope::new_child(&scope_params);
-                self.visit_extra_list(&mut scope_body, port_types, &mut |scope_body, &(port_name, port_ty)| {
-                    self.visit_expression(scope_body, port_ty)?;
-                    scope_body.declare(self.source, Conditional::No, port_name);
-                    Ok(())
-                })?;
+                let mut scope_body = scope_params.new_child();
+                self.visit_extra_list(
+                    &mut scope_body,
+                    port_types,
+                    &mut |slf, scope_body, &(port_name, port_ty)| {
+                        slf.visit_expression(scope_body, port_ty)?;
+                        slf.scope_declare(scope_body, Conditional::No, port_name.into())?;
+                        ControlFlow::Continue(())
+                    },
+                )?;
 
                 for view in views {
                     let &InterfaceView {
-                        span: _,
+                        span,
                         id,
                         ref port_dirs,
                     } = view;
+
+                    self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
                     self.visit_extra_list(
                         &mut scope_body,
                         port_dirs,
-                        &mut |scope_body, &(port_name, _port_dir)| self.visit_id_usage(scope_body, port_name),
+                        &mut |slf, scope_body, &(port_name, _port_dir)| {
+                            slf.visit_id_usage(scope_body, port_name.into())
+                        },
                     )?;
-                    scope_body.maybe_declare(self.source, Conditional::No, id);
+                    self.scope_declare(&mut scope_body, Conditional::No, id.into())?;
                 }
 
-                Ok(())
+                ControlFlow::Continue(())
             }
         }
     }
 
-    fn visit_port_item(
-        &self,
-        scope_ports: &mut DeclScope,
-        port: &ModulePortItem,
-    ) -> Result<FindDefinitionResult, FindDefinition> {
-        Ok(match port {
+    fn visit_port_item(&mut self, scope_ports: &mut DeclScope, port: &ModulePortItem) -> ControlFlow<V::Break> {
+        self.visitor.report_range(port.span(), None);
+
+        match port {
             ModulePortItem::Single(port) => {
                 let &ModulePortSingle { span: _, id, ref kind } = port;
                 match kind {
                     ModulePortSingleKind::Port { direction: _, kind } => match kind {
                         PortSingleKindInner::Clock { span_clock: _ } => {}
                         &PortSingleKindInner::Normal { domain, ty } => {
-                            self.visit_domain(scope_ports, domain.inner)?;
+                            self.visit_domain(scope_ports, domain)?;
                             self.visit_expression(scope_ports, ty)?;
                         }
                     },
@@ -456,61 +418,73 @@ impl ResolveContext<'_> {
                         domain,
                         interface,
                     } => {
-                        self.visit_domain(scope_ports, domain.inner)?;
+                        self.visit_domain(scope_ports, domain)?;
                         self.visit_expression(scope_ports, interface)?;
                     }
                 }
-                scope_ports.declare(self.source, Conditional::No, id);
-                Ok(())
+                self.scope_declare(scope_ports, Conditional::No, id.into())?;
+                ControlFlow::Continue(())
             }
             ModulePortItem::Block(block) => {
-                let ModulePortBlock { span: _, domain, ports } = block;
+                let &ModulePortBlock {
+                    span,
+                    domain,
+                    ref ports,
+                } = block;
 
-                self.visit_domain(scope_ports, domain.inner)?;
-                self.visit_extra_list(scope_ports, ports, &mut |scope_ports, port| {
-                    let &ModulePortInBlock { span: _, id, ref kind } = port;
+                self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
+                self.visit_domain(scope_ports, domain)?;
+                self.visit_extra_list(scope_ports, ports, &mut |slf, scope_ports, port| {
+                    let &ModulePortInBlock { span, id, ref kind } = port;
+                    slf.visitor.report_range(span, None);
+
                     match *kind {
                         ModulePortInBlockKind::Port { direction: _, ty } => {
-                            self.visit_expression(scope_ports, ty)?;
+                            slf.visit_expression(scope_ports, ty)?;
                         }
                         ModulePortInBlockKind::Interface {
                             span_keyword: _,
                             interface,
                         } => {
-                            self.visit_expression(scope_ports, interface)?;
+                            slf.visit_expression(scope_ports, interface)?;
                         }
                     }
-                    scope_ports.declare(self.source, Conditional::No, id);
-                    Ok(())
+                    slf.scope_declare(scope_ports, Conditional::No, id.into())?;
+                    ControlFlow::Continue(())
                 })?;
 
-                Ok(())
+                ControlFlow::Continue(())
             }
-        })
+        }
     }
 
-    fn visit_domain(&self, scope: &DeclScope, domain: DomainKind<Expression>) -> FindDefinitionResult {
-        match domain {
-            DomainKind::Const => Ok(()),
-            DomainKind::Async => Ok(()),
+    fn visit_domain(&mut self, scope: &DeclScope, domain: Spanned<DomainKind<Expression>>) -> ControlFlow<V::Break> {
+        self.visitor.report_range(domain.span, None);
+
+        match domain.inner {
+            DomainKind::Const => ControlFlow::Continue(()),
+            DomainKind::Async => ControlFlow::Continue(()),
             DomainKind::Sync(domain) => self.visit_domain_sync(scope, domain),
         }
     }
 
-    fn visit_domain_sync(&self, scope: &DeclScope, domain: SyncDomain<Expression>) -> FindDefinitionResult {
+    fn visit_domain_sync(&mut self, scope: &DeclScope, domain: SyncDomain<Expression>) -> ControlFlow<V::Break> {
         let SyncDomain { clock, reset } = domain;
         self.visit_expression(scope, clock)?;
         if let Some(reset) = reset {
             self.visit_expression(scope, reset)?;
         }
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_common_declaration<V>(
-        &self,
+    fn visit_common_declaration<S>(
+        &mut self,
         scope_parent: &mut DeclScope,
-        decl: &CommonDeclaration<V>,
-    ) -> FindDefinitionResult {
+        decl: &CommonDeclaration<S>,
+    ) -> ControlFlow<V::Break> {
+        self.visitor.report_range(decl.span(), Some(FoldRangeKind::Region));
+
         match decl {
             CommonDeclaration::Named(decl) => {
                 let CommonDeclarationNamed { vis: _, kind } = decl;
@@ -523,7 +497,7 @@ impl ResolveContext<'_> {
                             body,
                         } = decl;
 
-                        let mut scope_params = DeclScope::new_child(scope_parent);
+                        let mut scope_params = scope_parent.new_child();
                         if let Some(params) = params {
                             self.visit_parameters(&mut scope_params, params)?;
                         }
@@ -550,14 +524,15 @@ impl ResolveContext<'_> {
                             ref fields,
                         } = decl;
 
-                        let mut scope_params = DeclScope::new_child(scope_parent);
+                        let mut scope_params = scope_parent.new_child();
                         if let Some(params) = params {
                             self.visit_parameters(&mut scope_params, params)?;
                         }
-                        self.visit_extra_list(&mut scope_params, fields, &mut |_, field| {
+                        // TODO why the weird scoping here?
+                        self.visit_extra_list(&mut scope_params, fields, &mut |slf, _scope, field| {
                             let &StructField { span: _, id: _, ty } = field;
-                            self.visit_expression(scope_parent, ty)?;
-                            Ok(())
+                            slf.visit_expression(scope_parent, ty)?;
+                            ControlFlow::Continue(())
                         })?;
 
                         id
@@ -570,22 +545,20 @@ impl ResolveContext<'_> {
                             ref variants,
                         } = decl;
 
-                        let mut scope_params = DeclScope::new_child(scope_parent);
+                        let mut scope_params = scope_parent.new_child();
                         if let Some(params) = params {
                             self.visit_parameters(&mut scope_params, params)?;
                         }
 
-                        self.visit_extra_list(&mut scope_params, variants, &mut |scope_params, variant| {
-                            let &EnumVariant {
-                                span: _,
-                                id: _,
-                                content,
-                            } = variant;
+                        self.visit_extra_list(&mut scope_params, variants, &mut |slf, scope_params, variant| {
+                            let &EnumVariant { span, id: _, content } = variant;
+                            slf.visitor.report_range(span, None);
+
                             // TODO declare variant name
                             if let Some(content) = content {
-                                self.visit_expression(scope_params, content)?;
+                                slf.visit_expression(scope_params, content)?;
                             }
-                            Ok(())
+                            ControlFlow::Continue(())
                         })?;
 
                         id
@@ -599,7 +572,7 @@ impl ResolveContext<'_> {
                             ref body,
                         } = decl;
 
-                        let mut scope_params = DeclScope::new_child(scope_parent);
+                        let mut scope_params = scope_parent.new_child();
                         self.visit_parameters(&mut scope_params, params)?;
                         if let Some(ret_ty) = ret_ty {
                             self.visit_expression(&scope_params, ret_ty)?;
@@ -610,7 +583,7 @@ impl ResolveContext<'_> {
                     }
                 };
 
-                scope_parent.maybe_declare(self.source, Conditional::No, id);
+                self.scope_declare(scope_parent, Conditional::No, id.into())?;
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -618,60 +591,73 @@ impl ResolveContext<'_> {
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_parameters(&self, scope: &mut DeclScope, params: &Parameters) -> FindDefinitionResult {
-        let Parameters { span: _, items } = params;
+    fn visit_parameters(&mut self, scope: &mut DeclScope, params: &Parameters) -> ControlFlow<V::Break> {
+        let &Parameters { span, ref items } = params;
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
-        self.visit_extra_list(scope, items, &mut |scope, param| {
-            let &Parameter {
-                span: _,
-                id,
-                ty,
-                default,
-            } = param;
-            self.visit_expression(scope, ty)?;
+        self.visit_extra_list(scope, items, &mut |slf, scope, param| {
+            let &Parameter { span, id, ty, default } = param;
+
+            slf.visitor.report_range(span, None);
+
+            slf.visit_expression(scope, ty)?;
             if let Some(default) = default {
-                self.visit_expression(scope, default)?;
+                slf.visit_expression(scope, default)?;
             }
-            scope.declare(self.source, Conditional::No, id);
-            Ok(())
+            slf.scope_declare(scope, Conditional::No, id.into())?;
+            ControlFlow::Continue(())
         })
     }
 
     fn visit_extra_list<I: HasSpan>(
-        &self,
+        &mut self,
         scope_parent: &mut DeclScope,
         extra: &ExtraList<I>,
-        f: &mut impl FnMut(&mut DeclScope, &I) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
-        let ExtraList { span: _, items } = extra;
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
+        let &ExtraList { span, ref items } = extra;
+
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         for item in items {
             match item {
-                ExtraItem::Inner(item) => f(scope_parent, item)?,
+                ExtraItem::Inner(item) => f(self, scope_parent, item)?,
                 ExtraItem::Declaration(decl) => self.visit_common_declaration(scope_parent, decl)?,
                 ExtraItem::If(if_stmt) => {
-                    let mut scope_inner = DeclScope::new_child(scope_parent);
-                    self.visit_if_stmt(&mut scope_inner, if_stmt, &mut |s: &mut DeclScope, b| {
-                        self.visit_extra_list(s, b, f)
+                    let mut scope_inner = scope_parent.new_child();
+                    self.visit_if_stmt(&mut scope_inner, if_stmt, &mut |slf, s: &mut DeclScope, b| {
+                        slf.visit_extra_list(s, b, f)
                     })?;
+
+                    // TODO this is overly pessimistic, if/else combo can become non-conditional,
+                    //   which we don't model correctly
                     scope_parent.merge_conditional_child(scope_inner.content);
                 }
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn visit_if_stmt<I>(
-        &self,
+        &mut self,
         scope: &mut DeclScope,
         if_stmt: &IfStatement<I>,
-        f: &mut impl FnMut(&mut DeclScope, &I) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
-        let mut visit_pair = |pair: &IfCondBlockPair<I>| {
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
+        let &IfStatement {
+            span,
+            ref initial_if,
+            ref else_ifs,
+            ref final_else,
+        } = if_stmt;
+
+        self.visitor.report_range(span, None);
+
+        let mut visit_pair = |slf: &mut Self, pair: &IfCondBlockPair<I>| {
             let &IfCondBlockPair {
                 span: _,
                 span_if: _,
@@ -679,34 +665,28 @@ impl ResolveContext<'_> {
                 ref block,
             } = pair;
 
-            self.visit_expression(scope, cond)?;
-            f(scope, block)?;
+            slf.visit_expression(scope, cond)?;
+            f(slf, scope, block)?;
 
-            Ok(())
+            ControlFlow::Continue(())
         };
 
-        let IfStatement {
-            span: _,
-            initial_if,
-            else_ifs,
-            final_else,
-        } = if_stmt;
-        visit_pair(initial_if)?;
+        visit_pair(self, initial_if)?;
         for else_if in else_ifs {
-            visit_pair(else_if)?;
+            visit_pair(self, else_if)?;
         }
         if let Some(final_else) = final_else {
-            f(scope, final_else)?;
+            f(self, scope, final_else)?;
         }
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn visit_for_stmt<S>(
-        &self,
+        &mut self,
         scope: &DeclScope,
         stmt: &ForStatement<S>,
-        f: impl FnOnce(&DeclScope, &Block<S>) -> FindDefinitionResult,
-    ) -> FindDefinitionResult {
+        f: impl FnOnce(&mut Self, &DeclScope, &Block<S>) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
         let &ForStatement {
             span_keyword: _,
             index,
@@ -714,36 +694,48 @@ impl ResolveContext<'_> {
             iter,
             ref body,
         } = stmt;
+
+        self.visitor.report_range(stmt.span(), None);
+
         self.visit_expression(scope, iter)?;
 
         if let Some(index_ty) = index_ty {
             self.visit_expression(scope, index_ty)?;
         }
 
-        let mut scope_inner = DeclScope::new_child(scope);
-        scope_inner.maybe_declare(self.source, Conditional::No, index);
+        let mut scope_inner = scope.new_child();
+        self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
 
-        f(&scope_inner, body)?;
+        f(self, &scope_inner, body)?;
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_block_statements(&self, scope_parents: &DeclScope, block: &Block<BlockStatement>) -> FindDefinitionResult {
-        let Block { span, statements } = block;
+    fn visit_block_statements(
+        &mut self,
+        scope_parents: &DeclScope,
+        block: &Block<BlockStatement>,
+    ) -> ControlFlow<V::Break> {
+        let &Block { span, ref statements } = block;
 
         // declarations inside a block can't leak outside, so we can skip here
         check_skip!(self, span);
 
-        let mut scope = DeclScope::new_child(scope_parents);
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
+        let mut scope = scope_parents.new_child();
         for stmt in statements {
             self.visit_statement(&mut scope, stmt)?;
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_statement(&self, scope: &mut DeclScope, stmt: &BlockStatement) -> FindDefinitionResult {
+    fn visit_statement(&mut self, scope: &mut DeclScope, stmt: &BlockStatement) -> ControlFlow<V::Break> {
         let stmt_span = stmt.span;
+
+        self.visitor.report_range(stmt_span, None);
+
         match &stmt.inner {
             BlockStatementKind::CommonDeclaration(decl) => {
                 self.visit_common_declaration(scope, decl)?;
@@ -762,7 +754,7 @@ impl ResolveContext<'_> {
                 if let Some(init) = init {
                     self.visit_expression(scope, init)?;
                 }
-                scope.maybe_declare(self.source, Conditional::No, id);
+                self.scope_declare(scope, Conditional::No, id.into())?;
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -782,7 +774,7 @@ impl ResolveContext<'_> {
             }
             BlockStatementKind::If(stmt) => {
                 check_skip!(self, stmt_span);
-                self.visit_if_stmt(scope, stmt, &mut |s, b| self.visit_block_statements(s, b))?;
+                self.visit_if_stmt(scope, stmt, &mut |slf, s, b| slf.visit_block_statements(s, b))?;
             }
             BlockStatementKind::Match(stmt) => {
                 check_skip!(self, stmt_span);
@@ -797,11 +789,11 @@ impl ResolveContext<'_> {
                 for branch in branches {
                     let MatchBranch { pattern, block } = branch;
 
-                    let mut scope_inner = DeclScope::new_child(scope);
+                    let mut scope_inner = scope.new_child();
                     match &pattern.inner {
                         MatchPattern::Wildcard => {}
                         &MatchPattern::Val(id) => {
-                            scope_inner.declare(self.source, Conditional::No, id);
+                            self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                         }
                         &MatchPattern::Equal(expr) => {
                             self.visit_expression(scope, expr)?;
@@ -811,7 +803,7 @@ impl ResolveContext<'_> {
                         }
                         &MatchPattern::EnumVariant(_variant, id) => {
                             if let Some(id) = id {
-                                scope_inner.maybe_declare(self.source, Conditional::No, id);
+                                self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                             }
                         }
                     }
@@ -821,7 +813,7 @@ impl ResolveContext<'_> {
             }
             BlockStatementKind::For(stmt) => {
                 check_skip!(self, stmt_span);
-                self.visit_for_stmt(scope, stmt, |s, b| self.visit_block_statements(s, b))?;
+                self.visit_for_stmt(scope, stmt, |slf, s, b| slf.visit_block_statements(s, b))?;
             }
             BlockStatementKind::While(stmt) => {
                 check_skip!(self, stmt_span);
@@ -842,20 +834,20 @@ impl ResolveContext<'_> {
             BlockStatementKind::Break { span: _ } | BlockStatementKind::Continue { span: _ } => {}
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn collect_module_body_pub_declarations(
-        &self,
+        &mut self,
         scope_body: &mut DeclScope,
         cond: Conditional,
         curr_block: &Block<ModuleStatement>,
-    ) {
+    ) -> ControlFlow<V::Break> {
         for stmt in &curr_block.statements {
             match &stmt.inner {
                 // control flow
                 ModuleStatementKind::Block(block) => {
-                    self.collect_module_body_pub_declarations(scope_body, cond, block);
+                    self.collect_module_body_pub_declarations(scope_body, cond, block)?;
                 }
                 ModuleStatementKind::If(if_stmt) => {
                     let IfStatement {
@@ -871,7 +863,7 @@ impl ResolveContext<'_> {
                         cond: _,
                         block,
                     } = initial_if;
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
 
                     for else_if in else_ifs {
                         let IfCondBlockPair {
@@ -880,11 +872,11 @@ impl ResolveContext<'_> {
                             cond: _,
                             block,
                         } = else_if;
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block);
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
                     }
 
                     if let Some(final_else) = final_else {
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else);
+                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else)?;
                     }
                 }
                 ModuleStatementKind::For(for_stmt) => {
@@ -896,10 +888,12 @@ impl ResolveContext<'_> {
                         body,
                     } = for_stmt;
 
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body);
+                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body)?;
                 }
 
                 // potentially public declarations
+                // TODO it's annoying that this messes up visiting order a bit, maybe we should only call the visitor
+                //   for these right next to the non-public visits
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let &RegDeclaration {
                         vis,
@@ -909,7 +903,7 @@ impl ResolveContext<'_> {
                         init: _,
                     } = decl;
                     match vis {
-                        Visibility::Public { span: _ } => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
                         Visibility::Private => {}
                     }
                 }
@@ -921,7 +915,7 @@ impl ResolveContext<'_> {
                         kind: _,
                     } = decl;
                     match vis {
-                        Visibility::Public { span: _ } => self.declare_maybe_general(scope_body, cond, id),
+                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
                         Visibility::Private => {}
                     }
                 }
@@ -934,19 +928,32 @@ impl ResolveContext<'_> {
                 ModuleStatementKind::Instance(_) => {}
             }
         }
+
+        ControlFlow::Continue(())
     }
 
-    fn visit_block_module(&self, scope_parent: &DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
-        let mut scope = DeclScope::new_child(scope_parent);
+    fn visit_block_module(
+        &mut self,
+        scope_parent: &DeclScope,
+        block: &Block<ModuleStatement>,
+    ) -> ControlFlow<V::Break> {
+        let mut scope = scope_parent.new_child();
         self.visit_block_module_inner(&mut scope, block)
     }
 
-    fn visit_block_module_inner(&self, scope: &mut DeclScope, block: &Block<ModuleStatement>) -> FindDefinitionResult {
-        let Block { span, statements } = block;
+    fn visit_block_module_inner(
+        &mut self,
+        scope: &mut DeclScope,
+        block: &Block<ModuleStatement>,
+    ) -> ControlFlow<V::Break> {
+        let &Block { span, ref statements } = block;
         check_skip!(self, span);
+        self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         // match the two-pass system from the main compiler
         for stmt in statements {
+            self.visitor.report_range(stmt.span, None);
+
             match &stmt.inner {
                 ModuleStatementKind::CommonDeclaration(decl) => {
                     self.visit_common_declaration(scope, decl)?;
@@ -969,7 +976,7 @@ impl ResolveContext<'_> {
                     self.visit_maybe_general(scope, id)?;
                     match vis {
                         Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
+                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                     }
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
@@ -989,7 +996,7 @@ impl ResolveContext<'_> {
                                 WireDeclarationDomainTyKind::Clock { span_clock: _ } => {}
                                 WireDeclarationDomainTyKind::Normal { domain, ty } => {
                                     if let Some(domain) = domain {
-                                        self.visit_domain(scope, domain.inner)?;
+                                        self.visit_domain(scope, domain)?;
                                     }
                                     if let Some(ty) = ty {
                                         self.visit_expression(scope, ty)?;
@@ -1007,7 +1014,7 @@ impl ResolveContext<'_> {
                             interface,
                         } => {
                             if let Some(domain) = domain {
-                                self.visit_domain(scope, domain.inner)?;
+                                self.visit_domain(scope, domain)?;
                             }
                             self.visit_expression(scope, interface)?;
                         }
@@ -1016,13 +1023,13 @@ impl ResolveContext<'_> {
                     self.visit_maybe_general(scope, id)?;
                     match vis {
                         Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.declare_maybe_general(scope, Conditional::No, id),
+                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                     }
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
                     let &RegOutPortMarker { id, init } = decl;
                     self.visit_expression(scope, init)?;
-                    self.visit_id_usage(scope, id)?;
+                    self.visit_id_usage(scope, id.into())?;
                 }
 
                 // no declarations, handled in the second pass
@@ -1041,10 +1048,10 @@ impl ResolveContext<'_> {
                     self.visit_block_module(scope, block)?;
                 }
                 ModuleStatementKind::If(stmt) => {
-                    self.visit_if_stmt(scope, stmt, &mut |s, b| self.visit_block_module(s, b))?;
+                    self.visit_if_stmt(scope, stmt, &mut |slf, s, b| slf.visit_block_module(s, b))?;
                 }
                 ModuleStatementKind::For(stmt) => {
-                    self.visit_for_stmt(scope, stmt, |s, b| self.visit_block_module(s, b))?
+                    self.visit_for_stmt(scope, stmt, |slf, s, b| slf.visit_block_module(s, b))?
                 }
                 ModuleStatementKind::CombinatorialBlock(stmt) => {
                     let CombinatorialBlock { span_keyword: _, block } = stmt;
@@ -1091,23 +1098,27 @@ impl ResolveContext<'_> {
             }
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
     fn visit_array_literal_element(
-        &self,
+        &mut self,
         scope: &DeclScope,
         elem: ArrayLiteralElement<Expression>,
-    ) -> FindDefinitionResult {
+    ) -> ControlFlow<V::Break> {
+        self.visitor.report_range(elem.span(), None);
+
         match elem {
             ArrayLiteralElement::Single(elem) => self.visit_expression(scope, elem),
             ArrayLiteralElement::Spread(_, elem) => self.visit_expression(scope, elem),
         }
     }
 
-    fn visit_expression(&self, scope: &DeclScope, expr: Expression) -> FindDefinitionResult {
+    fn visit_expression(&mut self, scope: &DeclScope, expr: Expression) -> ControlFlow<V::Break> {
         // expressions can't contain declarations that leak outside, so we can skip here
         check_skip!(self, expr.span);
+
+        self.visitor.report_range(expr.span, None);
 
         match &self.arena_expressions[expr.inner] {
             &ExpressionKind::Wrapped(inner) => {
@@ -1118,31 +1129,43 @@ impl ResolveContext<'_> {
                     ref statements,
                     expression,
                 } = block;
-                let mut scope_inner = DeclScope::new_child(scope);
+                let mut scope_inner = scope.new_child();
                 for stmt in statements {
                     self.visit_statement(&mut scope_inner, stmt)?
                 }
                 self.visit_expression(&scope_inner, expression)?;
             }
             &ExpressionKind::Id(id) => {
-                self.visit_general_id_usage(scope, id)?;
+                self.visit_id_usage(scope, id.into())?;
             }
             ExpressionKind::StringLiteral(pieces) => {
-                for piece in pieces {
+                for &piece in pieces {
                     match piece {
-                        StringPiece::Literal { span: _ } => {}
-                        &StringPiece::Substitute(expr) => {
+                        StringPiece::Literal { span } => {
+                            self.visitor.report_range(span, None);
+                        }
+                        StringPiece::Substitute(expr) => {
                             self.visit_expression(scope, expr)?;
                         }
                     }
                 }
             }
             ExpressionKind::ArrayLiteral(elems) => {
+                // report extra selection range covering only the inside of the literal
+                if let (Some(first), Some(last)) = (elems.first(), elems.last()) {
+                    self.visitor.report_range(first.span().join(last.span()), None);
+                }
+
                 for &elem in elems {
                     self.visit_array_literal_element(scope, elem)?;
                 }
             }
             ExpressionKind::TupleLiteral(elems) => {
+                // report extra selection range covering only the inside of the literal
+                if let (Some(first), Some(last)) = (elems.first(), elems.last()) {
+                    self.visitor.report_range(first.span().join(last.span()), None);
+                }
+
                 for &elem in elems {
                     self.visit_expression(scope, elem)?;
                 }
@@ -1174,10 +1197,13 @@ impl ResolveContext<'_> {
                     span_keyword: _,
                     iter,
                 } = expr;
+
+                self.visitor.report_range(body.span().join(iter.span), None);
+
                 self.visit_expression(scope, iter)?;
 
-                let mut scope_inner = DeclScope::new_child(scope);
-                scope_inner.maybe_declare(self.source, Conditional::No, index);
+                let mut scope_inner = scope.new_child();
+                self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
 
                 self.visit_array_literal_element(&scope_inner, body)?;
             }
@@ -1206,12 +1232,12 @@ impl ResolveContext<'_> {
             }
             &ExpressionKind::Call(target, ref args) => {
                 self.visit_expression(scope, target)?;
+
+                self.visitor.report_range(args.span, None);
+
                 for arg in &args.inner {
-                    let &Arg {
-                        span: _,
-                        ref name,
-                        value,
-                    } = arg;
+                    let &Arg { span, ref name, value } = arg;
+                    self.visitor.report_range(span, None);
                     // TODO try resolving name, needs type info
                     let _ = name;
                     self.visit_expression(scope, value)?;
@@ -1219,7 +1245,7 @@ impl ResolveContext<'_> {
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 self.visit_expression(scope, value)?;
-                self.visit_domain(scope, domain.inner)?;
+                self.visit_domain(scope, domain)?;
             }
             ExpressionKind::RegisterDelay(expr) => {
                 let &RegisterDelay {
@@ -1227,6 +1253,9 @@ impl ResolveContext<'_> {
                     value,
                     init,
                 } = expr;
+
+                self.visitor.report_range(value.span.join(init.span), None);
+
                 self.visit_expression(scope, value)?;
                 self.visit_expression(scope, init)?;
             }
@@ -1240,10 +1269,13 @@ impl ResolveContext<'_> {
             | ExpressionKind::BoolLiteral(_) => {}
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn visit_maybe_general(&self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> FindDefinitionResult {
+    // TODO what is the difference between this and visit_id_usage?
+    fn visit_maybe_general(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
+        self.visitor.report_range(id.span(), None);
+
         match id {
             MaybeGeneralIdentifier::Dummy { span: _ } => {}
             MaybeGeneralIdentifier::Identifier(id) => match id {
@@ -1254,171 +1286,91 @@ impl ResolveContext<'_> {
             },
         }
 
-        Ok(())
+        ControlFlow::Continue(())
     }
 
-    fn declare_maybe_general(&self, scope: &mut DeclScope, cond: Conditional, id: MaybeGeneralIdentifier) {
-        match id {
-            MaybeGeneralIdentifier::Dummy { span: _ } => {}
-            MaybeGeneralIdentifier::Identifier(id) => {
-                let id = self.eval_general(id);
-                scope.declare_impl(cond, id.map_inner(|id| id.into_owned()));
-            }
-        }
-    }
-
-    fn visit_id_usage(&self, scope: &DeclScope, id: Identifier) -> FindDefinitionResult {
-        check_skip!(self, id.span);
-        Err(scope.find(&EvaluatedId::Simple(id.str(self.source))))
-    }
-
-    fn visit_general_id_usage(&self, scope: &DeclScope, id: GeneralIdentifier) -> FindDefinitionResult {
-        // visit inner expressions first
-        match id {
-            GeneralIdentifier::Simple(_id) => {}
-            GeneralIdentifier::FromString(_span, expr) => {
-                self.visit_expression(scope, expr)?;
-            }
-        }
-
-        // find the id itself
+    fn visit_id_usage(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
         check_skip!(self, id.span());
-        Err(scope.find(&self.eval_general(id).inner))
-    }
 
-    fn eval_general(&self, id: GeneralIdentifier) -> Spanned<EvaluatedId<&str>> {
-        let eval = match id {
-            GeneralIdentifier::Simple(id) => EvaluatedId::Simple(id.str(self.source)),
-            GeneralIdentifier::FromString(_, expr) => {
-                // TODO look even further through eg. constants, values, ...
-                match &self.arena_expressions[expr.inner] {
-                    ExpressionKind::StringLiteral(pieces) => {
-                        // build a pattern that matches all possible substitutions
-                        let mut pattern = String::new();
-                        pattern.push('^');
+        self.visitor.report_range(id.span(), None);
 
-                        for piece in pieces {
-                            match piece {
-                                &StringPiece::Literal { span: literal_span } => {
-                                    let literal = apply_string_literal_escapes(self.source.span_str(literal_span));
-                                    pattern.push_str(&regex::escape(literal.as_ref()));
-                                }
-                                StringPiece::Substitute(_expr) => {
-                                    pattern.push_str(".*");
-                                }
-                            }
-                        }
-
-                        pattern.push('$');
-                        EvaluatedId::Pattern(RegexDfa::new(&pattern).unwrap())
-                    }
-                    _ => {
-                        // default to a regex that matches everything
-                        // TODO maybe it's even faster to have a separate enum branch for this case
-                        EvaluatedId::Pattern(RegexDfa::new(".*").unwrap())
+        match id {
+            MaybeGeneralIdentifier::Dummy { .. } => ControlFlow::Continue(()),
+            MaybeGeneralIdentifier::Identifier(id) => {
+                // first visit the inner expressions if any
+                match id {
+                    GeneralIdentifier::Simple(_id) => {}
+                    GeneralIdentifier::FromString(_span, expr) => {
+                        self.visit_expression(scope, expr)?;
                     }
                 }
-            }
-        };
 
-        Spanned::new(id.span(), eval)
+                // report the id usage itself
+                self.visitor.report_id_use(scope, id, |source, id| {
+                    eval_general_id(source, self.arena_expressions, id)
+                })
+            }
+        }
+    }
+
+    fn scope_declare(
+        &mut self,
+        scope: &mut DeclScope,
+        cond: Conditional,
+        id: MaybeGeneralIdentifier,
+    ) -> ControlFlow<V::Break> {
+        match id {
+            MaybeGeneralIdentifier::Dummy { .. } => {}
+            MaybeGeneralIdentifier::Identifier(id) => {
+                self.visitor.report_id_declare(id)?;
+
+                if V::SCOPE_DECLARE {
+                    let id_eval = eval_general_id(self.source, self.arena_expressions, id);
+                    scope.declare(cond, id.span(), id_eval);
+                }
+            }
+        }
+
+        ControlFlow::Continue(())
     }
 }
 
-#[cfg(test)]
-mod test {
-    use crate::syntax::resolve::RegexDfa;
-    use itertools::Itertools;
+fn eval_general_id<'s>(
+    source: &'s SourceDatabase,
+    arena: &ArenaExpressions,
+    id: GeneralIdentifier,
+) -> EvaluatedId<&'s str> {
+    match id {
+        GeneralIdentifier::Simple(id) => EvaluatedId::Simple(id.str(source)),
+        GeneralIdentifier::FromString(_, expr) => {
+            // TODO look even further through eg. constants, values, ...
+            match &arena[expr.inner] {
+                ExpressionKind::StringLiteral(pieces) => {
+                    // build a pattern that matches all possible substitutions
+                    let mut pattern = String::new();
+                    pattern.push('^');
 
-    // tests based on https://users.rust-lang.org/t/detect-regex-conflict/57184/13
-    fn regex_overlap(a: &str, b: &str) -> bool {
-        let a = RegexDfa::new(a).unwrap();
-        let b = RegexDfa::new(b).unwrap();
-        a.could_match_pattern(&b)
-    }
+                    for piece in pieces {
+                        match piece {
+                            &StringPiece::Literal { span: literal_span } => {
+                                let literal = apply_string_literal_escapes(source.span_str(literal_span));
+                                pattern.push_str(&regex::escape(literal.as_ref()));
+                            }
+                            StringPiece::Substitute(_expr) => {
+                                pattern.push_str(".*");
+                            }
+                        }
+                    }
 
-    #[test]
-    fn overlapping_regexes() {
-        let pattern1 = r"[a-zA-Z]+";
-        let pattern2 = r"[a-z]+";
-        assert!(regex_overlap(pattern1, pattern2));
-        let pattern1 = r"a*";
-        let pattern2 = r"b*";
-        assert!(regex_overlap(pattern1, pattern2));
-        let pattern1 = r"a*bba+";
-        let pattern2 = r"b*aaab+a";
-        assert!(regex_overlap(pattern1, pattern2));
-        let pattern1 = r" ";
-        let pattern2 = r"\s";
-        assert!(regex_overlap(pattern1, pattern2));
-        let pattern1 = r"[A-Z]+";
-        let pattern2 = r"[a-z]+";
-        assert!(!regex_overlap(pattern1, pattern2));
-        let pattern1 = r"a";
-        let pattern2 = r"b";
-        assert!(!regex_overlap(pattern1, pattern2));
-        let pattern1 = r"a*bba+";
-        let pattern2 = r"b*aaabbb+a";
-        assert!(!regex_overlap(pattern1, pattern2));
-        let pattern1 = r"\s+";
-        let pattern2 = r"a+";
-        assert!(!regex_overlap(pattern1, pattern2));
-    }
-
-    #[test]
-    fn all_overlapping_regexes() {
-        let patterns = [
-            r"[a-zA-Z]+",
-            r"[a-z]+",
-            r"a*",
-            r"b*",
-            r"a*bba+",
-            r"b*aaab+a",
-            r" ",
-            r"\s",
-            r"[A-Z]+",
-            r"[a-z]+",
-            r"a",
-            r"b",
-            r"a*bba+",
-            r"b*aaabbb+a",
-            r"\s+",
-            r"a+",
-        ];
-
-        let patterns = patterns.iter().map(|&s| RegexDfa::new(s).unwrap()).collect_vec();
-
-        let mut match_count = 0;
-        for a in &patterns {
-            for b in &patterns {
-                if a.could_match_pattern(b) {
-                    match_count += 1;
+                    pattern.push('$');
+                    EvaluatedId::Pattern(RegexDfa::new(&pattern).unwrap())
+                }
+                _ => {
+                    // default to a regex that matches everything
+                    // TODO maybe it's even faster to have a separate enum branch for this case
+                    EvaluatedId::Pattern(RegexDfa::new(".*").unwrap())
                 }
             }
         }
-        assert_eq!(match_count, 102);
-    }
-
-    #[test]
-    fn test_basic() {
-        let a = RegexDfa::new("^a$").unwrap();
-        assert!(a.could_match_str("a"));
-        assert!(!a.could_match_str("ab"));
-
-        let empty = RegexDfa::new("").unwrap();
-        assert!(empty.could_match_str(""));
-        assert!(empty.could_match_str("abc"));
-
-        let start = RegexDfa::new("^a.*b$").unwrap();
-        assert!(start.could_match_str("ab"));
-        assert!(!start.could_match_str("abc"));
-        assert!(start.could_match_str("acb"));
-        assert!(!start.could_match_str("acbd"));
-    }
-
-    #[test]
-    fn test_self() {
-        let a = RegexDfa::new("^a$").unwrap();
-        assert!(a.could_match_pattern(&a));
     }
 }

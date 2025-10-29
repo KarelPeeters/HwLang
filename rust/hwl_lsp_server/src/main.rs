@@ -1,9 +1,9 @@
 use crossbeam_channel::{RecvError, TryRecvError};
 use hwl_language::throw;
-use hwl_lsp_server::server::logger::Logger;
-use hwl_lsp_server::server::sender::{SendError, SendErrorOr, ServerSender};
 use hwl_lsp_server::server::settings::Settings;
 use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
+use hwl_lsp_server::util::logger::Logger;
+use hwl_lsp_server::util::sender::{SendError, SendErrorOr, ServerSender};
 use hwl_util::constants::{HWL_LSP_NAME, HWL_VERSION};
 use lsp_server::{Connection, ErrorCode, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};

@@ -1,8 +1,8 @@
-use crate::server::language::semantic_token_legend;
+use crate::handlers::language::semantic_tokens::semantic_token_legend;
 use lsp_types::{
-    InitializeParams, OneOf, PositionEncodingKind, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    WorkDoneProgressOptions,
+    FoldingRangeProviderCapability, InitializeParams, OneOf, PositionEncodingKind, SelectionRangeProviderCapability,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkDoneProgressOptions,
 };
 
 pub struct Settings {
@@ -76,7 +76,10 @@ impl Settings {
                 },
             )),
             definition_provider: Some(OneOf::Left(true)),
+            references_provider: Some(OneOf::Left(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
+            folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+            selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
             ..Default::default()
         };
 

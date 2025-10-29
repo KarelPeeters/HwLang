@@ -1,4 +1,4 @@
-use crate::engine::vfs::{VfsError, VfsResult};
+use crate::server::vfs::{VfsError, VfsResult};
 use fluent_uri::HostData;
 use fluent_uri::enc::EStr;
 use hwl_language::throw;
