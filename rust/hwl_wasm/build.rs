@@ -26,12 +26,13 @@ fn main() {
             steps.insert(0, "std".to_owned());
             steps.push(entry_path.file_stem().unwrap().to_str().unwrap().to_owned());
 
-            let steps_str = steps.join("/");
+            let mut path = steps.join("/");
+            path.push_str(".kh");
 
             let entry_path = entry_path.to_str().unwrap();
             let include_str = format!("include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/\", {entry_path:?})");
 
-            swriteln!(f, "    (&{steps:?}, {steps_str:?}, {include_str})),",);
+            swriteln!(f, "    (&{steps:?}, {path:?}, {include_str})),",);
             found_any = true;
         }
         Ok::<_, IoErrorWithPath>(())
