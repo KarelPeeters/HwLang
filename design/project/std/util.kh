@@ -1,9 +1,12 @@
 import std.types.[any, bool, str, uint];
 
 pub fn print(value: any) {
+    // TODO convert to string here to simplify the implementation of the heuristic?
     __builtin("fn", "print", value);
 }
 
+// TODO this default message is annoying (since it repeats the diagnostic itself)
+//   maybe allow None or just special-case the empty string to mean "no message"
 const DEFAULT_ASSERT_MSG = "assertion failed";
 
 // TODO report the call location, not the body of this function
@@ -26,6 +29,7 @@ pub fn unsafe_bool_to_clock(value: bool) -> any {
 
 // TODO make this `b.to_int()` instead of `bool_to_int(b)`?
 // TODO dedicated intrinsic so this is faster? ideally we can just make function calls fast enough ofc :)
+// TODO maybe add casting so we can just write `false as int`? or an extension function `false.int()`?
 pub fn bool_to_int(b: bool) -> int(0..=1) {
     return int(0..=1).from_bits([b]);
 }
