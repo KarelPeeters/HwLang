@@ -296,7 +296,7 @@ impl Type {
                 }
 
                 let inner_str = inner.diagnostic_string();
-                format!("{inner_str}[{dims}]")
+                format!("[{dims}]{inner_str}")
             }
             // TODO better names here, including the definition name/loc/params
             Type::Struct(_) => "struct".to_string(),
