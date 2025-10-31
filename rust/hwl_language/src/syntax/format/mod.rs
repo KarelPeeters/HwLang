@@ -251,8 +251,9 @@ fn check_format_output_matches(
     }
 
     // check that parsing still works and yields at least plausible results
-    let new_ast =
-        parse_file_content(dummy_file, new_content).map_err(|e| diags.report(parse_error_to_diagnostic(e)))?;
+    let new_ast = parse_file_content(dummy_file, new_content)
+        .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-parse formatter output: {e:?}")))?;
+
     if new_ast.arena_expressions.len() != old_ast.arena_expressions.len() {
         return Err(diags.report_internal_error(
             old_span,

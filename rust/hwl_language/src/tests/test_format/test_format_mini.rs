@@ -334,7 +334,7 @@ fn two_comments_in_expression() {
 
 #[test]
 fn newlines_not_preserved_between_commas() {
-    let src = "const c: (\n    a,\n    b,\n) = false;\n";
+    let src = "const c: (\n    a,\n    b\n) = false;\n";
     let expected = "const c: (a, b) = false;\n";
     assert_formats_to(src, expected);
 }
@@ -344,4 +344,14 @@ fn dont_preserve_newlines_at_start_and_end() {
     let src = "fn foo(\n\n    // a\n\n    // b\n\n) {}\n\nfn foo() {\n\n    // a\n\n    // b\n\n}\n\nfn foo() {\n\n    a;\n\n    b;\n\n}\n";
     let expected = "fn foo(\n    // a\n\n    // b\n) {}\n\nfn foo() {\n    // a\n\n    // b\n}\n\nfn foo() {\n    a;\n\n    b;\n}\n";
     assert_formats_to(src, expected);
+}
+
+#[test]
+fn wrap_on_trailing_comma() {
+    let src_bare = "fn foo(x: int, y: int) {}\n";
+    let src_trailing = "fn foo(x: int, y: int,) {}\n";
+    let expected_trailing = "fn foo(\n    x: int,\n    y: int,\n) {}\n";
+
+    assert_formats_to(src_bare, src_bare);
+    assert_formats_to(src_trailing, expected_trailing);
 }

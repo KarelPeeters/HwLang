@@ -352,15 +352,14 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     self.collect_comments_all(prev_space, &mut seq);
                 }
 
-                seq.push(LNode::WrapStr(","));
-
-                // if there was a comma in the source, pop it
+                // if there was a comma in the source, pop it and force the surrounding group to wrap
                 if let Some(token) = self.peek_token()
                     && token.ty == TT::Comma
                 {
-                    // TODO force wrap if there was a trailing comma in the source, like Black?
                     let _ = self.pop_token();
+                    seq.push(LNode::ForceWrap(()));
                 }
+                seq.push(LNode::WrapStr(","));
 
                 self.collect_comments_on_prev_line_maybe(prev_space, next_wrap_comma, &mut seq);
 
