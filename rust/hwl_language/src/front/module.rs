@@ -1542,11 +1542,11 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     PortDirection::Input => {
                         // better dummy port error message
                         if let ExpressionKind::Dummy = self.ctx.refs.get_expr(value_expr) {
-                            return Err(diags.report_simple(
-                                "dummy connections are only allowed for output ports",
-                                value_expr.span,
-                                "used dummy connection on input port here",
-                            ));
+                            let diag = Diagnostic::new("dummy connections are only allowed for output ports")
+                                .add_error(value_expr.span, "dummy connection used here")
+                                .add_info(direction.span, "port declared as input here")
+                                .finish();
+                            return Err(diags.report(diag));
                         }
 
                         // eval expr
