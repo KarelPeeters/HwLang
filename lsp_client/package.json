@@ -52,6 +52,13 @@
 				],
 				"configuration": "./language-configuration.json"
 			}
+		],
+		"grammars": [
+			{
+				"language": "hwlang",
+				"scopeName": "source.hwlang",
+				"path": "./syntaxes/hwlang.tmLanguage.json"
+			}
 		]
 	},
 	"scripts": {

@@ -56,8 +56,10 @@ enum Mode {
 #[rustfmt::skip]
 macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
 #[rustfmt::skip]
+#[macro_export]
 macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
 #[rustfmt::skip]
+#[macro_export]
 macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' }; }
 #[rustfmt::skip]
 macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
@@ -257,7 +259,6 @@ impl<'s> Tokenizer<'s> {
 
             [pattern_decimal_digit!(), _, _] => {
                 self.skip(1);
-                #[allow(clippy::manual_is_ascii_check)]
                 self.skip_while(|c| matches!(c, pattern_decimal_digit!() | '_' | 'b' | 'x' | 'a'..='f'));
 
                 let token_str = &start_left_str[..self.curr_byte - start.byte];
@@ -505,11 +506,10 @@ macro_rules! declare_tokens {
         }
 
         impl TokenType {
-            #[cfg(test)]
-            const CUSTOM_TOKENS: &[(&str, TokenType)] = &[
+            pub const CUSTOM_TOKENS: &[(&str, TokenType)] = &[
                 $((stringify!($c_token), TokenType::$c_token),)*
             ];
-            const FIXED_TOKENS: &[FixedTokenInfo] = &[
+            pub const FIXED_TOKENS: &[FixedTokenInfo] = &[
                 $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
             ];
 
@@ -670,11 +670,10 @@ declare_tokens! {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct FixedTokenInfo {
-    #[allow(dead_code)]
-    name: &'static str,
-    literal: &'static str,
-    ty: TokenType,
+pub struct FixedTokenInfo {
+    pub name: &'static str,
+    pub literal: &'static str,
+    pub ty: TokenType,
 }
 
 lazy_static! {

@@ -1,0 +1,400 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "HWLang",
+  "scopeName": "source.hwlang",
+  "patterns": [
+    {
+      "name": "comment.line.double-slash.hwlang",
+      "match": "//.*$"
+    },
+    {
+      "include": "#block_comment"
+    },
+    {
+      "name": "string.quoted.double.hwlang",
+      "begin": "\"",
+      "end": "\""
+    },
+    {
+      "name": "string.quoted.double.hwlang",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "meta.string_substitution.hwlang",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "constant.numeric.hwlang",
+      "match": "[0-9][0-9_bxa-f]*"
+    },
+    {
+      "name": "keyword.control.import.hwlang",
+      "match": "\\bimport\\b"
+    },
+    {
+      "name": "storage.type.type.hwlang",
+      "match": "\\btype\\b"
+    },
+    {
+      "name": "storage.type.struct.hwlang",
+      "match": "\\bstruct\\b"
+    },
+    {
+      "name": "storage.type.enum.hwlang",
+      "match": "\\benum\\b"
+    },
+    {
+      "name": "keyword.other.ports.hwlang",
+      "match": "\\bports\\b"
+    },
+    {
+      "name": "storage.type.module.hwlang",
+      "match": "\\bmodule\\b"
+    },
+    {
+      "name": "keyword.other.interface.hwlang",
+      "match": "\\binterface\\b"
+    },
+    {
+      "name": "keyword.other.instance.hwlang",
+      "match": "\\binstance\\b"
+    },
+    {
+      "name": "keyword.other.fn.hwlang",
+      "match": "\\bfn\\b"
+    },
+    {
+      "name": "keyword.other.comb.hwlang",
+      "match": "\\bcomb\\b"
+    },
+    {
+      "name": "keyword.other.clock.hwlang",
+      "match": "\\bclock\\b"
+    },
+    {
+      "name": "keyword.other.clocked.hwlang",
+      "match": "\\bclocked\\b"
+    },
+    {
+      "name": "storage.type.const.hwlang",
+      "match": "\\bconst\\b"
+    },
+    {
+      "name": "storage.type.val.hwlang",
+      "match": "\\bval\\b"
+    },
+    {
+      "name": "storage.type.var.hwlang",
+      "match": "\\bvar\\b"
+    },
+    {
+      "name": "storage.type.wire.hwlang",
+      "match": "\\bwire\\b"
+    },
+    {
+      "name": "storage.type.reg.hwlang",
+      "match": "\\breg\\b"
+    },
+    {
+      "name": "keyword.other.in.hwlang",
+      "match": "\\bin\\b"
+    },
+    {
+      "name": "keyword.other.out.hwlang",
+      "match": "\\bout\\b"
+    },
+    {
+      "name": "keyword.other.async.hwlang",
+      "match": "\\basync\\b"
+    },
+    {
+      "name": "keyword.other.sync.hwlang",
+      "match": "\\bsync\\b"
+    },
+    {
+      "name": "keyword.control.return.hwlang",
+      "match": "\\breturn\\b"
+    },
+    {
+      "name": "keyword.control.break.hwlang",
+      "match": "\\bbreak\\b"
+    },
+    {
+      "name": "keyword.control.continue.hwlang",
+      "match": "\\bcontinue\\b"
+    },
+    {
+      "name": "constant.language.true.hwlang",
+      "match": "\\btrue\\b"
+    },
+    {
+      "name": "constant.language.false.hwlang",
+      "match": "\\bfalse\\b"
+    },
+    {
+      "name": "constant.language.undef.hwlang",
+      "match": "\\bundef\\b"
+    },
+    {
+      "name": "keyword.control.if.hwlang",
+      "match": "\\bif\\b"
+    },
+    {
+      "name": "keyword.control.else.hwlang",
+      "match": "\\belse\\b"
+    },
+    {
+      "name": "keyword.control.loop.hwlang",
+      "match": "\\bloop\\b"
+    },
+    {
+      "name": "keyword.control.match.hwlang",
+      "match": "\\bmatch\\b"
+    },
+    {
+      "name": "keyword.control.for.hwlang",
+      "match": "\\bfor\\b"
+    },
+    {
+      "name": "keyword.control.while.hwlang",
+      "match": "\\bwhile\\b"
+    },
+    {
+      "name": "keyword.other.pub.hwlang",
+      "match": "\\bpub\\b"
+    },
+    {
+      "name": "keyword.other.as.hwlang",
+      "match": "\\bas\\b"
+    },
+    {
+      "name": "storage.modifier.external.hwlang",
+      "match": "\\bexternal\\b"
+    },
+    {
+      "name": "keyword.other.builtin.hwlang",
+      "match": "\\b__builtin\\b"
+    },
+    {
+      "name": "keyword.other.unsafevaluewithdomain.hwlang",
+      "match": "\\bunsafe_value_with_domain\\b"
+    },
+    {
+      "name": "keyword.other.idfromstr.hwlang",
+      "match": "\\bid_from_str\\b"
+    },
+    {
+      "name": "punctuation.semi.hwlang",
+      "match": "\\b;\\b"
+    },
+    {
+      "name": "punctuation.colon.hwlang",
+      "match": "\\b:\\b"
+    },
+    {
+      "name": "punctuation.comma.hwlang",
+      "match": "\\b,\\b"
+    },
+    {
+      "name": "punctuation.arrow.hwlang",
+      "match": "\\b->\\b"
+    },
+    {
+      "name": "punctuation.doublearrow.hwlang",
+      "match": "\\b=>\\b"
+    },
+    {
+      "name": "punctuation.underscore.hwlang",
+      "match": "\\b_\\b"
+    },
+    {
+      "name": "punctuation.coloncolon.hwlang",
+      "match": "\\b::\\b"
+    },
+    {
+      "name": "punctuation.openc.hwlang",
+      "match": "\\b\\{\\b"
+    },
+    {
+      "name": "punctuation.closec.hwlang",
+      "match": "\\b\\}\\b"
+    },
+    {
+      "name": "punctuation.openr.hwlang",
+      "match": "\\b\\(\\b"
+    },
+    {
+      "name": "punctuation.closer.hwlang",
+      "match": "\\b\\)\\b"
+    },
+    {
+      "name": "punctuation.opens.hwlang",
+      "match": "\\b\\[\\b"
+    },
+    {
+      "name": "punctuation.closes.hwlang",
+      "match": "\\b\\]\\b"
+    },
+    {
+      "name": "keyword.operator.dot.hwlang",
+      "match": "\\b\\.\\b"
+    },
+    {
+      "name": "keyword.operator.dotdot.hwlang",
+      "match": "\\b\\.\\.\\b"
+    },
+    {
+      "name": "keyword.operator.dotdoteq.hwlang",
+      "match": "\\b\\.\\.=\\b"
+    },
+    {
+      "name": "keyword.operator.plusdotdot.hwlang",
+      "match": "\\b\\+\\.\\.\\b"
+    },
+    {
+      "name": "keyword.operator.amperamper.hwlang",
+      "match": "\\b&&\\b"
+    },
+    {
+      "name": "keyword.operator.pipepipe.hwlang",
+      "match": "\\b\\|\\|\\b"
+    },
+    {
+      "name": "keyword.operator.caretcaret.hwlang",
+      "match": "\\b\\^\\^\\b"
+    },
+    {
+      "name": "keyword.operator.eqeq.hwlang",
+      "match": "\\b==\\b"
+    },
+    {
+      "name": "keyword.operator.neq.hwlang",
+      "match": "\\b!=\\b"
+    },
+    {
+      "name": "keyword.operator.gte.hwlang",
+      "match": "\\b>=\\b"
+    },
+    {
+      "name": "keyword.operator.gt.hwlang",
+      "match": "\\b>\\b"
+    },
+    {
+      "name": "keyword.operator.lte.hwlang",
+      "match": "\\b<=\\b"
+    },
+    {
+      "name": "keyword.operator.lt.hwlang",
+      "match": "\\b<\\b"
+    },
+    {
+      "name": "keyword.operator.amper.hwlang",
+      "match": "\\b&\\b"
+    },
+    {
+      "name": "keyword.operator.pipe.hwlang",
+      "match": "\\b\\|\\b"
+    },
+    {
+      "name": "keyword.operator.caret.hwlang",
+      "match": "\\b\\^\\b"
+    },
+    {
+      "name": "keyword.operator.ltlt.hwlang",
+      "match": "\\b<<\\b"
+    },
+    {
+      "name": "keyword.operator.gtgt.hwlang",
+      "match": "\\b>>\\b"
+    },
+    {
+      "name": "keyword.operator.plus.hwlang",
+      "match": "\\b\\+\\b"
+    },
+    {
+      "name": "keyword.operator.minus.hwlang",
+      "match": "\\b-\\b"
+    },
+    {
+      "name": "keyword.operator.star.hwlang",
+      "match": "\\b\\*\\b"
+    },
+    {
+      "name": "keyword.operator.slash.hwlang",
+      "match": "\\b/\\b"
+    },
+    {
+      "name": "keyword.operator.percent.hwlang",
+      "match": "\\b%\\b"
+    },
+    {
+      "name": "keyword.operator.bang.hwlang",
+      "match": "\\b!\\b"
+    },
+    {
+      "name": "keyword.operator.starstar.hwlang",
+      "match": "\\b\\*\\*\\b"
+    },
+    {
+      "name": "keyword.operator.eq.hwlang",
+      "match": "\\b=\\b"
+    },
+    {
+      "name": "keyword.operator.pluseq.hwlang",
+      "match": "\\b\\+=\\b"
+    },
+    {
+      "name": "keyword.operator.minuseq.hwlang",
+      "match": "\\b-=\\b"
+    },
+    {
+      "name": "keyword.operator.stareq.hwlang",
+      "match": "\\b\\*=\\b"
+    },
+    {
+      "name": "keyword.operator.slasheq.hwlang",
+      "match": "\\b/=\\b"
+    },
+    {
+      "name": "keyword.operator.percenteq.hwlang",
+      "match": "\\b%=\\b"
+    },
+    {
+      "name": "keyword.operator.ampereq.hwlang",
+      "match": "\\b&=\\b"
+    },
+    {
+      "name": "keyword.operator.pipeeq.hwlang",
+      "match": "\\b\\|=\\b"
+    },
+    {
+      "name": "keyword.operator.careteq.hwlang",
+      "match": "\\b\\^=\\b"
+    }
+  ],
+  "repository": {
+    "block_comment": {
+      "patterns": [
+        {
+          "name": "comment.block.hwlang",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#block_comment"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -520,6 +520,7 @@ dependencies = [
  "regex",
  "regex-automata",
  "serde",
+ "serde_json",
  "strum",
  "toml",
  "unwrap-match",
@@ -1182,6 +1183,7 @@ version = "1.0.125"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83c8e735a073ccf5be70aa8066aa984eaf2fa000db6c8d0100ae605b366d31ed"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "ryu",

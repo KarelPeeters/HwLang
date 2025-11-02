@@ -12,6 +12,7 @@ use pos::Pos;
 
 pub mod ast;
 pub mod collect;
+pub mod external;
 pub mod format;
 pub mod hierarchy;
 pub mod manifest;
