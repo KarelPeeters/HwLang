@@ -531,6 +531,7 @@ name = "hwl_lsp_server"
 version = "0.1.0"
 dependencies = [
  "annotate-snippets",
+ "clap",
  "crossbeam-channel",
  "fluent-uri",
  "hwl_language",

@@ -1,3 +1,4 @@
+use clap::Parser;
 use crossbeam_channel::{RecvError, TryRecvError};
 use hwl_language::throw;
 use hwl_lsp_server::server::settings::Settings;
@@ -8,13 +9,23 @@ use hwl_util::constants::{HWL_LSP_NAME, HWL_VERSION};
 use lsp_server::{Connection, ErrorCode, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
-use std::path::Path;
+use std::path::PathBuf;
 
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[derive(clap::Parser)]
+struct Args {
+    #[clap(
+        long,
+        help = "The log file to use. This can also be set through the environment variable HWL_LSP_LOG_FILE."
+    )]
+    log_file: Option<PathBuf>,
+}
+
 // TODO replace types with https://github.com/gluon-lang/lsp-types/issues/284#issuecomment-2720488780
 // TODO think about error handling some more
+// TODO clean up this panicking mode, write to stderr and/or the log_file instead
 fn main() -> Result<(), TopError> {
     std::panic::catch_unwind(main_inner).unwrap_or_else(|e| {
         let s = match e.downcast::<String>() {
@@ -22,14 +33,16 @@ fn main() -> Result<(), TopError> {
             Ok(e_str) => format!("{e_str:?}"),
         };
 
-        std::fs::write("panic.txt", s).unwrap();
+        std::fs::write("hwl_lsp_server_panic.txt", s).unwrap();
         Err(TopError::Panic)
     })
 }
 
 fn main_inner() -> Result<(), TopError> {
-    // TODO make this configurable through env var at least
-    let mut logger = Logger::new(false, Some(Path::new("hwl_lsp_server_log.txt")));
+    let Args { log_file } = Args::parse();
+    let log_file = log_file.or_else(|| std::env::var_os("HWL_LOG_FILE").map(PathBuf::from));
+
+    let mut logger = Logger::new(false, log_file.as_deref());
     logger.log("server started");
 
     // open connection
@@ -139,6 +152,7 @@ fn main_inner() -> Result<(), TopError> {
 
 #[derive(Debug)]
 pub enum TopError {
+    Init,
     IO(std::io::Error),
     SendError(SendError),
     Protocol(ProtocolError),
