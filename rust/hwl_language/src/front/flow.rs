@@ -2,11 +2,11 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    join_implications, ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion,
+    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
-use crate::front::signal_mask::{SignalAccess, SignalMask};
+use crate::front::signal_mask::{MaskLengthMismatch, SignalMask, SignalWrite};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{
@@ -22,7 +22,7 @@ use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{zip_eq, Either, Itertools};
+use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
@@ -586,12 +586,12 @@ pub struct FlowHardwareBranch<'p> {
     common: FlowHardwareCommon,
 }
 
-pub type SignalAccesses = IndexMap<Signal, SignalMask<SignalAccess>>;
+pub type SignalsWritten = IndexMap<Signal, SignalMask<SignalWrite>>;
 
 struct FlowHardwareCommon {
     variables: FlowHardwareVariables,
     signal_versions: IndexMap<Signal, ValueVersionIndex>,
-    signal_access: SignalAccesses,
+    signals_written: SignalsWritten,
 
     statements: Vec<Spanned<IrStatement>>,
     // TODO store these as a map(version) -> type instead of this, so pre-applied
@@ -636,7 +636,7 @@ impl FlowHardwareCommon {
                 combined: IndexMap::new(),
             },
             signal_versions: IndexMap::new(),
-            signal_access: IndexMap::new(),
+            signals_written: SignalsWritten::default(),
             statements: vec![],
             implications,
         }
@@ -811,7 +811,7 @@ impl<'p> FlowHardwareRoot<'p> {
         }
     }
 
-    pub fn finish(self) -> (IrVariables, IrBlock, SignalAccesses) {
+    pub fn finish(self) -> (IrVariables, IrBlock) {
         // TODO for combinatorial blocks, check that signals are _fully_ driven
         let FlowHardwareRoot {
             root: _,
@@ -825,7 +825,7 @@ impl<'p> FlowHardwareRoot<'p> {
         let FlowHardwareCommon {
             variables: _,
             signal_versions: _,
-            signal_access,
+            signals_written,
             statements: ir_statements,
             implications: _,
         } = common;
@@ -833,7 +833,13 @@ impl<'p> FlowHardwareRoot<'p> {
         let block = IrBlock {
             statements: ir_statements,
         };
-        (ir_variables, block, signal_access)
+
+        // TODO return this too, replacing the old signal write mechanism
+        // signals_written
+
+        println!("signals_written: {:?}", signals_written);
+
+        (ir_variables, block)
     }
 }
 
@@ -924,6 +930,7 @@ impl<'p> FlowHardware<'p> {
     ) -> DiagResult<Vec<IrBlock>> {
         // TODO merge implications too
         // TODO do something else if childen are empty, eg. push an instruction for `assert(false)`
+        // TODO do all of these in a single loop instead of multiple redundant loops
 
         // collect the interesting vars and signals
         // things we can skip:
@@ -958,7 +965,8 @@ impl<'p> FlowHardware<'p> {
             self.var_set_maybe(var, var_span_decl, value_merged);
         }
 
-        // merge signals
+        // merge signal versions
+        // TODO actually merge values here, so we get compile-time storage for signals too
         for signal in merged_signals {
             let version_parent = self.signal_get_version(signal);
 
@@ -992,7 +1000,10 @@ impl<'p> FlowHardware<'p> {
             self.signal_set_version(signal, merged_version);
         }
 
-        // extract blocks
+        // merge signals written
+        merge_branch_signals_written(self.root.diags, span_merge, self.first_common_mut(), &branches)?;
+
+        // extract blocks and merge implications
         let mut branch_implications = vec![];
         let branch_blocks = branches
             .into_iter()
@@ -1005,7 +1016,7 @@ impl<'p> FlowHardware<'p> {
                 let FlowHardwareCommon {
                     variables: _,
                     signal_versions: _,
-                    sig
+                    signals_written: _,
                     statements,
                     implications,
                 } = common;
@@ -1610,6 +1621,62 @@ fn merge_branch_values(
             version: result_version,
         }),
     }))
+}
+
+fn merge_branch_signals_written(
+    diags: &Diagnostics,
+    span_merge: Span,
+    parent: &mut FlowHardwareCommon,
+    branches: &[FlowHardwareBranchContent],
+) -> DiagResult {
+    // TODO skip signals the parent has already certainly written to?
+
+    let map_err = |_: MaskLengthMismatch| diags.report_internal_error(span_merge, "mask length mismatch");
+
+    // join branches
+    let mut written_certain_count: IndexMap<Signal, SignalMask<usize>> = IndexMap::new();
+    for branch in branches {
+        for (&signal, branch_mask) in &branch.common.signals_written {
+            let signal_certain_count = written_certain_count
+                .entry(signal)
+                .or_insert_with(|| SignalMask::Scalar(0));
+
+            signal_certain_count
+                .merge_ref(branch_mask, |count, branch_write| {
+                    let branch_certain = match branch_write {
+                        SignalWrite::Certain => 1,
+                        SignalWrite::No | SignalWrite::Maybe => 0,
+                    };
+                    *count += branch_certain;
+                })
+                .map_err(map_err)?;
+        }
+    }
+
+    // merge into parent
+    for (signal, certain_count) in written_certain_count {
+        let parent_mask = parent
+            .signals_written
+            .entry(signal)
+            .or_insert(SignalMask::Scalar(SignalWrite::No));
+        parent_mask
+            .merge_ref(&certain_count, |parent_write, &certain_count| {
+                let branches_write = if certain_count == branches.len() {
+                    SignalWrite::Certain
+                } else {
+                    SignalWrite::Maybe
+                };
+
+                *parent_write = match (*parent_write, branches_write) {
+                    (SignalWrite::Certain, _) | (_, SignalWrite::Certain) => SignalWrite::Certain,
+                    (SignalWrite::No, other) | (other, SignalWrite::No) => other,
+                    (SignalWrite::Maybe, SignalWrite::Maybe) => SignalWrite::Maybe,
+                };
+            })
+            .map_err(map_err)?;
+    }
+
+    Ok(())
 }
 
 /// The borrow checking has trouble with nested chains of parent references,

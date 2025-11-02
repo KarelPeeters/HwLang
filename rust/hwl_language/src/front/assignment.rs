@@ -56,7 +56,7 @@ impl CompileItemContext<'_, '_> {
             value: right_expr,
         } = stmt;
 
-        // evaluate target
+        // evaluate target (including steps)
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
         let AssignmentTarget {
             base: target_base,
@@ -112,7 +112,7 @@ impl CompileItemContext<'_, '_> {
         let target_base_signal = Spanned::new(target_base.span, target_base_signal);
 
         // variable assignments have been handled, now we know the target is a signal
-        //   check this this is a hardware flow and that we're allowed to write to signals in this context
+        //   check that this is a hardware flow and that we're allowed to write to signals in this context
         // TODO still count as driver or suggested type to supress future errors?
         // TODO maybe type inference for wires based on processes is not actually a good idea,
         //   module instances should be enough
