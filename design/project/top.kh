@@ -1,1 +1,31 @@
-module top ports() {}
+import std.types.[bool, int];
+
+// case 1: detect values that are read before being written in comb blocks
+module top ports() {
+    wire w: async bool;
+
+    comb {
+        // TODO expect error
+        val v = w;
+        w = v;
+    }
+
+    // TODO allow this
+//    wire w1: async bool;
+//    comb {
+//        w1 = false;
+//        val a = w1;
+//    }
+}
+
+// case 2: allow multiple drivers for a single signal
+module child ports() {
+    // TODO allow this
+    wire w: async [2]bool;
+    comb {
+        w[0] = false;
+    }
+    comb {
+        w[1] = false;
+    }
+}

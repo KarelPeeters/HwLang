@@ -2,10 +2,11 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
+    join_implications, ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
+use crate::front::signal_mask::{SignalAccess, SignalMask};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
 use crate::mid::ir::{
@@ -21,10 +22,11 @@ use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, Itertools, zip_eq};
+use itertools::{zip_eq, Either, Itertools};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
+
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -584,9 +586,13 @@ pub struct FlowHardwareBranch<'p> {
     common: FlowHardwareCommon,
 }
 
+pub type SignalAccesses = IndexMap<Signal, SignalMask<SignalAccess>>;
+
 struct FlowHardwareCommon {
     variables: FlowHardwareVariables,
     signal_versions: IndexMap<Signal, ValueVersionIndex>,
+    signal_access: SignalAccesses,
+
     statements: Vec<Spanned<IrStatement>>,
     // TODO store these as a map(version) -> type instead of this, so pre-applied
     //   this should be faster and allow us to more easily cut dead branches
@@ -630,6 +636,7 @@ impl FlowHardwareCommon {
                 combined: IndexMap::new(),
             },
             signal_versions: IndexMap::new(),
+            signal_access: IndexMap::new(),
             statements: vec![],
             implications,
         }
@@ -804,7 +811,7 @@ impl<'p> FlowHardwareRoot<'p> {
         }
     }
 
-    pub fn finish(self) -> (IrVariables, IrBlock) {
+    pub fn finish(self) -> (IrVariables, IrBlock, SignalAccesses) {
         // TODO for combinatorial blocks, check that signals are _fully_ driven
         let FlowHardwareRoot {
             root: _,
@@ -818,6 +825,7 @@ impl<'p> FlowHardwareRoot<'p> {
         let FlowHardwareCommon {
             variables: _,
             signal_versions: _,
+            signal_access,
             statements: ir_statements,
             implications: _,
         } = common;
@@ -825,7 +833,7 @@ impl<'p> FlowHardwareRoot<'p> {
         let block = IrBlock {
             statements: ir_statements,
         };
-        (ir_variables, block)
+        (ir_variables, block, signal_access)
     }
 }
 
@@ -997,6 +1005,7 @@ impl<'p> FlowHardware<'p> {
                 let FlowHardwareCommon {
                     variables: _,
                     signal_versions: _,
+                    sig
                     statements,
                     implications,
                 } = common;

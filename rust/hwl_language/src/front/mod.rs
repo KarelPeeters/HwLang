@@ -17,6 +17,7 @@ pub mod print;
 pub mod range;
 pub mod scope;
 pub mod signal;
+pub mod signal_mask;
 pub mod steps;
 pub mod types;
 pub mod value;
