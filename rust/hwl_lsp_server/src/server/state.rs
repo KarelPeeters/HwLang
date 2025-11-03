@@ -90,8 +90,6 @@ impl ServerState {
     pub fn handle_message(&mut self, msg: Message) -> Result<HandleMessageOutcome, SendError> {
         match msg {
             Message::Request(request) => {
-                eprintln!("received request: {request:?}");
-
                 // evaluate the request
                 let result = if self.has_received_shutdown_request {
                     Err(RequestError::Invalid("no requests allowed after shutdown".to_owned()))
@@ -108,10 +106,8 @@ impl ServerState {
             }
             Message::Response(_) => {
                 // We don't expect to receive any yet, if there are any we can safely ignore them.
-                eprintln!("received response: {msg:?}")
             }
             Message::Notification(notification) => {
-                eprintln!("received notification: {notification:?}");
                 let method = &notification.method;
 
                 // handle exit notification

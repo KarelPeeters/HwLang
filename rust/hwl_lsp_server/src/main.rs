@@ -9,6 +9,8 @@ use hwl_util::constants::{HWL_LSP_NAME, HWL_VERSION};
 use lsp_server::{Connection, ErrorCode, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 #[global_allocator]
@@ -40,9 +42,19 @@ fn main() -> Result<(), TopError> {
 
 fn main_inner() -> Result<(), TopError> {
     let Args { log_file } = Args::parse();
-    let log_file = log_file.or_else(|| std::env::var_os("HWL_LOG_FILE").map(PathBuf::from));
 
-    let mut logger = Logger::new(false, log_file.as_deref());
+    let log_file = log_file.or_else(|| std::env::var_os("HWL_LOG_FILE").map(PathBuf::from));
+    let log_writer = log_file
+        .map::<Result<_, TopError>, _>(|log_file| {
+            let file = File::create(&log_file).map_err(|e| {
+                eprintln!("Failed to create log file at {log_file:?}: {e}");
+                TopError::Init
+            })?;
+            Ok(BufWriter::new(file))
+        })
+        .transpose()?;
+
+    let mut logger = Logger::new(false, log_writer);
     logger.log("server started");
 
     // open connection

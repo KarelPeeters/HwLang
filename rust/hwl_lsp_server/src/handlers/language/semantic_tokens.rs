@@ -37,10 +37,7 @@ impl RequestHandler<SemanticTokensFullRequest> for ServerState {
                 Ok(token) => token,
                 // TODO support error recovery in the tokenizer?
                 // TODO make tokenization error visible to user?
-                Err(e) => {
-                    eprintln!("tokenization failed: {e:?}");
-                    break;
-                }
+                Err(_) => break,
             };
 
             if let Some(semantic_index) = semantic_token_index(token.ty.category()) {

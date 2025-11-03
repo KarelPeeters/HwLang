@@ -1,23 +1,17 @@
+use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
 
 pub struct Logger {
     log_to_stderr: bool,
-    log_file: Option<BufWriter<std::fs::File>>,
+    log_writer: Option<BufWriter<File>>,
 }
 
+#[allow(clippy::print_stderr)]
 impl Logger {
-    pub fn new(log_to_stderr: bool, log_path: Option<&Path>) -> Self {
-        let log_file = log_path.and_then(|log_path| match std::fs::File::create(log_path) {
-            Ok(log_file) => Some(BufWriter::new(log_file)),
-            Err(e) => {
-                eprintln!("failed to open log file {log_path:?}: {e:?}");
-                None
-            }
-        });
+    pub fn new(log_to_stderr: bool, log_writer: Option<BufWriter<File>>) -> Self {
         Self {
             log_to_stderr,
-            log_file,
+            log_writer,
         }
     }
 
@@ -28,7 +22,7 @@ impl Logger {
             eprintln!("{msg}");
         }
 
-        if let Some(log_file) = &mut self.log_file {
+        if let Some(log_file) = &mut self.log_writer {
             // ignore errors, we don't want to add additional server crashes
             let r0 = writeln!(log_file, "{msg}");
             let r1 = log_file.flush();
