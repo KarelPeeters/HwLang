@@ -13,7 +13,7 @@ use std::convert::identity;
 use std::sync::Arc;
 
 // TODO just provide both as default args, by now it's pretty clear that this uses HardwareValue almost always
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value<C = CompileValue, T = HardwareValue> {
     Compile(C),
     Hardware(T),
@@ -48,7 +48,7 @@ pub struct ElaboratedInterfaceView {
     pub view_index: usize,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct HardwareValue<T = HardwareType, E = IrExpression> {
     pub ty: T,
     pub domain: ValueDomain,
