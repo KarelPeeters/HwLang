@@ -607,11 +607,22 @@ impl<'a> CompileItemContext<'a, '_> {
                 // eval target
                 let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, "call target")?;
 
-                // handle typeof operator, special-cased because it does not actually evaluate its args
-                if target.inner == CompileValue::Type(Type::Type) {
-                    let ty = self.eval_type_of(scope, flow, expr.span, args)?;
-                    let value = Value::Compile(CompileValue::Type(ty));
-                    return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                // handle special cases that can't immediately evaluate their arguments
+                match target.inner {
+                    CompileValue::Builtin => {
+                        // builtin
+                        let value = self.eval_builtin(scope, flow, expr.span, target.span, args)?;
+                        return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                    }
+                    CompileValue::Type(Type::Type) => {
+                        // typeof operator
+                        let ty = self.eval_type_of(scope, flow, expr.span, args)?;
+                        let value = Value::Compile(CompileValue::Type(ty));
+                        return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                    }
+                    _ => {
+                        // fallthrough into normal call logic
+                    }
                 }
 
                 // eval args
@@ -633,11 +644,6 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // check that the target is a function
                 let target_inner = match target.inner {
-                    CompileValue::Builtin => {
-                        return self
-                            .eval_builtin(flow, expr.span, target.span, args?)
-                            .map(|v| ValueInner::Value(ValueWithImplications::simple(v)));
-                    }
                     CompileValue::Type(Type::Int(range)) => {
                         // handle integer calls here
                         let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
@@ -1281,71 +1287,6 @@ impl<'a> CompileItemContext<'a, '_> {
             span: index.span,
             inner: step,
         })
-    }
-
-    fn eval_type_of(&mut self, scope: &Scope, flow: &mut impl Flow, expr_span: Span, args: &Args) -> DiagResult<Type> {
-        let diags = self.refs.diags;
-
-        // check single unnamed arg
-        // TODO extract common code, there are probably other users of this pattern
-        let Args {
-            span: args_span,
-            inner: args_inner,
-        } = args;
-        let arg = match args_inner.single_ref() {
-            Ok(&Arg { span: _, name, value }) => {
-                if let Some(name) = name {
-                    return Err(diags.report_simple(
-                        "typeof only takes a single unnamed argument",
-                        name.span,
-                        "tried to pass named argument here",
-                    ));
-                } else {
-                    value
-                }
-            }
-            Err(()) => {
-                return Err(diags.report_simple(
-                    "typeof only takes a single unnamed argument",
-                    *args_span,
-                    "incorrect number of arguments here",
-                ));
-            }
-        };
-
-        // eval id
-        let &ExpressionKind::Id(id) = self.refs.get_expr(arg) else {
-            return Err(diags.report_simple(
-                "typeof only works on identifiers, not general expressions",
-                arg.span,
-                "tried to pass non-identifier here",
-            ));
-        };
-        let id = self.eval_general_id(scope, flow, id)?;
-        let value = self
-            .eval_named_or_value(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
-            .inner;
-
-        // get type
-        let ty = match value {
-            NamedOrValue::ItemValue(value) => value.ty(),
-            NamedOrValue::Named(value) => match value {
-                NamedValue::Variable(var) => {
-                    let info = flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(arg.span, var))?;
-                    info.into_value().ty()
-                }
-                NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
-                NamedValue::Wire(wire) => {
-                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
-                    typed.ty.inner.as_type()
-                }
-                NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
-                NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
-                    return Err(diags.report_todo(expr_span, "typeof for interfaces"));
-                }
-            },
-        };
-        Ok(ty)
     }
 
     pub fn eval_expression_as_compile(

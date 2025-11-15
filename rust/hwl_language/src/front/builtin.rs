@@ -1,137 +1,222 @@
+use crate::front::check::{TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
+use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind};
+use crate::front::implication::ValueWithImplications;
+use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::mid::ir::IrStatement;
-use crate::syntax::ast::{Arg, Args};
+use crate::mid::ir::{IrExpression, IrStatement};
+use crate::syntax::ast::{Arg, Args, ExpressionKind};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
-use crate::util::iter::IterExt;
+use crate::util::data::VecExt;
+use crate::util::store::ArcOrRef;
+use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {
-    // TODO replace builtin+import+prelude with keywords?
+    pub fn eval_type_of(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        expr_span: Span,
+        args: &Args,
+    ) -> DiagResult<Type> {
+        let diags = self.refs.diags;
+
+        // check single unnamed arg
+        // TODO extract common code, there are probably other users of this pattern
+        let Args {
+            span: args_span,
+            inner: args_inner,
+        } = args;
+        let arg = match args_inner.single_ref() {
+            Ok(&Arg { span: _, name, value }) => {
+                if let Some(name) = name {
+                    return Err(diags.report_simple(
+                        "typeof only takes a single unnamed argument",
+                        name.span,
+                        "tried to pass named argument here",
+                    ));
+                } else {
+                    value
+                }
+            }
+            Err(()) => {
+                return Err(diags.report_simple(
+                    "typeof only takes a single unnamed argument",
+                    *args_span,
+                    "incorrect number of arguments here",
+                ));
+            }
+        };
+
+        // eval id
+        let &ExpressionKind::Id(id) = self.refs.get_expr(arg) else {
+            return Err(diags.report_simple(
+                "typeof only works on identifiers, not general expressions",
+                arg.span,
+                "tried to pass non-identifier here",
+            ));
+        };
+        let id = self.eval_general_id(scope, flow, id)?;
+        let value = self
+            .eval_named_or_value(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
+            .inner;
+
+        // get type
+        let ty = match value {
+            NamedOrValue::ItemValue(value) => value.ty(),
+            NamedOrValue::Named(value) => match value {
+                NamedValue::Variable(var) => {
+                    let info = flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(arg.span, var))?;
+                    info.into_value().ty()
+                }
+                NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
+                NamedValue::Wire(wire) => {
+                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
+                    typed.ty.inner.as_type()
+                }
+                NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
+                NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
+                    return Err(diags.report_todo(expr_span, "typeof for interfaces"));
+                }
+            },
+        };
+        Ok(ty)
+    }
+
     pub fn eval_builtin(
         &mut self,
+        scope: &Scope,
         flow: &mut impl Flow,
         expr_span: Span,
         target_span: Span,
-        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: &Args,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
-        // evaluate args
-        // TODO delay arg evaluation so we can do weird things like use certain args as a domain?
+        // check that there are no named arguments
         let Args {
             span: _,
             inner: args_inner,
         } = args;
-        let args_eval = args_inner
-            .into_iter()
-            .map(|arg| {
-                let Arg { span: _, name, value } = arg;
-                if let Some(name) = name {
-                    let diag = Diagnostic::new(format!("{TOKEN_STR_BUILTIN} does not support named arguments"))
-                        .snippet(expr_span)
-                        .add_error(name.span, "tried to pass named argument here")
-                        .add_info(target_span, format!("calling {TOKEN_STR_BUILTIN} here"))
-                        .finish()
-                        .finish();
-                    return Err(diags.report(diag));
-                }
-                Ok(value.inner)
-            })
-            .try_collect_all_vec()?;
-
-        if let (Some(Value::Compile(CompileValue::String(a0))), Some(Value::Compile(CompileValue::String(a1)))) =
-            (args_eval.get(0), args_eval.get(1))
-        {
-            let rest = &args_eval[2..];
-            let print_compile = |v: &Value| {
-                let value_str = match v {
-                    // TODO print strings without quotes
-                    Value::Compile(v) => v.diagnostic_string(),
-                    // TODO less ugly formatting for HardwareValue
-                    Value::Hardware(v) => {
-                        let HardwareValue { ty, domain, expr: _ } = v;
-                        let ty_str = ty.diagnostic_string();
-                        let domain_str = domain.diagnostic_string(self);
-                        format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _, }}")
-                    }
-                };
-                self.refs.print_handler.println(&value_str);
-            };
-
-            match (a0.as_str(), a1.as_str(), rest) {
-                ("type", "any", []) => return Ok(Value::Compile(CompileValue::Type(Type::Any))),
-                ("type", "bool", []) => return Ok(Value::Compile(CompileValue::Type(Type::Bool))),
-                ("type", "str", []) => return Ok(Value::Compile(CompileValue::Type(Type::String))),
-                ("type", "Range", []) => return Ok(Value::Compile(CompileValue::Type(Type::Range))),
-                ("type", "int", []) => {
-                    return Ok(Value::Compile(CompileValue::Type(Type::Int(IncRange::OPEN))));
-                }
-                ("fn", "typeof", [value]) => return Ok(Value::Compile(CompileValue::Type(value.ty()))),
-                ("fn", "print", [value]) => {
-                    match flow.kind_mut() {
-                        FlowKind::Compile(_) => {
-                            // TODO record similarly to diagnostics, where they can be deterministically printed later
-                            print_compile(value);
-                            return Ok(Value::Compile(CompileValue::unit()));
-                        }
-                        FlowKind::Hardware(flow) => {
-                            if let Value::Compile(CompileValue::String(value)) = value {
-                                let stmt = Spanned::new(expr_span, IrStatement::PrintLn((**value).clone()));
-                                flow.push_ir_statement(stmt);
-                                return Ok(Value::Compile(CompileValue::unit()));
-                            }
-                            // fallthough
-                        }
-                    }
-                }
-                (
-                    "fn",
-                    "assert",
-                    &[
-                        Value::Compile(CompileValue::Bool(cond)),
-                        Value::Compile(CompileValue::String(ref msg)),
-                    ],
-                ) => {
-                    return if cond {
-                        Ok(Value::Compile(CompileValue::unit()))
-                    } else {
-                        Err(diags.report_simple(
-                            format!("assertion failed with message {msg:?}"),
-                            expr_span,
-                            "failed here",
-                        ))
-                    };
-                }
-                ("fn", "assert", [Value::Hardware(_), Value::Compile(CompileValue::String(_))]) => {
-                    return Err(diags.report_todo(expr_span, "runtime assert"));
-                }
-                ("fn", "unsafe_bool_to_clock", [v]) => match v.ty() {
-                    Type::Bool => {
-                        let expr = v.as_hardware_value(self.refs, &mut self.large, expr_span, &HardwareType::Bool)?;
-                        return Ok(Value::Hardware(HardwareValue {
-                            ty: HardwareType::Bool,
-                            domain: ValueDomain::Clock,
-                            expr: expr.expr.clone(),
-                        }));
-                    }
-                    _ => {}
-                },
-                // fallthrough into err
-                _ => {}
+        for arg in args_inner {
+            let Arg {
+                span: _,
+                name,
+                value: _,
+            } = arg;
+            if let Some(name) = name {
+                let msg = format!("{TOKEN_STR_BUILTIN} does not support named arguments");
+                return Err(diags.report_internal_error(name.span, msg));
             }
         }
 
-        // TODO this causes a strange error message when people call eg. int_range with non-compile args
-        let diag = Diagnostic::new("invalid builtin arguments")
-            .snippet(expr_span)
-            .add_error(args.span, "invalid args")
-            .finish()
-            .finish();
-        Err(diags.report(diag))
+        // evaluate the first two arguments as string literals
+        if args_inner.len() < 2 {
+            return Err(diags.report_internal_error(
+                args.span,
+                format!("{TOKEN_STR_BUILTIN} requires at least two arguments"),
+            ));
+        }
+        let arg_0 = check_type_is_string(
+            diags,
+            TypeContainsReason::Operator(target_span),
+            self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[0].value, "builtin arg 0")?,
+        )?;
+        let arg_1 = check_type_is_string(
+            diags,
+            TypeContainsReason::Operator(target_span),
+            self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[1].value, "builtin arg 1")?,
+        )?;
+        let args_rest = &args_inner[2..];
+
+        // let print_compile = |v: &Value| {
+        //     let value_str = match v {
+        //         // TODO print strings without quotes
+        //         Value::Compile(v) => v.diagnostic_string(),
+        //         // TODO less ugly formatting for HardwareValue
+        //         Value::Hardware(v) => {
+        //             let HardwareValue { ty, domain, expr: _ } = v;
+        //             let ty_str = ty.diagnostic_string();
+        //             let domain_str = domain.diagnostic_string(self);
+        //             format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _, }}")
+        //         }
+        //     };
+        //     self.refs.print_handler.println(&value_str);
+        // }
+
+        // handle the different builtins
+        match (arg_0.as_ref().as_str(), arg_1.as_ref().as_str(), args_rest) {
+            // basic types
+            ("type", "any", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Any))),
+            ("type", "bool", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Bool))),
+            ("type", "str", &[]) => Ok(Value::Compile(CompileValue::Type(Type::String))),
+            ("type", "Range", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Range))),
+            ("type", "int", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Int(IncRange::OPEN)))),
+            // print
+            ("fn", "print", &[msg]) => {
+                // TODO support hardware msg
+                let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
+                let msg = check_type_is_string(diags, TypeContainsReason::Internal(expr_span), msg)?;
+
+                match flow.kind_mut() {
+                    FlowKind::Compile(_) => {
+                        self.refs.print_handler.println(&msg);
+                    }
+                    FlowKind::Hardware(flow) => {
+                        let stmt = Spanned::new(expr_span, IrStatement::PrintLn(Arc::unwrap_or_clone(msg)));
+                        flow.push_ir_statement(stmt);
+                    }
+                }
+
+                Ok(Value::Compile(CompileValue::unit()))
+            }
+            // assert
+            ("fn", "assert", &[cond, msg]) => {
+                // TODO support hardware cond and msg
+                let cond =
+                    self.eval_expression_as_compile(scope, flow, &Type::Bool, cond.value, "assertion condition")?;
+                let cond = check_type_is_bool_compile(diags, TypeContainsReason::Internal(expr_span), cond)?;
+
+                let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
+                let msg = check_type_is_string(diags, TypeContainsReason::Internal(expr_span), msg)?;
+
+                if cond {
+                    Ok(Value::Compile(CompileValue::unit()))
+                } else {
+                    // TODO include stack trace
+                    //   (and ensure it's deterministic even in multithreaded builds)
+                    Err(diags.report_simple(
+                        format!("assertion failed with message {msg:?}"),
+                        expr_span,
+                        "failed here",
+                    ))
+                }
+            }
+            // casting
+            ("fn", "unsafe_bool_to_clock", &[value]) => {
+                let value = self.eval_expression(scope, flow, &Type::Bool, value.value)?;
+                let value = check_type_is_bool(
+                    diags,
+                    TypeContainsReason::Internal(expr_span),
+                    value.map_inner(ValueWithImplications::simple),
+                )?;
+
+                let expr = match value.inner.into_value() {
+                    Value::Compile(v) => IrExpression::Bool(v),
+                    Value::Hardware(h) => h.expr,
+                };
+                Ok(Value::Hardware(HardwareValue {
+                    ty: HardwareType::Bool,
+                    domain: ValueDomain::Clock,
+                    expr,
+                }))
+            }
+            _ => Err(diags.report_internal_error(expr_span, "invalid builtin arguments")),
+        }
     }
 }

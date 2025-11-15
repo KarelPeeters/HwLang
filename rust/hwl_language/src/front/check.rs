@@ -126,6 +126,7 @@ pub enum TypeContainsReason {
     Parameter {
         param_ty: Span,
     },
+    Internal(Span),
 }
 
 impl TypeContainsReason {
@@ -193,6 +194,9 @@ impl TypeContainsReason {
             }
             TypeContainsReason::Parameter { param_ty } => {
                 diag.add_info(param_ty, format!("parameter requires type `{target_ty_str}`"))
+            }
+            TypeContainsReason::Internal(span) => {
+                Diagnostic::new_internal_error("type check failed").add_error(span, "here")
             }
         }
     }
