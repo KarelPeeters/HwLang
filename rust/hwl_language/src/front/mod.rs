@@ -1,6 +1,7 @@
 pub mod assignment;
 pub mod bits;
 pub mod block;
+pub mod builtin;
 pub mod check;
 pub mod compile;
 pub mod diagnostic;
