@@ -1009,7 +1009,7 @@ impl Context<'_> {
                 let mut seq = vec![token(TT::StringStart)];
                 for piece in pieces {
                     match piece {
-                        StringPiece::Literal { span: _ } => {
+                        StringPiece::Literal(_span) => {
                             seq.push(HNode::Dedent(Box::new(token(TT::StringMiddle))));
                         }
                         &StringPiece::Substitute(expr) => {

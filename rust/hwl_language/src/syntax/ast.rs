@@ -645,7 +645,7 @@ pub enum ExpressionKind {
     // Literals
     IntLiteral(IntLiteral),
     BoolLiteral(bool),
-    StringLiteral(Vec<StringPiece>),
+    StringLiteral(Vec<StringPiece<Span, Expression>>),
 
     // Structures
     ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
@@ -675,9 +675,9 @@ pub enum DotIndexKind {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum StringPiece {
-    Literal { span: Span },
-    Substitute(Expression),
+pub enum StringPiece<L, E> {
+    Literal(L),
+    Substitute(E),
 }
 
 #[derive(Debug, Clone)]

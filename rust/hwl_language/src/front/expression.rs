@@ -273,7 +273,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 for &piece in pieces {
                     match piece {
-                        StringPiece::Literal { span } => {
+                        StringPiece::Literal(span) => {
                             let raw = source.span_str(span);
                             let escaped = apply_string_literal_escapes(raw);
                             s.push_str(escaped.as_ref());

@@ -809,8 +809,8 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
         => ExpressionKind::StringLiteral(<>),
 }
 
-StringPiece: StringPiece = {
-    Span<TokenStringMiddle> => StringPiece::Literal { span: <> },
+StringPiece: StringPiece<Span, Expression> = {
+    Span<TokenStringMiddle> => StringPiece::Literal(<>),
     TokenStringSubStart <Expr> TokenStringSubEnd => StringPiece::Substitute(<>),
 }
 
