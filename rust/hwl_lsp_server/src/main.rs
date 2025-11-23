@@ -46,10 +46,7 @@ fn main_inner() -> Result<(), TopError> {
     let log_file = log_file.or_else(|| std::env::var_os("HWL_LOG_FILE").map(PathBuf::from));
     let log_writer = log_file
         .map::<Result<_, TopError>, _>(|log_file| {
-            let file = File::create(&log_file).map_err(|e| {
-                eprintln!("Failed to create log file at {log_file:?}: {e}");
-                TopError::Init
-            })?;
+            let file = File::create(&log_file).map_err(|_| TopError::Init)?;
             Ok(BufWriter::new(file))
         })
         .transpose()?;

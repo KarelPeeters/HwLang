@@ -63,7 +63,14 @@ debug = 2
 # Enable optimization for larlpop build
 #opt-level = 3
 
+[workspace.metadata.clippy]
+allow-print-in-tests = true
+
 [workspace.lints.clippy]
+# Bare prints are suspicious in library code, and can even cause the LSP to crash.
+print_stdout = "warn"
+print_stderr = "warn"
+
 # Things that are not yet implemented should report diagnostics, not crash the compiler.
 todo = "warn"
 unimplemented = "warn"

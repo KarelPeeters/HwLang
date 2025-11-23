@@ -718,8 +718,7 @@ fn finish_ir_database_impl(
     work_queue: &SharedQueue<WorkItem>,
     ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
-    if let Some(item) = work_queue.pop() {
-        println!("work queue is not empty, found item: {item:?}");
+    if work_queue.pop().is_some() {
         return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
     }
 

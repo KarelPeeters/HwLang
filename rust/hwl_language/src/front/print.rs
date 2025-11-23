@@ -14,6 +14,7 @@ impl PrintHandler for NoPrintHandler {
 pub struct StdoutPrintHandler;
 
 impl PrintHandler for StdoutPrintHandler {
+    #[allow(clippy::print_stdout)]
     fn println(&self, s: &str) {
         println!("{s}");
     }

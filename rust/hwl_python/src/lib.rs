@@ -243,17 +243,12 @@ impl Source {
 
         // read manifest
         let manifest_path = &PathBuf::from(manifest_path);
-        println!("a");
         let manifest_parent = manifest_path
             .parent()
             .ok_or_else(|| SourceSetException::new_err("manifest path does not have a parent directory"))?;
-        println!("b");
         let manifest_content = std::fs::read_to_string(manifest_path)
             .map_err(|e| SourceSetException::new_err(io_error_message(e.with_path(manifest_path))))?;
-        println!("c");
         let manifest_file = source.add_file(manifest_path.to_string_lossy().into_owned(), manifest_content);
-
-        println!("d");
 
         // parse manifest
         let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
