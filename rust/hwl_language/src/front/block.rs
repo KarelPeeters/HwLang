@@ -1,7 +1,6 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{
-    TypeContainsReason, check_type_contains_compile_value, check_type_contains_value, check_type_is_bool,
-    check_type_is_bool_compile,
+    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -13,7 +12,9 @@ use crate::front::implication::HardwareValueWithImplications;
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{
+    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value,
+};
 use crate::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
 };
@@ -31,7 +32,6 @@ use annotate_snippets::Level;
 use itertools::{Either, Itertools, enumerate, zip_eq};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -213,7 +213,6 @@ impl BranchMatched {
 enum PatternEqual {
     Bool(bool),
     Int(BigInt),
-    String(Arc<String>),
 }
 
 type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;
@@ -279,14 +278,14 @@ impl CompileItemContext<'_, '_> {
         };
 
         let end = match stack.early_exit_condition(diags, &mut self.large, flow, span)? {
-            Value::Compile(exit_cond) => {
+            MaybeCompile::Compile(exit_cond) => {
                 if exit_cond {
                     return Err(diags
                         .report_internal_error(span, "compile-time early exit condition should be handled elsewhere"));
                 }
                 self.elaborate_block_statements_without_immediate_exit_check(scope, flow, stack, statements)?
             }
-            Value::Hardware(exit_cond) => {
+            MaybeCompile::Hardware(exit_cond) => {
                 let flow = flow.check_hardware(span, "hardware exit conditions")?;
 
                 let exit_cond = Spanned::new(span, exit_cond);
@@ -390,7 +389,7 @@ impl CompileItemContext<'_, '_> {
                             span_target: id.span(),
                             span_target_ty: ty.span,
                         };
-                        check_type_contains_value(diags, reason, &ty.inner, init.as_ref(), true, true)?;
+                        check_type_contains_value(diags, reason, &ty.inner, init.as_ref())?;
                     }
 
                     // build variable
@@ -411,7 +410,7 @@ impl CompileItemContext<'_, '_> {
                             let flow = flow.check_hardware(init.span, "hardware value")?;
                             let debug_info_id = id.spanned_string(self.refs.fixed.source).inner;
                             store_ir_expression_in_new_variable(self.refs, flow, id.span(), debug_info_id, init_inner)
-                                .map(HardwareValue::to_general_expression)
+                                .map(|h| h.map_expression(IrExpression::Variable))
                         })?;
                         flow.var_set(var, decl.span, Ok(init));
                     }
@@ -524,15 +523,16 @@ impl CompileItemContext<'_, '_> {
             cond,
             ref block,
         } = initial_if;
+        let cond_span = cond.span;
 
         let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
         let cond = check_type_is_bool(diags, reason, cond)?;
 
-        match cond.inner {
+        match cond {
             // evaluate the if at compile-time
-            Value::Compile(cond_eval) => {
+            MaybeCompile::Compile(cond_eval) => {
                 // only visit the selected branch
                 if cond_eval {
                     self.elaborate_block(scope, flow, stack, block)
@@ -541,10 +541,10 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             // evaluate the if in hardware, generating IR
-            Value::Hardware(cond_value) => {
-                let flow = flow.check_hardware(cond.span, "hardware value")?;
+            MaybeCompile::Hardware(cond_value) => {
+                let flow = flow.check_hardware(cond_span, "hardware value")?;
 
-                let cond_value = Spanned::new(cond.span, cond_value);
+                let cond_value = Spanned::new(cond_span, cond_value);
                 let (then_end, else_end) =
                     self.elaborate_hardware_branch(flow, span_if, cond_value, |slf, branch_flow, branch_cond| {
                         if branch_cond {
@@ -600,7 +600,7 @@ impl CompileItemContext<'_, '_> {
         } else {
             None
         };
-        let eq_expected_ty = if matches!(&target_ty, Type::Int(_)) && matches!(&target.inner, Value::Compile(_)) {
+        let eq_expected_ty = if matches!(&target_ty, Type::Int(_)) && matches!(&target.inner, Value::Simple(_)) {
             &Type::Int(IncRange::OPEN)
         } else {
             &target_ty
@@ -631,26 +631,24 @@ impl CompileItemContext<'_, '_> {
                     &MatchPattern::Equal(value) => {
                         // TODO support tuples, arrays, structs, enums (by value), all recursively
                         let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
-                        check_type_contains_compile_value(
+                        check_type_contains_value(
                             diags,
                             TypeContainsReason::MatchPattern(target.span),
                             eq_expected_ty,
                             value.as_ref(),
-                            false,
                         )?;
 
                         let pattern = match value.inner {
-                            CompileValue::Bool(value) => {
+                            CompileValue::Simple(SimpleCompileValue::Bool(value)) => {
                                 cover_bool_true |= value;
                                 cover_bool_false |= !value;
                                 cover_all |= cover_bool_true && cover_bool_false;
                                 PatternEqual::Bool(value)
                             }
-                            CompileValue::Int(value) => {
+                            CompileValue::Simple(SimpleCompileValue::Int(value)) => {
                                 // TODO track covered int ranges
                                 PatternEqual::Int(value)
                             }
-                            CompileValue::String(value) => PatternEqual::String(value),
                             _ => {
                                 return Err(diags.report_simple(
                                     "unsupported match type",
@@ -673,7 +671,7 @@ impl CompileItemContext<'_, '_> {
 
                         let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
                         let value = match value.inner {
-                            CompileValue::IntRange(range) => range,
+                            CompileValue::Compound(CompileCompoundValue::Range(range)) => range,
                             _ => {
                                 return Err(diags.report_simple(
                                     "expected range for in pattern",
@@ -683,7 +681,7 @@ impl CompileItemContext<'_, '_> {
                             }
                         };
 
-                        Ok(MatchPattern::In(value))
+                        Ok(MatchPattern::In(value.as_range()))
                     }
                     &MatchPattern::EnumVariant(variant, id_content) => {
                         let elab = match target_ty {
@@ -789,8 +787,8 @@ impl CompileItemContext<'_, '_> {
         }
 
         // evaluate match itself
-        match target.inner {
-            Value::Compile(target_inner) => self.elaborate_match_statement_compile(
+        match CompileValue::try_from(&target.inner) {
+            Ok(target_inner) => self.elaborate_match_statement_compile(
                 scope,
                 flow,
                 stack,
@@ -799,17 +797,24 @@ impl CompileItemContext<'_, '_> {
                 branches,
                 branch_patterns,
             ),
-            Value::Hardware(target_inner) => {
-                let flow = flow.check_hardware(target.span, "hardware value")?;
-                self.elaborate_match_statement_hardware(
-                    scope,
-                    flow,
-                    stack,
-                    stmt.span,
-                    Spanned::new(target.span, target_inner),
-                    branches,
-                    branch_patterns,
-                )
+            Err(NotCompile) => {
+                match target.inner {
+                    Value::Simple(_) => Err(diags
+                        .report_internal_error(span_branches, "match compile target should have been handled earlier")),
+                    Value::Compound(_) => Err(diags.report_todo(span_branches, "match compount target")),
+                    Value::Hardware(target_inner) => {
+                        let flow = flow.check_hardware(target.span, "hardware value")?;
+                        self.elaborate_match_statement_hardware(
+                            scope,
+                            flow,
+                            stack,
+                            stmt.span,
+                            Spanned::new(target.span, target_inner),
+                            branches,
+                            branch_patterns,
+                        )
+                    }
+                }
             }
         }
     }
@@ -838,22 +843,28 @@ impl CompileItemContext<'_, '_> {
                 MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), target.clone()))),
                 MatchPattern::Equal(pattern) => {
                     let c = match (&pattern, &target) {
-                        (PatternEqual::Bool(p), CompileValue::Bool(v)) => p == v,
-                        (PatternEqual::Int(p), CompileValue::Int(v)) => p == v,
-                        (PatternEqual::String(p), CompileValue::String(v)) => p == v,
+                        (PatternEqual::Bool(p), CompileValue::Simple(SimpleCompileValue::Bool(v))) => p == v,
+                        (PatternEqual::Int(p), CompileValue::Simple(SimpleCompileValue::Int(v))) => p == v,
                         _ => return Err(diags.report_internal_error(pattern_span, "unexpected pattern/value")),
                     };
 
                     BranchMatched::from_bool(c)
                 }
                 MatchPattern::In(pattern) => match &target {
-                    CompileValue::Int(value) => BranchMatched::from_bool(pattern.contains(value)),
+                    CompileValue::Simple(SimpleCompileValue::Int(value)) => {
+                        BranchMatched::from_bool(pattern.contains(value))
+                    }
                     _ => return Err(diags.report_internal_error(pattern_span, "unexpected range/value")),
                 },
-                MatchPattern::EnumVariant(pattern_index, id_content) => match &target {
-                    CompileValue::Enum(_, (value_index, value_content)) => {
-                        if pattern_index == *value_index {
-                            let declare_content = match (id_content, value_content) {
+                MatchPattern::EnumVariant(pattern_variant, id_content) => match &target {
+                    CompileValue::Compound(CompileCompoundValue::Enum(target)) => {
+                        let &EnumValue {
+                            ty: _,
+                            variant: target_variant,
+                            payload: ref target_payload,
+                        } = target;
+                        if pattern_variant == target_variant {
+                            let declare_content = match (id_content, target_payload) {
                                 (Some(id_content), Some(value_content)) => {
                                     Some((id_content, (**value_content).clone()))
                                 }
@@ -879,7 +890,7 @@ impl CompileItemContext<'_, '_> {
                             declare_id.span(),
                             VariableId::Id(declare_id),
                             pattern_span,
-                            Ok(Value::Compile(declare_value)),
+                            Ok(Value::from(declare_value)),
                         );
                         scope_inner.maybe_declare(
                             diags,
@@ -991,7 +1002,7 @@ impl CompileItemContext<'_, '_> {
                     let info = self.refs.shared.elaboration_arenas.enum_info(target_ty.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
-                    let ty_content = &info_hw.content_types[pattern_index];
+                    let ty_content = &info_hw.payload_types[pattern_index];
 
                     let target_tag = large.push_expr(IrExpressionLarge::TupleIndex {
                         base: target.inner.expr.clone(),
@@ -1143,9 +1154,9 @@ impl CompileItemContext<'_, '_> {
 
                 // typecheck condition
                 let reason = TypeContainsReason::WhileCondition(span_keyword);
-                check_type_contains_compile_value(diags, reason, &Type::Bool, cond.as_ref(), false)?;
+                check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref())?;
                 let cond = match &cond.inner {
-                    &CompileValue::Bool(b) => b,
+                    &CompileValue::Simple(SimpleCompileValue::Bool(b)) => b,
                     _ => throw!(
                         diags.report_internal_error(cond.span, "expected bool, should have been checked already")
                     ),
@@ -1204,7 +1215,7 @@ impl CompileItemContext<'_, '_> {
         );
 
         self.elaborate_loop(flow, stack, span_keyword, iter, |slf, flow, stack, index_value| {
-            let index_value = index_value.to_maybe_compile(&mut slf.large);
+            let index_value = index_value.map_hardware(|h| h.map_expression(|h| slf.large.push_expr(h)));
 
             // typecheck index
             if let Some(index_ty) = &index_ty {
@@ -1213,7 +1224,7 @@ impl CompileItemContext<'_, '_> {
                     inner: &index_value,
                 };
                 let reason = TypeContainsReason::ForIndexType(index_ty.span);
-                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned, false, true)?;
+                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned)?;
             }
 
             // set index

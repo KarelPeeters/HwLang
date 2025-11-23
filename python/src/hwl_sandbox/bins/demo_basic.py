@@ -3,7 +3,7 @@ from pathlib import Path
 import hwl
 
 # TODO add this to CI
-source = hwl.Source(str(Path(__file__).parent / "../../design/project"))
+source = hwl.Source.new_from_manifest_path(str(Path(__file__).parent / "../../../../design/project/hwl.toml"))
 print("Parsed files:")
 for f in source.files:
     print(f"  {f}")
@@ -11,11 +11,11 @@ for f in source.files:
 parsed = source.parse()
 print(parsed)
 
-compile = parsed.compile()
+com = parsed.compile()
 
-top = compile.resolve("top.top")
-foo_function = compile.resolve("top.foo_function")
-foo_module = compile.resolve("top.foo_module")
+top = com.resolve("top.top")
+foo_function = com.resolve("top.foo_function")
+foo_module = com.resolve("top.foo_module")
 print(top, foo_function, foo_module)
 
 # TODO call function
@@ -23,7 +23,7 @@ print(foo_function(4, 5))
 print(foo_function(4, b=5))
 
 # TODO instantiate module into generated verilog
-ty_bool = compile.resolve("std.types.bool")
+ty_bool = com.resolve("std.types.bool")
 foo_inst = foo_module(T=ty_bool)
 
 foo_verilog = foo_inst.generate_verilog()

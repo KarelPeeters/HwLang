@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from hwl import hwl
+import hwl
+import pytest
+from hwl.hwl import DiagnosticException
 
 from hwl_sandbox.common.util import compile_custom
 
@@ -17,8 +19,23 @@ def test_interact_string_array():
     assert f(["a", "b", "c"], 1) == "b"
 
 
+def test_interact_types():
+    c = compile_custom("import std.types.bool; fn f(T: type, x: T) -> T { return x; }")
+    f = c.resolve("top.f")
+
+    assert f(bool, False) is False
+    assert f(bool, True) is True
+    with pytest.raises(DiagnosticException, match="type mismatch"):
+        f(bool, 0)
+
+    assert f(int, 0) == 0
+    with pytest.raises(DiagnosticException, match="type mismatch"):
+        f(int, False)
+
+
+# TODO this is a bit of a weird test, since the example project changes a lot
 def test_compile_manifest():
-    manifest_path = Path(__file__).parent / "../../../../design/project/hwl.toml"
+    manifest_path = Path(__file__).parent / "../../../../../design/project/hwl.toml"
     s = hwl.Source.new_from_manifest_path(str(manifest_path))
     c = s.compile()
     assert isinstance(c.resolve("top.top"), hwl.Module)

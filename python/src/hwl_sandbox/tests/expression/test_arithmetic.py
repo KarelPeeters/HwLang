@@ -24,18 +24,6 @@ def test_int_literal(tmp_dir: Path, v: int):
     e_rz.eval_assert([], v)
 
 
-def test_expand_pos(tmp_dir: Path):
-    e = expression_compile(["int(0..13)"], "int(0..25)", "a0", tmp_dir)
-    for v in range(13):
-        e.eval_assert([v], v)
-
-
-def test_expand_neg(tmp_dir: Path):
-    e = expression_compile(["int(-24..13)"], "int(-56..25)", "a0", tmp_dir)
-    for v in range(-24, 13):
-        e.eval_assert([v], v)
-
-
 def test_add_pos(tmp_dir: Path):
     e = expression_compile(["int(0..16)", "int(0..32)"], "int(0..48)", "a0 + a1", tmp_dir)
 
@@ -100,6 +88,7 @@ def assert_div_or_mod(e: CompiledCompare, op: str, a: int, b: int, c_div: int, c
         raise ValueError(f"Invalid op {op}")
 
 
+# TODO instead of duplicating tests, just return a tuple
 OPS_DIV_MOD = ["/", "%"]
 
 

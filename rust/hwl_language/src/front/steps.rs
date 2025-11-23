@@ -2,25 +2,28 @@ use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{
+    CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
+};
 use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
 use crate::syntax::pos::Span;
 use crate::syntax::pos::Spanned;
 use crate::util::big_int::{BigInt, BigUint};
 use itertools::Itertools;
 use std::sync::Arc;
+use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
     steps: Vec<Spanned<S>>,
 }
 
-pub type ArrayStep = Value<ArrayStepCompile, ArrayStepHardware>;
+pub type ArrayStep = MaybeCompile<ArrayStepCompile, ArrayStepHardware>;
 
 #[derive(Debug, Clone)]
 pub enum ArrayStepCompile {
     ArrayIndex(BigInt),
-    ArraySlice { start: BigInt, len: Option<BigUint> },
+    ArraySlice { start: BigInt, length: Option<BigUint> },
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +31,7 @@ pub enum ArrayStepHardware {
     ArrayIndex(HardwareValue<ClosedIncRange<BigInt>>),
     ArraySlice {
         start: HardwareValue<ClosedIncRange<BigInt>>,
-        len: BigUint,
+        length: BigUint,
     },
 }
 
@@ -47,7 +50,10 @@ struct EncounteredAny;
 
 impl ArraySteps<ArrayStep> {
     pub fn any_hardware(&self) -> bool {
-        self.steps.iter().any(|step| matches!(step.inner, Value::Hardware(_)))
+        self.steps.iter().any(|step| match step.inner {
+            ArrayStep::Compile(_) => false,
+            ArrayStep::Hardware(_) => true,
+        })
     }
 
     pub fn unwrap_compile(&self) -> ArraySteps<&ArrayStepCompile> {
@@ -55,7 +61,7 @@ impl ArraySteps<ArrayStep> {
             steps: self
                 .steps
                 .iter()
-                .map(|step| step.as_ref().map_inner(|m| m.as_ref().unwrap_compile()))
+                .map(|s| s.as_ref().map_inner(|s| unwrap_match!(s, ArrayStep::Compile(s) => s)))
                 .collect(),
         }
     }
@@ -91,7 +97,7 @@ impl ArraySteps<ArrayStep> {
                 ArrayStep::Compile(_) => &ValueDomain::CompileTime,
                 ArrayStep::Hardware(step) => match step {
                     ArrayStepHardware::ArrayIndex(index) => &index.domain,
-                    ArrayStepHardware::ArraySlice { start, len: _ } => &start.domain,
+                    ArrayStepHardware::ArraySlice { start, length: _ } => &start.domain,
                 },
             };
             f(Spanned::new(step.span, d));
@@ -114,7 +120,7 @@ impl ArraySteps<ArrayStep> {
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
                 Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
-                _ => return Err(diags.report(diag_expected_array_type(curr_ty.as_ref(), step.span))),
+                _ => return Err(diags.report(diag_expected_array(curr_ty.as_ref(), step.span))),
             };
             let ty_array_len = Spanned::new(curr_ty.span, ty_array_len);
 
@@ -129,7 +135,7 @@ impl ArraySteps<ArrayStep> {
                         let step_ir = IrTargetStep::ArrayIndex(IrExpression::Int(index.clone()));
                         (step_ir, None)
                     }
-                    ArrayStepCompile::ArraySlice { start, len } => {
+                    ArrayStepCompile::ArraySlice { start, length: len } => {
                         let len = check_range_slice(
                             diags,
                             Spanned::new(step.span, ClosedIncRange::single(start)),
@@ -146,7 +152,7 @@ impl ArraySteps<ArrayStep> {
                         let step_ir = IrTargetStep::ArrayIndex(index.expr.clone());
                         (step_ir, None)
                     }
-                    ArrayStepHardware::ArraySlice { start, len } => {
+                    ArrayStepHardware::ArraySlice { start, length: len } => {
                         let len = check_range_slice(
                             diags,
                             Spanned::new(step.span, start.ty.as_ref()),
@@ -187,9 +193,9 @@ impl ArraySteps<ArrayStep> {
         let mut curr = value;
 
         for step in steps {
-            let next_inner = match (&step.inner, curr.inner) {
-                (Value::Compile(step_inner), Value::Compile(curr_inner)) => match curr_inner {
-                    CompileValue::Array(curr_inner) => {
+            let next_inner: Value = match (&step.inner, curr.inner) {
+                (ArrayStep::Compile(step_inner), Value::Simple(curr_inner)) => match curr_inner {
+                    SimpleCompileValue::Array(curr_inner) => {
                         // index into array
                         let value_len = Spanned::new(curr.span, curr_inner.len());
                         match step_inner {
@@ -202,9 +208,9 @@ impl ArraySteps<ArrayStep> {
                                     Err(curr_inner) => curr_inner[index].clone(),
                                 };
 
-                                Value::Compile(result)
+                                Value::from(result)
                             }
-                            ArrayStepCompile::ArraySlice { start, len } => {
+                            ArrayStepCompile::ArraySlice { start, length: len } => {
                                 let SliceInfo { start, len } = check_range_slice_compile(
                                     diags,
                                     Spanned::new(step.span, start),
@@ -220,13 +226,13 @@ impl ArraySteps<ArrayStep> {
                                     Err(curr_inner) => curr_inner[start..start + len].to_vec(),
                                 };
 
-                                Value::Compile(CompileValue::Array(Arc::new(result)))
+                                Value::Simple(SimpleCompileValue::Array(Arc::new(result)))
                             }
                         }
                     }
                     _ => {
-                        return Err(diags.report(diag_expected_array_value(
-                            Spanned::new(curr.span, &curr_inner),
+                        return Err(diags.report(diag_expected_array(
+                            Spanned::new(curr.span, &curr_inner.ty()),
                             step.span,
                         )));
                     }
@@ -247,23 +253,22 @@ impl ArraySteps<ArrayStep> {
                             .finish();
                         diags.report(diag)
                     })?;
-                    let curr_inner = curr_inner.as_hardware_value(refs, large, curr.span, &ty)?;
+                    let curr_inner = curr_inner.as_hardware_value_unchecked(refs, large, curr.span, ty.clone())?;
                     let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
                         HardwareType::Array(curr_array_inner_ty, curr_array_len) => {
                             (curr_array_inner_ty, curr_array_len)
                         }
                         _ => {
-                            return Err(diags.report(diag_expected_array_type(
-                                Spanned::new(curr.span, &ty.as_type()),
-                                step.span,
-                            )));
+                            return Err(
+                                diags.report(diag_expected_array(Spanned::new(curr.span, &ty.as_type()), step.span))
+                            );
                         }
                     };
                     let curr_array_len = Spanned::new(curr.span, curr_array_len);
 
                     // convert step to hardware
                     let (result_expr, step_domain, slice_len) = match step_inner {
-                        Value::Compile(ArrayStepCompile::ArrayIndex(index)) => {
+                        ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
                                 Spanned::new(step.span, ClosedIncRange::single(index)),
@@ -278,7 +283,7 @@ impl ArraySteps<ArrayStep> {
                                 None,
                             )
                         }
-                        Value::Compile(ArrayStepCompile::ArraySlice { start, len }) => {
+                        ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length: len }) => {
                             let len = check_range_slice(
                                 diags,
                                 Spanned::new(step.span, ClosedIncRange::single(start)),
@@ -295,7 +300,7 @@ impl ArraySteps<ArrayStep> {
                                 Some(len),
                             )
                         }
-                        Value::Hardware(ArrayStepHardware::ArrayIndex(index)) => {
+                        ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
                                 Spanned::new(step.span, index.ty.as_ref()),
@@ -310,7 +315,7 @@ impl ArraySteps<ArrayStep> {
                                 None,
                             )
                         }
-                        Value::Hardware(ArrayStepHardware::ArraySlice { start, len }) => {
+                        ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length: len }) => {
                             let len = check_range_slice(
                                 diags,
                                 Spanned::new(step.span, start.ty.as_ref()),
@@ -337,12 +342,11 @@ impl ArraySteps<ArrayStep> {
                     Value::Hardware(HardwareValue {
                         ty: next_ty,
                         domain: curr_inner.domain.join(step_domain),
-                        expr: result_expr,
+                        expr: large.push_expr(result_expr),
                     })
                 }
             };
 
-            let next_inner = next_inner.to_maybe_compile(large);
             curr = Spanned::new(curr.span.join(step.span), next_inner);
         }
 
@@ -359,9 +363,9 @@ impl ArraySteps<ArrayStep> {
         self.apply_to_value(refs, large, value.map_inner(Value::Hardware))
             .and_then(|value| match value {
                 Value::Hardware(value) => Ok(value),
-                Value::Compile(_) => Err(refs.diags.report_internal_error(
+                Value::Simple(_) | Value::Compound(_) => Err(refs.diags.report_internal_error(
                     value_span,
-                    "applying hardware steps to hardware value should result in hardware value again, got compile-time",
+                    "applying hardware steps to hardware value should result in hardware value again, got non-hardware",
                 )),
             })
     }
@@ -388,12 +392,15 @@ impl ArraySteps<&ArrayStepCompile> {
             };
 
             let mut old_curr_inner = match old_curr.inner {
-                CompileValue::Array(curr) => Arc::unwrap_or_clone(curr),
+                CompileValue::Simple(SimpleCompileValue::Array(curr)) => Arc::unwrap_or_clone(curr),
                 _ => {
                     let diag = Diagnostic::new("expected array value for array access")
                         .add_info(
                             old_curr.span,
-                            format!("non-array value `{}` here", old_curr.inner.diagnostic_string()),
+                            format!(
+                                "non-array value with type `{}` here",
+                                old_curr.inner.ty().diagnostic_string()
+                            ),
                         )
                         .add_error(step.span, "this array access needs an array")
                         .finish();
@@ -407,12 +414,17 @@ impl ArraySteps<&ArrayStepCompile> {
                     let index = check_range_index_compile(diags, Spanned::new(step.span, index), array_len)?;
                     let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[index].clone());
                     old_curr_inner[index] = set_compile_value_impl(diags, old_next, rest, op_span, new_curr)?;
-                    Ok(CompileValue::Array(Arc::new(old_curr_inner)))
+                    Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
+                        old_curr_inner,
+                    ))))
                 }
-                ArrayStepCompile::ArraySlice { start, len } => {
+                ArrayStepCompile::ArraySlice { start, length: len } => {
                     let new_curr_inner = match new_curr.inner {
-                        CompileValue::Array(new_curr_inner) => new_curr_inner,
-                        _ => return Err(diags.report(diag_expected_array_value(new_curr.as_ref(), step.span))),
+                        CompileValue::Simple(SimpleCompileValue::Array(new_curr_inner)) => new_curr_inner,
+                        _ => {
+                            let new_curr_ty = new_curr.as_ref().map_inner(Value::ty);
+                            return Err(diags.report(diag_expected_array(new_curr_ty.as_ref(), step.span)));
+                        }
                     };
 
                     let SliceInfo { start, len: slice_len } = check_range_slice_compile(
@@ -443,7 +455,9 @@ impl ArraySteps<&ArrayStepCompile> {
                         old_curr_inner[start + i] = set_compile_value_impl(diags, old_next, rest, op_span, new_next)?;
                     }
 
-                    Ok(CompileValue::Array(Arc::new(old_curr_inner)))
+                    Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
+                        old_curr_inner,
+                    ))))
                 }
             }
         }
@@ -470,11 +484,11 @@ impl ArraySteps<&ArrayStepCompile> {
         };
         let value_span = value.span;
 
-        let result = self_mapped.apply_to_value(refs, large, value.map_inner(Value::Compile))?;
-        match result {
-            Value::Compile(result) => Ok(result),
-            Value::Hardware(_) => Err(diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")),
-        }
+        let result = self_mapped.apply_to_value(refs, large, value.map_inner(Value::from))?;
+
+        CompileValue::try_from(&result).map_err(|_: NotCompile| {
+            diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")
+        })
     }
 }
 
@@ -606,19 +620,9 @@ pub fn check_range_slice_compile(
     Ok(SliceInfo { start, len })
 }
 
-pub fn diag_expected_array_value(value: Spanned<&CompileValue>, step_span: Span) -> Diagnostic {
-    Diagnostic::new("array indexing on non-array value")
-        .add_error(step_span, "array access operation here")
-        .add_info(
-            value.span,
-            format!("on non-array value `{}` here", value.inner.diagnostic_string()),
-        )
-        .finish()
-}
-
-pub fn diag_expected_array_type(ty: Spanned<&Type>, step_span: Span) -> Diagnostic {
+pub fn diag_expected_array(ty: Spanned<&Type>, step_span: Span) -> Diagnostic {
     Diagnostic::new("array indexing on non-array type")
-        .add_error(step_span, "array access operation here")
+        .add_error(step_span, "array indexing operation here")
         .add_info(
             ty.span,
             format!("on non-array value with type `{}` here", ty.inner.diagnostic_string()),

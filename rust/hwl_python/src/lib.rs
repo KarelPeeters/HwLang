@@ -85,9 +85,6 @@ impl UnsupportedValue {
 }
 
 #[pyclass]
-struct Undefined;
-
-#[pyclass]
 struct Type(RustType);
 
 #[pyclass]
@@ -193,7 +190,6 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CapturePrints>()?;
     m.add_class::<CapturePrintsContext>()?;
     m.add_class::<UnsupportedValue>()?;
-    m.add_class::<Undefined>()?;
     m.add_class::<Type>()?;
     m.add_class::<IncRange>()?;
     m.add_class::<Function>()?;
@@ -778,6 +774,11 @@ impl Module {
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
         let ir_database = map_diag_error(py, &diags, source, ir_database)?;
+
+        if cfg!(debug_assertions) {
+            let validate_result = ir_database.validate(&diags);
+            map_diag_error(py, &diags, source, validate_result)?;
+        }
 
         // actual lowering
         let lowered = lower_to_verilog(

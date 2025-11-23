@@ -2,8 +2,8 @@ use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked, HardwareEnumInfo};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
-use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::{Never, ResultExt};
 use hwl_util::swrite;
 use itertools::{Itertools, zip_eq};
 use std::collections::Bound;
@@ -26,8 +26,10 @@ pub enum Type {
     Int(IncRange<BigInt>),
     Tuple(Arc<Vec<Type>>),
     Array(Arc<Type>, BigUint),
+    // TODO make user type covariant? or allow users to define variance?
     Struct(ElaboratedStruct),
     Enum(ElaboratedEnum),
+    // TODO include bound ranges as part of the type?
     Range,
     // TODO maybe maybe these (optionally) more specific
     Function,
@@ -38,6 +40,7 @@ pub enum Type {
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
+// TODO add range
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
     Undefined,
@@ -53,18 +56,18 @@ impl HardwareEnumInfo {
     pub fn tag_range(&self) -> ClosedIncRange<BigInt> {
         ClosedIncRange {
             start_inc: BigInt::ZERO,
-            end_inc: BigInt::from(self.content_types.len()) - 1,
+            end_inc: BigInt::from(self.payload_types.len()) - 1,
         }
     }
 
     pub fn padding_for_variant(&self, refs: CompileRefs, variant: usize) -> usize {
-        let content_size = match &self.content_types[variant] {
+        let content_size = match &self.payload_types[variant] {
             None => 0,
             Some(variant) => usize::try_from(variant.size_bits(refs)).unwrap(),
         };
 
-        assert!(content_size <= self.max_content_size);
-        self.max_content_size - content_size
+        assert!(content_size <= self.max_payload_size);
+        self.max_payload_size - content_size
     }
 
     pub fn build_ir_expression(
@@ -74,7 +77,7 @@ impl HardwareEnumInfo {
         variant: usize,
         content_bits: Option<IrExpression>,
     ) -> DiagResult<IrExpression> {
-        assert_eq!(self.content_types[variant].is_some(), content_bits.is_some());
+        assert_eq!(self.payload_types[variant].is_some(), content_bits.is_some());
 
         // tag
         let tag_range = self.tag_range();
@@ -93,7 +96,7 @@ impl HardwareEnumInfo {
 
         // build final expression
         let ir_content =
-            IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.max_content_size), ir_elements);
+            IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.max_payload_size), ir_elements);
         let ir_expr = IrExpressionLarge::TupleLiteral(vec![large.push_expr(ir_tag), large.push_expr(ir_content)]);
         Ok(large.push_expr(ir_expr))
     }
@@ -135,7 +138,11 @@ impl Type {
         matches!(self, Type::Tuple(inner) if inner.is_empty())
     }
 
-    pub fn union(&self, other: &Type, allow_compound_subtype: bool) -> Type {
+    pub fn union_all(types: impl IntoIterator<Item = Type>) -> Type {
+        types.into_iter().fold(Type::Undefined, |acc, ty| acc.union(&ty))
+    }
+
+    pub fn union(&self, other: &Type) -> Type {
         match (self, other) {
             // top and bottom
             (Type::Any, _) | (_, Type::Any) => Type::Any,
@@ -158,17 +165,7 @@ impl Type {
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
                     Type::Tuple(Arc::new(
-                        zip_eq(a.iter(), b.iter())
-                            .map(|(a, b)| {
-                                if allow_compound_subtype {
-                                    a.union(b, allow_compound_subtype)
-                                } else if a == b {
-                                    a.clone()
-                                } else {
-                                    Type::Any
-                                }
-                            })
-                            .collect_vec(),
+                        zip_eq(a.iter(), b.iter()).map(|(a, b)| a.union(b)).collect_vec(),
                     ))
                 } else {
                     Type::Any
@@ -176,14 +173,7 @@ impl Type {
             }
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
                 if a_len == b_len {
-                    let inner = if allow_compound_subtype {
-                        Arc::new(a_inner.union(b_inner, allow_compound_subtype))
-                    } else if a_inner == b_inner {
-                        a_inner.clone()
-                    } else {
-                        Arc::new(Type::Any)
-                    };
-                    Type::Array(inner, a_len.clone())
+                    Type::Array(Arc::new(a_inner.union(b_inner)), a_len.clone())
                 } else {
                     // TODO into list once that exists?
                     Type::Any
@@ -225,8 +215,8 @@ impl Type {
         }
     }
 
-    pub fn contains_type(&self, ty: &Type, allow_compound_subtype: bool) -> bool {
-        self == &self.union(ty, allow_compound_subtype)
+    pub fn contains_type(&self, ty: &Type) -> bool {
+        self == &self.union(ty)
     }
 
     // TODO centralize error messages for this, everyone is just doing them manually for now
@@ -344,7 +334,7 @@ impl HardwareType {
                     start_inc: BigInt::ZERO,
                     end_inc: BigInt::from(info.variants.len()) - 1,
                 });
-                let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_content_size));
+                let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_payload_size));
                 IrType::Tuple(vec![tag_ty, data_ty])
             }
         }
@@ -481,7 +471,7 @@ impl<T> ClosedIncRange<T> {
         }
     }
 
-    pub fn map(self, mut f: impl FnMut(T) -> T) -> Self {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> ClosedIncRange<U> {
         let ClosedIncRange { start_inc, end_inc } = self;
         ClosedIncRange {
             start_inc: f(start_inc),
@@ -497,10 +487,11 @@ impl<T> ClosedIncRange<T> {
         start_inc <= value && value <= end_inc
     }
 
-    pub fn contains_range(&self, other: &ClosedIncRange<T>) -> bool
+    pub fn contains_range(&self, other: ClosedIncRange<&T>) -> bool
     where
         T: Ord,
     {
+        // TODO always accept less-than-empty `other` ranges?
         let ClosedIncRange { start_inc, end_inc } = self;
         let ClosedIncRange {
             start_inc: other_start_inc,
@@ -655,5 +646,11 @@ impl Iterator for ClosedIncRangeIterator<BigInt> {
         } else {
             None
         }
+    }
+}
+
+impl Typed for Never {
+    fn ty(&self) -> Type {
+        self.unreachable()
     }
 }

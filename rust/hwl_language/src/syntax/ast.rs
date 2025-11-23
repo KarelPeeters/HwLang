@@ -630,8 +630,6 @@ pub type Expression = Spanned<ExpressionKindIndex>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
-    // TODO maybe this should not be part of expression, it's only allowed in very few places
-    //   just the existence of this makes type checking harder to trust
     Undefined,
     Type,
     TypeFunction,
@@ -674,7 +672,7 @@ pub enum DotIndexKind {
     Int { span: Span },
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum StringPiece<L, E> {
     Literal(L),
     Substitute(E),
@@ -768,7 +766,7 @@ pub enum RangeLiteral {
     Length {
         op_span: Span,
         start: Expression,
-        len: Expression,
+        length: Expression,
     },
 }
 

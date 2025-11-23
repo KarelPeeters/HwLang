@@ -1185,9 +1185,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     }
                     self.visit_expression(scope, end)?;
                 }
-                RangeLiteral::Length { op_span: _, start, len } => {
+                RangeLiteral::Length {
+                    op_span: _,
+                    start,
+                    length,
+                } => {
                     self.visit_expression(scope, start)?;
-                    self.visit_expression(scope, len)?;
+                    self.visit_expression(scope, length)?;
                 }
             },
             ExpressionKind::ArrayComprehension(expr) => {

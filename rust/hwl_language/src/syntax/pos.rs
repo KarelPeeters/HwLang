@@ -1,4 +1,3 @@
-use crate::front::value::Value;
 use crate::syntax::source::FileId;
 use crate::util::arena::IndexType;
 use std::cmp::{max, min};
@@ -410,21 +409,6 @@ impl<T, E> Spanned<Result<T, E>> {
 impl<T> Spanned<Option<T>> {
     pub fn transpose(self) -> Option<Spanned<T>> {
         self.inner.map(|inner| Spanned { span: self.span, inner })
-    }
-}
-
-impl<T, C> Spanned<Value<T, C>> {
-    pub fn transpose(self) -> Value<Spanned<T>, Spanned<C>> {
-        match self.inner {
-            Value::Compile(value) => Value::Compile(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-            Value::Hardware(value) => Value::Hardware(Spanned {
-                span: self.span,
-                inner: value,
-            }),
-        }
     }
 }
 

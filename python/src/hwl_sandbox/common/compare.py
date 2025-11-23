@@ -18,7 +18,7 @@ class CompiledCompare:
     eval_mod: hwl.Module
     eval_mod_inst: hwl.VerilatedInstance
 
-    def eval(self, values: List[int]) -> Tuple[int, int]:
+    def eval(self, values: List[object]) -> Tuple[object, object]:
         assert len(values) == self.input_count
 
         # eval func
@@ -33,7 +33,7 @@ class CompiledCompare:
 
         return val_res_func, val_res_mod
 
-    def eval_assert(self, values: List[int], expected: int):
+    def eval_assert(self, values: List[object], expected: object):
         val_res_func, val_res_mod = self.eval(values)
         assert val_res_func == expected, f"Function result {val_res_func} != expected {expected}"
         assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
@@ -48,7 +48,7 @@ def compare_codegen(ty_inputs: List[str], ty_res: str, body: str) -> hwl.Compile
     body_indented = "\n".join("    " + s for s in body.splitlines())
 
     src = f"""
-import std.types.[any, int, bool];
+import std.types.[any, bool, int, uint];
 import std.util.print;
 fn eval_func({args}) -> any {{
 {body_indented}
@@ -84,6 +84,8 @@ def compare_compile(ty_inputs: List[str], ty_res: str, body: str, build_dir: Pat
     c = compare_codegen(ty_inputs, ty_res, body)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
+
+    print(eval_mod.as_verilog().source)
 
     build_dir.mkdir(parents=True, exist_ok=True)
     eval_mod_inst = eval_mod.as_verilated(build_dir).instance()

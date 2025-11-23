@@ -1,4 +1,6 @@
-use crate::front::check::{TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string};
+use crate::front::check::{
+    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string_compile,
+};
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
@@ -7,7 +9,7 @@ use crate::front::flow::{Flow, FlowKind};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{HardwareValue, MaybeCompile, Value};
 use crate::mid::ir::{IrExpression, IrStatement};
 use crate::syntax::ast::{Arg, Args, ExpressionKind};
 use crate::syntax::pos::{Span, Spanned};
@@ -71,7 +73,7 @@ impl CompileItemContext<'_, '_> {
             NamedOrValue::ItemValue(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
-                    let info = flow.var_eval_unchecked(diags, &mut self.large, Spanned::new(arg.span, var))?;
+                    let info = flow.var_eval(diags, &mut self.large, Spanned::new(arg.span, var))?;
                     info.into_value().ty()
                 }
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
@@ -122,12 +124,12 @@ impl CompileItemContext<'_, '_> {
                 format!("{TOKEN_STR_BUILTIN} requires at least two arguments"),
             ));
         }
-        let arg_0 = check_type_is_string(
+        let arg_0 = check_type_is_string_compile(
             diags,
             TypeContainsReason::Operator(target_span),
             self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[0].value, "builtin arg 0")?,
         )?;
-        let arg_1 = check_type_is_string(
+        let arg_1 = check_type_is_string_compile(
             diags,
             TypeContainsReason::Operator(target_span),
             self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[1].value, "builtin arg 1")?,
@@ -150,18 +152,18 @@ impl CompileItemContext<'_, '_> {
         // }
 
         // handle the different builtins
-        match (arg_0.as_ref().as_str(), arg_1.as_ref().as_str(), args_rest) {
+        match (arg_0.as_str(), arg_1.as_str(), args_rest) {
             // basic types
-            ("type", "any", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Any))),
-            ("type", "bool", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Bool))),
-            ("type", "str", &[]) => Ok(Value::Compile(CompileValue::Type(Type::String))),
-            ("type", "Range", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Range))),
-            ("type", "int", &[]) => Ok(Value::Compile(CompileValue::Type(Type::Int(IncRange::OPEN)))),
+            ("type", "any", &[]) => Ok(Value::new_ty(Type::Any)),
+            ("type", "bool", &[]) => Ok(Value::new_ty(Type::Bool)),
+            ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
+            ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
+            ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(IncRange::OPEN))),
             // print
             ("fn", "print", &[msg]) => {
                 // TODO support hardware msg
                 let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
-                let msg = check_type_is_string(diags, TypeContainsReason::Internal(expr_span), msg)?;
+                let msg = check_type_is_string_compile(diags, TypeContainsReason::Internal(expr_span), msg)?;
 
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
@@ -173,7 +175,7 @@ impl CompileItemContext<'_, '_> {
                     }
                 }
 
-                Ok(Value::Compile(CompileValue::unit()))
+                Ok(Value::unit())
             }
             // assert
             ("fn", "assert", &[cond, msg]) => {
@@ -183,10 +185,10 @@ impl CompileItemContext<'_, '_> {
                 let cond = check_type_is_bool_compile(diags, TypeContainsReason::Internal(expr_span), cond)?;
 
                 let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
-                let msg = check_type_is_string(diags, TypeContainsReason::Internal(expr_span), msg)?;
+                let msg = check_type_is_string_compile(diags, TypeContainsReason::Internal(expr_span), msg)?;
 
                 if cond {
-                    Ok(Value::Compile(CompileValue::unit()))
+                    Ok(Value::unit())
                 } else {
                     // TODO include stack trace
                     //   (and ensure it's deterministic even in multithreaded builds)
@@ -206,9 +208,9 @@ impl CompileItemContext<'_, '_> {
                     value.map_inner(ValueWithImplications::simple),
                 )?;
 
-                let expr = match value.inner.into_value() {
-                    Value::Compile(v) => IrExpression::Bool(v),
-                    Value::Hardware(h) => h.expr,
+                let expr = match value {
+                    MaybeCompile::Compile(v) => IrExpression::Bool(v),
+                    MaybeCompile::Hardware(v) => v.value.expr,
                 };
                 Ok(Value::Hardware(HardwareValue {
                     ty: HardwareType::Bool,

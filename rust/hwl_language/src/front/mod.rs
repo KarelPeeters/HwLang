@@ -19,5 +19,6 @@ pub mod range;
 pub mod scope;
 pub mod signal;
 pub mod steps;
+pub mod string;
 pub mod types;
 pub mod value;

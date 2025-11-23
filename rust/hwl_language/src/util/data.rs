@@ -1,8 +1,10 @@
+use crate::util::iter::IterExt;
+use crate::util::{Never, ResultNeverExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use std::cell::RefCell;
 use std::hash::Hash;
-use std::ops::Range;
+use std::ops::{Deref, DerefMut, Range};
 
 // TODO add function to get entry with borrowed key, only cloning the key if necessary
 pub trait IndexMapExt<K, V> {
@@ -141,5 +143,54 @@ impl<T> GrowVec<T> {
 
     pub fn is_empty(&self) -> bool {
         self.inner.borrow().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct NonEmptyVec<T> {
+    inner: Vec<T>,
+}
+
+#[derive(Debug)]
+pub struct EmptyVec;
+
+impl<T> NonEmptyVec<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> NonEmptyVec<U> {
+        self.try_map::<U, Never>(|v| Ok(f(v))).remove_never()
+    }
+
+    pub fn try_map<U, E>(self, f: impl FnMut(T) -> Result<U, E>) -> Result<NonEmptyVec<U>, E> {
+        let inner = self.inner.into_iter().map(f).try_collect_vec()?;
+        Ok(NonEmptyVec { inner })
+    }
+
+    pub fn try_map_ref<U, E>(&self, f: impl FnMut(&T) -> Result<U, E>) -> Result<NonEmptyVec<U>, E> {
+        let inner = self.inner.iter().map(f).try_collect_vec()?;
+        Ok(NonEmptyVec { inner })
+    }
+}
+
+impl<T> TryFrom<Vec<T>> for NonEmptyVec<T> {
+    type Error = EmptyVec;
+
+    fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            Err(EmptyVec)
+        } else {
+            Ok(Self { inner: value })
+        }
+    }
+}
+
+impl<T> Deref for NonEmptyVec<T> {
+    type Target = [T];
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> DerefMut for NonEmptyVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }

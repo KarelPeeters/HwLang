@@ -1053,7 +1053,11 @@ impl Context<'_> {
                     start.map(|e| self.fmt_expr(e)),
                     Some(self.fmt_expr(end)),
                 ),
-                RangeLiteral::Length { op_span: _, start, len } => wrapping_binary_op(
+                RangeLiteral::Length {
+                    op_span: _,
+                    start,
+                    length: len,
+                } => wrapping_binary_op(
                     token(TT::PlusDotDot),
                     Some(self.fmt_expr(start)),
                     Some(self.fmt_expr(len)),

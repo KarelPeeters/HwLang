@@ -2,6 +2,7 @@ use crate::back::lower_verilog::non_zero_width::NonZeroWidthRange;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
+use crate::front::value::ValueCommon;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp,
@@ -1219,11 +1220,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::TupleLiteral(elements) => {
                         // verilog does not care much about types, this is just a concatenation
                         //  (assuming all sub-expression have the right width, which they should)
+                        // the order is flipped, verilog concatenation is high->low index
                         // TODO this is probably incorrect in general, we need to store the tuple in a variable first
                         let mut g = String::new();
                         let mut any_prev = false;
                         swrite!(g, "{{");
-                        for elem in elements {
+                        for elem in elements.iter().rev() {
                             let elem = match self.lower_expression(span, elem)? {
                                 Ok(elem) => elem,
                                 Err(ZeroWidth) => continue,
@@ -1241,13 +1243,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArrayLiteral(_inner_ty, _len, elements) => {
                         // verilog does not care much about types, this is just a concatenation
                         //  (assuming all sub-expression have the right width, which they should)
-                        // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions
+                        // the order is flipped, verilog concatenation is high->low index
                         // TODO use repeat operator if array elements are repeated
-                        // TODO the order is wrong, the verilog array operator is the wrong way around
                         let mut g = String::new();
                         let mut any_prev = false;
                         swrite!(g, "{{");
-                        for elem in elements {
+                        for elem in elements.iter().rev() {
                             let elem = match elem {
                                 IrArrayLiteralElement::Spread(inner) => inner,
                                 IrArrayLiteralElement::Single(inner) => inner,

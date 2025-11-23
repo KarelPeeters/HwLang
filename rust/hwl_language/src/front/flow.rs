@@ -7,7 +7,10 @@ use crate::front::implication::{
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{
+    CompileCompoundValue, CompileValue, CompoundValue, HardwareValue, MaybeUndefined, NotCompile, SimpleCompileValue,
+    Value, ValueCommon,
+};
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
     IrVariableInfo, IrVariables, IrWires,
@@ -25,6 +28,7 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
+
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -63,8 +67,8 @@ trait FlowPrivate: Sized {
 
                 match (known_false, known_true) {
                     (false, false) => Value::Hardware(value),
-                    (true, false) => Value::Compile(CompileValue::Bool(false)),
-                    (false, true) => Value::Compile(CompileValue::Bool(true)),
+                    (true, false) => Value::new_bool(false),
+                    (false, true) => Value::new_bool(true),
                     (true, true) => {
                         // TODO support never type or maybe specifically empty ranges
                         // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
@@ -131,20 +135,21 @@ pub trait Flow: FlowPrivate {
     fn var_set(&mut self, var: Variable, assignment_span: Span, value: DiagResult<Value>) {
         let assigned = match value {
             Ok(value) => {
-                let value_with_version = match value {
-                    Value::Compile(value) => Value::Compile(value),
-                    Value::Hardware(value) => Value::Hardware(HardwareValueWithVersion {
-                        value,
-                        version: self.root().next_version(),
-                    }),
-                };
-                MaybeAssignedValue::Assigned(AssignedValue {
+                let value = value.map_hardware(|value| {
+                    let version = self.root().next_version();
+                    HardwareValueWithVersion { value, version }
+                });
+                MaybeAssignedValue::Assigned(MaybeUndefined::Defined(AssignedValue {
                     last_assignment_span: assignment_span,
-                    value_with_version,
-                })
+                    value,
+                }))
             }
             Err(e) => MaybeAssignedValue::Error(e),
         };
+        self.var_set_maybe(var, assignment_span, assigned);
+    }
+    fn var_set_undefined(&mut self, var: Variable, assignment_span: Span) {
+        let assigned = MaybeAssignedValue::Assigned(MaybeUndefined::Undefined);
         self.var_set_maybe(var, assignment_span, assigned);
     }
 
@@ -157,24 +162,30 @@ pub trait Flow: FlowPrivate {
         })
     }
 
-    /// Evaluate the variable without checking if this allowed in the current context.
-    /// TODO rename or clarify what still needs to be checked by the caller
-    fn var_eval_unchecked(
+    fn var_eval(
         &self,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
         var: Spanned<Variable>,
     ) -> DiagResult<ValueWithVersion> {
         match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => match value.value_with_version.clone() {
-                Value::Compile(v) => Ok(Value::Compile(v)),
-                Value::Hardware(v) => {
-                    let v = v.map_version(|index| ValueVersion {
-                        signal: SignalOrVariable::Variable(var.inner),
-                        index,
-                    });
-                    Ok(self.apply_implications(large, v))
+            MaybeAssignedValue::Assigned(value) => match value {
+                MaybeUndefined::Undefined => {
+                    // should not be possible,
+                    //   undefined here means the caller is responsible for ensuring this is never observable
+                    Err(diags.report_internal_error(var.span, "variable is undefined"))
                 }
+                MaybeUndefined::Defined(assigned) => match &assigned.value {
+                    Value::Simple(v) => Ok(Value::Simple(v.clone())),
+                    Value::Compound(v) => Ok(Value::Compound(v.clone())),
+                    Value::Hardware(v) => {
+                        let v = v.clone().map_version(|index| ValueVersion {
+                            signal: SignalOrVariable::Variable(var.inner),
+                            index,
+                        });
+                        Ok(self.apply_implications(large, v))
+                    }
+                },
             },
             MaybeAssignedValue::NotYetAssigned => {
                 let var_info = self.var_info(var)?;
@@ -215,11 +226,17 @@ pub trait Flow: FlowPrivate {
         var
     }
 
+    // TODO allow capturing hardware values, at least within process?
+    //   now that we have composite values that should be doable,
+    //   we can then discard the hardware values on conversion to compile time
     fn var_capture(&self, var: Spanned<Variable>) -> DiagResult<CapturedValue> {
         match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => match &value.value_with_version {
-                Value::Compile(v) => Ok(CapturedValue::Value(v.clone())),
-                Value::Hardware(_) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::Hardware)),
+            MaybeAssignedValue::Assigned(value) => match value {
+                MaybeUndefined::Undefined => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized)),
+                MaybeUndefined::Defined(assigned) => match CompileValue::try_from(assigned.value) {
+                    Ok(v) => Ok(CapturedValue::Value(v)),
+                    Err(NotCompile) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
+                },
             },
             MaybeAssignedValue::NotYetAssigned => {
                 Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))
@@ -358,14 +375,19 @@ impl FlowPrivate for FlowCompile<'_> {
         assert_eq!(self.root.check, var.check);
         let diags = self.root.diags;
 
-        let mut value = value;
-        if let MaybeAssignedValue::Assigned(assigned) = &value
-            && let Value::Hardware(_) = assigned.value_with_version
+        // TODO this conversion might be expensive, maybe only do this when assertions are enabled
+        // TODO maybe only store unwrapped compile values in compile flows?
+        let value = if let MaybeAssignedValue::Assigned(assigned) = &value
+            && let MaybeUndefined::Defined(assigned) = &assigned
+            && CompileValue::try_from(&assigned.value).is_err()
         {
             let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
-            value = MaybeAssignedValue::Error(e);
-        }
+            MaybeAssignedValue::Error(e)
+        } else {
+            value
+        };
 
+        // find which slot to store the value in
         let mut curr = self;
         let slot = loop {
             if let Some(slot) = curr.variable_slots.get_mut(&var.index) {
@@ -915,7 +937,7 @@ impl<'p> FlowHardware<'p> {
         mut branches: Vec<FlowHardwareBranchContent>,
     ) -> DiagResult<Vec<IrBlock>> {
         // TODO merge implications too
-        // TODO do something else if childen are empty, eg. push an instruction for `assert(false)`
+        // TODO do something else if children are empty, eg. push an instruction for `assert(false)`
 
         // collect the interesting vars and signals
         // things we can skip:
@@ -1273,23 +1295,36 @@ impl VariableId {
     }
 }
 
-type VariableValue =
-    MaybeAssignedValue<AssignedValue<Value<CompileValue, HardwareValueWithVersion<ValueVersionIndex>>>>;
-type VariableValueRef<'a> =
-    MaybeAssignedValue<&'a AssignedValue<Value<CompileValue, HardwareValueWithVersion<ValueVersionIndex>>>>;
+type FlowValue = Value<SimpleCompileValue, CompoundValue, HardwareValueWithVersion<ValueVersionIndex>>;
+type VariableValue = MaybeAssignedValue<FlowValue>;
+type VariableValueRef<'a> = MaybeAssignedValue<&'a FlowValue>;
 
 #[derive(Debug, Copy, Clone)]
-pub enum MaybeAssignedValue<A> {
-    Assigned(A),
+pub enum MaybeAssignedValue<V> {
+    /// The undefined case acts as if the variable has been assigned a value, without that actually being true.
+    /// This should only be used if the caller can somehow guarantee that
+    /// the variable will _actually_ be assigned before any use, but [Flow] does not realize this by itself.
+    Assigned(MaybeUndefined<AssignedValue<V>>),
     NotYetAssigned,
     PartiallyAssigned,
     Error(DiagError),
 }
 
-impl<A> MaybeAssignedValue<A> {
-    pub fn as_ref(&self) -> MaybeAssignedValue<&A> {
+#[derive(Debug, Copy, Clone)]
+pub struct AssignedValue<V> {
+    pub last_assignment_span: Span,
+    pub value: V,
+}
+
+impl<V> MaybeAssignedValue<V> {
+    pub fn as_ref(&self) -> MaybeAssignedValue<&V> {
         match self {
-            MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(v),
+            MaybeAssignedValue::Assigned(v) => {
+                MaybeAssignedValue::Assigned(v.as_ref().map_defined(|v| AssignedValue {
+                    last_assignment_span: v.last_assignment_span,
+                    value: &v.value,
+                }))
+            }
             MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
             MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
             &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
@@ -1297,10 +1332,18 @@ impl<A> MaybeAssignedValue<A> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct AssignedValue<V> {
-    pub last_assignment_span: Span,
-    pub value_with_version: V,
+impl<V: Clone> MaybeAssignedValue<&V> {
+    pub fn cloned(&self) -> MaybeAssignedValue<V> {
+        match self {
+            MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(v.map_defined(|v| AssignedValue {
+                last_assignment_span: v.last_assignment_span,
+                value: v.value.clone(),
+            })),
+            MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
+            MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
+            &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1324,7 +1367,7 @@ pub enum CapturedValue {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum FailedCaptureReason {
-    Hardware,
+    NotCompile,
     NotFullyInitialized,
 }
 
@@ -1351,9 +1394,16 @@ fn merge_branch_values(
     let var_info = parent_flow.var_info(var_spanned)?;
     let parent_value = parent_flow.var_get_maybe(var_spanned)?;
 
-    // visit all branch values to check if we can skip the merge
-    let mut merged: Option<MaybeAssignedValue<Result<AssignedValue<_>, NeedsHardwareMerge>>> = None;
-    let mut used_value_parent = false;
+    // visit all branch values to check if we need to do a hardware merge
+    #[derive(Debug)]
+    enum Merged<'a> {
+        AllMatch(AssignedValue<&'a FlowValue>),
+        NotFullyAssigned,
+        NeedsHardwareMerge,
+    }
+    let mut merged: Option<Merged> = None;
+
+    let mut used_parent_value = false;
 
     for branch in &mut *branches {
         // TODO apply implications here too
@@ -1363,96 +1413,113 @@ fn merge_branch_values(
                 branch_combined.value.as_ref().unwrap().as_ref()
             }
             None => {
-                used_value_parent = true;
+                used_parent_value = true;
                 parent_value
             }
         };
 
-        // first branch, just set it
+        // first (non-undefined) branch, just set it
         let Some(merged_value) = merged else {
-            merged = Some(match branch_value {
-                MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(Ok(v.clone())),
-                MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
-                MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
-                MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
-            });
+            merged = match branch_value {
+                MaybeAssignedValue::Assigned(value) => match value {
+                    MaybeUndefined::Undefined => None,
+                    MaybeUndefined::Defined(value) => Some(Merged::AllMatch(value)),
+                },
+                MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned => {
+                    Some(Merged::NotFullyAssigned)
+                }
+                MaybeAssignedValue::Error(e) => return Err(e),
+            };
             continue;
         };
 
-        // check if we need to do a merge
-        //   we don't stop once we know we need to merge, because later unassigned values might remove that requirement again
+        // join multiple values
         let merged_new = match (merged_value, branch_value) {
-            // once we need a hardware merge and we get more normal values, we will still need a hardware merge
-            (MaybeAssignedValue::Assigned(Err(e)), MaybeAssignedValue::Assigned(_)) => {
-                MaybeAssignedValue::Assigned(Err(e))
+            (Merged::NotFullyAssigned, _)
+            | (_, MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned) => {
+                // if anything is not fully assigned, the result is not fully assigned
+                Merged::NotFullyAssigned
             }
-            // actual merge check
-            (MaybeAssignedValue::Assigned(Ok(merged_value)), MaybeAssignedValue::Assigned(child_value)) => {
-                let same_value_and_version = match (&merged_value.value_with_version, &child_value.value_with_version) {
-                    (Value::Compile(merged_value), Value::Compile(child_value)) => merged_value == child_value,
-                    (Value::Hardware(merged_value), Value::Hardware(child_value)) => {
-                        merged_value.version == child_value.version
+            (_, MaybeAssignedValue::Error(e)) => {
+                // short-circuit on error
+                return Err(e);
+            }
+            (Merged::NeedsHardwareMerge, MaybeAssignedValue::Assigned(_)) => {
+                // if we need a hardware merge and we get more normal values, we will still need a hardware merge
+                Merged::NeedsHardwareMerge
+            }
+            (Merged::AllMatch(merged), MaybeAssignedValue::Assigned(MaybeUndefined::Undefined)) => {
+                // undefined does not care about the result value, so keep whatever we have so far
+                Merged::AllMatch(merged)
+            }
+            (Merged::AllMatch(merged), MaybeAssignedValue::Assigned(MaybeUndefined::Defined(branch))) => {
+                // actual merge check between two assigned values
+                let value_matches = match (merged.value, branch.value) {
+                    (FlowValue::Simple(merged), FlowValue::Simple(branch)) => merged == branch,
+                    (FlowValue::Hardware(merged), FlowValue::Hardware(branch)) => merged.version == branch.version,
+
+                    (FlowValue::Compound(merged), FlowValue::Compound(branch)) => {
+                        if let Ok(merged) = CompileCompoundValue::try_from(merged)
+                            && let Ok(branch) = CompileCompoundValue::try_from(branch)
+                        {
+                            merged == branch
+                        } else {
+                            false
+                        }
                     }
-                    _ => false,
+
+                    (FlowValue::Simple(_), FlowValue::Hardware(_) | FlowValue::Compound(_)) => false,
+                    (FlowValue::Hardware(_), FlowValue::Simple(_) | FlowValue::Compound(_)) => false,
+                    (FlowValue::Compound(_), FlowValue::Simple(_) | FlowValue::Hardware(_)) => false,
                 };
 
-                if same_value_and_version {
-                    let span_combined = if merged_value.last_assignment_span == child_value.last_assignment_span {
-                        merged_value.last_assignment_span
+                if value_matches {
+                    let span_new = if merged.last_assignment_span == branch.last_assignment_span {
+                        merged.last_assignment_span
                     } else {
                         span_merge
                     };
-
-                    MaybeAssignedValue::Assigned(Ok(AssignedValue {
-                        last_assignment_span: span_combined,
-                        value_with_version: merged_value.value_with_version,
-                    }))
+                    Merged::AllMatch(AssignedValue {
+                        last_assignment_span: span_new,
+                        value: merged.value,
+                    })
                 } else {
-                    MaybeAssignedValue::Assigned(Err(NeedsHardwareMerge))
+                    Merged::NeedsHardwareMerge
                 }
             }
-            // unassigned and error cases, these are in some sense nice because we can avoid doing the merge
-            (MaybeAssignedValue::NotYetAssigned, MaybeAssignedValue::NotYetAssigned) => {
-                MaybeAssignedValue::NotYetAssigned
-            }
-            (
-                MaybeAssignedValue::NotYetAssigned
-                | MaybeAssignedValue::PartiallyAssigned
-                | MaybeAssignedValue::Assigned(_),
-                MaybeAssignedValue::NotYetAssigned
-                | MaybeAssignedValue::PartiallyAssigned
-                | MaybeAssignedValue::Assigned(_),
-            ) => MaybeAssignedValue::PartiallyAssigned,
-            (MaybeAssignedValue::Error(e), _) | (_, MaybeAssignedValue::Error(e)) => MaybeAssignedValue::Error(e),
         };
         merged = Some(merged_new);
     }
 
-    // check if we're done
-    let merged = match merged {
-        None => {
-            // There were no branches, this implies that control flow diverges.
-            // It doesn't really matter what value we use, so we'll just use an unassigned one.
-            return Ok(MaybeAssignedValue::NotYetAssigned);
-        }
-        Some(MaybeAssignedValue::Assigned(Ok(value))) => Ok(MaybeAssignedValue::Assigned(value)),
-        Some(MaybeAssignedValue::NotYetAssigned) => Ok(MaybeAssignedValue::NotYetAssigned),
-        Some(MaybeAssignedValue::PartiallyAssigned) => Ok(MaybeAssignedValue::PartiallyAssigned),
-        Some(MaybeAssignedValue::Error(e)) => Ok(MaybeAssignedValue::Error(e)),
-        Some(MaybeAssignedValue::Assigned(Err(NeedsHardwareMerge))) => Err(NeedsHardwareMerge),
-    };
+    // handle the merge result
     match merged {
-        Ok(merged) => return Ok(merged),
-        Err(NeedsHardwareMerge) => {}
+        None => {
+            // There were no (non-undefined) branches, this implies that control flow diverges or that all branches
+            //   have an undefined value.
+            return Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Undefined));
+        }
+        Some(Merged::AllMatch(value)) => {
+            // all branches agree on the assigned value, we don't need to do a hardware merge
+            let assigned = AssignedValue {
+                last_assignment_span: value.last_assignment_span,
+                value: value.value.clone(),
+            };
+            return Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(assigned)));
+        }
+        Some(Merged::NotFullyAssigned) => {
+            // fully un-assigned would have exited earlier, so the result is partially assigned
+            return Ok(MaybeAssignedValue::PartiallyAssigned);
+        }
+        Some(Merged::NeedsHardwareMerge) => {
+            // fall through into hardware merge
+        }
     }
 
     // at this point we know that there are no un-assigned branches, and that not all branches have the same value:
     //   this means we actually need to do a hardware merge
-    fn constrain_lifetime<B, F: for<'a> Fn(VariableValueRef<'a>) -> &'a B>(f: F) -> F {
-        f
+    fn unwrap_branch_value(v: VariableValueRef<'_>) -> MaybeUndefined<AssignedValue<&FlowValue>> {
+        unwrap_match!(v, MaybeAssignedValue::Assigned(value) => value)
     }
-    let unwrap_branch_value =
-        constrain_lifetime(|v: VariableValueRef| unwrap_match!(v, MaybeAssignedValue::Assigned(value) => value));
 
     // check that all types are hardware
     // (we do this before finding the common type to get nicer error messages)
@@ -1466,35 +1533,36 @@ fn merge_branch_values(
                 }
                 None => parent_value,
             };
+
             let branch_value = unwrap_branch_value(branch_value);
 
-            match &branch_value.value_with_version {
-                Value::Compile(v) => {
-                    let ty = v.ty();
-                    ty.as_hardware_type(refs).map_err(|_| {
-                        let ty_str = ty.diagnostic_string();
-                        let diag = Diagnostic::new("merging if assignments needs hardware type")
-                            .add_info(var_info.span_decl, "for this variable")
-                            .add_info(
-                                branch_value.last_assignment_span,
-                                format!(
-                                    "value assigned here has type `{ty_str}` which cannot be represented in hardware"
-                                ),
-                            )
-                            .add_error(span_merge, "merging happens here")
-                            .finish();
-                        diags.report(diag)
-                    })
-                }
-                Value::Hardware(v) => Ok(v.value.ty.clone()),
-            }
+            let branch_value = match branch_value {
+                MaybeUndefined::Undefined => return Ok(HardwareType::Undefined),
+                MaybeUndefined::Defined(branch_value) => branch_value,
+            };
+            let branch_ty = match &branch_value.value {
+                Value::Simple(v) => v.ty(),
+                Value::Compound(v) => v.ty(),
+                Value::Hardware(v) => v.value.ty.as_type(),
+            };
+
+            branch_ty.as_hardware_type(refs).map_err(|_| {
+                let ty_str = branch_ty.diagnostic_string();
+                let diag = Diagnostic::new("merging if assignments needs hardware type")
+                    .add_info(var_info.span_decl, "for this variable")
+                    .add_info(
+                        branch_value.last_assignment_span,
+                        format!("value assigned here has type `{ty_str}` which cannot be represented in hardware"),
+                    )
+                    .add_error(span_merge, "merging happens here")
+                    .finish();
+                diags.report(diag)
+            })
         })
         .try_collect_all_vec()?;
 
     // find common type
-    let ty = branch_tys
-        .iter()
-        .fold(Type::Undefined, |a, t| a.union(&t.as_type(), false));
+    let ty = branch_tys.iter().fold(Type::Undefined, |a, t| a.union(&t.as_type()));
 
     // convert common to hardware too
     let ty = ty.as_hardware_type(refs).map_err(|_| {
@@ -1513,21 +1581,33 @@ fn merge_branch_values(
                 let branch_combined = branch_combined.value.as_ref().unwrap().as_ref();
 
                 let branch_value = unwrap_branch_value(branch_combined);
-                diag = diag.add_info(
-                    branch_value.last_assignment_span,
-                    format!("value in branch assigned here has type `{}`", ty.diagnostic_string()),
-                )
+
+                match branch_value {
+                    MaybeUndefined::Undefined => {}
+                    MaybeUndefined::Defined(branch_value) => {
+                        diag = diag.add_info(
+                            branch_value.last_assignment_span,
+                            format!("value in branch assigned here has type `{}`", ty.diagnostic_string()),
+                        )
+                    }
+                }
             }
         }
-        if used_value_parent {
-            let value_parent = unwrap_branch_value(parent_value);
-            diag = diag.add_info(
-                value_parent.last_assignment_span,
-                format!(
-                    "value before branch assigned here has type `{}`",
-                    ty.diagnostic_string()
-                ),
-            );
+        if used_parent_value {
+            let parent_value = unwrap_branch_value(parent_value);
+
+            match parent_value {
+                MaybeUndefined::Undefined => {}
+                MaybeUndefined::Defined(parent_value) => {
+                    diag = diag.add_info(
+                        parent_value.last_assignment_span,
+                        format!(
+                            "value before branch assigned here has type `{}`",
+                            ty.diagnostic_string()
+                        ),
+                    );
+                }
+            }
         }
         diags.report(diag.finish())
     })?;
@@ -1552,18 +1632,38 @@ fn merge_branch_values(
     let mut build_store = |value: VariableValueRef| {
         let value = unwrap_branch_value(value);
 
-        let value = match &value.value_with_version {
-            Value::Compile(v) => v.as_hardware_value(refs, large, value.last_assignment_span, &ty)?,
-            Value::Hardware(v) => v.value.clone().soft_expand_to_type(large, &ty),
-        };
+        match value {
+            MaybeUndefined::Undefined => {
+                // undefined, skip store
+                Ok(None)
+            }
+            MaybeUndefined::Defined(assigned) => {
+                let (assigned_domain, assigned_expr) = match &assigned.value {
+                    Value::Simple(v) => (
+                        v.domain(),
+                        v.as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
+                    ),
+                    Value::Compound(v) => (
+                        v.domain(),
+                        v.as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
+                    ),
+                    Value::Hardware(v) => (
+                        v.value.domain(),
+                        v.value
+                            .as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
+                    ),
+                };
 
-        domain = domain.join(value.domain);
+                domain = domain.join(assigned_domain);
 
-        if matches!(value.expr, IrExpression::Variable(value_var) if value_var == var_ir) {
-            Ok(None)
-        } else {
-            let store = IrStatement::Assign(IrAssignmentTarget::simple(var_ir.into()), value.expr);
-            Ok(Some(Spanned::new(span_merge, store)))
+                if matches!(assigned_expr, IrExpression::Variable(value_var) if value_var == var_ir) {
+                    // copy from variable to itself, skip store
+                    Ok(None)
+                } else {
+                    let store = IrStatement::Assign(IrAssignmentTarget::simple(var_ir.into()), assigned_expr);
+                    Ok(Some(Spanned::new(span_merge, store)))
+                }
+            }
         }
     };
 
@@ -1577,7 +1677,7 @@ fn merge_branch_values(
         }
         domain_cond = domain_cond.join(branch.cond_domain.inner);
     }
-    if used_value_parent {
+    if used_parent_value {
         // re-borrow parent_value
         let parent_value = parent_flow.var_get_maybe(var_spanned)?;
         if let Some(store) = build_store(parent_value)? {
@@ -1594,13 +1694,14 @@ fn merge_branch_values(
     };
     let result_version = parent_flow.root.next_version();
 
-    Ok(MaybeAssignedValue::Assigned(AssignedValue {
+    let result_assigned = AssignedValue {
         last_assignment_span: span_merge,
-        value_with_version: Value::Hardware(HardwareValueWithVersion {
+        value: Value::Hardware(HardwareValueWithVersion {
             value: result_value,
             version: result_version,
         }),
-    }))
+    };
+    Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(result_assigned)))
 }
 
 /// The borrow checking has trouble with nested chains of parent references,
