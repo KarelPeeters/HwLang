@@ -8,7 +8,7 @@ from _pytest._py.path import LocalPath
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 # Only do these once in the root process (when using pytest-xdist)
-if "PYTEST_XDIST_WORKER" not in os.environ:
+if "PYTEST_SKIP_RUST_BUILD" not in os.environ and "PYTEST_XDIST_WORKER" not in os.environ:
     # Update the rust module
     # (be careful not to import hwl before this point)
     print("Installing/updating hwl_python rust module")
