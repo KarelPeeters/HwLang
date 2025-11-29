@@ -168,7 +168,6 @@ extern "C" {
     }
 
     Result get_port(Wrapper *wrapper, uint32_t port_index, size_t data_len, uint8_t *data) {
-        // TODO generate this
         // clang-format off
         switch (port_index) {
             /*[TEMPLATE-PORTS-GET]*/
@@ -178,8 +177,7 @@ extern "C" {
     }
 
     Result set_port(Wrapper *wrapper, uint32_t port_index, size_t data_len, uint8_t const *data) {
-        // TODO generate this (only for input ports)
-        // TODO check somewhere that sync signals only change on the right edges
+        // TODO check somewhere that sync signals only change on the right edges?
         // clang-format off
         switch (port_index) {
             /*[TEMPLATE-PORTS-SET]*/
