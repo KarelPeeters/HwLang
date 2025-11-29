@@ -1,7 +1,8 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked, HardwareEnumInfo};
-use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena, IrType};
+use crate::front::value::HardwareValue;
+use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::{Never, ResultExt};
 use hwl_util::swrite;
@@ -60,10 +61,10 @@ impl HardwareEnumInfo {
         }
     }
 
-    pub fn padding_for_variant(&self, refs: CompileRefs, variant: usize) -> usize {
+    pub fn padding_for_variant(&self, variant: usize) -> usize {
         let content_size = match &self.payload_types[variant] {
             None => 0,
-            Some(variant) => usize::try_from(variant.size_bits(refs)).unwrap(),
+            Some((_, ty_ir)) => usize::try_from(ty_ir.size_bits()).unwrap(),
         };
 
         assert!(content_size <= self.max_payload_size);
@@ -72,7 +73,6 @@ impl HardwareEnumInfo {
 
     pub fn build_ir_expression(
         &self,
-        refs: CompileRefs,
         large: &mut IrLargeArena,
         variant: usize,
         content_bits: Option<IrExpression>,
@@ -90,7 +90,7 @@ impl HardwareEnumInfo {
         }
 
         // padding
-        for _ in 0..self.padding_for_variant(refs, variant) {
+        for _ in 0..self.padding_for_variant(variant) {
             ir_elements.push(IrArrayLiteralElement::Single(IrExpression::Bool(false)));
         }
 
@@ -99,6 +99,45 @@ impl HardwareEnumInfo {
             IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.max_payload_size), ir_elements);
         let ir_expr = IrExpressionLarge::TupleLiteral(vec![large.push_expr(ir_tag), large.push_expr(ir_content)]);
         Ok(large.push_expr(ir_expr))
+    }
+
+    pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: &HardwareValue, variant: usize) -> IrExpression {
+        let tag = large.push_expr(IrExpressionLarge::TupleIndex {
+            base: value.expr.clone(),
+            index: BigUint::ZERO,
+        });
+
+        large.push_expr(IrExpressionLarge::IntCompare(
+            IrIntCompareOp::Eq,
+            tag,
+            IrExpression::Int(BigInt::from(variant)),
+        ))
+    }
+
+    pub fn extract_payload(
+        &self,
+        large: &mut IrLargeArena,
+        value: &HardwareValue,
+        variant: usize,
+    ) -> Option<HardwareValue> {
+        let (payload_ty, payload_ty_ir) = self.payload_types[variant].as_ref()?;
+
+        let payload_bits_all = large.push_expr(IrExpressionLarge::TupleIndex {
+            base: value.expr.clone(),
+            index: BigUint::ONE,
+        });
+        let payload_bits = large.push_expr(IrExpressionLarge::ArraySlice {
+            base: payload_bits_all,
+            start: IrExpression::Int(BigInt::ZERO),
+            len: payload_ty_ir.size_bits(),
+        });
+        let payload = large.push_expr(IrExpressionLarge::FromBits(payload_ty_ir.clone(), payload_bits));
+
+        Some(HardwareValue {
+            ty: payload_ty.clone(),
+            domain: value.domain,
+            expr: payload,
+        })
     }
 }
 
@@ -220,6 +259,8 @@ impl Type {
     }
 
     // TODO centralize error messages for this, everyone is just doing them manually for now
+    // TODO accept empty tuples here, maybe those need to be normal values instead of types,
+    //   and then cast to type where needed
     pub fn as_hardware_type(&self, refs: CompileRefs) -> Result<HardwareType, NonHardwareType> {
         match self {
             Type::Undefined => Ok(HardwareType::Undefined),

@@ -8,8 +8,8 @@ use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, CompoundValue, HardwareValue, MaybeUndefined, NotCompile, SimpleCompileValue,
-    Value, ValueCommon,
+    CompileCompoundValue, CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile,
+    SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
@@ -1295,7 +1295,7 @@ impl VariableId {
     }
 }
 
-type FlowValue = Value<SimpleCompileValue, CompoundValue, HardwareValueWithVersion<ValueVersionIndex>>;
+type FlowValue = Value<SimpleCompileValue, MixedCompoundValue, HardwareValueWithVersion<ValueVersionIndex>>;
 type VariableValue = MaybeAssignedValue<FlowValue>;
 type VariableValueRef<'a> = MaybeAssignedValue<&'a FlowValue>;
 

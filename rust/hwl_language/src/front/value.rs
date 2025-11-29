@@ -13,15 +13,13 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::NonEmptyVec;
 use crate::util::iter::IterExt;
 use crate::util::{Never, ResultNeverExt};
-use hwl_util::swrite;
-use itertools::{Itertools, zip_eq};
-use std::fmt::Display;
+use itertools::zip_eq;
 use std::sync::Arc;
 
 pub type CompileValue = Value<SimpleCompileValue, CompileCompoundValue, Never>;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum Value<S = SimpleCompileValue, C = CompoundValue, H = HardwareValue> {
+pub enum Value<S = SimpleCompileValue, C = MixedCompoundValue, H = HardwareValue> {
     // TODO should simple and hardware share one branch?
     // TODO rename simple to SimpleCompile?
     Simple(S),
@@ -41,10 +39,8 @@ pub enum SimpleCompileValue {
     InterfaceView(ElaboratedInterfaceView),
 }
 
-// TODO share definition of MixedValue and MixedCompileValue?
 #[derive(Debug, Clone)]
-pub enum CompoundValue {
-    /// There are never any consecutive literal pieces.
+pub enum MixedCompoundValue {
     String(Arc<Vec<StringPiece<String, HardwareValue>>>),
     Range(
         RangeValue<
@@ -66,6 +62,8 @@ pub enum CompileCompoundValue {
     Enum(EnumValue<Box<CompileValue>>),
 }
 
+/// This type intentionally does not implement Eq/PartialEq, comparing hardware values only makes sense at runtime,
+/// not during compilation.
 #[derive(Debug, Clone)]
 pub struct HardwareValue<T = HardwareType, E = IrExpression> {
     pub ty: T,
@@ -116,9 +114,6 @@ pub enum MaybeUndefined<T> {
 pub struct NotCompile;
 
 pub trait ValueCommon {
-    // TODO avoid allocation here?
-    fn diagnostic_string(&self) -> String;
-
     /// Convert this value to a hardware value with the exact type `ty`.
     ///
     /// This fails if the value cannot be represented as a hardware value of the given type.
@@ -148,9 +143,6 @@ pub trait ValueCommon {
 }
 
 impl ValueCommon for Never {
-    fn diagnostic_string(&self) -> String {
-        self.unreachable()
-    }
     fn domain(&self) -> ValueDomain {
         self.unreachable()
     }
@@ -166,14 +158,6 @@ impl ValueCommon for Never {
 }
 
 impl<S: ValueCommon, C: ValueCommon, H: ValueCommon> ValueCommon for Value<S, C, H> {
-    fn diagnostic_string(&self) -> String {
-        match self {
-            Value::Simple(v) => v.diagnostic_string(),
-            Value::Compound(v) => v.diagnostic_string(),
-            Value::Hardware(v) => v.diagnostic_string(),
-        }
-    }
-
     fn domain(&self) -> ValueDomain {
         match self {
             Value::Simple(v) => v.domain(),
@@ -198,23 +182,6 @@ impl<S: ValueCommon, C: ValueCommon, H: ValueCommon> ValueCommon for Value<S, C,
 }
 
 impl ValueCommon for SimpleCompileValue {
-    fn diagnostic_string(&self) -> String {
-        match self {
-            SimpleCompileValue::Type(v) => v.diagnostic_string(),
-            SimpleCompileValue::Bool(v) => v.to_string(),
-            SimpleCompileValue::Int(v) => v.to_string(),
-            SimpleCompileValue::Array(v) => {
-                let content = v.iter().map(|e| e.diagnostic_string()).format(", ");
-                format!("[{}]", content)
-            }
-            // TODO include names
-            SimpleCompileValue::Function(_) => "function".to_owned(),
-            SimpleCompileValue::Module(_) => "module".to_owned(),
-            SimpleCompileValue::Interface(_) => "interface".to_owned(),
-            SimpleCompileValue::InterfaceView(_) => "interface_view".to_owned(),
-        }
-    }
-
     fn domain(&self) -> ValueDomain {
         ValueDomain::CompileTime
     }
@@ -243,6 +210,7 @@ impl ValueCommon for SimpleCompileValue {
             },
             SimpleCompileValue::Array(v) => match &ty {
                 HardwareType::Array(e_ty, len) if &BigUint::from(v.len()) == len => {
+                    // TODO if all values are the same, replace with repeat?
                     let result = v
                         .iter()
                         .map(|e| {
@@ -263,100 +231,14 @@ impl ValueCommon for SimpleCompileValue {
     }
 }
 
-impl ValueCommon for CompoundValue {
-    fn diagnostic_string(&self) -> String {
-        match self {
-            CompoundValue::String(pieces) => {
-                let mut result = String::new();
-                result.push('"');
-                for p in pieces.iter() {
-                    match p {
-                        StringPiece::Literal(s) => result.push_str(s),
-                        StringPiece::Substitute(v) => {
-                            result.push('{');
-                            result.push_str(&v.diagnostic_string());
-                            result.push('}');
-                        }
-                    }
-                }
-                result.push('"');
-                result
-            }
-            CompoundValue::Range(v) => {
-                fn write_opt<I: Display + Clone + Into<BigInt>>(
-                    f: &mut String,
-                    v: Option<&MaybeCompile<I, HardwareValue<ClosedIncRange<I>>>>,
-                ) {
-                    if let Some(v) = v {
-                        match v {
-                            MaybeCompile::Compile(v) => swrite!(f, "{v}"),
-                            MaybeCompile::Hardware(v) => {
-                                let v = v.clone().map_type(|r| HardwareType::Int(r.map(Into::into)));
-                                swrite!(f, "{}", v.diagnostic_string());
-                            }
-                        }
-                    }
-                }
-
-                let mut f = String::new();
-                match v {
-                    RangeValue::StartEnd { start, end } => {
-                        write_opt(&mut f, start.as_ref());
-                        match end {
-                            RangeEnd::Exclusive(end) => {
-                                swrite!(f, "..");
-                                write_opt(&mut f, end.as_ref());
-                            }
-                            RangeEnd::Inclusive(end) => {
-                                swrite!(f, "..=");
-                                write_opt(&mut f, Some(end));
-                            }
-                        }
-                    }
-                    RangeValue::StartLength { start, length } => {
-                        write_opt(&mut f, Some(start));
-                        swrite!(f, "+..");
-                        write_opt(&mut f, Some(length));
-                    }
-                }
-                f
-            }
-            CompoundValue::Tuple(v) => {
-                let mut f = String::new();
-                swrite!(f, "(");
-                swrite!(f, "{}", v.iter().map(Value::diagnostic_string).format(", "));
-                if v.len() == 1 {
-                    swrite!(f, ",");
-                }
-                swrite!(f, ")");
-                f
-            }
-            CompoundValue::Struct(v) => {
-                // TODO include struct and field names
-                let StructValue { ty: _, fields } = v;
-                format!("struct({})", fields.iter().map(Value::diagnostic_string).format(", "))
-            }
-            CompoundValue::Enum(v) => {
-                let EnumValue {
-                    ty: _,
-                    variant,
-                    payload,
-                } = v;
-                match payload {
-                    None => format!("enum({})", variant),
-                    Some(payload) => format!("enum({}, {})", variant, payload.diagnostic_string()),
-                }
-            }
-        }
-    }
-
+impl ValueCommon for MixedCompoundValue {
     fn domain(&self) -> ValueDomain {
         match self {
-            CompoundValue::String(v) => ValueDomain::fold(v.iter().map(|p| match p {
+            MixedCompoundValue::String(v) => ValueDomain::fold(v.iter().map(|p| match p {
                 StringPiece::Literal(_) => ValueDomain::CompileTime,
                 StringPiece::Substitute(v) => v.domain,
             })),
-            CompoundValue::Range(v) => {
+            MixedCompoundValue::Range(v) => {
                 fn opt_domain<C, H>(x: Option<&MaybeCompile<C, HardwareValue<H>>>) -> ValueDomain {
                     match x {
                         None => ValueDomain::CompileTime,
@@ -385,12 +267,12 @@ impl ValueCommon for CompoundValue {
 
                 domain
             }
-            CompoundValue::Tuple(v) => ValueDomain::fold(v.iter().map(Value::domain)),
-            CompoundValue::Struct(v) => {
+            MixedCompoundValue::Tuple(v) => ValueDomain::fold(v.iter().map(Value::domain)),
+            MixedCompoundValue::Struct(v) => {
                 let StructValue { ty: _, fields } = v;
                 ValueDomain::fold(fields.iter().map(Value::domain))
             }
-            CompoundValue::Enum(v) => {
+            MixedCompoundValue::Enum(v) => {
                 let EnumValue {
                     ty: _,
                     variant: _,
@@ -414,9 +296,9 @@ impl ValueCommon for CompoundValue {
         let err_type = || refs.diags.report(err_hw_type_mismatch(span, ty));
 
         match self {
-            CompoundValue::String(_) => Err(err_type()),
-            CompoundValue::Range(_) => Err(err_type()),
-            CompoundValue::Tuple(v) => match &ty {
+            MixedCompoundValue::String(_) => Err(err_type()),
+            MixedCompoundValue::Range(_) => Err(err_type()),
+            MixedCompoundValue::Tuple(v) => match &ty {
                 HardwareType::Tuple(ty) if v.len() == ty.len() => {
                     let result = zip_eq(v.iter(), ty.iter())
                         .map(|(e, e_ty)| e.as_ir_expression_unchecked(refs, large, span, e_ty))
@@ -425,7 +307,7 @@ impl ValueCommon for CompoundValue {
                 }
                 _ => Err(err_type()),
             },
-            CompoundValue::Struct(v) => match &ty {
+            MixedCompoundValue::Struct(v) => match &ty {
                 HardwareType::Struct(ty_hw) if ty_hw.inner() == v.ty => {
                     let info = refs.shared.elaboration_arenas.struct_info(ty_hw.inner());
                     let fields_hw = info.fields_hw.as_ref().expect("hardware struct");
@@ -437,7 +319,7 @@ impl ValueCommon for CompoundValue {
                 }
                 _ => Err(err_type()),
             },
-            CompoundValue::Enum(v) => match &ty {
+            MixedCompoundValue::Enum(v) => match &ty {
                 HardwareType::Enum(ty_hw) if ty_hw.inner() == v.ty => {
                     let &EnumValue {
                         ty: _,
@@ -451,14 +333,14 @@ impl ValueCommon for CompoundValue {
                     let payload_bits = payload
                         .as_ref()
                         .map(|payload| {
-                            let payload_ty = info_hw.payload_types[variant].as_ref().unwrap();
+                            let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
                             let payload_expr = payload.as_ir_expression_unchecked(refs, large, span, payload_ty)?;
                             Ok(large.push_expr(IrExpressionLarge::ToBits(payload_ty.as_ir(refs), payload_expr)))
                         })
                         .transpose()?;
 
                     // build the entire ir expression
-                    info_hw.build_ir_expression(refs, large, variant, payload_bits)
+                    info_hw.build_ir_expression(large, variant, payload_bits)
                 }
                 _ => Err(err_type()),
             },
@@ -467,10 +349,6 @@ impl ValueCommon for CompoundValue {
 }
 
 impl ValueCommon for CompileCompoundValue {
-    fn diagnostic_string(&self) -> String {
-        CompoundValue::from(self.clone()).diagnostic_string()
-    }
-
     fn domain(&self) -> ValueDomain {
         ValueDomain::CompileTime
     }
@@ -482,22 +360,11 @@ impl ValueCommon for CompileCompoundValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        CompoundValue::from(self.clone()).as_ir_expression_unchecked(refs, large, span, ty)
+        MixedCompoundValue::from(self.clone()).as_ir_expression_unchecked(refs, large, span, ty)
     }
 }
 
 impl ValueCommon for HardwareValue {
-    fn diagnostic_string(&self) -> String {
-        // TODO use proper diagnostic strings for children
-        let HardwareValue { ty, domain, expr } = self;
-        format!(
-            "hardware(ty={}, domain={:?}, expr={:?})",
-            ty.diagnostic_string(),
-            domain,
-            expr
-        )
-    }
-
     fn domain(&self) -> ValueDomain {
         self.domain
     }
@@ -673,50 +540,71 @@ impl RangeValue<BigInt, BigUint> {
     }
 }
 
-impl<H> From<CompileValue> for Value<SimpleCompileValue, CompoundValue, H> {
+impl<H> From<CompileValue> for Value<SimpleCompileValue, MixedCompoundValue, H> {
     fn from(v: CompileValue) -> Self {
         match v {
             CompileValue::Simple(v) => Value::Simple(v),
-            CompileValue::Compound(v) => Value::Compound(CompoundValue::from(v)),
+            CompileValue::Compound(v) => Value::Compound(MixedCompoundValue::from(v)),
             CompileValue::Hardware(never) => never.unreachable(),
         }
     }
 }
-impl From<CompileCompoundValue> for CompoundValue {
+impl From<CompileCompoundValue> for MixedCompoundValue {
     fn from(v: CompileCompoundValue) -> Self {
         match v {
             CompileCompoundValue::String(v) => {
-                CompoundValue::String(Arc::new(vec![StringPiece::Literal(Arc::unwrap_or_clone(v))]))
+                MixedCompoundValue::String(Arc::new(vec![StringPiece::Literal(Arc::unwrap_or_clone(v))]))
             }
             CompileCompoundValue::Range(v) => match v {
-                RangeValue::StartEnd { start, end } => CompoundValue::Range(RangeValue::StartEnd {
+                RangeValue::StartEnd { start, end } => MixedCompoundValue::Range(RangeValue::StartEnd {
                     start: start.map(MaybeCompile::Compile),
                     end: match end {
                         RangeEnd::Exclusive(end) => RangeEnd::Exclusive(end.map(MaybeCompile::Compile)),
                         RangeEnd::Inclusive(end) => RangeEnd::Inclusive(MaybeCompile::Compile(end)),
                     },
                 }),
-                RangeValue::StartLength { start, length } => CompoundValue::Range(RangeValue::StartLength {
+                RangeValue::StartLength { start, length } => MixedCompoundValue::Range(RangeValue::StartLength {
                     start: MaybeCompile::Compile(start),
                     length: MaybeCompile::Compile(length),
                 }),
             },
-            CompileCompoundValue::Tuple(v) => CompoundValue::Tuple(v.map(Value::from)),
+            CompileCompoundValue::Tuple(v) => MixedCompoundValue::Tuple(v.map(Value::from)),
             CompileCompoundValue::Struct(StructValue { ty, fields }) => {
                 let fields = fields.into_iter().map(Value::from).collect();
-                CompoundValue::Struct(StructValue { ty, fields })
+                MixedCompoundValue::Struct(StructValue { ty, fields })
             }
             CompileCompoundValue::Enum(EnumValue { ty, variant, payload }) => {
                 let payload = payload.map(|e| Box::new(Value::from(*e)));
-                CompoundValue::Enum(EnumValue { ty, variant, payload })
+                MixedCompoundValue::Enum(EnumValue { ty, variant, payload })
             }
         }
     }
 }
+impl<C> From<MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>
+    for Value<SimpleCompileValue, C, HardwareValue>
+{
+    fn from(value: MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>) -> Self {
+        match value {
+            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Int(v)),
+            MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(HardwareType::Int)),
+        }
+    }
+}
 
-impl<H: Clone> TryFrom<&Value<SimpleCompileValue, CompoundValue, H>> for CompileValue {
+impl<C> From<MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>>
+    for Value<SimpleCompileValue, C, HardwareValue>
+{
+    fn from(value: MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>) -> Self {
+        match value {
+            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Int(v.into())),
+            MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|r| HardwareType::Int(r.map(BigInt::from)))),
+        }
+    }
+}
+
+impl<H: Clone> TryFrom<&Value<SimpleCompileValue, MixedCompoundValue, H>> for CompileValue {
     type Error = NotCompile;
-    fn try_from(v: &Value<SimpleCompileValue, CompoundValue, H>) -> Result<Self, Self::Error> {
+    fn try_from(v: &Value<SimpleCompileValue, MixedCompoundValue, H>) -> Result<Self, Self::Error> {
         match v {
             Value::Simple(v) => Ok(CompileValue::Simple(v.clone())),
             Value::Compound(v) => Ok(CompileValue::Compound(CompileCompoundValue::try_from(v)?)),
@@ -724,11 +612,11 @@ impl<H: Clone> TryFrom<&Value<SimpleCompileValue, CompoundValue, H>> for Compile
         }
     }
 }
-impl TryFrom<&CompoundValue> for CompileCompoundValue {
+impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
     type Error = NotCompile;
-    fn try_from(v: &CompoundValue) -> Result<Self, Self::Error> {
+    fn try_from(v: &MixedCompoundValue) -> Result<Self, Self::Error> {
         match v {
-            CompoundValue::String(v) => {
+            MixedCompoundValue::String(v) => {
                 // TODO simplify this by forcing banning consecutive literals
                 let mut s = String::new();
                 for p in v.iter() {
@@ -742,7 +630,7 @@ impl TryFrom<&CompoundValue> for CompileCompoundValue {
                 }
                 Ok(CompileCompoundValue::String(Arc::new(s)))
             }
-            CompoundValue::Range(v) => {
+            MixedCompoundValue::Range(v) => {
                 fn try_map_bound<I: Clone>(
                     b: &MaybeCompile<I, HardwareValue<ClosedIncRange<I>>>,
                 ) -> Result<I, NotCompile> {
@@ -769,15 +657,15 @@ impl TryFrom<&CompoundValue> for CompileCompoundValue {
                     }
                 }
             }
-            CompoundValue::Tuple(v) => {
+            MixedCompoundValue::Tuple(v) => {
                 let v = v.try_map_ref(|e| CompileValue::try_from(e))?;
                 Ok(CompileCompoundValue::Tuple(v))
             }
-            CompoundValue::Struct(v) => {
+            MixedCompoundValue::Struct(v) => {
                 let fields = v.fields.iter().map(CompileValue::try_from).try_collect_vec()?;
                 Ok(CompileCompoundValue::Struct(StructValue { ty: v.ty, fields }))
             }
-            CompoundValue::Enum(v) => {
+            MixedCompoundValue::Enum(v) => {
                 let payload = v
                     .payload
                     .as_ref()
@@ -836,14 +724,14 @@ impl<S: Typed, C: Typed, H: Typed> Typed for Value<S, C, H> {
         }
     }
 }
-impl Typed for CompoundValue {
+impl Typed for MixedCompoundValue {
     fn ty(&self) -> Type {
         match self {
-            CompoundValue::String(_) => Type::String,
-            CompoundValue::Range(_) => Type::Range,
-            CompoundValue::Tuple(values) => Type::Tuple(Arc::new(values.iter().map(Value::ty).collect())),
-            CompoundValue::Struct(value) => Type::Struct(value.ty),
-            CompoundValue::Enum(value) => Type::Enum(value.ty),
+            MixedCompoundValue::String(_) => Type::String,
+            MixedCompoundValue::Range(_) => Type::Range,
+            MixedCompoundValue::Tuple(values) => Type::Tuple(Arc::new(values.iter().map(Value::ty).collect())),
+            MixedCompoundValue::Struct(value) => Type::Struct(value.ty),
+            MixedCompoundValue::Enum(value) => Type::Enum(value.ty),
         }
     }
 }

@@ -922,19 +922,21 @@ impl<I> MaybeIdentifier<I> {
 }
 
 impl MaybeIdentifier<Identifier> {
-    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
+    pub fn str(self, source: &SourceDatabase) -> MaybeIdentifier<&str> {
         match self {
             MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
-            MaybeIdentifier::Identifier(id) => {
-                MaybeIdentifier::Identifier(Spanned::new(id.span, source.span_str(id.span)))
-            }
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id.str(source)),
         }
+    }
+
+    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
+        self.str(source).map_id(|s| Spanned::new(self.span(), s))
     }
 
     pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
         match self {
             MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
-            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(source.span_str(id.span).to_owned())),
+            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.str(source).to_owned())),
         }
     }
 }

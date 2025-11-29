@@ -1,9 +1,7 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::types::{ClosedIncRange, HardwareType};
-use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue, ValueCommon,
-};
+use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue};
 use crate::mid::ir::IrType;
 use crate::syntax::pos::Span;
 use crate::util::ResultExt;
@@ -58,7 +56,7 @@ impl HardwareType {
                     .payload_types
                     .iter()
                     .filter_map(Option::as_ref)
-                    .all(|ty| ty.every_bit_pattern_is_valid(refs))
+                    .all(|(ty, _)| ty.every_bit_pattern_is_valid(refs))
             }
         }
     }
@@ -82,7 +80,7 @@ impl HardwareType {
                 span,
                 format!(
                     "failed to convert value `{}` to bits of type `{}`",
-                    value.diagnostic_string(),
+                    value.value_string(&refs.shared.elaboration_arenas),
                     self.diagnostic_string()
                 ),
             )
@@ -146,12 +144,12 @@ impl HardwareType {
 
                 // content
                 if let Some(payload) = payload {
-                    let payload_ty = info_hw.payload_types[variant].as_ref().unwrap();
+                    let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
                     payload_ty.value_to_bits_impl(refs, span, payload, result)?;
                 }
 
                 // padding
-                for _ in 0..info_hw.padding_for_variant(refs, variant) {
+                for _ in 0..info_hw.padding_for_variant(variant) {
                     result.push(false);
                 }
                 Ok(())
@@ -263,7 +261,7 @@ impl HardwareType {
 
                 // content
                 let payload_ty = info_hw.payload_types[tag_value].as_ref();
-                let payload_value = if let Some(content_ty) = payload_ty {
+                let payload_value = if let Some((content_ty, _)) = payload_ty {
                     let content_value = content_ty.value_from_bits_impl(refs, span, bits)?;
                     Some(Box::new(content_value))
                 } else {
@@ -271,7 +269,7 @@ impl HardwareType {
                 };
 
                 // discard padding
-                for _ in 0..info_hw.padding_for_variant(refs, tag_value) {
+                for _ in 0..info_hw.padding_for_variant(tag_value) {
                     bits.next().ok_or_else(err_internal)?;
                 }
 

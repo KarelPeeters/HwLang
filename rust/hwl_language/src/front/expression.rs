@@ -18,7 +18,7 @@ use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, NonHardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, CompoundValue, EnumValue, HardwareValue, MaybeCompile, MaybeUndefined,
+    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MaybeCompile, MaybeUndefined, MixedCompoundValue,
     NotCompile, RangeEnd, RangeValue, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
@@ -301,7 +301,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             start: start?,
                             end: RangeEnd::Exclusive(end?),
                         };
-                        Value::Compound(CompoundValue::Range(range))
+                        Value::Compound(MixedCompoundValue::Range(range))
                     }
                     RangeLiteral::InclusiveEnd { op_span, start, end } => {
                         let start = start.map(|start| eval_bound(start, op_span)).transpose();
@@ -311,7 +311,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             start: start?,
                             end: RangeEnd::Inclusive(end?),
                         };
-                        Value::Compound(CompoundValue::Range(range))
+                        Value::Compound(MixedCompoundValue::Range(range))
                     }
                     RangeLiteral::Length { op_span, start, length } => {
                         let start = eval_bound(start, op_span);
@@ -331,7 +331,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             start: start?,
                             length: length?,
                         };
-                        Value::Compound(CompoundValue::Range(range))
+                        Value::Compound(MixedCompoundValue::Range(range))
                     }
                 }
             }
@@ -514,7 +514,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                     // TODO use common step logic once that supports tuple indexing
                     match base_eval {
-                        ValueInner::Value(Value::Compound(CompoundValue::Tuple(inner))) => {
+                        ValueInner::Value(Value::Compound(MixedCompoundValue::Tuple(inner))) => {
                             let index = index_int
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
@@ -604,7 +604,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let e = diags.report_simple(
                             "call target must be function",
                             expr.span,
-                            format!("got `{}`", target.inner.diagnostic_string()),
+                            format!("got value with type `{}`", target.inner.ty().diagnostic_string()),
                         );
                         return Err(e);
                     }
@@ -956,7 +956,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let (_, content_ty) = &info.variants[variant_index];
 
             let result = match content_ty {
-                None => Value::Compound(CompoundValue::Enum(EnumValue {
+                None => Value::Compound(MixedCompoundValue::Enum(EnumValue {
                     ty: elab,
                     variant: variant_index,
                     payload: None,
@@ -981,8 +981,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     Err(diags.report(error_unique_mismatch(
                         "struct",
                         base.span,
-                        expected_info.unique.span_id(),
-                        unique.span_id(),
+                        expected_info.unique.id().span(),
+                        unique.id().span(),
                     )))
                 }
             } else {
@@ -1009,7 +1009,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let result = match base_eval {
                 Value::Simple(_) => return Err(diags.report_internal_error(expr_span, "expected struct value")),
                 Value::Compound(base_eval) => match base_eval {
-                    CompoundValue::Struct(base_eval) => base_eval.fields[field_index].clone(),
+                    MixedCompoundValue::Struct(base_eval) => base_eval.fields[field_index].clone(),
                     _ => return Err(diags.report_internal_error(expr_span, "expected struct compile value")),
                 },
                 Value::Hardware(base_eval) => {
@@ -1116,7 +1116,7 @@ impl<'a> CompileItemContext<'a, '_> {
         } else {
             // default to value
             let values = NonEmptyVec::try_from(values).unwrap();
-            Ok(Value::Compound(CompoundValue::Tuple(values)))
+            Ok(Value::Compound(MixedCompoundValue::Tuple(values)))
         }
     }
 
@@ -1204,7 +1204,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     _ => return Err(err_wrong_type()),
                 },
                 Value::Compound(index) => match index {
-                    CompoundValue::Range(range) => match range {
+                    MixedCompoundValue::Range(range) => match range {
                         RangeValue::StartEnd { start, end } => {
                             let start = match start {
                                 None => BigInt::ZERO,
@@ -1363,7 +1363,7 @@ impl<'a> CompileItemContext<'a, '_> {
             value => Err(diags.report_simple(
                 "expected type, got value",
                 expr.span,
-                format!("got value `{}`", value.diagnostic_string()),
+                format!("got value with type `{}`", value.ty().diagnostic_string()),
             )),
         }
     }
@@ -1677,7 +1677,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let iter_span = iter.span;
 
         let result = match iter.inner {
-            Value::Compound(CompoundValue::Range(iter)) => {
+            Value::Compound(MixedCompoundValue::Range(iter)) => {
                 fn unwrap_compile<C, H>(
                     diags: &Diagnostics,
                     iter_span: Span,
@@ -1882,10 +1882,10 @@ fn eval_int_ty_call(
             new_range
         }
         _ => {
-            let diag = Diagnostic::new("int type constraining must be an int or int range")
+            let diag = Diagnostic::new("int type constraint must be an int or int range")
                 .add_error(
                     arg.span,
-                    format!("got invalid value `{}` here", arg_inner.diagnostic_string()),
+                    format!("got value with type `{}` here", arg_inner.ty().diagnostic_string()),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -1925,7 +1925,7 @@ impl ForIterator {
 }
 
 impl Iterator for ForIterator {
-    type Item = Value<SimpleCompileValue, CompoundValue, HardwareValue<HardwareType, IrExpressionLarge>>;
+    type Item = Value<SimpleCompileValue, MixedCompoundValue, HardwareValue<HardwareType, IrExpressionLarge>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {

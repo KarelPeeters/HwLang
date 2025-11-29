@@ -4,7 +4,7 @@ use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, CompoundValue, HardwareValue, MaybeCompile, SimpleCompileValue, Value,
+    CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, MixedCompoundValue, SimpleCompileValue, Value,
 };
 use crate::syntax::ast::{StringPiece, SyncDomain};
 use crate::syntax::pos::{Span, Spanned};
@@ -436,7 +436,7 @@ pub fn check_type_is_string(
     check_type_contains_value(diags, reason, &Type::String, value.as_ref())?;
 
     match value.inner {
-        Value::Compound(CompoundValue::String(v)) => Ok(v),
+        Value::Compound(MixedCompoundValue::String(v)) => Ok(v),
         _ => Err(diags.report_internal_error(value.span, "expected string value")),
     }
 }

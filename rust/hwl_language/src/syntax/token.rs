@@ -433,8 +433,12 @@ impl<'s> Tokenizer<'s> {
 }
 
 pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
-    // TODO actually do escapes here, keep in sync with tokenizer state machine
-    Cow::Borrowed(raw)
+    // TODO skip allocation if not needed
+    // TODO handle more escape codes including \" (which needs tokenizer changes)
+    // TODO maybe we should _actually_ parse string literals during parsing,
+    //   instead of keeping them as spans and then only later fixing them?
+    //   Alternatively create some zero-cost wrapper type that guarantees correctness.
+    Cow::Owned(raw.replace("\\n", "\n"))
 }
 
 fn str_is_single_token(s: &str, ty: TokenType) -> bool {

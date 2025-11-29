@@ -19,7 +19,8 @@ class CompiledCompare:
     eval_mod_inst: hwl.VerilatedInstance
 
     def eval(self, values: List[object]) -> Tuple[object, object]:
-        assert len(values) == self.input_count
+        assert len(values) == self.input_count, \
+            f"Input value count mismatch, expected {self.input_count}, got {len(values)}"
 
         # eval func
         val_res_func = self.eval_func(*values)

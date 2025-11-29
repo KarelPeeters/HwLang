@@ -1,15 +1,16 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
+use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
-    IrExpressionLarge, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables,
-    IrWireOrPort,
+    IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrStringSubstitution, IrTargetStep, IrType,
+    IrVariables, IrWireOrPort,
 };
-use crate::syntax::ast::PortDirection;
+use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
-use crate::util::big_int::BigUint;
+use crate::util::big_int::{BigInt, BigUint};
 use indexmap::IndexSet;
 use itertools::zip_eq;
 use std::borrow::Cow;
@@ -194,7 +195,35 @@ impl IrBlock {
                         else_block.validate(diags, module, locals)?;
                     }
                 }
-                IrStatement::PrintLn(_) => {}
+                IrStatement::For(for_stmt) => {
+                    let &IrForStatement {
+                        index,
+                        ref range,
+                        ref block,
+                    } = for_stmt;
+                    let index_ty = IrExpression::Variable(index).ty(module, locals);
+                    let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
+
+                    if !index_range.contains_range(range.as_ref()) {
+                        let msg = format!("IR for loop range mismatch: loop index {index_range:?} but range {range:?}");
+                        return Err(diags.report_internal_error(stmt.span, msg));
+                    }
+
+                    block.validate(diags, module, locals)?;
+                }
+                IrStatement::Print(pieces) => {
+                    for p in pieces {
+                        match p {
+                            StringPiece::Literal(_) => {}
+                            StringPiece::Substitute(p) => match p {
+                                IrStringSubstitution::Integer(p, _) => {
+                                    p.validate(diags, module, locals, stmt.span)?;
+                                    check_type_is_int(diags, stmt.span, &p.ty(module, locals))?;
+                                }
+                            },
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -305,6 +334,20 @@ fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: 
         return Err(diags.report_internal_error(span, msg));
     }
     Ok(())
+}
+
+fn check_type_is_int<'t>(
+    diags: &Diagnostics,
+    span: Span,
+    actual: &'t IrType,
+) -> DiagResult<&'t ClosedIncRange<BigInt>> {
+    match actual {
+        IrType::Int(range) => Ok(range),
+        _ => {
+            let msg = format!("IR type mismatch: expected int, got {actual:?}");
+            Err(diags.report_internal_error(span, msg))
+        }
+    }
 }
 
 fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult {

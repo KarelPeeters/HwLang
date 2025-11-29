@@ -10,8 +10,8 @@ use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
-    CompileValue, CompoundValue, EnumValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, StructValue,
-    Value, ValueCommon,
+    CompileValue, EnumValue, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile, SimpleCompileValue,
+    StructValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
@@ -376,13 +376,13 @@ impl CompileItemContext<'_, '_> {
                         Err(diags.report(error_unique_mismatch(
                             "struct",
                             span_target,
-                            expected_info.unique.span_id(),
-                            func_unique.span_id(),
+                            expected_info.unique.id().span(),
+                            func_unique.id().span(),
                         )))
                     }
                 }
                 Type::Any => Err(err_infer_any("struct")),
-                _ => Err(err_infer_mismatch("struct", func_unique.span_id())),
+                _ => Err(err_infer_mismatch("struct", func_unique.id().span())),
             },
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
                 self.call_enum_new(span_call, enum_elab, variant_index, &args)
@@ -394,7 +394,7 @@ impl CompileItemContext<'_, '_> {
                     self.call_enum_new(span_call, elab, variant_index, &args)
                 }
                 Type::Any => Err(err_infer_any("enum")),
-                _ => Err(err_infer_mismatch("enum", unique.span_id())),
+                _ => Err(err_infer_mismatch("enum", unique.id().span())),
             },
         }
     }
@@ -441,8 +441,9 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<Value> {
         let _ = span_call;
         let &ElaboratedStructInfo {
-            span_body,
             unique: _,
+            name: _,
+            span_body,
             ref fields,
             fields_hw: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);
@@ -468,7 +469,7 @@ impl CompileItemContext<'_, '_> {
             ty: elab,
             fields: field_values,
         };
-        Ok(Value::Compound(CompoundValue::Struct(result)))
+        Ok(Value::Compound(MixedCompoundValue::Struct(result)))
     }
 
     fn call_enum_new(
@@ -500,7 +501,7 @@ impl CompileItemContext<'_, '_> {
             variant: variant_index,
             payload: Some(Box::new(payload.inner)),
         };
-        Ok(Value::Compound(CompoundValue::Enum(result)))
+        Ok(Value::Compound(MixedCompoundValue::Enum(result)))
     }
 
     fn call_user_function(
@@ -1029,6 +1030,7 @@ impl Hash for FunctionValue {
 }
 
 pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> Diagnostic {
+    // TODO include struct/enum name
     Diagnostic::new(format!("{kind} expected type mismatch"))
         .add_error(target_span, format!("actual {kind} type is set here"))
         .add_info(expected_span, format!("expected {kind} type declared here"))

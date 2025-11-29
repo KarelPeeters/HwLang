@@ -1,7 +1,8 @@
 import std.types.[any, bool, str, uint];
 
-pub fn print(value: any) {
-    __builtin("fn", "print", "{value}");
+// TODO add named-only args?
+pub fn print(value: any, end: str = "\n") {
+    __builtin("fn", "print", "{value}{end}");
 }
 
 // TODO this default message is annoying (since it repeats the diagnostic itself)
@@ -22,6 +23,7 @@ pub fn assume(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
 }
 
 // TODO parse "clock" as type here?
+// TODO is this just a special case of unsafe_value_with_domain?
 pub fn unsafe_bool_to_clock(value: bool) -> any {
     return __builtin("fn", "unsafe_bool_to_clock", value);
 }

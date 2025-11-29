@@ -182,6 +182,22 @@ impl<T> TryFrom<Vec<T>> for NonEmptyVec<T> {
     }
 }
 
+impl<T> IntoIterator for NonEmptyVec<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a NonEmptyVec<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
 impl<T> Deref for NonEmptyVec<T> {
     type Target = [T];
     fn deref(&self) -> &Self::Target {

@@ -25,7 +25,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
-use crate::util::big_int::{BigInt, BigUint};
+use crate::util::big_int::BigInt;
 use crate::util::iter::IterExt;
 use crate::util::{ResultExt, result_pair};
 use annotate_snippets::Level;
@@ -574,6 +574,8 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
+        // TODO completely rewrite this, also share code with string printing
+
         let diags = self.refs.diags;
         let &MatchStatement {
             target,
@@ -801,7 +803,7 @@ impl CompileItemContext<'_, '_> {
                 match target.inner {
                     Value::Simple(_) => Err(diags
                         .report_internal_error(span_branches, "match compile target should have been handled earlier")),
-                    Value::Compound(_) => Err(diags.report_todo(span_branches, "match compount target")),
+                    Value::Compound(_) => Err(diags.report_todo(span_branches, "match compound target")),
                     Value::Hardware(target_inner) => {
                         let flow = flow.check_hardware(target.span, "hardware value")?;
                         self.elaborate_match_statement_hardware(
@@ -1002,41 +1004,11 @@ impl CompileItemContext<'_, '_> {
                     let info = self.refs.shared.elaboration_arenas.enum_info(target_ty.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
-                    let ty_content = &info_hw.payload_types[pattern_index];
+                    let cond = info_hw.check_tag_matches(large, &target.inner, pattern_index);
+                    let payload = info_hw.extract_payload(large, &target.inner, pattern_index);
 
-                    let target_tag = large.push_expr(IrExpressionLarge::TupleIndex {
-                        base: target.inner.expr.clone(),
-                        index: BigUint::ZERO,
-                    });
-
-                    let cond = large.push_expr(IrExpressionLarge::IntCompare(
-                        IrIntCompareOp::Eq,
-                        target_tag,
-                        IrExpression::Int(BigInt::from(pattern_index)),
-                    ));
-                    let declare = match (ty_content, id_content) {
-                        (Some(ty_content), Some(id_content)) => {
-                            let target_content_all_bits = large.push_expr(IrExpressionLarge::TupleIndex {
-                                base: target.inner.expr.clone(),
-                                index: BigUint::ONE,
-                            });
-                            let target_content_bits = large.push_expr(IrExpressionLarge::ArraySlice {
-                                base: target_content_all_bits,
-                                start: IrExpression::Int(BigInt::ZERO),
-                                len: ty_content.size_bits(self.refs),
-                            });
-                            let target_content = large.push_expr(IrExpressionLarge::FromBits(
-                                ty_content.as_ir(self.refs),
-                                target_content_bits,
-                            ));
-
-                            let declare_value = HardwareValue {
-                                ty: ty_content.clone(),
-                                domain: target.inner.domain,
-                                expr: target_content,
-                            };
-                            Some((id_content, declare_value))
-                        }
+                    let declare = match (id_content, payload) {
+                        (Some(id_content), Some(payload)) => Some((id_content, payload)),
                         (None, None) => None,
                         _ => unreachable!(),
                     };

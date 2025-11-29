@@ -81,7 +81,7 @@ enum ConnectorKind {
 #[derive(Debug)]
 pub struct ElaboratedModuleHeader<A> {
     pub ast_ref: A,
-    debug_info_params: Option<Vec<(String, CompileValue)>>,
+    debug_info_params: Option<Vec<(String, String)>>,
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
@@ -135,8 +135,16 @@ impl CompileRefs<'_, '_> {
         let scope_ports = scope_ports.into_content();
 
         let source = self.fixed.source;
-        let debug_info_params =
-            debug_info_params.map(|p| p.into_iter().map(|(k, v)| (k.str(source).to_owned(), v)).collect_vec());
+        let debug_info_params = debug_info_params.map(|p| {
+            p.into_iter()
+                .map(|(k, v)| {
+                    (
+                        k.str(source).to_owned(),
+                        v.value_string(&self.shared.elaboration_arenas),
+                    )
+                })
+                .collect_vec()
+        });
 
         let flow = flow.into_content();
         let header = ElaboratedModuleHeader {
@@ -271,7 +279,7 @@ impl CompileRefs<'_, '_> {
                                         value => Err(diags.report_simple(
                                             "expected interface view",
                                             view.span,
-                                            format!("got other value `{}`", value.diagnostic_string()),
+                                            format!("got other value with type `{}`", value.ty().diagnostic_string()),
                                         )),
                                     });
 
@@ -344,7 +352,10 @@ impl CompileRefs<'_, '_> {
                                                 value => Err(diags.report_simple(
                                                     "expected interface view",
                                                     view.span,
-                                                    format!("got other value `{}`", value.diagnostic_string()),
+                                                    format!(
+                                                        "got other value with type `{}`",
+                                                        value.ty().diagnostic_string()
+                                                    ),
                                                 )),
                                             });
 
@@ -382,7 +393,7 @@ impl CompileRefs<'_, '_> {
         flow: &FlowCompile,
         scope_header: &Scope,
         def_id: MaybeIdentifier,
-        debug_info_params: Option<Vec<(String, CompileValue)>>,
+        debug_info_params: Option<Vec<(String, String)>>,
         ir_ports: Arena<IrPort, IrPortInfo>,
         body: &'a Block<ModuleStatement>,
     ) -> DiagResult<IrModuleInfo> {

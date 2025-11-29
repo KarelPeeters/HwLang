@@ -41,6 +41,7 @@ Websites and blog posts:
     * https://matklad.github.io/2022/04/25/why-lsp.html
     * https://rust-analyzer.github.io/blog/2023/12/26/the-heart-of-a-language-server.html
     * https://rust-analyzer.github.io/blog/2020/07/20/three-architectures-for-responsive-ide.html
+    * https://rustc-dev-guide.rust-lang.org/overview.html#queries
   * Project management
     * https://matklad.github.io/2024/03/22/basic-things.html
     * https://matklad.github.io/2023/12/31/O(1)-build-file.html

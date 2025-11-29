@@ -1,5 +1,6 @@
 use crate::front::check::{
-    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string_compile,
+    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string,
+    check_type_is_string_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
@@ -8,15 +9,15 @@ use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
+use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, IncRange, Type, Typed};
-use crate::front::value::{HardwareValue, MaybeCompile, Value};
-use crate::mid::ir::{IrExpression, IrStatement};
+use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, Value};
+use crate::mid::ir::IrExpression;
 use crate::syntax::ast::{Arg, Args, ExpressionKind};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::data::VecExt;
 use crate::util::store::ArcOrRef;
-use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {
     pub fn eval_type_of(
@@ -136,21 +137,6 @@ impl CompileItemContext<'_, '_> {
         )?;
         let args_rest = &args_inner[2..];
 
-        // let print_compile = |v: &Value| {
-        //     let value_str = match v {
-        //         // TODO print strings without quotes
-        //         Value::Compile(v) => v.diagnostic_string(),
-        //         // TODO less ugly formatting for HardwareValue
-        //         Value::Hardware(v) => {
-        //             let HardwareValue { ty, domain, expr: _ } = v;
-        //             let ty_str = ty.diagnostic_string();
-        //             let domain_str = domain.diagnostic_string(self);
-        //             format!("HardwareValue {{ ty: {ty_str}, domain: {domain_str}, expr: _, }}")
-        //         }
-        //     };
-        //     self.refs.print_handler.println(&value_str);
-        // }
-
         // handle the different builtins
         match (arg_0.as_str(), arg_1.as_str(), args_rest) {
             // basic types
@@ -161,17 +147,26 @@ impl CompileItemContext<'_, '_> {
             ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(IncRange::OPEN))),
             // print
             ("fn", "print", &[msg]) => {
-                // TODO support hardware msg
-                let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
-                let msg = check_type_is_string_compile(diags, TypeContainsReason::Internal(expr_span), msg)?;
+                let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
+                let reason_str = TypeContainsReason::Internal(expr_span);
 
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
+                        let msg_inner = CompileValue::try_from(&msg.inner).map_err(|_: NotCompile| {
+                            diags.report_internal_error(expr_span, "non-compile expression in compile flow")
+                        })?;
+                        let msg = check_type_is_string_compile(diags, reason_str, Spanned::new(msg.span, msg_inner))?;
                         self.refs.print_handler.println(&msg);
                     }
                     FlowKind::Hardware(flow) => {
-                        let stmt = Spanned::new(expr_span, IrStatement::PrintLn(Arc::unwrap_or_clone(msg)));
-                        flow.push_ir_statement(stmt);
+                        let msg = check_type_is_string(diags, TypeContainsReason::Internal(expr_span), msg)?;
+                        hardware_print_string(
+                            &self.refs.shared.elaboration_arenas,
+                            flow,
+                            &mut self.large,
+                            expr_span,
+                            &msg,
+                        );
                     }
                 }
 

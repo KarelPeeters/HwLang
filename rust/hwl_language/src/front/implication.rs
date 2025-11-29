@@ -1,6 +1,6 @@
 use crate::front::flow::ValueVersion;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{CompoundValue, HardwareValue, SimpleCompileValue, Value};
+use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
 
@@ -30,9 +30,9 @@ pub enum ImplicationIntOp {
     Gt,
 }
 
-pub type ValueWithVersion<S = SimpleCompileValue, C = CompoundValue, T = HardwareType> =
+pub type ValueWithVersion<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
     Value<S, C, HardwareValueWithVersion<ValueVersion, T>>;
-pub type ValueWithImplications<S = SimpleCompileValue, C = CompoundValue, T = HardwareType> =
+pub type ValueWithImplications<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
     Value<S, C, HardwareValueWithImplications<T>>;
 pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
 
