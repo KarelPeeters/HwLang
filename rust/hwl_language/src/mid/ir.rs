@@ -6,6 +6,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use derive_more::From;
+use hwl_util::swrite;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::sync::Arc;
@@ -97,7 +98,7 @@ pub struct IrRegisterInfo {
     pub ty: IrType,
 
     pub debug_info_id: Spanned<Option<String>>,
-    pub debug_info_ty: HardwareType,
+    pub debug_info_ty: String,
     pub debug_info_domain: String,
 }
 
@@ -106,7 +107,7 @@ pub struct IrWireInfo {
     pub ty: IrType,
 
     pub debug_info_id: Spanned<Option<String>>,
-    pub debug_info_ty: HardwareType,
+    pub debug_info_ty: String,
     pub debug_info_domain: String,
 }
 
@@ -408,7 +409,23 @@ impl IrType {
     }
 
     pub fn diagnostic_string(&self) -> String {
-        self.as_type_hw().diagnostic_string()
+        match self {
+            IrType::Bool => "bool".to_owned(),
+            IrType::Int(range) => format!("int({})", range),
+            IrType::Tuple(elements) => {
+                let mut f = String::new();
+                f.push('(');
+                swrite!(f, "{}", elements.iter().map(IrType::diagnostic_string).format(", "));
+                if elements.len() == 1 {
+                    f.push(',');
+                }
+                f.push(')');
+                f
+            }
+            IrType::Array(inner, len) => {
+                format!("[{len}]{}", inner.diagnostic_string())
+            }
+        }
     }
 
     pub fn unwrap_int(self) -> ClosedIncRange<BigInt> {

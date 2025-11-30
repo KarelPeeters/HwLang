@@ -1,7 +1,7 @@
 use crate::back::lower_verilog::non_zero_width::NonZeroWidthRange;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
-use crate::front::types::{ClosedIncRange, HardwareType};
+use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
@@ -416,8 +416,8 @@ fn lower_module_signals(
     let mut lower_signal = |signal_kind,
                             ty,
                             debug_info_id: &Spanned<Option<String>>,
-                            debug_info_ty: &HardwareType,
-                            debug_domain,
+                            debug_info_ty: &String,
+                            debug_info_domain,
                             newline: &mut NewlineGenerator,
                             f: &mut String| {
         // skip zero-width signals
@@ -433,13 +433,12 @@ fn lower_module_signals(
 
         // figure out debug info
         let debug_name = debug_info_id.inner.unwrap_or("_");
-        let debug_ty = debug_info_ty.diagnostic_string();
 
         // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
         newline.start_item(f);
         swriteln!(
             f,
-            "{I}reg {ty_verilog_prefix}{name}; // {signal_kind} {debug_name}: {debug_domain} {debug_ty}"
+            "{I}reg {ty_verilog_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
         );
 
         Ok(Ok(name))

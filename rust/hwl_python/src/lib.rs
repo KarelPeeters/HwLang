@@ -33,6 +33,7 @@ use pyo3::{
     Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyResult, Python, create_exception, intern, pyclass,
     pyfunction, pymethods, pymodule, wrap_pyfunction,
 };
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -85,7 +86,10 @@ impl UnsupportedValue {
 }
 
 #[pyclass]
-struct Type(RustType);
+struct Type {
+    compile: Py<Compile>,
+    ty: RustType,
+}
 
 #[pyclass]
 struct IncRange {
@@ -512,8 +516,9 @@ impl CapturePrintsContext {
 
 #[pymethods]
 impl Type {
-    fn __str__(&self) -> String {
-        self.0.diagnostic_string()
+    fn __str__(&self, py: Python) -> String {
+        let elab = &self.compile.borrow(py).state.elaboration_arenas;
+        self.ty.value_string(elab)
     }
 }
 
@@ -888,27 +893,22 @@ impl VerilatedPort {
     #[setter]
     fn set_value(&mut self, value: &Bound<PyAny>) -> PyResult<()> {
         let py = value.py();
-        let mut instance = self.instance.borrow_mut(py);
-
-        let dummy_span = {
-            let module = instance.module.borrow(py);
-            let compile = module.compile.borrow(py);
-            let parsed = compile.parsed.borrow(py);
-            let source = parsed.source.borrow(py);
-            source.dummy_span
-        };
-
         let value = compile_value_from_py(value)?;
-        let diags = Diagnostics::new();
-        let result = instance
-            .instance
-            .set_port(&diags, self.port, Spanned::new(dummy_span, &value));
 
-        // reborrow chain, annoying but seems to be necessary
+        let mut instance = self.instance.borrow_mut(py);
+        let instance = instance.deref_mut();
         let module = instance.module.borrow(py);
         let compile = module.compile.borrow(py);
         let parsed = compile.parsed.borrow(py);
         let source = parsed.source.borrow(py);
+
+        let elab = &compile.state.elaboration_arenas;
+        let dummy_span = source.dummy_span;
+
+        let diags = Diagnostics::new();
+        let result = instance
+            .instance
+            .set_port(&diags, elab, self.port, Spanned::new(dummy_span, &value));
 
         result.map_err(|e| match e {
             Either::Left(e) => map_verilator_error(e),
@@ -920,7 +920,13 @@ impl VerilatedPort {
 
     #[getter]
     fn r#type(&self, py: Python) -> Type {
-        self.map_port_info(py, |info| Type(info.ty.as_type_hw().as_type()))
+        // TODO this should return the the real original type,
+        //   more generally the entire verilator wrapper should be "real" type-based, instead of IrType-based
+        let ty = self.map_port_info(py, |info| info.ty.clone());
+        Type {
+            compile: self.instance.borrow(py).module.borrow(py).compile.clone_ref(py),
+            ty: ty.as_type_hw().as_type(),
+        }
     }
 
     #[getter]

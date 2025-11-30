@@ -23,7 +23,11 @@ use std::sync::Arc;
 pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue) -> PyResult<Py<PyAny>> {
     match value {
         CompileValue::Simple(value) => match value {
-            SimpleCompileValue::Type(x) => Type(x.clone()).into_py_any(py),
+            SimpleCompileValue::Type(x) => Type {
+                compile: state.clone_ref(py),
+                ty: x.clone(),
+            }
+            .into_py_any(py),
             SimpleCompileValue::Bool(x) => x.into_py_any(py),
             SimpleCompileValue::Int(x) => x.clone().into_num_bigint().into_py_any(py),
             SimpleCompileValue::Array(x) => {
@@ -82,7 +86,7 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
     if let Ok(value) = value.extract::<PyRef<Type>>() {
-        return Ok(CompileValue::new_ty(value.0.clone()));
+        return Ok(CompileValue::new_ty(value.ty.clone()));
     }
     if let Ok(value) = value.extract::<bool>() {
         return Ok(CompileValue::new_bool(value));

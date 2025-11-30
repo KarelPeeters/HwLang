@@ -354,8 +354,9 @@ impl CompileItemContext<'_, '_> {
         stmt: &BlockStatement,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
-        let stmt_span = stmt.span;
+        let elab = &self.refs.shared.elaboration_arenas;
 
+        let stmt_span = stmt.span;
         let end = match &stmt.inner {
             BlockStatementKind::CommonDeclaration(decl) => {
                 self.eval_and_declare_declaration(scope, flow, decl);
@@ -389,7 +390,7 @@ impl CompileItemContext<'_, '_> {
                             span_target: id.span(),
                             span_target_ty: ty.span,
                         };
-                        check_type_contains_value(diags, reason, &ty.inner, init.as_ref())?;
+                        check_type_contains_value(diags, elab, reason, &ty.inner, init.as_ref())?;
                     }
 
                     // build variable
@@ -469,7 +470,7 @@ impl CompileItemContext<'_, '_> {
                     .map(|value| self.eval_expression(scope, flow, expected_ty, value))
                     .transpose()?;
 
-                check_function_return_type_and_set_value(diags, flow, entry, stmt_span, span_return, value)?;
+                check_function_return_type_and_set_value(self.refs, flow, entry, stmt_span, span_return, value)?;
 
                 BlockEnd::CompileExit(EarlyExitKind::Return)
             }
@@ -504,6 +505,7 @@ impl CompileItemContext<'_, '_> {
         final_else: &Option<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
@@ -528,7 +530,7 @@ impl CompileItemContext<'_, '_> {
         let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
-        let cond = check_type_is_bool(diags, reason, cond)?;
+        let cond = check_type_is_bool(diags, elab, reason, cond)?;
 
         match cond {
             // evaluate the if at compile-time
@@ -575,8 +577,9 @@ impl CompileItemContext<'_, '_> {
         stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
         // TODO completely rewrite this, also share code with string printing
-
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
         let &MatchStatement {
             target,
             span_branches,
@@ -635,6 +638,7 @@ impl CompileItemContext<'_, '_> {
                         let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
                         check_type_contains_value(
                             diags,
+                            elab,
                             TypeContainsReason::MatchPattern(target.span),
                             eq_expected_ty,
                             value.as_ref(),
@@ -655,7 +659,7 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_simple(
                                     "unsupported match type",
                                     value.span,
-                                    format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
+                                    format!("pattern has type `{}`", value.inner.ty().value_string(elab)),
                                 ));
                             }
                         };
@@ -667,7 +671,7 @@ impl CompileItemContext<'_, '_> {
                             return Err(diags.report_simple(
                                 "range patterns are only supported for int values",
                                 value.span,
-                                format!("value has type `{}`", target_ty.diagnostic_string()),
+                                format!("value has type `{}`", target_ty.value_string(elab)),
                             ));
                         }
 
@@ -678,7 +682,7 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_simple(
                                     "expected range for in pattern",
                                     value.span,
-                                    format!("pattern has type `{}`", value.inner.ty().diagnostic_string()),
+                                    format!("pattern has type `{}`", value.inner.ty().value_string(elab)),
                                 ));
                             }
                         };
@@ -692,7 +696,7 @@ impl CompileItemContext<'_, '_> {
                                 return Err(diags.report_simple(
                                     "expected enum type for enum variant pattern",
                                     variant.span,
-                                    format!("value has type `{}`", target_ty.diagnostic_string()),
+                                    format!("value has type `{}`", target_ty.value_string(elab)),
                                 ));
                             }
                         };
@@ -777,7 +781,7 @@ impl CompileItemContext<'_, '_> {
                 .add_error(span_branches, msg)
                 .add_info(
                     target.span,
-                    format!("value has type `{}`", target_ty.diagnostic_string()),
+                    format!("value has type `{}`", target_ty.value_string(elab)),
                 )
                 .footer(Level::Help, "add missing cases, or")
                 .footer(
@@ -1108,12 +1112,14 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&WhileStatement>,
     ) -> DiagResult<BlockEnd> {
+        let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
         let &WhileStatement {
             span_keyword,
             cond,
             ref body,
         } = stmt.inner;
-        let diags = self.refs.diags;
 
         self.elaborate_loop(
             flow,
@@ -1126,7 +1132,7 @@ impl CompileItemContext<'_, '_> {
 
                 // typecheck condition
                 let reason = TypeContainsReason::WhileCondition(span_keyword);
-                check_type_contains_value(diags, reason, &Type::Bool, cond.as_ref())?;
+                check_type_contains_value(diags, elab, reason, &Type::Bool, cond.as_ref())?;
                 let cond = match &cond.inner {
                     &CompileValue::Simple(SimpleCompileValue::Bool(b)) => b,
                     _ => throw!(
@@ -1153,6 +1159,9 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&ForStatement<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
+        let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
         let &ForStatement {
             span_keyword,
             index: index_id,
@@ -1160,7 +1169,6 @@ impl CompileItemContext<'_, '_> {
             iter,
             ref body,
         } = stmt.inner;
-        let diags = self.refs.diags;
 
         // header
         let index_ty = index_ty
@@ -1196,7 +1204,7 @@ impl CompileItemContext<'_, '_> {
                     inner: &index_value,
                 };
                 let reason = TypeContainsReason::ForIndexType(index_ty.span);
-                check_type_contains_value(diags, reason, &index_ty.inner, curr_spanned)?;
+                check_type_contains_value(diags, elab, reason, &index_ty.inner, curr_spanned)?;
             }
 
             // set index
@@ -1328,6 +1336,8 @@ impl CompileItemContext<'_, '_> {
         if_stmt: &'a IfStatement<B>,
     ) -> DiagResult<Option<&'a B>> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
         let IfStatement {
             span: _,
             initial_if,
@@ -1346,7 +1356,7 @@ impl CompileItemContext<'_, '_> {
             let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, "compile-time if condition")?;
 
             let reason = TypeContainsReason::IfCondition(span_if);
-            let cond = check_type_is_bool_compile(diags, reason, cond)?;
+            let cond = check_type_is_bool_compile(diags, elab, reason, cond)?;
 
             if cond { Ok(Some(block)) } else { Ok(None) }
         };

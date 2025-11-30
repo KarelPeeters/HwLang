@@ -49,6 +49,8 @@ impl CompileItemContext<'_, '_> {
     // TODO this probably needs yet another refactor, there's a lot of semi-duplicate code here
     pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
         let &Assignment {
             span: _,
             op,
@@ -78,7 +80,7 @@ impl CompileItemContext<'_, '_> {
         let target_expected_ty = match target_base_ty {
             None => Type::Any,
             Some(target_base_ty) => {
-                target_steps.apply_to_expected_type(diags, Spanned::new(target_base.span, target_base_ty.inner))?
+                target_steps.apply_to_expected_type(self.refs, Spanned::new(target_base.span, target_base_ty.inner))?
             }
         };
 
@@ -125,11 +127,11 @@ impl CompileItemContext<'_, '_> {
             let right_ty = right_eval
                 .inner
                 .ty()
-                .as_hardware_type(self.refs)
+                .as_hardware_type(elab)
                 .map_err(|_: NonHardwareType| {
                     let msg_value = format!(
                         "assigned value is non-hardware with type `{}`",
-                        right_eval.inner.ty().diagnostic_string()
+                        right_eval.inner.ty().value_string(&self.refs.shared.elaboration_arenas)
                     );
                     let diag = Diagnostic::new("assignment to hardware signal requires hardware type")
                         .add_error(right_eval.span, msg_value)
@@ -200,7 +202,7 @@ impl CompileItemContext<'_, '_> {
             span_target: target.span,
             span_target_ty: target_base_ty.span,
         };
-        check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref())?;
+        check_type_contains_value(diags, elab, reason, &target_ty.as_type(), value.as_ref())?;
 
         // convert value to hardware
         let value_hw = value
@@ -350,6 +352,7 @@ impl CompileItemContext<'_, '_> {
         right_eval: Spanned<ValueWithImplications>,
     ) -> DiagResult {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         // TODO move all of this into a function
         // check mutable
@@ -395,7 +398,7 @@ impl CompileItemContext<'_, '_> {
                     span_target: target_span,
                     span_target_ty: ty.span,
                 };
-                check_type_contains_value(diags, reason, &ty.inner, value.as_ref())?;
+                check_type_contains_value(diags, elab, reason, &ty.inner, value.as_ref())?;
             }
 
             // store hardware expression in IR variable, to avoid generating duplicate code if we end up using it multiple times
@@ -476,7 +479,7 @@ impl CompileItemContext<'_, '_> {
                 span_target: target_span,
                 span_target_ty: target_base_ty.span,
             };
-            check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref())?;
+            check_type_contains_value(diags, elab, reason, &target_inner_ty.as_type(), value.as_ref())?;
 
             // do the current assignment
             let value_ir =
@@ -538,11 +541,11 @@ impl CompileItemContext<'_, '_> {
                     span_target: target_span,
                     span_target_ty: var_ty.span,
                 };
-                check_type_contains_value(diags, reason, &target_expected_ty, value_eval.as_ref())?;
+                check_type_contains_value(diags, elab, reason, &target_expected_ty, value_eval.as_ref())?;
             }
 
             // do assignment
-            let result_value = target_steps.set_compile_value(diags, target_base_eval, op.span, value_eval)?;
+            let result_value = target_steps.set_compile_value(self.refs, target_base_eval, op.span, value_eval)?;
             Value::from(result_value)
         };
 
@@ -559,6 +562,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<HardwareValue<Spanned<HardwareType>, IrVariable>> {
         let refs = self.refs;
         let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
 
         // pick a type and convert the current base value to hardware
         // TODO allow just inferring types, the user can specify one if they really want to
@@ -575,13 +579,13 @@ impl CompileItemContext<'_, '_> {
         })?;
         let target_base_ty_span = target_base_ty.span;
 
-        let target_base_ty_hw = target_base_ty.inner.as_hardware_type(refs).map_err(|_| {
+        let target_base_ty_hw = target_base_ty.inner.as_hardware_type(elab).map_err(|_| {
             let diag = Diagnostic::new("variable needs hardware type because it is assigned a hardware value")
                 .add_error(
                     target_span,
                     format!(
                         "actual type `{}` not representable in hardware",
-                        target_base_ty.inner.diagnostic_string()
+                        target_base_ty.inner.value_string(&self.refs.shared.elaboration_arenas)
                     ),
                 )
                 .add_info(target_base_ty_span, "variable type set here")

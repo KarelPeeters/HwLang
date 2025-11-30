@@ -14,7 +14,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::token::apply_string_literal_escapes;
+use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use hwl_util::swrite;
@@ -447,7 +447,7 @@ impl CompileValue {
 impl SimpleCompileValue {
     pub fn value_string(&self, elab: &ElaborationArenas) -> String {
         match self {
-            SimpleCompileValue::Type(v) => v.diagnostic_string(),
+            SimpleCompileValue::Type(v) => v.value_string(elab),
             SimpleCompileValue::Bool(v) => v.to_string(),
             SimpleCompileValue::Int(v) => v.to_string(),
             SimpleCompileValue::Array(v) => {
@@ -460,6 +460,54 @@ impl SimpleCompileValue {
             SimpleCompileValue::Interface(_) => "<interface>".to_owned(),
             SimpleCompileValue::InterfaceView(_) => "<interface view>".to_owned(),
         }
+    }
+}
+
+impl Type {
+    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
+        match self {
+            Type::Type => "type".to_string(),
+            Type::Any => "any".to_string(),
+            Type::Undefined => "undefined".to_string(),
+
+            Type::Bool => "bool".to_string(),
+            Type::String => "string".to_string(),
+            Type::Int(range) => format!("int({range})"),
+            Type::Tuple(inner) => {
+                let mut f = String::new();
+                swrite!(f, "(");
+                swrite!(f, "{}", inner.iter().map(|e| e.value_string(elab)).format(", "));
+                if inner.len() == 1 {
+                    swrite!(f, ",");
+                }
+                swrite!(f, ")");
+                f
+            }
+            Type::Array(inner, len) => {
+                format!("[{len}]{}", inner.value_string(elab))
+            }
+            Type::Struct(ty) => {
+                let ty_info = elab.struct_info(*ty);
+                ty_info.name.clone()
+            }
+            Type::Enum(ty) => {
+                let ty_info = elab.enum_info(*ty);
+                ty_info.name.clone()
+            }
+            Type::Range => "range".to_string(),
+            // TODO include names
+            Type::Function => "function".to_string(),
+            Type::Module => "module".to_string(),
+            Type::Interface => "interface".to_string(),
+            Type::InterfaceView => "interface_view".to_string(),
+            Type::Builtin => TOKEN_STR_BUILTIN.to_owned(),
+        }
+    }
+}
+
+impl HardwareType {
+    pub fn value_str(&self, elab: &ElaborationArenas) -> String {
+        self.as_type().value_string(elab)
     }
 }
 

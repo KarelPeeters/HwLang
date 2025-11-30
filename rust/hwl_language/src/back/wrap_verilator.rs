@@ -1,6 +1,7 @@
 use crate::front::bits::WrongType;
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::diagnostic::{DiagError, Diagnostics};
+use crate::front::item::ElaborationArenas;
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
 use crate::syntax::ast::PortDirection;
@@ -194,6 +195,7 @@ impl VerilatedInstance {
     pub fn set_port(
         &mut self,
         diags: &Diagnostics,
+        elab: &ElaborationArenas,
         port: IrPort,
         value: Spanned<&CompileValue>,
     ) -> Result<(), Either<VerilatorError, DiagError>> {
@@ -207,7 +209,8 @@ impl VerilatedInstance {
             span_target: port_info.debug_span,
             span_target_ty: port_info.debug_info_ty.span,
         };
-        check_type_contains_value(diags, reason, &port_info.ty.as_type_hw().as_type(), value).map_err(Either::Right)?;
+        check_type_contains_value(diags, elab, reason, &port_info.ty.as_type_hw().as_type(), value)
+            .map_err(Either::Right)?;
 
         let bits = port_info
             .ty

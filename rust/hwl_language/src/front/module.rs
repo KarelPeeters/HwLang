@@ -210,6 +210,7 @@ impl CompileRefs<'_, '_> {
     ) -> DiagResult<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>)> {
         let diags = self.diags;
         let source = self.fixed.source;
+        let elab = &self.shared.elaboration_arenas;
 
         let mut scope_ports = Scope::new_child(ports.span.join(Span::empty_at(module_def_span.end())), scope_params);
 
@@ -279,7 +280,7 @@ impl CompileRefs<'_, '_> {
                                         value => Err(diags.report_simple(
                                             "expected interface view",
                                             view.span,
-                                            format!("got other value with type `{}`", value.ty().diagnostic_string()),
+                                            format!("got other value with type `{}`", value.ty().value_string(elab)),
                                         )),
                                     });
 
@@ -354,7 +355,7 @@ impl CompileRefs<'_, '_> {
                                                     view.span,
                                                     format!(
                                                         "got other value with type `{}`",
-                                                        value.ty().diagnostic_string()
+                                                        value.ty().value_string(elab)
                                                     ),
                                                 )),
                                             });
@@ -508,6 +509,7 @@ fn push_connector_single(
 ) -> DiagResult<ScopedEntry> {
     let diags = ctx.refs.diags;
     let source = ctx.refs.fixed.source;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     claim_ir_name(diags, used_ir_names, id.str(source), id.span)?;
 
@@ -517,7 +519,7 @@ fn push_connector_single(
             direction: direction.inner,
             ty: ty.inner.as_ir(ctx.refs),
             debug_span: id.span,
-            debug_info_ty: ty.as_ref().map_inner(|inner| inner.diagnostic_string()),
+            debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_str(elab)),
             debug_info_domain: domain.inner.diagnostic_string(ctx),
         });
 
@@ -563,6 +565,7 @@ fn push_connector_interface(
 ) -> DiagResult<ScopedEntry> {
     let diags = ctx.refs.diags;
     let source = ctx.refs.fixed.source;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
         let ElaboratedInterfaceView { interface, view_index } = view.inner;
@@ -589,7 +592,7 @@ fn push_connector_interface(
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
-                debug_info_ty: ty.as_ref().map_inner(HardwareType::diagnostic_string),
+                debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_str(elab)),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             });
             let port = ctx.ports.push(PortInfo {
@@ -1220,6 +1223,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     ) -> DiagResult<(ModuleTodo<'a>, PublicDeclarations<'a>)> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
+        let elab = &self.ctx.refs.shared.elaboration_arenas;
 
         let &ForStatement {
             span_keyword,
@@ -1255,6 +1259,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 let index_value_spanned = Spanned::new(iter_span, &index_value);
                 check_type_contains_value(
                     diags,
+                    elab,
                     TypeContainsReason::ForIndexType(index_ty.span),
                     &index_ty.inner,
                     index_value_spanned,
@@ -1465,6 +1470,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
+        let elab = &self.ctx.refs.shared.elaboration_arenas;
 
         let &PortConnection {
             id: ref connection_id,
@@ -1577,8 +1583,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             span_connection_port_id: connection_id.span,
                             span_port_ty: ty.span,
                         };
-                        let check_ty =
-                            check_type_contains_value(diags, reason, &ty.inner.as_type(), connection_value.as_ref());
+                        let check_ty = check_type_contains_value(
+                            diags,
+                            elab,
+                            reason,
+                            &ty.inner.as_type(),
+                            connection_value.as_ref(),
+                        );
 
                         // check domain
                         let target_domain = Spanned {
@@ -1619,7 +1630,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(self.ctx.refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
-                                debug_info_ty: ty.inner.clone(),
+                                debug_info_ty: ty.inner.clone().value_str(&self.ctx.refs.shared.elaboration_arenas),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(self.ctx),
                             });
 
@@ -1705,6 +1716,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 };
                                 any_err = any_err.and(check_type_contains_type(
                                     diags,
+                                    elab,
                                     reason,
                                     &signal_ty.inner.as_type(),
                                     Spanned {
@@ -2080,6 +2092,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ctx = &mut self.ctx;
         let refs = ctx.refs;
         let diags = ctx.refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
 
         // declaration and visibility are handled in the caller
         let &WireDeclaration {
@@ -2170,13 +2183,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                         // infer or check type
                         let ty = match ty {
-                            None => match value.inner.ty().as_hardware_type(refs) {
+                            None => match value.inner.ty().as_hardware_type(elab) {
                                 Ok(ty) => Ok(Spanned::new(value.span, ty)),
                                 Err(e) => {
                                     let _: NonHardwareType = e;
                                     let err_msg = format!(
                                         "value with type `{}` cannot be represented in hardware",
-                                        value.inner.ty().diagnostic_string()
+                                        value.inner.ty().value_string(elab)
                                     );
                                     let diag = Diagnostic::new("cannot assign non-hardware value to wire")
                                         .add_error(value.span, err_msg)
@@ -2190,7 +2203,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                     span_target: id.span(),
                                     span_target_ty: ty.span,
                                 };
-                                check_type_contains_value(diags, reason, &ty.inner.as_type(), value.as_ref())
+                                check_type_contains_value(diags, elab, reason, &ty.inner.as_type(), value.as_ref())
                                     .map(|()| ty)
                             }
                         };
@@ -2281,7 +2294,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 });
 
                 // create inner wires
-                let interface_info = ctx.refs.shared.elaboration_arenas.interface_info(interface.inner);
+                let interface_info = elab.interface_info(interface.inner);
                 let mut wires = vec![];
                 let mut ir_wires = vec![];
                 for (port_index, (port_name, port_info)) in enumerate(&interface_info.ports) {
@@ -2294,7 +2307,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     let wire_ir_info = IrWireInfo {
                         ty: ty.inner.as_ir(refs),
                         debug_info_id: Spanned::new(id.span, Some(ir_name)),
-                        debug_info_ty: ty.inner.clone(),
+                        debug_info_ty: ty.inner.value_str(elab),
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
@@ -2333,6 +2346,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     ) -> DiagResult<RegisterInit> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
+        let elab = &ctx.refs.shared.elaboration_arenas;
 
         let mut flow_inner = flow_body.new_child_isolated();
 
@@ -2369,7 +2383,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 span_target: id.span(),
                 span_target_ty: ty.span,
             };
-            check_type_contains_value(diags, reason, &ty.inner.as_type(), init_raw.as_ref())?;
+            check_type_contains_value(diags, elab, reason, &ty.inner.as_type(), init_raw.as_ref())?;
             Ok(init_raw)
         });
 
@@ -2380,7 +2394,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: ty.inner.as_ir(ctx.refs),
             debug_info_id: id.spanned_string(),
-            debug_info_ty: ty.inner.clone(),
+            debug_info_ty: ty.inner.value_str(elab),
             debug_info_domain,
         });
         let reg = ctx.registers.push(RegisterInfo {
@@ -2405,6 +2419,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ctx = &mut self.ctx;
         let diags = ctx.refs.diags;
         let source = ctx.refs.fixed.source;
+        let elab = &ctx.refs.shared.elaboration_arenas;
 
         let &RegOutPortMarker { id, init } = decl;
         let id = id.spanned_str(source);
@@ -2477,7 +2492,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 span_target: id.span,
                 span_target_ty: port_info.ty.span,
             };
-            check_type_contains_value(diags, reason, &port_ty, init_raw.as_ref())?;
+            check_type_contains_value(diags, elab, reason, &port_ty, init_raw.as_ref())?;
             Ok(init_raw)
         });
 
@@ -2485,7 +2500,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: port_info.ty.inner.as_ir(ctx.refs),
             debug_info_id: id.map_inner(|s| Some(s.to_owned())),
-            debug_info_ty: port_info.ty.inner.clone(),
+            debug_info_ty: port_info.ty.inner.value_str(elab),
             debug_info_domain: domain.diagnostic_string(ctx),
         });
         let domain_spanned = Spanned {

@@ -73,13 +73,13 @@ impl<'a> CompileItemContext<'a, '_> {
         id: GeneralIdentifier,
     ) -> DiagResult<Spanned<ArcOrRef<'a, str>>> {
         let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         match id {
-            GeneralIdentifier::Simple(id) => Ok(id.spanned_str(source).map_inner(ArcOrRef::Ref)),
+            GeneralIdentifier::Simple(id) => Ok(id.spanned_str(self.refs.fixed.source).map_inner(ArcOrRef::Ref)),
             GeneralIdentifier::FromString(span, expr) => {
                 let value = self.eval_expression_as_compile(scope, flow, &Type::String, expr, "id string")?;
-                let value = check_type_is_string_compile(diags, TypeContainsReason::Operator(span), value)?;
+                let value = check_type_is_string_compile(diags, elab, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(span, ArcOrRef::Arc(value)))
             }
@@ -169,6 +169,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let refs = self.refs;
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
+        let elab = &refs.shared.elaboration_arenas;
 
         let result_simple = match refs.get_expr(expr) {
             ExpressionKind::Dummy => {
@@ -284,7 +285,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.eval_expression(scope, flow, &Type::Int(IncRange::OPEN), bound)
                         .and_then(|bound| {
                             let reason = TypeContainsReason::Operator(op_span);
-                            check_type_is_int(diags, reason, bound)
+                            check_type_is_int(diags, elab, reason, bound)
                         })
                 };
 
@@ -324,7 +325,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             .eval_expression(scope, flow, &Type::Int(range_uint), length)
                             .and_then(|length| {
                                 let reason = TypeContainsReason::Operator(op_span);
-                                check_type_is_uint(diags, reason, length)
+                                check_type_is_uint(diags, elab, reason, length)
                             });
 
                         let range = RangeValue::StartLength {
@@ -394,6 +395,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
                     let _ = check_type_is_int(
                         diags,
+                        elab,
                         TypeContainsReason::Operator(op.span),
                         operand.clone().map_inner(ValueWithImplications::into_value),
                     )?;
@@ -401,7 +403,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
-                    let operand_int = check_type_is_int(diags, TypeContainsReason::Operator(op.span), operand)?;
+                    let operand_int = check_type_is_int(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
                     match operand_int {
                         MaybeCompile::Compile(c) => Value::new_int(-c),
@@ -425,7 +427,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 UnaryOp::Not => {
                     let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
-                    let operand_bool = check_type_is_bool(diags, TypeContainsReason::Operator(op.span), operand)?;
+                    let operand_bool = check_type_is_bool(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
                     match operand_bool {
                         MaybeCompile::Compile(c) => Value::new_bool(!c),
@@ -472,7 +474,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let len =
                             self.eval_expression_as_compile(scope, flow, &len_expected_ty, len, "array type length")?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
-                        check_type_is_uint_compile(diags, reason, len)
+                        check_type_is_uint_compile(diags, elab, reason, len)
                     })
                     .try_collect_all_vec();
                 let base = self.eval_expression_as_ty(scope, flow, base);
@@ -544,10 +546,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                         expr: self.large.push_expr(expr),
                                     })
                                 }
-                                _ => return Err(err_not_tuple(&value.ty.diagnostic_string())),
+                                _ => return Err(err_not_tuple(&value.ty.value_str(elab))),
                             }
                         }
-                        ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().diagnostic_string())),
+                        ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().value_string(elab))),
                         ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
                             return Err(err_not_tuple("interface instance"));
                         }
@@ -596,7 +598,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let target_inner = match target.inner {
                     Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
                         // handle integer calls here
-                        let result = eval_int_ty_call(diags, expr.span, Spanned::new(target.span, range), args?)?;
+                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, range), args?)?;
                         return Ok(ValueInner::Value(Value::new_ty(Type::Int(result))));
                     }
                     Value::Simple(SimpleCompileValue::Function(f)) => f,
@@ -604,7 +606,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let e = diags.report_simple(
                             "call target must be function",
                             expr.span,
-                            format!("got value with type `{}`", target.inner.ty().diagnostic_string()),
+                            format!("got value with type `{}`", target.inner.ty().value_string(elab)),
                         );
                         return Err(e);
                     }
@@ -639,13 +641,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 let domain = domain?;
 
                 // convert value to hardware
-                let ty = match value.inner.ty().as_hardware_type(refs) {
+                let ty = match value.inner.ty().as_hardware_type(elab) {
                     Ok(ty) => ty,
                     Err(NonHardwareType) => {
                         let diag = Diagnostic::new("value must be representable in hardware for domain cast")
                             .add_error(
                                 value.span,
-                                format!("got non-hardware type `{}`", value.inner.ty().diagnostic_string()),
+                                format!("got non-hardware type `{}`", value.inner.ty().value_string(elab)),
                             )
                             .finish();
                         return Err(diags.report(diag));
@@ -679,14 +681,14 @@ impl<'a> CompileItemContext<'a, '_> {
                 let value_ty = value.inner.ty();
                 let init_ty = init.inner.ty();
                 let ty = value_ty.union(&init_ty);
-                let ty_hw = ty.as_hardware_type(refs).map_err(|_| {
+                let ty_hw = ty.as_hardware_type(elab).map_err(|_| {
                     let diag = Diagnostic::new("register type must be representable in hardware")
                         .add_error(
                             span_keyword,
-                            format!("got non-hardware type `{}`", ty.diagnostic_string()),
+                            format!("got non-hardware type `{}`", ty.value_string(elab)),
                         )
-                        .add_info(value.span, format!("from combining `{}`", value_ty.diagnostic_string()))
-                        .add_info(init.span, format!("from combining `{}`", init_ty.diagnostic_string()))
+                        .add_info(value.span, format!("from combining `{}`", value_ty.value_string(elab)))
+                        .add_info(init.span, format!("from combining `{}`", init_ty.value_string(elab)))
                         .finish();
                     diags.report(diag)
                 })?;
@@ -722,7 +724,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
                     debug_info_id: Spanned::new(span_keyword, None),
-                    debug_info_ty: ty_hw.clone(),
+                    debug_info_ty: ty_hw.clone().value_str(elab),
                     debug_info_domain: clocked_domain.inner.diagnostic_string(self),
                 };
                 let reg = ir_registers.push(reg_info);
@@ -797,9 +799,10 @@ impl<'a> CompileItemContext<'a, '_> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
         let refs = self.refs;
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         let base_eval = self.eval_expression_inner(scope, flow, &Type::Any, base)?;
-        let index_str = index.str(self.refs.fixed.source);
+        let index_str = index.str(refs.fixed.source);
 
         // interface fields
         let base_eval = match base_eval {
@@ -868,7 +871,7 @@ impl<'a> CompileItemContext<'a, '_> {
         if let Value::Simple(SimpleCompileValue::Type(ty)) = &base_eval {
             match index_str {
                 "size_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let width = ty_hw.as_ir(refs).size_bits();
                     let result = Value::new_int(width.into());
                     return Ok(ValueInner::Value(result));
@@ -876,7 +879,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 // TODO all of these should return functions with a single params,
                 //   without the need for scope capturing
                 "to_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let func = FunctionBits {
                         ty_hw,
                         kind: FunctionBitsKind::ToBits,
@@ -885,14 +888,14 @@ impl<'a> CompileItemContext<'a, '_> {
                     return Ok(ValueInner::Value(result));
                 }
                 "from_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
 
                     if !ty_hw.every_bit_pattern_is_valid(refs) {
                         let diag =
                             Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
                                 .add_error(
                                     base.span,
-                                    format!("got type `{}` with invalid bit patterns", ty_hw.diagnostic_string()),
+                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_str(elab)),
                                 )
                                 .footer(
                                     Level::Help,
@@ -914,7 +917,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     return Ok(ValueInner::Value(result));
                 }
                 "from_bits_unsafe" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
+                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let func = FunctionBits {
                         ty_hw,
                         kind: FunctionBitsKind::FromBits,
@@ -995,11 +998,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // struct fields
         let base_ty = base_eval.ty();
-        if let Type::Struct(elab) = base_ty {
-            let info = self.refs.shared.elaboration_arenas.struct_info(elab);
+        if let Type::Struct(base_ty_struct) = base_ty {
+            let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
             let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
                 let diag = Diagnostic::new("field not found")
-                    .add_info(base.span, format!("base has type `{}`", base_ty.diagnostic_string()))
+                    .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
                     .add_error(index.span, "attempt to access non-existing field here")
                     .add_info(info.span_body, "struct fields declared here")
                     .finish();
@@ -1039,7 +1042,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // fallthrough into error
         let diag = Diagnostic::new("invalid dot index expression")
-            .add_info(base.span, format!("base has type `{}`", base_ty.diagnostic_string()))
+            .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
             .add_error(index.span, format!("no attribute found with with name `{index_str}`"))
             .finish();
         Err(diags.report(diag))
@@ -1147,6 +1150,7 @@ impl<'a> CompileItemContext<'a, '_> {
         index: Expression,
     ) -> DiagResult<Spanned<ArrayStep>> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         // special case range with length, it can have a hardware start index
         let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
@@ -1158,7 +1162,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
                 .eval_expression(scope, flow, &Type::Any, start)
-                .and_then(|start| check_type_is_int(diags, reason, start));
+                .and_then(|start| check_type_is_int(diags, elab, reason, start));
 
             let len_expected_ty = Type::Int(IncRange {
                 start_inc: Some(BigInt::ZERO),
@@ -1166,7 +1170,7 @@ impl<'a> CompileItemContext<'a, '_> {
             });
             let len = self
                 .eval_expression_as_compile(scope, flow, &len_expected_ty, len, "range length")
-                .and_then(|len| check_type_is_uint_compile(diags, reason, len));
+                .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len));
 
             let start = start?;
             let len = len?;
@@ -1187,7 +1191,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let index_ty = index.inner.ty();
             let err_wrong_type = || {
                 let diag = Diagnostic::new("array index must be integer or range")
-                    .add_error(index.span, format!("got type `{}`", index_ty.diagnostic_string()))
+                    .add_error(index.span, format!("got type `{}`", index_ty.value_string(elab)))
                     .finish();
                 diags.report(diag)
             };
@@ -1270,7 +1274,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 Value::Hardware(index) => {
                     // TODO make this error message better, specifically refer to non-compile-time index
                     let reason = TypeContainsReason::ArrayIndex { span_index: index_span };
-                    let index_int = check_type_is_int_hardware(diags, reason, Spanned::new(index_span, index))?;
+                    let index_int = check_type_is_int_hardware(diags, elab, reason, Spanned::new(index_span, index))?;
                     ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index_int))
                 }
             }
@@ -1350,6 +1354,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expr: Expression,
     ) -> DiagResult<Spanned<Type>> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         // TODO unify this message with the one when a normal type-check fails
         match self
@@ -1363,7 +1368,7 @@ impl<'a> CompileItemContext<'a, '_> {
             value => Err(diags.report_simple(
                 "expected type, got value",
                 expr.span,
-                format!("got value with type `{}`", value.ty().diagnostic_string()),
+                format!("got value with type `{}`", value.ty().value_string(elab)),
             )),
         }
     }
@@ -1376,13 +1381,14 @@ impl<'a> CompileItemContext<'a, '_> {
         reason: &str,
     ) -> DiagResult<Spanned<HardwareType>> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         let ty = self.eval_expression_as_ty(scope, flow, expr)?.inner;
-        let ty_hw = ty.as_hardware_type(self.refs).map_err(|_| {
+        let ty_hw = ty.as_hardware_type(elab).map_err(|_| {
             diags.report_simple(
                 format!("{reason} type must be representable in hardware"),
                 expr.span,
-                format!("got type `{}`", ty.diagnostic_string()),
+                format!("got type `{}`", ty.value_string(elab)),
             )
         })?;
         Ok(Spanned {
@@ -1672,6 +1678,7 @@ impl<'a> CompileItemContext<'a, '_> {
         iter: Expression,
     ) -> DiagResult<ForIterator> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         let iter = self.eval_expression(scope, flow, &Type::Any, iter)?;
         let iter_span = iter.span;
@@ -1750,7 +1757,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 throw!(diags.report_simple(
                     "invalid for loop iterator type, must be range or array",
                     iter.span,
-                    format!("iterator has type `{}`", iter.inner.ty().diagnostic_string())
+                    format!("iterator has type `{}`", iter.inner.ty().value_string(elab))
                 ))
             }
         };
@@ -1766,11 +1773,12 @@ impl<'a> CompileItemContext<'a, '_> {
         expr: Expression,
     ) -> DiagResult<ElaboratedModule> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         let eval = self.eval_expression_as_compile(scope, flow, &Type::Module, expr, "module")?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
-        check_type_contains_value(diags, reason, &Type::Module, eval.as_ref())?;
+        check_type_contains_value(diags, elab, reason, &Type::Module, eval.as_ref())?;
 
         match eval.inner {
             CompileValue::Simple(SimpleCompileValue::Module(elab)) => Ok(elab),
@@ -1780,11 +1788,14 @@ impl<'a> CompileItemContext<'a, '_> {
 }
 
 fn eval_int_ty_call(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     span_call: Span,
     target_range: Spanned<IncRange<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
 ) -> DiagResult<IncRange<BigInt>> {
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
     // int calls should only work for `int` and `uint`, detect which of these it is here
     let target_signed = match target_range.inner {
         IncRange {
@@ -1800,7 +1811,7 @@ fn eval_int_ty_call(
                 .add_error(span_call, "attempt to constrain int type here")
                 .add_info(
                     target_range.span,
-                    format!("base type `{}` here", Type::Int(target_range.inner).diagnostic_string()),
+                    format!("base type `{}` here", Type::Int(target_range.inner).value_string(elab)),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -1885,7 +1896,7 @@ fn eval_int_ty_call(
             let diag = Diagnostic::new("int type constraint must be an int or int range")
                 .add_error(
                     arg.span,
-                    format!("got value with type `{}` here", arg_inner.ty().diagnostic_string()),
+                    format!("got value with type `{}` here", arg_inner.ty().value_string(elab)),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -2014,19 +2025,21 @@ pub fn eval_binary_expression(
     right: Spanned<ValueWithImplications>,
 ) -> DiagResult<ValueWithImplications> {
     let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
     let op_reason = TypeContainsReason::Operator(op.span);
 
     let left_span = left.span;
     let right_span = right.span;
 
     let check_both_int = |left, right| {
-        let left = check_type_is_int(diags, op_reason, left);
-        let right = check_type_is_int(diags, op_reason, right);
+        let left = check_type_is_int(diags, elab, op_reason, left);
+        let right = check_type_is_int(diags, elab, op_reason, right);
         Ok((left?, right?))
     };
-    let eval_binary_bool = |large, left, right, op| eval_binary_bool(diags, large, op_reason, left, right, op);
+    let eval_binary_bool = |large, left, right, op| eval_binary_bool(refs, large, op_reason, left, right, op);
     let eval_binary_int_compare =
-        |large, left, right, op| eval_binary_int_compare(diags, large, op_reason, left, right, op);
+        |large, left, right, op| eval_binary_int_compare(refs, large, op_reason, left, right, op);
 
     let result_simple: Value<_> = match op.inner {
         // (int, int)
@@ -2057,7 +2070,7 @@ pub fn eval_binary_expression(
         BinaryOp::Mul => {
             // TODO do we want to keep using multiplication as the "array repeat" syntax?
             //   if so, maybe allow tuples on the right side for multidimensional repeating
-            let right = check_type_is_int(diags, op_reason, right.map_inner(|e| e.into_value()));
+            let right = check_type_is_int(diags, elab, op_reason, right.map_inner(|e| e.into_value()));
             match left.inner.ty() {
                 Type::Array(left_ty_inner, left_len) => {
                     let right = right?;
@@ -2101,7 +2114,7 @@ pub fn eval_binary_expression(
                             let element = IrArrayLiteralElement::Spread(value.expr);
                             let elements = vec![element; right_inner];
 
-                            let left_ty_inner_hw = left_ty_inner.as_hardware_type(refs).unwrap();
+                            let left_ty_inner_hw = left_ty_inner.as_hardware_type(elab).unwrap();
                             let result_len = left_len * right_inner;
                             let result_expr = IrExpressionLarge::ArrayLiteral(
                                 left_ty_inner_hw.as_ir(refs),
@@ -2123,7 +2136,7 @@ pub fn eval_binary_expression(
                     }
                 }
                 Type::Int(_) => {
-                    let left = check_type_is_int(diags, op_reason, left.map_inner(|e| e.into_value()))
+                    let left = check_type_is_int(diags, elab, op_reason, left.map_inner(|e| e.into_value()))
                         .expect("int, already checked");
                     let right = right?;
                     match pair_compile_int(left, right) {
@@ -2140,7 +2153,7 @@ pub fn eval_binary_expression(
                     return Err(diags.report_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
-                        format!("got value with type `{}`", left.inner.ty().diagnostic_string()),
+                        format!("got value with type `{}`", left.inner.ty().value_string(elab)),
                     ));
                 }
             }
@@ -2299,15 +2312,18 @@ fn int_value_range(value: &MaybeCompile<BigInt, HardwareValue<ClosedIncRange<Big
 }
 
 fn eval_binary_bool(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
     op: IrBoolBinaryOp,
 ) -> DiagResult<ValueWithImplications> {
-    let left = check_type_is_bool(diags, op_reason, left);
-    let right = check_type_is_bool(diags, op_reason, right);
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
+    let left = check_type_is_bool(diags, elab, op_reason, left);
+    let right = check_type_is_bool(diags, elab, op_reason, right);
 
     let left = left?;
     let right = right?;
@@ -2391,20 +2407,25 @@ fn build_unary_bool_gate(
 }
 
 fn eval_binary_int_compare(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     large: &mut IrLargeArena,
     op_reason: TypeContainsReason,
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
     op: IrIntCompareOp,
 ) -> DiagResult<ValueWithImplications> {
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
     let left_int = check_type_is_int(
         diags,
+        elab,
         op_reason,
         left.clone().map_inner(ValueWithImplications::into_value),
     );
     let right_int = check_type_is_int(
         diags,
+        elab,
         op_reason,
         right.clone().map_inner(ValueWithImplications::into_value),
     );
@@ -2582,6 +2603,7 @@ fn array_literal_combine_values(
     values: Vec<ArrayLiteralElement<Spanned<Value>>>,
 ) -> DiagResult<Value> {
     let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
 
     let first_non_compile_span = values
         .iter()
@@ -2603,17 +2625,17 @@ fn array_literal_combine_values(
                         _ => Err(diags.report_simple(
                             "spread operator requires an array value",
                             v.span,
-                            format!("got non-array type `{}`", v_ty.diagnostic_string()),
+                            format!("got non-array type `{}`", v_ty.value_string(elab)),
                         )),
                     }
                 }
             })
             .try_fold(Type::Undefined, |a, t| Ok(a.union(&t?)))?;
 
-        let ty_inner_hw = ty_inner.as_hardware_type(refs).map_err(|_| {
+        let ty_inner_hw = ty_inner.as_hardware_type(elab).map_err(|_| {
             let message = format!(
                 "hardware array literal has inner type `{}` which is not representable in hardware",
-                ty_inner.diagnostic_string()
+                ty_inner.value_string(elab)
             );
             let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
                 .add_error(expr_span, message)

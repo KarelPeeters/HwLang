@@ -1389,6 +1389,7 @@ fn merge_branch_values(
     branches: &mut [FlowHardwareBranchContent],
 ) -> DiagResult<VariableValue> {
     let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
 
     let var_spanned = Spanned::new(span_merge, var);
     let var_info = parent_flow.var_info(var_spanned)?;
@@ -1546,8 +1547,8 @@ fn merge_branch_values(
                 Value::Hardware(v) => v.value.ty.as_type(),
             };
 
-            branch_ty.as_hardware_type(refs).map_err(|_| {
-                let ty_str = branch_ty.diagnostic_string();
+            branch_ty.as_hardware_type(elab).map_err(|_| {
+                let ty_str = branch_ty.value_string(elab);
                 let diag = Diagnostic::new("merging if assignments needs hardware type")
                     .add_info(var_info.span_decl, "for this variable")
                     .add_info(
@@ -1565,8 +1566,8 @@ fn merge_branch_values(
     let ty = branch_tys.iter().fold(Type::Undefined, |a, t| a.union(&t.as_type()));
 
     // convert common to hardware too
-    let ty = ty.as_hardware_type(refs).map_err(|_| {
-        let ty_str = ty.diagnostic_string();
+    let ty = ty.as_hardware_type(elab).map_err(|_| {
+        let ty_str = ty.value_string(elab);
 
         let mut diag = Diagnostic::new("merging if assignments needs hardware type")
             .add_info(var_info.span_decl, "for this variable")
@@ -1587,7 +1588,7 @@ fn merge_branch_values(
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
                             branch_value.last_assignment_span,
-                            format!("value in branch assigned here has type `{}`", ty.diagnostic_string()),
+                            format!("value in branch assigned here has type `{}`", ty.value_str(elab)),
                         )
                     }
                 }
@@ -1601,10 +1602,7 @@ fn merge_branch_values(
                 MaybeUndefined::Defined(parent_value) => {
                     diag = diag.add_info(
                         parent_value.last_assignment_span,
-                        format!(
-                            "value before branch assigned here has type `{}`",
-                            ty.diagnostic_string()
-                        ),
+                        format!("value before branch assigned here has type `{}`", ty.value_string(elab)),
                     );
                 }
             }

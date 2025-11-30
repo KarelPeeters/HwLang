@@ -189,7 +189,7 @@ impl WireInfo {
                         let ir = ir_wires.push(IrWireInfo {
                             ty: suggest.inner.as_ir(refs),
                             debug_info_id: slf.id.spanned_string(),
-                            debug_info_ty: suggest.inner.clone(),
+                            debug_info_ty: suggest.inner.clone().value_str(&refs.shared.elaboration_arenas),
                             // will be filled in later during the inference checking pass
                             debug_info_domain: String::new(),
                         });

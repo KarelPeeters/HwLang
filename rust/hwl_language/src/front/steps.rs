@@ -66,8 +66,8 @@ impl ArraySteps<ArrayStep> {
         }
     }
 
-    pub fn apply_to_expected_type(&self, diags: &Diagnostics, ty: Spanned<Type>) -> DiagResult<Type> {
-        let (ty, _) = self.apply_to_type_impl(diags, ty, true)?;
+    pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
+        let (ty, _) = self.apply_to_type_impl(refs, ty, true)?;
         Ok(ty)
     }
 
@@ -77,11 +77,12 @@ impl ArraySteps<ArrayStep> {
         ty: Spanned<&HardwareType>,
     ) -> DiagResult<(HardwareType, Vec<IrTargetStep>)> {
         let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
 
-        let (result_ty, steps) = self.apply_to_type_impl(diags, ty.map_inner(HardwareType::as_type), false)?;
+        let (result_ty, steps) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type), false)?;
         let steps = steps.unwrap();
 
-        let result_ty_hw = result_ty.as_hardware_type(refs).map_err(|_| {
+        let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
             diags.report_internal_error(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
@@ -106,10 +107,12 @@ impl ArraySteps<ArrayStep> {
 
     fn apply_to_type_impl(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         ty: Spanned<Type>,
         pass_any: bool,
     ) -> DiagResult<(Type, Result<Vec<IrTargetStep>, EncounteredAny>)> {
+        let diags = refs.diags;
+
         let ArraySteps { steps } = self;
 
         // forward
@@ -120,7 +123,7 @@ impl ArraySteps<ArrayStep> {
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
                 Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
-                _ => return Err(diags.report(diag_expected_array(curr_ty.as_ref(), step.span))),
+                _ => return Err(diags.report(diag_expected_array(refs, curr_ty.as_ref(), step.span))),
             };
             let ty_array_len = Spanned::new(curr_ty.span, ty_array_len);
 
@@ -188,6 +191,8 @@ impl ArraySteps<ArrayStep> {
         value: Spanned<Value>,
     ) -> DiagResult<Value> {
         let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
+
         let ArraySteps { steps } = self;
 
         let mut curr = value;
@@ -232,6 +237,7 @@ impl ArraySteps<ArrayStep> {
                     }
                     _ => {
                         return Err(diags.report(diag_expected_array(
+                            refs,
                             Spanned::new(curr.span, &curr_inner.ty()),
                             step.span,
                         )));
@@ -240,13 +246,13 @@ impl ArraySteps<ArrayStep> {
                 (step_inner, curr_inner) => {
                     // convert curr to hardware
                     let ty = curr_inner.ty();
-                    let ty = ty.as_hardware_type(refs).map_err(|_| {
+                    let ty = ty.as_hardware_type(elab).map_err(|_| {
                         let diag = Diagnostic::new("hardware array indexing target needs to have hardware type")
                             .add_error(
                                 curr.span,
                                 format!(
                                     "this array target needs to have a hardware type, has type `{}`",
-                                    ty.diagnostic_string()
+                                    ty.value_string(elab)
                                 ),
                             )
                             .add_info(step.span, "for this hardware array access operation")
@@ -259,9 +265,11 @@ impl ArraySteps<ArrayStep> {
                             (curr_array_inner_ty, curr_array_len)
                         }
                         _ => {
-                            return Err(
-                                diags.report(diag_expected_array(Spanned::new(curr.span, &ty.as_type()), step.span))
-                            );
+                            return Err(diags.report(diag_expected_array(
+                                refs,
+                                Spanned::new(curr.span, &ty.as_type()),
+                                step.span,
+                            )));
                         }
                     };
                     let curr_array_len = Spanned::new(curr.span, curr_array_len);
@@ -374,18 +382,21 @@ impl ArraySteps<ArrayStep> {
 impl ArraySteps<&ArrayStepCompile> {
     pub fn set_compile_value(
         &self,
-        diags: &Diagnostics,
+        refs: CompileRefs,
         old: Spanned<CompileValue>,
         op_span: Span,
         new: Spanned<CompileValue>,
     ) -> DiagResult<CompileValue> {
         fn set_compile_value_impl(
-            diags: &Diagnostics,
+            refs: CompileRefs,
             old_curr: Spanned<CompileValue>,
             steps: &[Spanned<&ArrayStepCompile>],
             op_span: Span,
             new_curr: Spanned<CompileValue>,
         ) -> DiagResult<CompileValue> {
+            let diags = refs.diags;
+            let elab = &refs.shared.elaboration_arenas;
+
             let (step, rest) = match steps.split_first() {
                 None => return Ok(new_curr.inner),
                 Some(pair) => pair,
@@ -399,7 +410,7 @@ impl ArraySteps<&ArrayStepCompile> {
                             old_curr.span,
                             format!(
                                 "non-array value with type `{}` here",
-                                old_curr.inner.ty().diagnostic_string()
+                                old_curr.inner.ty().value_string(elab)
                             ),
                         )
                         .add_error(step.span, "this array access needs an array")
@@ -413,7 +424,7 @@ impl ArraySteps<&ArrayStepCompile> {
                 ArrayStepCompile::ArrayIndex(index) => {
                     let index = check_range_index_compile(diags, Spanned::new(step.span, index), array_len)?;
                     let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[index].clone());
-                    old_curr_inner[index] = set_compile_value_impl(diags, old_next, rest, op_span, new_curr)?;
+                    old_curr_inner[index] = set_compile_value_impl(refs, old_next, rest, op_span, new_curr)?;
                     Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
                         old_curr_inner,
                     ))))
@@ -423,7 +434,7 @@ impl ArraySteps<&ArrayStepCompile> {
                         CompileValue::Simple(SimpleCompileValue::Array(new_curr_inner)) => new_curr_inner,
                         _ => {
                             let new_curr_ty = new_curr.as_ref().map_inner(Value::ty);
-                            return Err(diags.report(diag_expected_array(new_curr_ty.as_ref(), step.span)));
+                            return Err(diags.report(diag_expected_array(refs, new_curr_ty.as_ref(), step.span)));
                         }
                     };
 
@@ -452,7 +463,7 @@ impl ArraySteps<&ArrayStepCompile> {
                     for i in 0..slice_len {
                         let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[start + i].clone());
                         let new_next = Spanned::new(new_curr.span.join(step.span), new_curr_inner[i].clone());
-                        old_curr_inner[start + i] = set_compile_value_impl(diags, old_next, rest, op_span, new_next)?;
+                        old_curr_inner[start + i] = set_compile_value_impl(refs, old_next, rest, op_span, new_next)?;
                     }
 
                     Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
@@ -463,7 +474,7 @@ impl ArraySteps<&ArrayStepCompile> {
         }
 
         let ArraySteps { steps } = self;
-        set_compile_value_impl(diags, old, steps, op_span, new)
+        set_compile_value_impl(refs, old, steps, op_span, new)
     }
 
     pub fn get_compile_value(
@@ -620,12 +631,15 @@ pub fn check_range_slice_compile(
     Ok(SliceInfo { start, len })
 }
 
-pub fn diag_expected_array(ty: Spanned<&Type>, step_span: Span) -> Diagnostic {
+pub fn diag_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> Diagnostic {
     Diagnostic::new("array indexing on non-array type")
         .add_error(step_span, "array indexing operation here")
         .add_info(
             ty.span,
-            format!("on non-array value with type `{}` here", ty.inner.diagnostic_string()),
+            format!(
+                "on non-array value with type `{}` here",
+                ty.inner.value_string(&refs.shared.elaboration_arenas)
+            ),
         )
         .finish()
 }

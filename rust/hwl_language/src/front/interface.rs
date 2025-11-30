@@ -78,6 +78,8 @@ impl CompileRefs<'_, '_> {
     ) -> DiagResult<ElaboratedInterfaceInfo> {
         let diags = self.diags;
         let source = self.fixed.source;
+        let elab = &self.shared.elaboration_arenas;
+
         let &ItemDefInterface {
             span,
             vis: _,
@@ -104,12 +106,12 @@ impl CompileRefs<'_, '_> {
             port_types,
             &mut |ctx, scope_params, flow, &(port_id, ty)| {
                 let ty_eval = ctx.eval_expression_as_ty(scope_params, flow, ty).and_then(|ty| {
-                    match ty.inner.as_hardware_type(self) {
+                    match ty.inner.as_hardware_type(elab) {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                         Err(_) => Err(diags.report_simple(
                             "interface ports must have hardware types",
                             ty.span,
-                            format!("got non-hardware type `{}`", ty.inner.diagnostic_string()),
+                            format!("got non-hardware type `{}`", ty.inner.value_string(elab)),
                         )),
                     }
                 });

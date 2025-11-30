@@ -1,11 +1,10 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
-use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked, HardwareEnumInfo};
+use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo};
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::{Never, ResultExt};
-use hwl_util::swrite;
 use itertools::{Itertools, zip_eq};
 use std::collections::Bound;
 use std::fmt::{Display, Formatter};
@@ -25,6 +24,7 @@ pub enum Type {
     Bool,
     String,
     Int(IncRange<BigInt>),
+    // TODO empty tuples should be convertible to hardware
     Tuple(Arc<Vec<Type>>),
     Array(Arc<Type>, BigUint),
     // TODO make user type covariant? or allow users to define variance?
@@ -261,7 +261,7 @@ impl Type {
     // TODO centralize error messages for this, everyone is just doing them manually for now
     // TODO accept empty tuples here, maybe those need to be normal values instead of types,
     //   and then cast to type where needed
-    pub fn as_hardware_type(&self, refs: CompileRefs) -> Result<HardwareType, NonHardwareType> {
+    pub fn as_hardware_type(&self, elab: &ElaborationArenas) -> Result<HardwareType, NonHardwareType> {
         match self {
             Type::Undefined => Ok(HardwareType::Undefined),
             Type::Bool => Ok(HardwareType::Bool),
@@ -271,23 +271,23 @@ impl Type {
             },
             Type::Tuple(inner) => inner
                 .iter()
-                .map(|ty| ty.as_hardware_type(refs))
+                .map(|ty| ty.as_hardware_type(elab))
                 .try_collect()
                 .map(|v| HardwareType::Tuple(Arc::new(v))),
             Type::Array(inner, len) => inner
-                .as_hardware_type(refs)
+                .as_hardware_type(elab)
                 .map(|inner| HardwareType::Array(Arc::new(inner), len.clone())),
-            &Type::Struct(elab) => {
-                let info = refs.shared.elaboration_arenas.struct_info(elab);
+            &Type::Struct(ty_struct) => {
+                let info = elab.struct_info(ty_struct);
                 match info.fields_hw {
-                    Ok(_) => Ok(HardwareType::Struct(HardwareChecked::new_unchecked(elab))),
+                    Ok(_) => Ok(HardwareType::Struct(HardwareChecked::new_unchecked(ty_struct))),
                     Err(_) => Err(NonHardwareType),
                 }
             }
-            &Type::Enum(elab) => {
-                let info = refs.shared.elaboration_arenas.enum_info(elab);
+            &Type::Enum(ty_enum) => {
+                let info = elab.enum_info(ty_enum);
                 match info.hw {
-                    Ok(_) => Ok(HardwareType::Enum(HardwareChecked::new_unchecked(elab))),
+                    Ok(_) => Ok(HardwareType::Enum(HardwareChecked::new_unchecked(ty_enum))),
                     Err(_) => Err(NonHardwareType),
                 }
             }
@@ -300,44 +300,6 @@ impl Type {
             | Type::Interface
             | Type::InterfaceView
             | Type::Builtin => Err(NonHardwareType),
-        }
-    }
-
-    pub fn diagnostic_string(&self) -> String {
-        match self {
-            Type::Type => "type".to_string(),
-            Type::Any => "any".to_string(),
-            Type::Undefined => "undefined".to_string(),
-
-            Type::Bool => "bool".to_string(),
-            Type::String => "string".to_string(),
-            Type::Int(range) => format!("int({range})"),
-            Type::Tuple(inner) => {
-                let inner_str = inner.iter().map(Type::diagnostic_string).join(", ");
-                format!("({inner_str})")
-            }
-            Type::Array(first_inner, first_len) => {
-                let mut dims = String::new();
-
-                swrite!(&mut dims, "{}", first_len);
-                let mut inner = first_inner;
-                while let Type::Array(curr_inner, curr_len) = &**inner {
-                    swrite!(&mut dims, ", {}", curr_len);
-                    inner = curr_inner;
-                }
-
-                let inner_str = inner.diagnostic_string();
-                format!("[{dims}]{inner_str}")
-            }
-            // TODO better names here, including the definition name/loc/params
-            Type::Struct(_) => "struct".to_string(),
-            Type::Enum(_) => "enum".to_string(),
-            Type::Range => "range".to_string(),
-            Type::Function => "function".to_string(),
-            Type::Module => "module".to_string(),
-            Type::Interface => "interface".to_string(),
-            Type::InterfaceView => "interface_view".to_string(),
-            Type::Builtin => "builtin".to_string(),
         }
     }
 }
@@ -379,10 +341,6 @@ impl HardwareType {
                 IrType::Tuple(vec![tag_ty, data_ty])
             }
         }
-    }
-
-    pub fn diagnostic_string(&self) -> String {
-        self.as_type().diagnostic_string()
     }
 }
 

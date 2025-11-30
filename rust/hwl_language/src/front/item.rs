@@ -381,6 +381,7 @@ impl CompileItemContext<'_, '_> {
         decl: &CommonDeclarationNamedKind,
     ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         match decl {
             CommonDeclarationNamedKind::Type(decl) => {
@@ -409,7 +410,7 @@ impl CompileItemContext<'_, '_> {
                         span_target: id.span(),
                         span_target_ty: ty.span,
                     };
-                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref())?;
+                    check_type_contains_value(diags, elab, reason, &ty.inner, value.as_ref())?;
                 };
 
                 Ok(value.inner)
@@ -708,6 +709,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         // TODO generalize this indexmap "already defined" structure
         let mut fields_eval = IndexMap::new();
@@ -746,7 +748,7 @@ impl CompileItemContext<'_, '_> {
             .enumerate()
             .map(|(i, (_, (_, ty)))| {
                 ty.inner
-                    .as_hardware_type(self.refs)
+                    .as_hardware_type(elab)
                     .map_err(|_| NonHardwareStruct { first_failing_field: i })
             })
             .try_collect_vec();
@@ -832,6 +834,7 @@ fn try_enum_as_hardware(
     span_body: Span,
 ) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
     let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
 
     if variants_eval.is_empty() {
         // no variants, cannot be represented in hardware
@@ -843,7 +846,7 @@ fn try_enum_as_hardware(
     for (i, (_, (_, ty))) in variants_eval.iter().enumerate() {
         let ty_hw = match ty {
             None => None,
-            Some(ty) => match ty.inner.as_hardware_type(refs) {
+            Some(ty) => match ty.inner.as_hardware_type(elab) {
                 Ok(ty_hw) => {
                     let ty_ir = ty_hw.as_ir(refs);
                     Some((ty_hw, ty_ir))

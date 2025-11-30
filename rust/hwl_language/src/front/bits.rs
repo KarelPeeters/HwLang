@@ -81,7 +81,7 @@ impl HardwareType {
                 format!(
                     "failed to convert value `{}` to bits of type `{}`",
                     value.value_string(&refs.shared.elaboration_arenas),
-                    self.diagnostic_string()
+                    self.value_str(&refs.shared.elaboration_arenas)
                 ),
             )
         };
@@ -193,7 +193,10 @@ impl HardwareType {
         let err_internal = || {
             diags.report_internal_error(
                 span,
-                format!("failed to convert bits to value of type `{}`", self.diagnostic_string()),
+                format!(
+                    "failed to convert bits to value of type `{}`",
+                    self.value_str(&refs.shared.elaboration_arenas)
+                ),
             )
         };
 
