@@ -1141,7 +1141,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             ExpressionKind::StringLiteral(pieces) => {
                 for &piece in pieces {
                     match piece {
-                        StringPiece::Literal { span } => {
+                        StringPiece::Literal(span) => {
                             self.visitor.report_range(span, None);
                         }
                         StringPiece::Substitute(expr) => {
@@ -1185,9 +1185,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     }
                     self.visit_expression(scope, end)?;
                 }
-                RangeLiteral::Length { op_span: _, start, len } => {
+                RangeLiteral::Length {
+                    op_span: _,
+                    start,
+                    length,
+                } => {
                     self.visit_expression(scope, start)?;
-                    self.visit_expression(scope, len)?;
+                    self.visit_expression(scope, length)?;
                 }
             },
             ExpressionKind::ArrayComprehension(expr) => {
@@ -1352,7 +1356,7 @@ fn eval_general_id<'s>(
 
                     for piece in pieces {
                         match piece {
-                            &StringPiece::Literal { span: literal_span } => {
+                            &StringPiece::Literal(literal_span) => {
                                 let literal = apply_string_literal_escapes(source.span_str(literal_span));
                                 pattern.push_str(&regex::escape(literal.as_ref()));
                             }

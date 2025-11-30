@@ -1,10 +1,10 @@
 use crate::front::block::EarlyExitKind;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
-use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
-use crate::front::implication::{HardwareValueWithVersion, ValueWithImplications, ValueWithVersion};
+use crate::front::flow::{Flow, FlowKind, ValueVersion, Variable, VariableId, VariableInfo};
+use crate::front::implication::{HardwareValueWithImplications, HardwareValueWithVersion};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, Value};
+use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
 use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
@@ -104,17 +104,17 @@ impl ExitFlag {
         let var = flow.var_new(info);
 
         // initialize to false
-        flow.var_set(var, span, Ok(Value::Compile(CompileValue::Bool(false))));
+        flow.var_set(var, span, Ok(Value::new_bool(false)));
 
         Self { var }
     }
 
     pub fn clear(&mut self, flow: &mut impl Flow, span: Span) {
-        flow.var_set(self.var, span, Ok(Value::Compile(CompileValue::Bool(false))));
+        flow.var_set(self.var, span, Ok(Value::new_bool(false)));
     }
 
     pub fn set(&mut self, flow: &mut impl Flow, span: Span) {
-        flow.var_set(self.var, span, Ok(Value::Compile(CompileValue::Bool(true))));
+        flow.var_set(self.var, span, Ok(Value::new_bool(true)));
     }
 
     pub fn get(
@@ -123,17 +123,18 @@ impl ExitFlag {
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
         span: Span,
-    ) -> DiagResult<ValueWithVersion<bool, ()>> {
-        match flow.var_eval_unchecked(diags, large, Spanned::new(span, self.var)) {
+    ) -> DiagResult<MaybeCompile<bool, HardwareValueWithVersion<ValueVersion, ()>>> {
+        match flow.var_eval(diags, large, Spanned::new(span, self.var)) {
             Ok(value) => {
                 let value = match value {
-                    Value::Compile(value) => {
-                        let value = unwrap_match!(value, CompileValue::Bool(value) => value);
-                        Value::Compile(value)
+                    Value::Simple(value) => {
+                        let value = unwrap_match!(value, SimpleCompileValue::Bool(value) => value);
+                        MaybeCompile::Compile(value)
                     }
+                    Value::Compound(_) => panic!("unexpected compound value for exit flag"),
                     Value::Hardware(value) => {
                         assert_eq!(value.value.ty, HardwareType::Bool);
-                        Value::Hardware(HardwareValueWithVersion {
+                        MaybeCompile::Hardware(HardwareValueWithVersion {
                             value: value.value.map_type(|_| ()),
                             version: value.version,
                         })
@@ -177,18 +178,15 @@ impl<'r> ExitStack<'r> {
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
         span: Span,
-    ) -> DiagResult<ValueWithImplications<bool, ()>> {
-        let mut add_flag = |c: ValueWithImplications<bool, ()>, flag: &ExitFlag| {
-            let flag = flag.get(diags, large, flow, span)?;
-            Ok(eval_binary_bool_typed(
-                large,
-                IrBoolBinaryOp::Or,
-                c,
-                ValueWithImplications::simple_version(flag),
-            ))
+    ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<()>>> {
+        let mut add_flag = |c: MaybeCompile<bool, HardwareValueWithImplications<()>>, flag: &ExitFlag| {
+            let flag = flag
+                .get(diags, large, flow, span)?
+                .map_hardware(HardwareValueWithImplications::simple_version);
+            Ok(eval_binary_bool_typed(large, IrBoolBinaryOp::Or, c, flag))
         };
 
-        let mut exit_cond = ValueWithImplications::<bool, ()>::Compile(false);
+        let mut exit_cond = MaybeCompile::Compile(false);
         if let Some(entry) = self.return_info_option()
             && let ReturnEntryKind::Hardware(entry) = &entry.kind
         {

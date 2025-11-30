@@ -4,13 +4,13 @@ use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp,
-    IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrModules,
-    IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement,
-    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, ValueAccess,
-    ir_modules_topological_sort,
+    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
+    IrSignalOrVariable, IrStatement, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
+    IrVariables, IrWire, IrWireInfo, ValueAccess, ir_modules_topological_sort,
 };
-use crate::syntax::ast::PortDirection;
+use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
@@ -271,7 +271,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     if let Some(generic_args) = debug_info_generic_args {
         swriteln!(f, "//   instantiated with generic arguments:");
         for (arg_name, arg_value) in generic_args {
-            swriteln!(f, "//     {}={}", arg_name, arg_value.diagnostic_string());
+            swriteln!(f, "//     {}={}", arg_name, arg_value);
         }
     }
 
@@ -1077,6 +1077,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
     fn lower_statement(&mut self, stmt: Spanned<&IrStatement>) -> DiagResult {
         let indent = self.indent;
+        let diags = self.diags;
         self.newline.start_item(self.f);
 
         match &stmt.inner {
@@ -1118,9 +1119,73 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                 swriteln!(self.f);
             }
-            IrStatement::PrintLn(s) => {
-                // TODO properly escape string
-                swriteln!(self.f, "{indent}$display(\"{s}\");");
+            IrStatement::For(IrForStatement { index, range, block }) => {
+                let index = *index;
+                let index_ty = IrExpression::Variable(index).ty(self.module, self.locals).unwrap_int();
+
+                match NonZeroWidthRange::new(index_ty.as_ref()) {
+                    Ok(index_ty) => {
+                        let index = match self.name_map.map_var(index) {
+                            Ok(index) => index,
+                            Err(Either::Left(ZeroWidth)) => {
+                                return Err(diags.report_internal_error(stmt.span, "index var zero-width"));
+                            }
+                            Err(Either::Right(NotRead)) => {
+                                return Err(diags.report_internal_error(stmt.span, "index var not read"));
+                            }
+                        };
+
+                        let start_inc = lower_int_constant(index_ty, &range.start_inc);
+                        let end_inc = lower_int_constant(index_ty, &range.end_inc);
+                        swriteln!(
+                            self.f,
+                            "{indent}for({index} = {start_inc}; {index} <= {end_inc}; {index} = {index} + 1) begin"
+                        );
+                        self.lower_block_indented(block)?;
+                        swriteln!(self.f, "{indent}end");
+                    }
+                    Err(ZeroWidth) => {
+                        // the loop would also run for zero iterations, so just skip it
+                    }
+                }
+            }
+            IrStatement::Print(pieces) => {
+                let mut f_str = String::new();
+                let mut f_args = String::new();
+
+                for p in pieces {
+                    match p {
+                        StringPiece::Literal(p) => {
+                            f_str.push_str(&escape_verilog_str(p));
+                        }
+                        StringPiece::Substitute(p) => match p {
+                            IrStringSubstitution::Integer(p, radix) => {
+                                // TODO how does signed bin/hex behave?
+                                let signed =
+                                    p.ty(self.module, self.locals).unwrap_int().as_ref().start_inc < &BigInt::ZERO;
+                                let p = self.lower_expression(stmt.span, p)?;
+
+                                let radix = match radix {
+                                    IrIntegerRadix::Binary => "%b",
+                                    IrIntegerRadix::Decimal => "%d",
+                                    IrIntegerRadix::Hexadecimal => "%h",
+                                };
+
+                                match p {
+                                    Ok(p) => {
+                                        swrite!(f_str, "{radix}");
+                                        swrite!(f_args, ", {}", p.as_signed_maybe(signed));
+                                    }
+                                    Err(ZeroWidth) => {
+                                        swrite!(f_str, "0");
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+
+                swriteln!(self.f, "{indent}$write(\"{f_str}\"{f_args});");
             }
         }
         Ok(())
@@ -1219,11 +1284,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::TupleLiteral(elements) => {
                         // verilog does not care much about types, this is just a concatenation
                         //  (assuming all sub-expression have the right width, which they should)
+                        // the order is flipped, verilog concatenation is high->low index
                         // TODO this is probably incorrect in general, we need to store the tuple in a variable first
                         let mut g = String::new();
                         let mut any_prev = false;
                         swrite!(g, "{{");
-                        for elem in elements {
+                        for elem in elements.iter().rev() {
                             let elem = match self.lower_expression(span, elem)? {
                                 Ok(elem) => elem,
                                 Err(ZeroWidth) => continue,
@@ -1241,13 +1307,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArrayLiteral(_inner_ty, _len, elements) => {
                         // verilog does not care much about types, this is just a concatenation
                         //  (assuming all sub-expression have the right width, which they should)
-                        // TODO skip for zero-sized array? we probably need a more general way to skip zero-sized expressions
+                        // the order is flipped, verilog concatenation is high->low index
                         // TODO use repeat operator if array elements are repeated
-                        // TODO the order is wrong, the verilog array operator is the wrong way around
                         let mut g = String::new();
                         let mut any_prev = false;
                         swrite!(g, "{{");
-                        for elem in elements {
+                        for elem in elements.iter().rev() {
                             let elem = match elem {
                                 IrArrayLiteralElement::Spread(inner) => inner,
                                 IrArrayLiteralElement::Single(inner) => inner,
@@ -1828,11 +1893,11 @@ impl<S: AsRef<str>> Display for LoweredName<S> {
 }
 
 lazy_static! {
-    // TODO also include vhdl keywords and ban both in generated output?
-    /// Updated to "IEEE Standard for SystemVerilog", IEEE 1800-2023
-    static ref VERILOG_KEYWORDS: IndexSet<&'static str> = {
-        include_str!("verilog_keywords.txt").lines().map(str::trim).filter(|line| !line.is_empty()).collect()
-    };
+// TODO also include vhdl keywords and ban both in generated output?
+/// Updated to "IEEE Standard for SystemVerilog", IEEE 1800-2023
+static ref VERILOG_KEYWORDS: IndexSet < & 'static str > = {
+include_str ! ("verilog_keywords.txt").lines().map(str::trim).filter( |line | ! line.is_empty()).collect()
+};
 }
 
 fn maybe_id_as_ref(id: &Spanned<Option<String>>) -> Spanned<Option<&str>> {
@@ -1904,4 +1969,28 @@ impl MaybeBool {
 
 fn unwrap_zero_width<T>(r: Result<T, ZeroWidth>) -> T {
     r.expect("zero width should have already been checked")
+}
+
+fn escape_verilog_str(s: &str) -> String {
+    let mut f = String::new();
+
+    for c in s.chars() {
+        match c {
+            '\n' => swrite!(f, "\\n"),
+            '\t' => swrite!(f, "\\t"),
+            '\\' => swrite!(f, "\\\\"),
+            '"' => swrite!(f, "\\\""),
+            '%' => swrite!(f, "%%"),
+            _ => {
+                if c.is_ascii() {
+                    f.push(c);
+                } else {
+                    // verilog does not support unicode strings, so replace non-ascii with '?'
+                    f.push('?');
+                }
+            }
+        }
+    }
+
+    f
 }

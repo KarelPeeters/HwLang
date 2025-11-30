@@ -1,4 +1,4 @@
-use crate::front::check::{TypeContainsReason, check_type_contains_compile_value, check_type_contains_value};
+use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -9,7 +9,7 @@ use crate::front::scope::Scope;
 use crate::front::signal::{Port, Register, Signal, Wire};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{HardwareValue, Value};
+use crate::front::value::{CompileValue, HardwareValue, NotCompile, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrStatement, IrVariable, IrVariableInfo};
 use crate::syntax::ast::{AssignBinaryOp, Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -200,12 +200,12 @@ impl CompileItemContext<'_, '_> {
             span_target: target.span,
             span_target_ty: target_base_ty.span,
         };
-        check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref(), true, false)?;
+        check_type_contains_value(diags, reason, &target_ty.as_type(), value.as_ref())?;
 
         // convert value to hardware
         let value_hw = value
             .inner
-            .as_hardware_value(self.refs, &mut self.large, value.span, &target_ty)?;
+            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, target_ty)?;
 
         // suggest and check domains
         let value_domain = Spanned {
@@ -373,7 +373,7 @@ impl CompileItemContext<'_, '_> {
             let value = match op.inner {
                 None => right_eval,
                 Some(op_inner) => {
-                    let var_eval = flow.var_eval_unchecked(diags, &mut self.large, target_base)?;
+                    let var_eval = flow.var_eval(diags, &mut self.large, target_base)?;
                     let target_eval = Spanned::new(target_span, ValueWithImplications::simple_version(var_eval));
                     let value_eval = eval_binary_expression(
                         self.refs,
@@ -395,12 +395,13 @@ impl CompileItemContext<'_, '_> {
                     span_target: target_span,
                     span_target_ty: ty.span,
                 };
-                check_type_contains_value(diags, reason, &ty.inner, value.as_ref(), true, false)?;
+                check_type_contains_value(diags, reason, &ty.inner, value.as_ref())?;
             }
 
             // store hardware expression in IR variable, to avoid generating duplicate code if we end up using it multiple times
             let value_stored = match value.inner {
-                Value::Compile(value_inner) => Value::Compile(value_inner),
+                Value::Simple(value_inner) => Value::Simple(value_inner),
+                Value::Compound(value_inner) => Value::Compound(value_inner),
                 Value::Hardware(value_inner) => {
                     let debug_info_id = target_base_info.id.str(self.refs.fixed.source).map(str::to_owned);
                     let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
@@ -411,7 +412,7 @@ impl CompileItemContext<'_, '_> {
                         debug_info_id,
                         value_inner,
                     )?;
-                    Value::Hardware(ir_var.to_general_expression())
+                    Value::Hardware(ir_var.map_expression(IrExpression::Variable))
                 }
             };
 
@@ -421,16 +422,13 @@ impl CompileItemContext<'_, '_> {
         }
 
         // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(
-            target_base.span,
-            flow.var_eval_unchecked(diags, &mut self.large, target_base)?,
-        );
+        let target_base_eval = Spanned::new(target_base.span, flow.var_eval(diags, &mut self.large, target_base)?);
 
         // check if we will stay compile-time or be forced to convert to hardware
         let mut any_hardware = false;
-        any_hardware |= matches!(target_base_eval.inner, Value::Hardware(_));
+        any_hardware |= CompileValue::try_from(&target_base_eval.inner).is_err();
         any_hardware |= target_steps.any_hardware();
-        any_hardware |= matches!(right_eval.inner, Value::Hardware(_));
+        any_hardware |= CompileValue::try_from(&right_eval.inner).is_err();
 
         let result = if any_hardware {
             let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
@@ -478,12 +476,13 @@ impl CompileItemContext<'_, '_> {
                 span_target: target_span,
                 span_target_ty: target_base_ty.span,
             };
-            check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref(), true, false)?;
+            check_type_contains_value(diags, reason, &target_inner_ty.as_type(), value.as_ref())?;
 
             // do the current assignment
-            let value_ir = value
-                .inner
-                .as_hardware_value(self.refs, &mut self.large, value.span, &target_inner_ty)?;
+            let value_ir =
+                value
+                    .inner
+                    .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, target_inner_ty)?;
             let target_ir = IrAssignmentTarget {
                 base: target_base_ir_var.into(),
                 steps: target_steps_ir,
@@ -503,9 +502,10 @@ impl CompileItemContext<'_, '_> {
             Value::Hardware(value_assigned)
         } else {
             // everything is compile-time, do assignment at compile-time
-            let target_base_eval = target_base_eval.map_inner(|m| m.unwrap_compile());
+            let target_base_eval =
+                target_base_eval.map_inner(|m| CompileValue::try_from(&m.map_hardware(|m| m.value)).unwrap());
             let target_steps = target_steps.unwrap_compile();
-            let right_eval = right_eval.map_inner(Value::unwrap_compile);
+            let right_eval = right_eval.map_inner(|m| CompileValue::try_from(&m.map_hardware(|m| m.value)).unwrap());
 
             // handle op
             let value_eval = match op.inner {
@@ -518,20 +518,16 @@ impl CompileItemContext<'_, '_> {
                         &mut self.large,
                         stmt_span,
                         Spanned::new(op.span, op_inner.to_binary_op()),
-                        Spanned::new(target_span, ValueWithImplications::simple(Value::Compile(target_eval))),
-                        right_eval.map_inner(ValueWithImplications::Compile),
+                        Spanned::new(target_span, ValueWithImplications::simple(Value::from(target_eval))),
+                        right_eval.map_inner(ValueWithImplications::from),
                     )?
                     .into_value();
-                    let value = match value {
-                        Value::Compile(value) => value,
-                        _ => {
-                            return Err(diags.report_internal_error(
-                                stmt_span,
-                                "binary op on compile values should result in compile value again",
-                            ));
-                        }
-                    };
-
+                    let value = CompileValue::try_from(&value).map_err(|_: NotCompile| {
+                        diags.report_internal_error(
+                            stmt_span,
+                            "binary op on compile values should result in compile value again",
+                        )
+                    })?;
                     Spanned::new(stmt_span, value)
                 }
             };
@@ -542,12 +538,12 @@ impl CompileItemContext<'_, '_> {
                     span_target: target_span,
                     span_target_ty: var_ty.span,
                 };
-                check_type_contains_compile_value(diags, reason, &target_expected_ty, value_eval.as_ref(), true)?;
+                check_type_contains_value(diags, reason, &target_expected_ty, value_eval.as_ref())?;
             }
 
             // do assignment
             let result_value = target_steps.set_compile_value(diags, target_base_eval, op.span, value_eval)?;
-            Value::Compile(result_value)
+            Value::from(result_value)
         };
 
         flow.var_set(target_base.inner, stmt_span, Ok(result));
@@ -594,7 +590,7 @@ impl CompileItemContext<'_, '_> {
         })?;
 
         let target_base_ir_expr =
-            target_base_eval.as_hardware_value(refs, &mut self.large, target_base.span, &target_base_ty_hw)?;
+            target_base_eval.as_hardware_value_unchecked(refs, &mut self.large, target_base.span, target_base_ty_hw)?;
 
         let debug_info_id = target_var_info.id.str(refs.fixed.source).map(str::to_owned);
         let result = store_ir_expression_in_new_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;

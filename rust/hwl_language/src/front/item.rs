@@ -1,4 +1,4 @@
-use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
+use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
@@ -8,11 +8,12 @@ use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInterna
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, Value};
+use crate::front::value::{CompileValue, SimpleCompileValue, Value};
+use crate::mid::ir::IrType;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
     EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModuleExternal,
-    ItemDefModuleInternal, Parameters, StructDeclaration, StructField, TypeDeclaration,
+    ItemDefModuleInternal, MaybeIdentifier, Parameters, StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -44,6 +45,12 @@ pub struct ElaboratedStruct(usize);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ElaboratedEnum(usize);
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ElaboratedInterfaceView {
+    pub interface: ElaboratedInterface,
+    pub view_index: usize,
+}
+
 pub struct ElaborationArenas {
     elaborated_modules_internal: ElaborateItemArena<ElaboratedModuleInternal, ElaboratedModuleInternalInfo>,
     elaborated_modules_external: ElaborateItemArena<ElaboratedModuleExternal, ElaboratedModuleExternalInfo>,
@@ -53,12 +60,28 @@ pub struct ElaborationArenas {
     next_unique_declaration: AtomicUsize,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct UniqueDeclaration(usize, Span);
+// TODO rework this, this should really _only_ store a unique index, no other metadata
+#[derive(Debug, Copy, Clone)]
+pub struct UniqueDeclaration {
+    index: usize,
+    id: MaybeIdentifier,
+}
 
 impl UniqueDeclaration {
-    pub fn span_id(&self) -> Span {
-        self.1
+    pub fn id(&self) -> MaybeIdentifier {
+        self.id
+    }
+}
+
+impl Eq for UniqueDeclaration {}
+impl PartialEq for UniqueDeclaration {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+impl Hash for UniqueDeclaration {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
     }
 }
 
@@ -94,10 +117,10 @@ impl ElaborationArenas {
         self.elaborated_enums.get(elab)
     }
 
-    fn next_unique_declaration(&self, span_id: Span) -> UniqueDeclaration {
-        let id = self.next_unique_declaration.fetch_add(1, Ordering::Relaxed);
-        assert!(id < usize::MAX / 2, "(close to) overflowing");
-        UniqueDeclaration(id, span_id)
+    fn next_unique_declaration(&self, id: MaybeIdentifier) -> UniqueDeclaration {
+        let index = self.next_unique_declaration.fetch_add(1, Ordering::Relaxed);
+        assert!(index < usize::MAX / 2, "(close to) overflowing");
+        UniqueDeclaration { index, id }
     }
 }
 
@@ -197,9 +220,11 @@ impl<T: Copy> HardwareChecked<T> {
     }
 }
 
+// TODO rename away from "elaborated", maybe just "resolved"
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
     pub unique: UniqueDeclaration,
+    pub name: String,
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
     pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
@@ -213,6 +238,7 @@ pub struct NonHardwareStruct {
 #[derive(Debug)]
 pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
+    pub name: String,
     pub span_body: Span,
     pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
@@ -226,9 +252,9 @@ pub enum NonHardwareEnum {
 
 #[derive(Debug)]
 pub struct HardwareEnumInfo {
-    pub content_types: Vec<Option<HardwareType>>,
+    pub payload_types: Vec<Option<(HardwareType, IrType)>>,
     // TODO remove once this (or something similar enough) is cached in HardwareType
-    pub max_content_size: usize,
+    pub max_payload_size: usize,
 }
 
 impl ElaboratedEnumInfo {
@@ -263,18 +289,18 @@ impl CompileItemContext<'_, '_> {
                 Ok(value.unwrap_or_else(CompileValue::unit))
             }
             Item::ModuleInternal(module) => {
-                let ItemDefModuleInternal {
+                let &ItemDefModuleInternal {
                     span: _,
                     vis: _,
                     id,
-                    params,
-                    ports,
-                    body,
+                    ref params,
+                    ref ports,
+                    ref body,
                 } = module;
                 let item = AstRefModuleInternal::new_unchecked(item, module);
                 let body_span = ports.span.join(body.span);
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::ModuleInternal(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
@@ -283,18 +309,22 @@ impl CompileItemContext<'_, '_> {
                 self.eval_maybe_generic_item(id.span(), body_span, scope, &mut flow, params, body)
             }
             Item::ModuleExternal(module) => {
-                let ItemDefModuleExternal {
+                let &ItemDefModuleExternal {
                     span: _,
                     span_ext: _,
                     vis: _,
                     id,
-                    params,
-                    ports,
+                    ref params,
+                    ref ports,
                 } = module;
                 let item = AstRefModuleExternal::new_unchecked(item, module);
                 let body_span = ports.span;
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span);
+                let unique = self
+                    .refs
+                    .shared
+                    .elaboration_arenas
+                    .next_unique_declaration(MaybeIdentifier::Identifier(id));
                 let body = FunctionItemBody::ModuleExternal(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
@@ -304,18 +334,18 @@ impl CompileItemContext<'_, '_> {
             }
 
             Item::Interface(interface) => {
-                let ItemDefInterface {
+                let &ItemDefInterface {
                     span: _,
                     vis: _,
                     id,
-                    params,
-                    span_body,
+                    ref params,
+                    ref span_body,
                     port_types: _,
                     views: _,
                 } = interface;
                 let item = AstRefInterface::new_unchecked(item, interface);
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::Interface(unique, item);
 
                 let scope = self.refs.shared.file_scope(item.file())?;
@@ -379,35 +409,35 @@ impl CompileItemContext<'_, '_> {
                         span_target: id.span(),
                         span_target_ty: ty.span,
                     };
-                    check_type_contains_compile_value(diags, reason, &ty.inner, value.as_ref(), true)?;
+                    check_type_contains_value(diags, reason, &ty.inner, value.as_ref())?;
                 };
 
                 Ok(value.inner)
             }
             CommonDeclarationNamedKind::Struct(decl) => {
-                let StructDeclaration {
+                let &StructDeclaration {
                     span: _,
                     span_body,
                     id,
-                    params,
-                    fields,
+                    ref params,
+                    ref fields,
                 } = decl;
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::Struct(unique, fields.clone());
-                self.eval_maybe_generic_item(id.span(), *span_body, scope, flow, params, body)
+                self.eval_maybe_generic_item(id.span(), span_body, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Enum(decl) => {
-                let EnumDeclaration {
+                let &EnumDeclaration {
                     span,
                     id,
-                    params,
-                    variants,
+                    ref params,
+                    ref variants,
                 } = decl;
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id.span());
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::Enum(unique, variants.clone());
-                self.eval_maybe_generic_item(id.span(), *span, scope, flow, params, body)
+                self.eval_maybe_generic_item(id.span(), span, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Function(decl) => {
                 let &FunctionDeclaration {
@@ -431,7 +461,9 @@ impl CompileItemContext<'_, '_> {
                         inner: body_inner,
                     },
                 };
-                Ok(CompileValue::Function(FunctionValue::User(Arc::new(function))))
+                Ok(CompileValue::Simple(SimpleCompileValue::Function(FunctionValue::User(
+                    Arc::new(function),
+                ))))
             }
         }
     }
@@ -456,7 +488,7 @@ impl CompileItemContext<'_, '_> {
                         decl_id.span(),
                         VariableId::Id(decl_id),
                         decl_span,
-                        Ok(Value::Compile(v)),
+                        Ok(Value::from(v)),
                     );
                     ScopedEntry::Named(NamedValue::Variable(var))
                 });
@@ -496,7 +528,9 @@ impl CompileItemContext<'_, '_> {
                         inner: FunctionBody::ItemBody(body),
                     },
                 };
-                Ok(CompileValue::Function(FunctionValue::User(Arc::new(func))))
+                Ok(CompileValue::Simple(SimpleCompileValue::Function(FunctionValue::User(
+                    Arc::new(func),
+                ))))
             }
         }
     }
@@ -514,7 +548,7 @@ impl CompileItemContext<'_, '_> {
         match *body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
                 let result_ty = self.eval_expression_as_ty(scope_params, flow, expr)?.inner;
-                Ok(CompileValue::Type(result_ty))
+                Ok(CompileValue::new_ty(result_ty))
             }
             FunctionItemBody::ModuleInternal(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
@@ -554,7 +588,9 @@ impl CompileItemContext<'_, '_> {
                     },
                 )?;
 
-                Ok(CompileValue::Module(ElaboratedModule::Internal(result_id)))
+                Ok(CompileValue::Simple(SimpleCompileValue::Module(
+                    ElaboratedModule::Internal(result_id),
+                )))
             }
             FunctionItemBody::ModuleExternal(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
@@ -574,14 +610,14 @@ impl CompileItemContext<'_, '_> {
                                     .iter()
                                     .map(|(id, value)| {
                                         let value = match value {
-                                            &CompileValue::Bool(value) => {
+                                            &CompileValue::Simple(SimpleCompileValue::Bool(value)) => {
                                                 if value {
                                                     BigInt::ONE
                                                 } else {
                                                     BigInt::ZERO
                                                 }
                                             }
-                                            CompileValue::Int(value) => value.clone(),
+                                            CompileValue::Simple(SimpleCompileValue::Int(value)) => value.clone(),
                                             _ => {
                                                 return Err(diags.report_todo(
                                                     ast.params.as_ref().map_or(ast.span, |p| p.span),
@@ -621,7 +657,9 @@ impl CompileItemContext<'_, '_> {
                     },
                 )?;
 
-                Ok(CompileValue::Module(ElaboratedModule::External(result_id)))
+                Ok(CompileValue::Simple(SimpleCompileValue::Module(
+                    ElaboratedModule::External(result_id),
+                )))
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
@@ -634,7 +672,7 @@ impl CompileItemContext<'_, '_> {
                     |_| refs.elaborate_interface_new(ast_ref, scope_captured),
                 )?;
 
-                Ok(CompileValue::Interface(result_id))
+                Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
             }
             FunctionItemBody::Struct(unique, ref fields) => {
                 let item_params = ElaboratedItemParams { unique, params };
@@ -644,7 +682,7 @@ impl CompileItemContext<'_, '_> {
                     ElaboratedStruct,
                     |_| self.elaborate_struct_new(scope_params, flow, unique, body.span, fields),
                 )?;
-                Ok(CompileValue::Type(Type::Struct(result_id)))
+                Ok(CompileValue::new_ty(Type::Struct(result_id)))
             }
             FunctionItemBody::Enum(unique, ref variants) => {
                 let item_params = ElaboratedItemParams { unique, params };
@@ -655,7 +693,7 @@ impl CompileItemContext<'_, '_> {
                     |_| self.elaborate_enum_new(scope_params, flow, unique, body.span, variants),
                 )?;
 
-                Ok(CompileValue::Type(Type::Enum(result_id)))
+                Ok(CompileValue::new_ty(Type::Enum(result_id)))
             }
         }
     }
@@ -713,8 +751,14 @@ impl CompileItemContext<'_, '_> {
             })
             .try_collect_vec();
 
+        let name = unique
+            .id
+            .spanned_string(self.refs.fixed.source)
+            .inner
+            .unwrap_or_else(|| String::from("_"));
         Ok(ElaboratedStructInfo {
             unique,
+            name,
             span_body,
             fields: fields_eval,
             fields_hw,
@@ -767,8 +811,14 @@ impl CompileItemContext<'_, '_> {
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
+        let name = unique
+            .id
+            .spanned_string(self.refs.fixed.source)
+            .inner
+            .unwrap_or_else(|| String::from("_"));
         Ok(ElaboratedEnumInfo {
             unique,
+            name,
             span_body,
             variants: variants_eval,
             hw,
@@ -794,7 +844,10 @@ fn try_enum_as_hardware(
         let ty_hw = match ty {
             None => None,
             Some(ty) => match ty.inner.as_hardware_type(refs) {
-                Ok(ty_hw) => Some(ty_hw),
+                Ok(ty_hw) => {
+                    let ty_ir = ty_hw.as_ir(refs);
+                    Some((ty_hw, ty_ir))
+                }
                 Err(_) => return Ok(Err(NonHardwareEnum::NonHardwareField(i))),
             },
         };
@@ -805,7 +858,7 @@ fn try_enum_as_hardware(
     let max_content_size = content_types
         .iter()
         .filter_map(Option::as_ref)
-        .map(|ty| ty.size_bits(refs))
+        .map(|(_, ty)| ty.size_bits())
         .max()
         .unwrap_or(BigUint::ZERO);
     let max_content_size = usize::try_from(max_content_size)
@@ -813,8 +866,8 @@ fn try_enum_as_hardware(
 
     // wrap
     let info = HardwareEnumInfo {
-        content_types,
-        max_content_size,
+        payload_types: content_types,
+        max_payload_size: max_content_size,
     };
     Ok(Ok(info))
 }

@@ -1,6 +1,7 @@
 pub mod assignment;
 pub mod bits;
 pub mod block;
+pub mod builtin;
 pub mod check;
 pub mod compile;
 pub mod diagnostic;
@@ -18,5 +19,6 @@ pub mod range;
 pub mod scope;
 pub mod signal;
 pub mod steps;
+pub mod string;
 pub mod types;
 pub mod value;

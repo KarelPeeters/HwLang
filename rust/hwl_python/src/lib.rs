@@ -85,9 +85,6 @@ impl UnsupportedValue {
 }
 
 #[pyclass]
-struct Undefined;
-
-#[pyclass]
 struct Type(RustType);
 
 #[pyclass]
@@ -193,7 +190,6 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CapturePrints>()?;
     m.add_class::<CapturePrintsContext>()?;
     m.add_class::<UnsupportedValue>()?;
-    m.add_class::<Undefined>()?;
     m.add_class::<Type>()?;
     m.add_class::<IncRange>()?;
     m.add_class::<Function>()?;
@@ -247,17 +243,12 @@ impl Source {
 
         // read manifest
         let manifest_path = &PathBuf::from(manifest_path);
-        println!("a");
         let manifest_parent = manifest_path
             .parent()
             .ok_or_else(|| SourceSetException::new_err("manifest path does not have a parent directory"))?;
-        println!("b");
         let manifest_content = std::fs::read_to_string(manifest_path)
             .map_err(|e| SourceSetException::new_err(io_error_message(e.with_path(manifest_path))))?;
-        println!("c");
         let manifest_file = source.add_file(manifest_path.to_string_lossy().into_owned(), manifest_content);
-
-        println!("d");
 
         // parse manifest
         let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
@@ -778,6 +769,11 @@ impl Module {
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
         let ir_database = map_diag_error(py, &diags, source, ir_database)?;
+
+        if cfg!(debug_assertions) {
+            let validate_result = ir_database.validate(&diags);
+            map_diag_error(py, &diags, source, validate_result)?;
+        }
 
         // actual lowering
         let lowered = lower_to_verilog(

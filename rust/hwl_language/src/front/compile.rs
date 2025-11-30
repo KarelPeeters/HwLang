@@ -9,7 +9,7 @@ use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInterface,
     WireInterfaceInfo,
 };
-use crate::front::value::{CompileValue, Value};
+use crate::front::value::{CompileValue, SimpleCompileValue, Value};
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
@@ -83,7 +83,7 @@ pub fn compile(
             let result = ctx.eval_item(top_item.item())?;
 
             match result {
-                &CompileValue::Module(ElaboratedModule::Internal(elab)) => {
+                &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(elab))) => {
                     let info = shared.elaboration_arenas.module_internal_info(elab);
                     Ok((top_item, info.module_ir))
                 }
@@ -158,9 +158,10 @@ pub fn compile(
         external_modules: db_partial.external_modules.into_iter().sorted().collect(),
     };
 
-    // TODO add an option to always do this?
-    #[cfg(debug_assertions)]
-    db.validate(diags)?;
+    // TODO add an option to always/never do this?
+    if cfg!(debug_assertions) {
+        db.validate(diags)?;
+    }
 
     Ok(db)
 }
@@ -242,6 +243,19 @@ pub struct CompileShared {
 pub struct PartialIrDatabase<M> {
     pub external_modules: IndexSet<String>,
     pub ir_modules: Arena<IrModule, M>,
+}
+
+impl PartialIrDatabase<IrModuleInfo> {
+    pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
+        let PartialIrDatabase {
+            external_modules,
+            ir_modules,
+        } = self;
+        for (_, info) in ir_modules.iter() {
+            info.validate(diags, ir_modules, external_modules)?;
+        }
+        Ok(())
+    }
 }
 
 pub type FileScopes = IndexMap<FileId, DiagResult<Scope<'static>>>;
@@ -704,8 +718,7 @@ fn finish_ir_database_impl(
     work_queue: &SharedQueue<WorkItem>,
     ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
-    if let Some(item) = work_queue.pop() {
-        println!("work queue is not empty, found item: {item:?}");
+    if work_queue.pop().is_some() {
         return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
     }
 

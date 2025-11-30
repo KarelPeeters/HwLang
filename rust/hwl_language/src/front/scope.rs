@@ -295,7 +295,7 @@ impl<'p> Scope<'p> {
                     DeclaredValue::Error(err) => return Err(err),
                     DeclaredValue::FailedCapture(span, reason) => {
                         let reason_str = match reason {
-                            FailedCaptureReason::Hardware => "contains a non-compile-time value",
+                            FailedCaptureReason::NotCompile => "contains a non-compile-time value",
                             FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
                         };
 

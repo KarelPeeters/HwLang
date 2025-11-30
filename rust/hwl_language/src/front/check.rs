@@ -1,17 +1,19 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
 use crate::front::domain::ValueDomain;
-use crate::front::implication::ValueWithImplications;
+use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
-use crate::syntax::ast::SyncDomain;
+use crate::front::value::{
+    CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, MixedCompoundValue, SimpleCompileValue, Value,
+};
+use crate::syntax::ast::{StringPiece, SyncDomain};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::iter::IterExt;
 use annotate_snippets::Level;
-use itertools::Itertools;
+use std::fmt::Debug;
 use std::sync::Arc;
-use unwrap_match::unwrap_match;
 
 impl CompileItemContext<'_, '_> {
     pub fn check_valid_domain_crossing(
@@ -92,6 +94,7 @@ impl CompileItemContext<'_, '_> {
 }
 
 // TODO turn this into a lambda
+// TODO do we really need this many variants?
 #[derive(Debug, Copy, Clone)]
 pub enum TypeContainsReason {
     Assignment {
@@ -126,6 +129,7 @@ pub enum TypeContainsReason {
     Parameter {
         param_ty: Span,
     },
+    Internal(Span),
 }
 
 impl TypeContainsReason {
@@ -194,62 +198,22 @@ impl TypeContainsReason {
             TypeContainsReason::Parameter { param_ty } => {
                 diag.add_info(param_ty, format!("parameter requires type `{target_ty_str}`"))
             }
+            TypeContainsReason::Internal(span) => {
+                Diagnostic::new_internal_error("type check failed").add_error(span, "here")
+            }
         }
     }
 }
 
-// TODO go over this again and see if/how users are using `accept_undefined` and `allow_compound_subtype`
-pub fn check_type_contains_value(
+pub fn check_type_contains_value<V: Typed + Debug>(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     target_ty: &Type,
-    value: Spanned<&Value>,
-    accept_undefined: bool,
-    allow_compound_subtype: bool,
+    value: Spanned<&V>,
 ) -> DiagResult {
-    match value.inner {
-        Value::Compile(value_inner) => {
-            let value = Spanned {
-                span: value.span,
-                inner: value_inner,
-            };
-            check_type_contains_compile_value(diags, reason, target_ty, value, accept_undefined)
-        }
-        Value::Hardware(value_inner) => {
-            let value_ty = Spanned {
-                span: value.span,
-                inner: &value_inner.ty.as_type(),
-            };
-            check_type_contains_type(diags, reason, target_ty, value_ty, allow_compound_subtype)
-        }
-    }
-}
-
-pub fn check_type_contains_compile_value(
-    diags: &Diagnostics,
-    reason: TypeContainsReason,
-    target_ty: &Type,
-    value: Spanned<&CompileValue>,
-    accept_undefined: bool,
-) -> DiagResult {
-    let ty_contains_value = target_ty.contains_type(&value.inner.ty(), true);
-
-    if ty_contains_value && (accept_undefined || !value.inner.contains_undefined()) {
-        Ok(())
-    } else {
-        let mut diag = Diagnostic::new("value does not fit in type");
-        diag = reason.add_diag_info(diag, target_ty);
-        // TODO abbreviate source value if it gets too long
-        let value_str = value.inner.diagnostic_string();
-        let value_ty_str = value.inner.ty().diagnostic_string();
-        let diag = diag
-            .add_error(
-                value.span,
-                format!("source with type `{value_ty_str}` and value `{value_str}` does not fit"),
-            )
-            .finish();
-        Err(diags.report(diag))
-    }
+    // TODO if constant value, use value in message?
+    let value_ty = value.map_inner(|v| v.ty());
+    check_type_contains_type(diags, reason, target_ty, value_ty.as_ref())
 }
 
 pub fn check_type_contains_type(
@@ -257,21 +221,12 @@ pub fn check_type_contains_type(
     reason: TypeContainsReason,
     target_ty: &Type,
     value_ty: Spanned<&Type>,
-    allow_compound_subtype: bool,
 ) -> DiagResult {
-    if target_ty.contains_type(value_ty.inner, allow_compound_subtype) {
+    if target_ty.contains_type(value_ty.inner) {
         Ok(())
     } else {
-        let mut diag = Diagnostic::new("value does not fit in type");
+        let mut diag = Diagnostic::new("type mismatch");
         diag = reason.add_diag_info(diag, target_ty);
-
-        if !allow_compound_subtype && target_ty.contains_type(value_ty.inner, true) {
-            diag = diag.footer(
-                Level::Info,
-                "compound subtyping is not allowed for hardware values, if it was the value would have fit",
-            );
-        }
-
         let diag = diag
             .add_error(
                 value_ty.span,
@@ -285,46 +240,62 @@ pub fn check_type_contains_type(
     }
 }
 
-// TODO reduce boilerplate with a trait?
 pub fn check_type_is_int(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<Value>,
-) -> DiagResult<Spanned<Value<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>> {
-    check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false, true)?;
+) -> DiagResult<MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>> {
+    check_type_contains_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref())?;
 
+    let err = || diags.report_internal_error(value.span, "unexpected value kind for int type");
     match value.inner {
-        Value::Compile(value_inner) => match value_inner {
-            CompileValue::Int(value_inner) => Ok(Spanned {
-                span: value.span,
-                inner: Value::Compile(value_inner),
-            }),
-            _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
+        Value::Simple(v) => match v {
+            SimpleCompileValue::Int(v) => Ok(MaybeCompile::Compile(v)),
+            _ => Err(err()),
         },
-        Value::Hardware(value_inner) => match value_inner.ty {
-            HardwareType::Int(ty) => Ok(Spanned {
-                span: value.span,
-                inner: Value::Hardware(HardwareValue {
-                    ty,
-                    domain: value_inner.domain,
-                    expr: value_inner.expr,
-                }),
-            }),
-            _ => Err(diags.report_internal_error(value.span, "expected int type, should have already been checked")),
+        Value::Hardware(v) => match v.ty {
+            HardwareType::Int(ty) => Ok(MaybeCompile::Hardware(HardwareValue {
+                ty,
+                domain: v.domain,
+                expr: v.expr,
+            })),
+            _ => Err(err()),
         },
+        Value::Compound(_) => Err(err()),
     }
 }
 
-pub fn check_type_is_int_compile(
+pub fn check_type_is_uint(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<CompileValue>,
-) -> DiagResult<BigInt> {
-    check_type_contains_compile_value(diags, reason, &Type::Int(IncRange::OPEN), value.as_ref(), false)?;
+    value: Spanned<Value>,
+) -> DiagResult<MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>> {
+    let range = IncRange {
+        start_inc: Some(BigInt::ZERO),
+        end_inc: None,
+    };
+    check_type_contains_value(diags, reason, &Type::Int(range), value.as_ref())?;
+
+    let err = || diags.report_internal_error(value.span, "unexpected value kind for uint type");
+    let unwrap_uint = |x: BigInt| BigUint::try_from(x).unwrap();
 
     match value.inner {
-        CompileValue::Int(value_inner) => Ok(value_inner),
-        _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
+        Value::Simple(v) => match v {
+            SimpleCompileValue::Int(v) => Ok(MaybeCompile::Compile(unwrap_uint(v))),
+            _ => Err(err()),
+        },
+        Value::Hardware(v) => match v.ty {
+            HardwareType::Int(ty) => Ok(MaybeCompile::Hardware(HardwareValue {
+                ty: ClosedIncRange {
+                    start_inc: unwrap_uint(ty.start_inc),
+                    end_inc: unwrap_uint(ty.end_inc),
+                },
+                domain: v.domain,
+                expr: v.expr,
+            })),
+            _ => Err(err()),
+        },
+        Value::Compound(_) => Err(err()),
     }
 }
 
@@ -332,20 +303,17 @@ pub fn check_type_is_int_hardware(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<HardwareValue>,
-) -> DiagResult<Spanned<HardwareValue<ClosedIncRange<BigInt>>>> {
+) -> DiagResult<HardwareValue<ClosedIncRange<BigInt>>> {
     let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
-    check_type_contains_type(diags, reason, &Type::Int(IncRange::OPEN), value_ty.as_ref(), false)?;
+    check_type_contains_type(diags, reason, &Type::Int(IncRange::OPEN), value_ty.as_ref())?;
 
     match value.inner.ty {
-        HardwareType::Int(ty) => Ok(Spanned {
-            span: value.span,
-            inner: HardwareValue {
-                ty,
-                domain: value.inner.domain,
-                expr: value.inner.expr,
-            },
+        HardwareType::Int(ty) => Ok(HardwareValue {
+            ty,
+            domain: value.inner.domain,
+            expr: value.inner.expr,
         }),
-        _ => Err(diags.report_internal_error(value.span, "expected int type, should have already been checked")),
+        _ => Err(diags.report_internal_error(value.span, "expected int type")),
     }
 }
 
@@ -354,15 +322,20 @@ pub fn check_type_is_uint_compile(
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<BigUint> {
-    let range = IncRange {
+    let target_ty = Type::Int(IncRange {
         start_inc: Some(BigInt::ZERO),
         end_inc: None,
-    };
-    check_type_contains_compile_value(diags, reason, &Type::Int(range), value.as_ref(), false)?;
+    });
+    check_type_contains_value(diags, reason, &target_ty, value.as_ref())?;
 
+    let err = || diags.report_internal_error(value.span, "expected uint value");
     match value.inner {
-        CompileValue::Int(value_inner) => Ok(BigUint::try_from(value_inner).unwrap()),
-        _ => Err(diags.report_internal_error(value.span, "expected int value, should have already been checked")),
+        CompileValue::Simple(v) => match v {
+            SimpleCompileValue::Int(v) => Ok(BigUint::try_from(v).unwrap()),
+            _ => Err(err()),
+        },
+        CompileValue::Compound(_) => Err(err()),
+        CompileValue::Hardware(never) => never.unreachable(),
     }
 }
 
@@ -370,24 +343,19 @@ pub fn check_type_is_bool(
     diags: &Diagnostics,
     reason: TypeContainsReason,
     value: Spanned<ValueWithImplications>,
-) -> DiagResult<Spanned<ValueWithImplications<bool, ()>>> {
-    let value_simple = value.as_ref().map_inner(|v| v.clone().into_value());
-    check_type_contains_value(diags, reason, &Type::Bool, value_simple.as_ref(), false, false)?;
+) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<()>>> {
+    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref())?;
 
+    let err = || diags.report_internal_error(value.span, "unexpected value kind for bool type");
     match value.inner {
-        Value::Compile(value_inner) => match value_inner {
-            CompileValue::Bool(value_inner) => Ok(Spanned {
-                span: value.span,
-                inner: Value::Compile(value_inner),
-            }),
-            _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
+        Value::Simple(v) => match v {
+            SimpleCompileValue::Bool(v) => Ok(MaybeCompile::Compile(v)),
+            _ => Err(err()),
         },
-        Value::Hardware(value_inner) => match value_inner.value.ty {
-            HardwareType::Bool => Ok(Spanned {
-                span: value.span,
-                inner: Value::Hardware(value_inner.map_type(|_| ())),
-            }),
-            _ => Err(diags.report_internal_error(value.span, "expected bool type, should have already been checked")),
+        Value::Compound(_) => Err(err()),
+        Value::Hardware(v) => match v.value.ty {
+            HardwareType::Bool => Ok(MaybeCompile::Hardware(v.map_type(|_| ()))),
+            _ => Err(diags.report_internal_error(value.span, "expected bool type")),
         },
     }
 }
@@ -397,11 +365,16 @@ pub fn check_type_is_bool_compile(
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<bool> {
-    check_type_contains_compile_value(diags, reason, &Type::Bool, value.as_ref(), false)?;
+    check_type_contains_value(diags, reason, &Type::Bool, value.as_ref())?;
 
+    let err = || diags.report_internal_error(value.span, "expected bool value");
     match value.inner {
-        CompileValue::Bool(value_inner) => Ok(value_inner),
-        _ => Err(diags.report_internal_error(value.span, "expected bool value, should have already been checked")),
+        CompileValue::Simple(v) => match v {
+            SimpleCompileValue::Bool(v) => Ok(v),
+            _ => Err(err()),
+        },
+        CompileValue::Compound(_) => Err(err()),
+        CompileValue::Hardware(never) => never.unreachable(),
     }
 }
 
@@ -410,21 +383,28 @@ pub fn check_type_is_bool_array(
     reason: TypeContainsReason,
     value: Spanned<Value>,
     expected_len: Option<&BigUint>,
-) -> DiagResult<Value<Vec<bool>, HardwareValue<BigUint>>> {
+) -> DiagResult<MaybeCompile<Vec<bool>, HardwareValue<BigUint>>> {
     if let Type::Array(ty_inner, ty_len) = value.inner.ty()
         && expected_len.is_none_or(|expected_len| expected_len == &ty_len)
         && let Type::Bool = *ty_inner
     {
+        let err = || diags.report_internal_error(value.span, "expected bool array");
         return match value.inner {
-            Value::Compile(c) => {
-                let c = unwrap_match!(c, CompileValue::Array(c) => c);
-                let result = c
-                    .iter()
-                    .map(|c| unwrap_match!(c, &CompileValue::Bool(c) => c))
-                    .collect_vec();
-                Ok(Value::Compile(result))
-            }
-            Value::Hardware(c) => Ok(Value::Hardware(HardwareValue {
+            Value::Simple(v) => match v {
+                SimpleCompileValue::Array(v) => {
+                    let result = v
+                        .iter()
+                        .map(|e| match e {
+                            &Value::Simple(SimpleCompileValue::Bool(b)) => Ok(b),
+                            _ => Err(err()),
+                        })
+                        .try_collect_vec()?;
+                    Ok(MaybeCompile::Compile(result))
+                }
+                _ => return Err(err()),
+            },
+            Value::Compound(_) => return Err(err()),
+            Value::Hardware(c) => Ok(MaybeCompile::Hardware(HardwareValue {
                 ty: ty_len,
                 domain: c.domain,
                 expr: c.expr,
@@ -439,7 +419,7 @@ pub fn check_type_is_bool_array(
         Some(expected_len) => Type::Array(Arc::new(Type::Bool), expected_len.clone()).diagnostic_string(),
     };
     let value_ty_str = value.inner.ty().diagnostic_string();
-    let mut diag = Diagnostic::new("value does not fit in type").add_error(
+    let mut diag = Diagnostic::new("type mismatch").add_error(
         value.span,
         format!("expected `{expected_ty_str}`, got type `{value_ty_str}`"),
     );
@@ -451,13 +431,26 @@ pub fn check_type_is_bool_array(
 pub fn check_type_is_string(
     diags: &Diagnostics,
     reason: TypeContainsReason,
-    value: Spanned<CompileValue>,
-) -> DiagResult<Arc<String>> {
-    check_type_contains_compile_value(diags, reason, &Type::String, value.as_ref(), false)?;
+    value: Spanned<Value>,
+) -> DiagResult<Arc<Vec<StringPiece<String, HardwareValue>>>> {
+    check_type_contains_value(diags, reason, &Type::String, value.as_ref())?;
 
     match value.inner {
-        CompileValue::String(value_inner) => Ok(value_inner),
-        _ => Err(diags.report_internal_error(value.span, "expected string value, should have already been checked")),
+        Value::Compound(MixedCompoundValue::String(v)) => Ok(v),
+        _ => Err(diags.report_internal_error(value.span, "expected string value")),
+    }
+}
+
+pub fn check_type_is_string_compile(
+    diags: &Diagnostics,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> DiagResult<Arc<String>> {
+    check_type_contains_value(diags, reason, &Type::String, value.as_ref())?;
+
+    match value.inner {
+        Value::Compound(CompileCompoundValue::String(v)) => Ok(v),
+        _ => Err(diags.report_internal_error(value.span, "expected string value")),
     }
 }
 

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -ue
+
+# Run all tests with coverage and generate a report
+# Based on:
+# * https://github.com/cjermain/rust-python-coverage
+# * https://github.com/taiki-e/cargo-llvm-cov
+
+# TODO separate cargo dir
+
+(
+  cd rust
+
+  # enable coverage collection
+  # shellcheck disable=SC1090
+  source <(cargo llvm-cov show-env --export-prefix)
+  export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
+  export CARGO_INCREMENTAL=1
+
+  # remove old coverage data
+  cargo llvm-cov clean --workspace
+)
+
+# run rust tests
+(cd rust; cargo test)
+
+# run python tests
+(cd rust/hwl_python; maturin dev --compression-method stored --uv)
+(cd python/src/hwl_sandbox; PYTEST_SKIP_RUST_BUILD=1 pytest -n auto || true)
+
+# report coverage
+IGNORE_REGEX="^$PWD/rust/(hwl_lsp_server|hwl_bin|hwl_wasm)/src/"
+(cd rust && cargo llvm-cov report --html --ignore-filename-regex "$IGNORE_REGEX")
+echo "Coverage report is available at file://$CARGO_LLVM_COV_TARGET_DIR/llvm-cov/html/index.html"

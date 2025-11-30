@@ -1,6 +1,6 @@
 use crate::front::flow::ValueVersion;
 use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
 use crate::util::big_int::BigInt;
 use itertools::Itertools;
 
@@ -30,8 +30,10 @@ pub enum ImplicationIntOp {
     Gt,
 }
 
-pub type ValueWithVersion<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithVersion<ValueVersion, T>>;
-pub type ValueWithImplications<C = CompileValue, T = HardwareType> = Value<C, HardwareValueWithImplications<T>>;
+pub type ValueWithVersion<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
+    Value<S, C, HardwareValueWithVersion<ValueVersion, T>>;
+pub type ValueWithImplications<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
+    Value<S, C, HardwareValueWithImplications<T>>;
 pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
 
 #[derive(Debug, Clone)]
@@ -105,16 +107,16 @@ impl ValueWithVersion {
     }
 }
 
-impl<C, T> ValueWithImplications<C, T> {
-    pub fn simple(value: Value<C, HardwareValue<T>>) -> Self {
+impl<S, C, T> ValueWithImplications<S, C, T> {
+    pub fn simple(value: Value<S, C, HardwareValue<T>>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple)
     }
 
-    pub fn simple_version(value: ValueWithVersion<C, T>) -> Self {
+    pub fn simple_version(value: ValueWithVersion<S, C, T>) -> Self {
         value.map_hardware(HardwareValueWithImplications::simple_version)
     }
 
-    pub fn into_value(self) -> Value<C, HardwareValue<T>> {
+    pub fn into_value(self) -> Value<S, C, HardwareValue<T>> {
         self.map_hardware(|v| v.value)
     }
 }
@@ -148,7 +150,8 @@ impl<T> HardwareValueWithImplications<T> {
 impl Typed for ValueWithImplications {
     fn ty(&self) -> Type {
         match self {
-            Value::Compile(v) => v.ty(),
+            Value::Simple(v) => v.ty(),
+            Value::Compound(v) => v.ty(),
             Value::Hardware(v) => v.value.ty(),
         }
     }

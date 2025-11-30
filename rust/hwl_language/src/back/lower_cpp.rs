@@ -3,10 +3,11 @@ use crate::front::signal::Polarized;
 use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp,
-    IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo,
-    IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrTargetStep, IrType, IrVariable,
-    IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort, ir_modules_topological_sort,
+    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
+    IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
+    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
+    IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort, ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -772,11 +773,51 @@ impl CodegenBlockContext<'_> {
 
                     swriteln!(self.f);
                 }
-                IrStatement::PrintLn(s) => {
-                    // TODO properly escape string
+                IrStatement::For(for_stmt) => {
+                    let &IrForStatement {
+                        index,
+                        ref range,
+                        ref block,
+                    } = for_stmt;
+                    let ClosedIncRange { start_inc, end_inc } = range;
+
+                    let index_var = Evaluated::Inline(var_str(index, &self.locals[index]));
+                    swrite!(
+                        self.f,
+                        "{indent}for ({index_var} = {start_inc}; {index_var} <= {end_inc}; {index_var}++)"
+                    );
+                    self.generate_nested_block(indent, block, stage_read)?;
+                    swriteln!(self.f);
+                }
+                IrStatement::Print(pieces) => {
                     // TODO write to a user-passed in stream, to save users from capturing hacks
                     //   this should probably live in a general context object that deals with any outside IO
-                    swriteln!(self.f, "{indent}std::cout << \"{s}\" << std::endl;");
+
+                    let mut f_str = String::new();
+                    let mut f_args = String::new();
+
+                    for piece in pieces {
+                        match piece {
+                            IrStringPiece::Literal(piece) => {
+                                escape_cpp_str(&mut f_str, piece);
+                            }
+                            IrStringPiece::Substitute(piece) => match piece {
+                                IrStringSubstitution::Integer(value, radix) => {
+                                    let radix_str = match radix {
+                                        IrIntegerRadix::Binary => "b",
+                                        IrIntegerRadix::Decimal => "d",
+                                        IrIntegerRadix::Hexadecimal => "x",
+                                    };
+                                    swrite!(f_str, "%{radix_str}");
+
+                                    let value_eval = self.eval_to_temporary(indent, stmt.span, value, stage_read)?;
+                                    swrite!(f_args, ", {value_eval}");
+                                }
+                            },
+                        }
+                    }
+
+                    swriteln!(self.f, "{indent}printf(\"{f_str}\"{f_args});");
                 }
             }
         }
@@ -912,3 +953,28 @@ fn name_str(prefix: &str, index: Idx, id: Option<&str>) -> String {
 }
 
 const I: &str = Indent::I;
+
+fn escape_cpp_str(f: &mut String, s: &str) {
+    // https://en.cppreference.com/w/cpp/language/charset.html#Basic_source_character_set
+    // https://en.cppreference.com/w/cpp/language/escape.html
+    const BASIC_CHARACTERS: &str =
+        " !#%&'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_abcdefghijklmnopqrstuvwxyz{|}~";
+
+    for c in s.chars() {
+        match c {
+            '"' => f.push_str("\\\""),
+            '\\' => f.push_str("\\\\"),
+            '\n' => f.push_str("\\n"),
+            '\r' => f.push_str("\\r"),
+            '\t' => f.push_str("\\t"),
+            _ => {
+                if BASIC_CHARACTERS.contains(c) {
+                    f.push(c)
+                } else {
+                    f.push_str("\\u");
+                    swrite!(f, "{:04x}", c as u64);
+                }
+            }
+        }
+    }
+}

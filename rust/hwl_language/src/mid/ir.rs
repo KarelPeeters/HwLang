@@ -1,8 +1,7 @@
 use crate::front::signal::Polarized;
 use crate::front::types::{ClosedIncRange, HardwareType};
-use crate::front::value::CompileValue;
 use crate::new_index_type;
-use crate::syntax::ast::PortDirection;
+use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
@@ -79,7 +78,7 @@ pub struct IrModuleInfo {
 
     pub debug_info_file: String,
     pub debug_info_id: Spanned<Option<String>>,
-    pub debug_info_generic_args: Option<Vec<(String, CompileValue)>>,
+    pub debug_info_generic_args: Option<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +217,23 @@ pub enum IrStatement {
     // TODO maybe we can remove this
     Block(IrBlock),
     If(IrIfStatement),
-    PrintLn(String),
+    For(IrForStatement),
+    /// This does not automatically include a trailing newline.
+    Print(Vec<IrStringPiece>),
+}
+
+pub type IrStringPiece = StringPiece<String, IrStringSubstitution>;
+
+#[derive(Debug, Clone)]
+pub enum IrStringSubstitution {
+    Integer(IrExpression, IrIntegerRadix),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum IrIntegerRadix {
+    Binary,
+    Decimal,
+    Hexadecimal,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +241,13 @@ pub struct IrIfStatement {
     pub condition: IrExpression,
     pub then_block: IrBlock,
     pub else_block: Option<IrBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrForStatement {
+    pub index: IrVariable,
+    pub range: ClosedIncRange<BigInt>,
+    pub block: IrBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +423,12 @@ pub enum ValueAccess {
 }
 
 impl IrBlock {
+    pub fn single(span: Span, stmt: IrStatement) -> Self {
+        IrBlock {
+            statements: vec![Spanned::new(span, stmt)],
+        }
+    }
+
     pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         let IrBlock { statements } = self;
         for stmt in statements {
@@ -420,14 +448,39 @@ impl IrStatement {
                 block.visit_values_accessed(large, f);
             }
             IrStatement::If(if_stmt) => {
-                if_stmt.condition.visit_values_accessed(large, f);
-                if_stmt.then_block.visit_values_accessed(large, f);
-                if let Some(else_block) = &if_stmt.else_block {
+                let IrIfStatement {
+                    condition,
+                    then_block,
+                    else_block,
+                } = if_stmt;
+                condition.visit_values_accessed(large, f);
+                then_block.visit_values_accessed(large, f);
+                if let Some(else_block) = else_block {
                     else_block.visit_values_accessed(large, f);
                 }
             }
-            IrStatement::PrintLn(s) => {
-                let _: &String = s;
+            IrStatement::For(for_stmt) => {
+                let &IrForStatement {
+                    index,
+                    range: _,
+                    ref block,
+                } = for_stmt;
+                f(IrSignalOrVariable::Variable(index), ValueAccess::Write);
+                f(IrSignalOrVariable::Variable(index), ValueAccess::Read);
+                block.visit_values_accessed(large, f);
+            }
+            IrStatement::Print(pieces) => {
+                for p in pieces {
+                    match p {
+                        StringPiece::Literal(_) => {}
+                        StringPiece::Substitute(v) => {
+                            let v = match v {
+                                IrStringSubstitution::Integer(v, _) => v,
+                            };
+                            v.visit_values_accessed(large, f);
+                        }
+                    }
+                }
             }
         }
     }

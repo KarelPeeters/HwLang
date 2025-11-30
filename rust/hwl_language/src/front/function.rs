@@ -2,18 +2,17 @@ use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
-use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
 use crate::front::flow::{Flow, FlowCompile};
-use crate::front::item::{
-    ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, HardwareChecked, NonHardwareEnum,
-    NonHardwareStruct, UniqueDeclaration,
-};
+use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, UniqueDeclaration};
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, HardwareValue, Value};
+use crate::front::value::{
+    CompileValue, EnumValue, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile, SimpleCompileValue,
+    StructValue, Value, ValueCommon,
+};
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
     Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters,
@@ -30,7 +29,6 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
 use std::sync::Arc;
-use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub enum FunctionValue {
@@ -148,7 +146,7 @@ impl<'a> ParamArgMacher<'a> {
         let mut positional_count: usize = 0;
         let mut any_err_args = Ok(());
         for (arg_index, arg) in enumerate(&args.inner) {
-            if args_must_be_compile && !matches!(arg.value.inner, Value::Compile(_)) {
+            if args_must_be_compile && CompileValue::try_from(&arg.value.inner).is_err() {
                 let diag = Diagnostic::new("call target only supports compile-time arguments")
                     .add_info(params_span, "parameters defined here")
                     .add_error(arg.value.span, "hardware value passed here")
@@ -300,7 +298,7 @@ impl<'a> ParamArgMacher<'a> {
         // check type match
         let value = value.and_then(|value| {
             let reason = TypeContainsReason::Parameter { param_ty: ty.span };
-            check_type_contains_value(diags, reason, ty.inner, value.as_ref(), false, false)?;
+            check_type_contains_value(diags, reason, ty.inner, value.as_ref())?;
             Ok(value)
         });
 
@@ -378,13 +376,13 @@ impl CompileItemContext<'_, '_> {
                         Err(diags.report(error_unique_mismatch(
                             "struct",
                             span_target,
-                            expected_info.unique.span_id(),
-                            func_unique.span_id(),
+                            expected_info.unique.id().span(),
+                            func_unique.id().span(),
                         )))
                     }
                 }
                 Type::Any => Err(err_infer_any("struct")),
-                _ => Err(err_infer_mismatch("struct", func_unique.span_id())),
+                _ => Err(err_infer_mismatch("struct", func_unique.id().span())),
             },
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
                 self.call_enum_new(span_call, enum_elab, variant_index, &args)
@@ -396,7 +394,7 @@ impl CompileItemContext<'_, '_> {
                     self.call_enum_new(span_call, elab, variant_index, &args)
                 }
                 Type::Any => Err(err_infer_any("enum")),
-                _ => Err(err_infer_mismatch("enum", unique.span_id())),
+                _ => Err(err_infer_mismatch("enum", unique.id().span())),
             },
         }
     }
@@ -418,18 +416,19 @@ impl CompileItemContext<'_, '_> {
                 .map(|arg| Arg {
                     span: arg.span,
                     name: arg.name,
-                    value: arg.value.map_inner(Value::Compile),
+                    value: arg.value.map_inner(Value::from),
                 })
                 .collect_vec(),
         };
 
-        match self.call_function(flow, expected_ty, span_target, span_call, function, args)? {
-            Value::Compile(result) => Ok(result),
-            Value::Hardware(_) => Err(self.refs.diags.report_internal_error(
+        let result = self.call_function(flow, expected_ty, span_target, span_call, function, args)?;
+
+        CompileValue::try_from(&result).map_err(|_: NotCompile| {
+            self.refs.diags.report_internal_error(
                 span_call,
                 "calling a function with compile-time args should return a compile-time value, got hardware value",
-            )),
-        }
+            )
+        })
     }
 
     // TODO ensure the expected type for fields is correctly propagated to the args
@@ -440,12 +439,13 @@ impl CompileItemContext<'_, '_> {
         elab: ElaboratedStruct,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let _ = span_call;
         let &ElaboratedStructInfo {
-            span_body,
             unique: _,
+            name: _,
+            span_body,
             ref fields,
-            ref fields_hw,
+            fields_hw: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);
 
         let mut matcher = ParamArgMacher::new(
@@ -460,70 +460,16 @@ impl CompileItemContext<'_, '_> {
         let mut field_values = vec![];
         for &(field_id, ref field_ty) in fields.values() {
             if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
-                field_values.push(v);
+                field_values.push(v.inner);
             }
         }
         matcher.finish()?;
 
-        // decide between hardware/compile
-        // combine into compile or non-compile value
-        // TODO share this code with tuple and array literals
-        let first_non_compile = field_values
-            .iter()
-            .find(|v| !matches!(v.inner, Value::Compile(_)))
-            .map(|v| v.span);
-
-        let result = if let Some(first_non_compile) = first_non_compile {
-            // at least one non-compile, turn everything into IR
-            let fields_hw = match fields_hw {
-                Ok(fields_hw) => fields_hw,
-                &Err(NonHardwareStruct { first_failing_field }) => {
-                    let (field_id, field_ty) = &fields[first_failing_field];
-                    let diag = Diagnostic::new("cannot construct hardware value of struct")
-                        .add_error(span_call, "during construction of struct here")
-                        .add_info(first_non_compile, "necessary because this field value is hardware")
-                        .add_info(field_id.span, "field declared here")
-                        .add_info(
-                            field_ty.span,
-                            format!("with non-hardware type `{}`", field_ty.inner.diagnostic_string()),
-                        )
-                        .finish();
-                    return Err(diags.report(diag));
-                }
-            };
-            let elab_hw = HardwareChecked::new_unchecked(elab);
-
-            let mut result_ty = vec![];
-            let mut result_domain = ValueDomain::CompileTime;
-            let mut result_expr = vec![];
-
-            for (i, value) in enumerate(field_values) {
-                let expected_ty_inner_hw = &fields_hw[i];
-
-                let value_ir =
-                    value
-                        .inner
-                        .as_hardware_value(self.refs, &mut self.large, value.span, expected_ty_inner_hw)?;
-
-                result_ty.push(value_ir.ty);
-                result_domain = result_domain.join(value_ir.domain);
-                result_expr.push(value_ir.expr);
-            }
-
-            Value::Hardware(HardwareValue {
-                ty: HardwareType::Struct(elab_hw),
-                domain: result_domain,
-                expr: self.large.push_expr(IrExpressionLarge::TupleLiteral(result_expr)),
-            })
-        } else {
-            // all compile
-            let values = field_values
-                .into_iter()
-                .map(|v| unwrap_match!(&v.inner, Value::Compile(v) => v.clone()))
-                .collect();
-            Value::Compile(CompileValue::Struct(elab, Arc::new(values)))
+        let result = StructValue {
+            ty: elab,
+            fields: field_values,
         };
-        Ok(result)
+        Ok(Value::Compound(MixedCompoundValue::Struct(result)))
     }
 
     fn call_enum_new(
@@ -537,7 +483,7 @@ impl CompileItemContext<'_, '_> {
 
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &(variant_id, ref variant_content) = &enum_info.variants[variant_index];
-        let variant_content = variant_content.as_ref().unwrap();
+        let variant_payload_ty = variant_content.as_ref().unwrap();
 
         let mut matcher = ParamArgMacher::new(
             diags,
@@ -547,62 +493,15 @@ impl CompileItemContext<'_, '_> {
             false,
             NamedRule::OnlyPositional,
         )?;
-        let content = matcher.resolve_param(variant_id, variant_content.as_ref(), None)?;
+        let payload = matcher.resolve_param(variant_id, variant_payload_ty.as_ref(), None)?;
         matcher.finish()?;
 
-        let result = match content.inner {
-            Value::Compile(content) => Value::Compile(CompileValue::Enum(
-                elab,
-                (variant_index, Some(Box::new(content.clone()))),
-            )),
-            Value::Hardware(content_inner) => {
-                let enum_info_hw = match &enum_info.hw {
-                    Ok(hw_info) => hw_info,
-                    Err(non_hw_reason) => {
-                        let e = match non_hw_reason {
-                            NonHardwareEnum::NoVariants => {
-                                diags.report_internal_error(span_call, "constructing enum without variants")
-                            }
-                            &NonHardwareEnum::NonHardwareField(variant_index) => {
-                                let (variant_id, variant_content) = &enum_info.variants[variant_index];
-                                let variant_content = variant_content.as_ref().unwrap();
-                                let diag = Diagnostic::new("cannot construct hardware value of enum")
-                                    .add_error(span_call, "during construction of enum here")
-                                    .add_info(content.span, "necessary because this content value is hardware")
-                                    .add_info(variant_id.span, "variant declared here")
-                                    .add_info(
-                                        variant_content.span,
-                                        format!(
-                                            "with non-hardware type `{}`",
-                                            variant_content.inner.diagnostic_string()
-                                        ),
-                                    )
-                                    .finish();
-                                return Err(diags.report(diag));
-                            }
-                        };
-                        return Err(e);
-                    }
-                };
-                let ty_hw = HardwareChecked::new_unchecked(elab);
-
-                // build new expression
-                let content_bits = self.large.push_expr(IrExpressionLarge::ToBits(
-                    content_inner.ty.as_ir(self.refs),
-                    content_inner.expr.clone(),
-                ));
-                let expr =
-                    enum_info_hw.build_ir_expression(self.refs, &mut self.large, variant_index, Some(content_bits))?;
-
-                Value::Hardware(HardwareValue {
-                    ty: HardwareType::Enum(ty_hw),
-                    domain: content_inner.domain,
-                    expr,
-                })
-            }
+        let result = EnumValue {
+            ty: elab,
+            variant: variant_index,
+            payload: Some(Box::new(payload.inner)),
         };
-
-        Ok(result)
+        Ok(Value::Compound(MixedCompoundValue::Enum(result)))
     }
 
     fn call_user_function(
@@ -656,7 +555,7 @@ impl CompileItemContext<'_, '_> {
                 .map(|&default| {
                     let value =
                         ctx.eval_expression_as_compile(scope, flow, &ty.inner, default, "parameter default value")?;
-                    Ok(value.map_inner(Value::Compile))
+                    Ok(value.map_inner(Value::from))
                 })
                 .transpose()?;
 
@@ -717,7 +616,7 @@ impl CompileItemContext<'_, '_> {
                         // As far as the flow is concerned,
                         //   it might look like not all branches are guaranteed to initialize the return value.
                         // To avoid wrong error messages and skipped merging, we always start with an initial value.
-                        flow.var_set(return_var, decl_span, Ok(Value::Compile(CompileValue::Undefined)));
+                        flow.var_set_undefined(return_var, decl_span);
 
                         Some(return_var)
                     } else {
@@ -742,7 +641,7 @@ impl CompileItemContext<'_, '_> {
                     // unwrap compile, we checked that these values are compile-time during argument matching
                     let param_values = param_values
                         .into_iter()
-                        .map(|(id, v)| (id, v.unwrap_compile()))
+                        .map(|(id, v)| (id, CompileValue::try_from(&v).unwrap()))
                         .collect_vec();
 
                     let mut flow_inner = flow.new_child_compile(body.span, "item body");
@@ -752,7 +651,7 @@ impl CompileItemContext<'_, '_> {
                         Some(param_values),
                         Spanned::new(body.span, item_body),
                     )?;
-                    Ok(Value::Compile(value))
+                    Ok(Value::from(value))
                 }
             }
         })
@@ -798,37 +697,34 @@ impl CompileItemContext<'_, '_> {
                     TypeContainsReason::Operator(span_call),
                     &ty_hw.as_type(),
                     value.as_ref(),
-                    false,
-                    false,
                 )?;
 
                 let ty_ir = ty_hw.as_ir(self.refs);
                 let width = ty_ir.size_bits();
 
-                let result = match &value.inner {
-                    Value::Compile(value) => {
-                        // TODO dedicated compile-time bits value that's faster than a boxed array of bools
-                        let bits = ty_hw.value_to_bits(self.refs, span_call, value)?;
-                        Value::Compile(CompileValue::Array(Arc::new(
-                            bits.into_iter().map(CompileValue::Bool).collect_vec(),
-                        )))
+                // try as compile-time first so we get compile-time bits back
+                match CompileValue::try_from(&value.inner) {
+                    Ok(value) => {
+                        let bits = ty_hw.value_to_bits(self.refs, span_call, &value)?;
+                        let bits_wrapped = bits.into_iter().map(CompileValue::new_bool).collect_vec();
+                        Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(bits_wrapped))))
                     }
-                    Value::Hardware(value_raw) => {
-                        let value = value_raw.clone().soft_expand_to_type(&mut self.large, ty_hw);
-
-                        let expr = self
-                            .large
-                            .push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr.clone()));
+                    Err(NotCompile) => {
+                        let value = value.inner.as_hardware_value_unchecked(
+                            self.refs,
+                            &mut self.large,
+                            span_call,
+                            ty_hw.clone(),
+                        )?;
                         let ty_bits = HardwareType::Array(Arc::new(HardwareType::Bool), width);
-
-                        Value::Hardware(HardwareValue {
+                        let bits_hw = HardwareValue {
                             ty: ty_bits,
                             domain: value.domain,
-                            expr,
-                        })
+                            expr: self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr)),
+                        };
+                        Ok(Value::Hardware(bits_hw))
                     }
-                };
-                Ok(result)
+                }
             }
             FunctionBitsKind::FromBits => {
                 let ty_ir = ty_hw.as_ir(self.refs);
@@ -838,17 +734,18 @@ impl CompileItemContext<'_, '_> {
                     check_type_is_bool_array(diags, TypeContainsReason::Operator(span_call), value, Some(&width))?;
 
                 let result = match value {
-                    Value::Compile(v) => {
-                        Value::Compile(ty_hw.value_from_bits(self.refs, span_call, &v).map_err(|_| {
+                    MaybeCompile::Compile(v) => {
+                        let result = ty_hw.value_from_bits(self.refs, span_call, &v).map_err(|_| {
                             let msg = format!(
                                 "while converting value `{:?}` into type `{}`",
                                 v,
                                 ty_hw.diagnostic_string()
                             );
                             diags.report_simple("`from_bits` failed", span_call, msg)
-                        })?)
+                        })?;
+                        Value::from(result)
                     }
-                    Value::Hardware(v) => {
+                    MaybeCompile::Hardware(v) => {
                         let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
                         Value::Hardware(HardwareValue {
                             ty: ty_hw.clone(),
@@ -880,7 +777,7 @@ pub fn check_function_return_type_and_set_value(
                 span_keyword,
                 span_return_ty: ty.span,
             };
-            let result_ty = check_type_contains_value(diags, reason, ty.inner, value.as_ref(), true, false);
+            let result_ty = check_type_contains_value(diags, reason, ty.inner, value.as_ref());
 
             if let Some(return_var) = entry.return_var {
                 flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner));
@@ -933,16 +830,16 @@ fn check_function_end(
     let value = if is_certain_return {
         if let Some(var) = return_entry.return_var {
             // normal return, get the value
-            flow.var_eval_unchecked(diags, large, Spanned::new(body_span, var))
+            flow.var_eval(diags, large, Spanned::new(body_span, var))
                 .map_err(|_: DiagError| diags.report_internal_error(body_span, "failed to evaluate return value"))?
         } else {
             // normal return with unit return type, return unit
-            Value::Compile(CompileValue::unit())
+            Value::unit()
         }
     } else {
         // the end of the body might be reachable, this is only okay for functions without a return type
         match return_entry.return_type {
-            None => Value::Compile(CompileValue::unit()),
+            None => Value::unit(),
             Some(return_type) => {
                 let diag = Diagnostic::new("missing return in function")
                     .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
@@ -997,7 +894,7 @@ impl CapturedScope {
                                         | NamedValue::Register(_)
                                         | NamedValue::PortInterface(_)
                                         | NamedValue::WireInterface(_) => {
-                                            Ok(CapturedValue::FailedCapture(FailedCaptureReason::Hardware))
+                                            Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
                                         }
                                     },
                                 };
@@ -1064,7 +961,7 @@ impl CapturedScope {
                                 id_recreated.span(),
                                 VariableId::Id(id_recreated),
                                 span,
-                                Ok(Value::Compile(value.clone())),
+                                Ok(Value::from(value.clone())),
                             );
                             DeclaredValueSingle::Value {
                                 span,
@@ -1133,6 +1030,7 @@ impl Hash for FunctionValue {
 }
 
 pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> Diagnostic {
+    // TODO include struct/enum name
     Diagnostic::new(format!("{kind} expected type mismatch"))
         .add_error(target_span, format!("actual {kind} type is set here"))
         .add_info(expected_span, format!("expected {kind} type declared here"))

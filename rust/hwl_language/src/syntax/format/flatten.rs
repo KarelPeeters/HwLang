@@ -1009,7 +1009,7 @@ impl Context<'_> {
                 let mut seq = vec![token(TT::StringStart)];
                 for piece in pieces {
                     match piece {
-                        StringPiece::Literal { span: _ } => {
+                        StringPiece::Literal(_span) => {
                             seq.push(HNode::Dedent(Box::new(token(TT::StringMiddle))));
                         }
                         &StringPiece::Substitute(expr) => {
@@ -1053,7 +1053,11 @@ impl Context<'_> {
                     start.map(|e| self.fmt_expr(e)),
                     Some(self.fmt_expr(end)),
                 ),
-                RangeLiteral::Length { op_span: _, start, len } => wrapping_binary_op(
+                RangeLiteral::Length {
+                    op_span: _,
+                    start,
+                    length: len,
+                } => wrapping_binary_op(
                     token(TT::PlusDotDot),
                     Some(self.fmt_expr(start)),
                     Some(self.fmt_expr(len)),

@@ -584,8 +584,8 @@ ExprLevelRange: ExpressionKind = {
         => ExpressionKind::RangeLiteral(RangeLiteral::ExclusiveEnd { op_span, start, end }),
     <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..=">> <end:SpannedPushArena<ExprLevelLogical>>
         => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end }),
-    <start:SpannedPushArena<ExprLevelLogical>> <op_span:Span<"+..">> <len:SpannedPushArena<ExprLevelLogical>>
-        => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, len }),
+    <start:SpannedPushArena<ExprLevelLogical>> <op_span:Span<"+..">> <length:SpannedPushArena<ExprLevelLogical>>
+        => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, length }),
     ExprLevelLogical,
 }
 
@@ -809,8 +809,8 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
         => ExpressionKind::StringLiteral(<>),
 }
 
-StringPiece: StringPiece = {
-    Span<TokenStringMiddle> => StringPiece::Literal { span: <> },
+StringPiece: StringPiece<Span, Expression> = {
+    Span<TokenStringMiddle> => StringPiece::Literal(<>),
     TokenStringSubStart <Expr> TokenStringSubEnd => StringPiece::Substitute(<>),
 }
 

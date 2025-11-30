@@ -2,13 +2,12 @@ use num_integer::Integer;
 use num_traits::{Num, Pow, Signed};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
-use std::marker::PhantomData;
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct BigUint(Storage, PhantomData<()>);
+pub struct BigUint(Storage);
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct BigInt(Storage, PhantomData<()>);
+pub struct BigInt(Storage);
 
 // TODO benchmark i128 vs i64
 type IStorage = i128;
@@ -52,7 +51,7 @@ impl Storage {
             Storage::Big(inner) => {
                 // values that can be represented as Storage::Small should be,
                 //   this ensures that each value has a unique representation
-                assert!(IStorage::try_from(inner).is_err());
+                debug_assert!(IStorage::try_from(inner).is_err());
             }
         }
     }
@@ -78,14 +77,14 @@ impl Storage {
 }
 
 impl BigUint {
-    pub const ZERO: Self = BigUint(Storage::ZERO, PhantomData);
-    pub const ONE: Self = BigUint(Storage::ONE, PhantomData);
-    pub const TWO: Self = BigUint(Storage::TWO, PhantomData);
+    pub const ZERO: Self = BigUint(Storage::ZERO);
+    pub const ONE: Self = BigUint(Storage::ONE);
+    pub const TWO: Self = BigUint(Storage::TWO);
 
     fn new(storage: Storage) -> Self {
         storage.check_valid();
-        assert_ne!(storage.sign(), Sign::Negative);
-        BigUint(storage, PhantomData)
+        debug_assert_ne!(storage.sign(), Sign::Negative);
+        BigUint(storage)
     }
 
     fn storage(&self) -> &Storage {
@@ -179,14 +178,14 @@ impl BigUint {
 }
 
 impl BigInt {
-    pub const ZERO: Self = BigInt(Storage::ZERO, PhantomData);
-    pub const ONE: Self = BigInt(Storage::ONE, PhantomData);
-    pub const TWO: Self = BigInt(Storage::TWO, PhantomData);
-    pub const NEG_ONE: Self = BigInt(Storage::NEG_ONE, PhantomData);
+    pub const ZERO: Self = BigInt(Storage::ZERO);
+    pub const ONE: Self = BigInt(Storage::ONE);
+    pub const TWO: Self = BigInt(Storage::TWO);
+    pub const NEG_ONE: Self = BigInt(Storage::NEG_ONE);
 
     fn new(storage: Storage) -> Self {
         storage.check_valid();
-        BigInt(storage, PhantomData)
+        BigInt(storage)
     }
 
     fn storage(&self) -> &Storage {
@@ -233,7 +232,7 @@ impl BigInt {
 
     pub fn div_floor(&self, rhs: &BigInt) -> Result<BigInt, DivideByZero> {
         // TODO small fast path
-        if rhs == &BigInt::ZERO {
+        if rhs.is_zero() {
             Err(DivideByZero)
         } else {
             Ok(BigInt::new(Storage::from_maybe_big(
@@ -243,7 +242,8 @@ impl BigInt {
     }
 
     pub fn mod_floor(&self, rhs: &BigInt) -> Result<BigInt, DivideByZero> {
-        if rhs == &BigInt::ZERO {
+        // TODO small fast path
+        if rhs.is_zero() {
             Err(DivideByZero)
         } else {
             Ok(BigInt::new(Storage::from_maybe_big(

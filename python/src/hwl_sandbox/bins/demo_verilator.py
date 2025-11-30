@@ -6,7 +6,8 @@ import hwl
 
 # TODO update this and add it to CI
 print("Loading, parsing, compiling")
-compiled = hwl.Source.simple(str(Path(__file__).parent / "../design/project")).compile()
+compiled = hwl.Source.new_from_manifest_path(
+    str(Path(__file__).parent / "../../../../design/project/hwl.toml")).compile()
 print("  parsed files:")
 for file in compiled.parsed.source.files:
     print(f"    {file}")

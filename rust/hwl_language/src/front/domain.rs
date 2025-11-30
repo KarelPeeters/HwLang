@@ -98,6 +98,10 @@ impl ValueDomain {
         }
     }
 
+    pub fn fold(domains: impl IntoIterator<Item = Self>) -> Self {
+        domains.into_iter().fold(ValueDomain::CompileTime, |acc, d| acc.join(d))
+    }
+
     pub fn from_port_domain(domain: PortDomain<Port>) -> Self {
         match domain {
             PortDomain::Clock => ValueDomain::Clock,

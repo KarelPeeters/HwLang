@@ -1,5 +1,5 @@
 use crate::front::bits::WrongType;
-use crate::front::check::{TypeContainsReason, check_type_contains_compile_value};
+use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::value::CompileValue;
 use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
@@ -207,8 +207,7 @@ impl VerilatedInstance {
             span_target: port_info.debug_span,
             span_target_ty: port_info.debug_info_ty.span,
         };
-        check_type_contains_compile_value(diags, reason, &port_info.ty.as_type_hw().as_type(), value, true)
-            .map_err(Either::Right)?;
+        check_type_contains_value(diags, reason, &port_info.ty.as_type_hw().as_type(), value).map_err(Either::Right)?;
 
         let bits = port_info
             .ty

@@ -73,6 +73,7 @@ impl Diagnostics {
 
     #[track_caller]
     pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> DiagError {
+        // TODO change arg order
         self.report(Diagnostic::new_todo(feature).add_error(span, "used here").finish())
     }
 

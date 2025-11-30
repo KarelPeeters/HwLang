@@ -1,13 +1,17 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
+use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
-    IrExpressionLarge, IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance,
-    IrPortConnection, IrPortInfo, IrStatement, IrTargetStep, IrType, IrVariables, IrWireOrPort,
+    IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrStringSubstitution, IrTargetStep, IrType,
+    IrVariables, IrWireOrPort,
 };
-use crate::syntax::ast::PortDirection;
+use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
-use crate::util::big_int::BigUint;
+use crate::util::arena::Arena;
+use crate::util::big_int::{BigInt, BigUint};
+use indexmap::IndexSet;
 use itertools::zip_eq;
 use std::borrow::Cow;
 use unwrap_match::unwrap_match;
@@ -15,15 +19,25 @@ use unwrap_match::unwrap_match;
 // TODO expand all of this
 impl IrDatabase {
     pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
+        let IrDatabase {
+            top_module: _,
+            modules,
+            external_modules,
+        } = self;
         for (_, info) in self.modules.iter() {
-            info.validate(self, diags)?;
+            info.validate(diags, modules, external_modules)?;
         }
         Ok(())
     }
 }
 
 impl IrModuleInfo {
-    pub fn validate(&self, db: &IrDatabase, diags: &Diagnostics) -> DiagResult {
+    pub fn validate(
+        &self,
+        diags: &Diagnostics,
+        modules: &Arena<IrModule, IrModuleInfo>,
+        external_modules: &IndexSet<String>,
+    ) -> DiagResult {
         let no_variables = &IrVariables::new();
 
         for child in &self.children {
@@ -88,7 +102,7 @@ impl IrModuleInfo {
                         ref port_connections,
                     } = instance;
                     // TODO check name unique
-                    let child_module_info = &db.modules[module];
+                    let child_module_info = &modules[module];
 
                     for ((_, port_info), connection) in zip_eq(&child_module_info.ports, port_connections) {
                         let IrPortInfo {
@@ -129,8 +143,8 @@ impl IrModuleInfo {
                         port_connections,
                     } = instance;
 
-                    if !db.external_modules.contains(module_name) {
-                        let msg = format!("external module `{module_name}` not found in external modules");
+                    if !external_modules.contains(module_name) {
+                        let msg = format!("IR external module `{module_name}` not found in external modules");
                         return Err(diags.report_internal_error(child.span, msg));
                     }
 
@@ -140,7 +154,7 @@ impl IrModuleInfo {
                     let _ = port_connections;
 
                     if port_names.len() != port_connections.len() {
-                        return Err(diags.report_internal_error(child.span, "port length mismatch"));
+                        return Err(diags.report_internal_error(child.span, "IR port length mismatch"));
                     }
                 }
             }
@@ -181,7 +195,35 @@ impl IrBlock {
                         else_block.validate(diags, module, locals)?;
                     }
                 }
-                IrStatement::PrintLn(_) => {}
+                IrStatement::For(for_stmt) => {
+                    let &IrForStatement {
+                        index,
+                        ref range,
+                        ref block,
+                    } = for_stmt;
+                    let index_ty = IrExpression::Variable(index).ty(module, locals);
+                    let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
+
+                    if !index_range.contains_range(range.as_ref()) {
+                        let msg = format!("IR for loop range mismatch: loop index {index_range:?} but range {range:?}");
+                        return Err(diags.report_internal_error(stmt.span, msg));
+                    }
+
+                    block.validate(diags, module, locals)?;
+                }
+                IrStatement::Print(pieces) => {
+                    for p in pieces {
+                        match p {
+                            StringPiece::Literal(_) => {}
+                            StringPiece::Substitute(p) => match p {
+                                IrStringSubstitution::Integer(p, _) => {
+                                    p.validate(diags, module, locals, stmt.span)?;
+                                    check_type_is_int(diags, stmt.span, &p.ty(module, locals))?;
+                                }
+                            },
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -257,13 +299,13 @@ impl IrExpression {
                         }
                     }
                     if &actual_len != len {
-                        let msg = format!("array literal length mismatch: expected {len} but got {actual_len}");
+                        let msg = format!("IR array literal length mismatch: expected {len} but got {actual_len}");
                         return Err(diags.report_internal_error(span, msg));
                     }
                 }
                 IrExpressionLarge::ToBits(ty, expr) => {
                     if ty != &expr.ty(module, locals) {
-                        return Err(diags.report_internal_error(span, "ToBits type mismatch"));
+                        return Err(diags.report_internal_error(span, "IR ToBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::FromBits(ty, expr) => {
@@ -273,7 +315,7 @@ impl IrExpression {
                     {
                         return Ok(());
                     }
-                    return Err(diags.report_internal_error(span, "FromInt width mismatch"));
+                    return Err(diags.report_internal_error(span, "IR FromInt width mismatch"));
                 }
                 // TODO expand
                 _ => {}
@@ -288,15 +330,29 @@ impl IrExpression {
 
 fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: &IrType) -> DiagResult {
     if expected != actual {
-        let msg = format!("ir type mismatch: expected {expected:?}, got {actual:?}");
+        let msg = format!("IR type mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));
     }
     Ok(())
 }
 
+fn check_type_is_int<'t>(
+    diags: &Diagnostics,
+    span: Span,
+    actual: &'t IrType,
+) -> DiagResult<&'t ClosedIncRange<BigInt>> {
+    match actual {
+        IrType::Int(range) => Ok(range),
+        _ => {
+            let msg = format!("IR type mismatch: expected int, got {actual:?}");
+            Err(diags.report_internal_error(span, msg))
+        }
+    }
+}
+
 fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult {
     if expected != actual {
-        let msg = format!("ir port direction mismatch: expected {expected:?}, got {actual:?}");
+        let msg = format!("IR port direction mismatch: expected {expected:?}, got {actual:?}");
         return Err(diags.report_internal_error(span, msg));
     }
     Ok(())

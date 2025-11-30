@@ -630,8 +630,6 @@ pub type Expression = Spanned<ExpressionKindIndex>;
 pub enum ExpressionKind {
     // Miscellaneous
     Dummy,
-    // TODO maybe this should not be part of expression, it's only allowed in very few places
-    //   just the existence of this makes type checking harder to trust
     Undefined,
     Type,
     TypeFunction,
@@ -645,7 +643,7 @@ pub enum ExpressionKind {
     // Literals
     IntLiteral(IntLiteral),
     BoolLiteral(bool),
-    StringLiteral(Vec<StringPiece>),
+    StringLiteral(Vec<StringPiece<Span, Expression>>),
 
     // Structures
     ArrayLiteral(Vec<ArrayLiteralElement<Expression>>),
@@ -674,10 +672,10 @@ pub enum DotIndexKind {
     Int { span: Span },
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum StringPiece {
-    Literal { span: Span },
-    Substitute(Expression),
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum StringPiece<L, E> {
+    Literal(L),
+    Substitute(E),
 }
 
 #[derive(Debug, Clone)]
@@ -768,7 +766,7 @@ pub enum RangeLiteral {
     Length {
         op_span: Span,
         start: Expression,
-        len: Expression,
+        length: Expression,
     },
 }
 
@@ -924,19 +922,21 @@ impl<I> MaybeIdentifier<I> {
 }
 
 impl MaybeIdentifier<Identifier> {
-    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
+    pub fn str(self, source: &SourceDatabase) -> MaybeIdentifier<&str> {
         match self {
             MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
-            MaybeIdentifier::Identifier(id) => {
-                MaybeIdentifier::Identifier(Spanned::new(id.span, source.span_str(id.span)))
-            }
+            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id.str(source)),
         }
+    }
+
+    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
+        self.str(source).map_id(|s| Spanned::new(self.span(), s))
     }
 
     pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
         match self {
             MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
-            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(source.span_str(id.span).to_owned())),
+            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.str(source).to_owned())),
         }
     }
 }

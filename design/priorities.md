@@ -24,6 +24,16 @@
 * for utilities, we need something more more convenient than a module and more powerful then an interface + functions
   * or is the "reg" trick inside functions enough?
 
+* track signals as normal variables for the purpose of VariableValues
+* improve imports to packages can be handles like normal values, containing their definitions as values
+* add prelude system to get common utilities, eg. simple types and print
+* fix `match` completeness checking: do nothing at compile-time, and properly check ints at hardware-time
+
+* implement new mixed value system
+    * implement struct and tuple indexing for assignment targets
+    * implement struct and tuple indexing for assignment targets
+    * properly implement print so everything can be printed at both compile and hardware time
+
 # Simulation
 
 * get C++ backend to be as convenient as verilator
