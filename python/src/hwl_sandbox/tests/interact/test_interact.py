@@ -65,4 +65,4 @@ def test_capture_prints():
         result = f(5)
 
     assert result == 6
-    assert capture.prints == ["hello", "world"]
+    assert capture.prints == ["hello\n", "world\n"]

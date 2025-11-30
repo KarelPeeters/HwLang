@@ -15,7 +15,7 @@ def test_signal_does_not_fit():
     """
     c = compile_custom(source)
 
-    with pytest.raises(hwl.DiagnosticException, match="value does not fit in type"):
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         _ = c.resolve("top.foo")
 
 
@@ -46,7 +46,7 @@ def test_variable_does_not_fit():
     """
     c = compile_custom(source)
 
-    with pytest.raises(hwl.DiagnosticException, match="value does not fit in type"):
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         _ = c.resolve("top.foo")
 
 
