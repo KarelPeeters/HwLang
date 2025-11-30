@@ -34,9 +34,9 @@ def test_print_compile():
         "()\n",
         "(1,)\n",
         "(1, 2, 3)\n",
-        "Point.new(x=4, y=8)\n",
-        "Option.None\n",
-        "Option.Some(10)\n",
+        "Point(T=int).new(x=4, y=8)\n",
+        "Option(T=int).None\n",
+        "Option(T=int).Some(10)\n",
     ]
 
     f = c.resolve("top.f")

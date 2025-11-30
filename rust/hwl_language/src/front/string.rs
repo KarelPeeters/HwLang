@@ -3,7 +3,7 @@ use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::ElaborationArenas;
 use crate::front::scope::Scope;
-use crate::front::types::{ClosedIncRange, HardwareType, Type};
+use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, RangeEnd, RangeValue,
     SimpleCompileValue, StructValue, Value,
@@ -472,7 +472,20 @@ impl Type {
 
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
-            Type::Int(range) => format!("int({range})"),
+            Type::Int(range) => {
+                let range_int = IncRange::OPEN;
+                let range_uint = IncRange {
+                    start_inc: Some(BigInt::ZERO),
+                    end_inc: None,
+                };
+                if range == &range_int {
+                    "int".to_owned()
+                } else if range == &range_uint {
+                    "uint".to_owned()
+                } else {
+                    format!("int({range})")
+                }
+            }
             Type::Tuple(inner) => {
                 let mut f = String::new();
                 swrite!(f, "(");

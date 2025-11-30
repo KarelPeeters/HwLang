@@ -17,10 +17,12 @@ use crate::syntax::ast::{
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::source::SourceDatabase;
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::sync::ComputeOnceMap;
+use hwl_util::swrite;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::Itertools;
@@ -681,7 +683,9 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
-                    |_| self.elaborate_struct_new(scope_params, flow, unique, body.span, fields),
+                    |item_params| {
+                        self.elaborate_struct_new(scope_params, flow, unique, &item_params.params, body.span, fields)
+                    },
                 )?;
                 Ok(CompileValue::new_ty(Type::Struct(result_id)))
             }
@@ -691,7 +695,9 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
                     item_params,
                     ElaboratedEnum,
-                    |_| self.elaborate_enum_new(scope_params, flow, unique, body.span, variants),
+                    |item_params| {
+                        self.elaborate_enum_new(scope_params, flow, unique, &item_params.params, body.span, variants)
+                    },
                 )?;
 
                 Ok(CompileValue::new_ty(Type::Enum(result_id)))
@@ -704,6 +710,7 @@ impl CompileItemContext<'_, '_> {
         scope_params: &Scope,
         flow: &mut FlowCompile,
         unique: UniqueDeclaration,
+        params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
         fields: &ExtraList<StructField>,
     ) -> DiagResult<ElaboratedStructInfo> {
@@ -753,11 +760,7 @@ impl CompileItemContext<'_, '_> {
             })
             .try_collect_vec();
 
-        let name = unique
-            .id
-            .spanned_string(self.refs.fixed.source)
-            .inner
-            .unwrap_or_else(|| String::from("_"));
+        let name = type_name_inluding_params(source, elab, unique, params);
         Ok(ElaboratedStructInfo {
             unique,
             name,
@@ -772,11 +775,13 @@ impl CompileItemContext<'_, '_> {
         scope_params: &Scope,
         flow: &mut FlowCompile,
         unique: UniqueDeclaration,
+        params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
         variants: &ExtraList<EnumVariant>,
     ) -> DiagResult<ElaboratedEnumInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
+        let elab = &self.refs.shared.elaboration_arenas;
 
         // evaluate variants
         let mut variants_eval = IndexMap::new();
@@ -813,11 +818,7 @@ impl CompileItemContext<'_, '_> {
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
-        let name = unique
-            .id
-            .spanned_string(self.refs.fixed.source)
-            .inner
-            .unwrap_or_else(|| String::from("_"));
+        let name = type_name_inluding_params(source, elab, unique, params);
         Ok(ElaboratedEnumInfo {
             unique,
             name,
@@ -826,6 +827,30 @@ impl CompileItemContext<'_, '_> {
             hw,
         })
     }
+}
+
+fn type_name_inluding_params(
+    source: &SourceDatabase,
+    elab: &ElaborationArenas,
+    unique: UniqueDeclaration,
+    params: &Option<Vec<(Identifier, CompileValue)>>,
+) -> String {
+    let mut f = unique
+        .id
+        .spanned_string(source)
+        .inner
+        .unwrap_or_else(|| String::from("_"));
+    if let Some(params) = params {
+        swrite!(f, "(");
+        for ((param_id, param_value), last) in params.iter().with_last() {
+            swrite!(f, "{}={}", param_id.str(source), param_value.value_string(elab));
+            if !last {
+                swrite!(f, ", ");
+            }
+        }
+        swrite!(f, ")");
+    }
+    f
 }
 
 fn try_enum_as_hardware(
