@@ -8,7 +8,7 @@ use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{Annotation, DiagResult, Diagnostic, Diagnostics};
-use hwl_language::front::print::NoPrintHandler;
+use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
@@ -84,7 +84,7 @@ impl ServerState {
                     hierarchy,
                     &parsed,
                     ElaborationSet::AsMuchAsPossible,
-                    &mut NoPrintHandler,
+                    &mut IgnorePrintHandler,
                     &|| false,
                     NON_ZERO_USIZE_ONE,
                     source.full_span(manifest.common.manifest_file),

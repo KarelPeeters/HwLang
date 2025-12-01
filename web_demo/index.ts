@@ -146,7 +146,10 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
         if (result.compile_prints.length > 0) {
             let combined_prints = "// prints:\n";
             for (const print of result.compile_prints) {
-                combined_prints += "//  " + print + "\n";
+                if (combined_prints.endsWith("\n")) {
+                    combined_prints += "//  ";
+                }
+                combined_prints += print;
             }
             combined_prints += "\n";
             lowered_verilog = combined_prints + lowered_verilog;

@@ -2,7 +2,7 @@
 
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::Diagnostics;
-use hwl_language::front::print::NoPrintHandler;
+use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::SourceDatabase;
@@ -32,7 +32,7 @@ fn target(data: String) {
         &hierarchy,
         &parsed,
         ElaborationSet::AsMuchAsPossible,
-        &mut NoPrintHandler,
+        &mut IgnorePrintHandler,
         &|| false,
         NON_ZERO_USIZE_ONE,
         dummy_span,

@@ -156,7 +156,7 @@ impl CompileItemContext<'_, '_> {
                         })?;
                         let msg =
                             check_type_is_string_compile(diags, elab, reason_str, Spanned::new(msg.span, msg_inner))?;
-                        self.refs.print_handler.println(&msg);
+                        self.refs.print_handler.print(&msg);
                     }
                     FlowKind::Hardware(flow) => {
                         let msg = check_type_is_string(diags, elab, TypeContainsReason::Internal(expr_span), msg)?;

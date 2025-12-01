@@ -2,21 +2,21 @@ use std::sync::Mutex;
 
 // TODO rename/expand to handle all external interactions: IO, env vars, ...
 pub trait PrintHandler {
-    fn println(&self, s: &str);
+    fn print(&self, s: &str);
 }
 
-pub struct NoPrintHandler;
+pub struct IgnorePrintHandler;
 
-impl PrintHandler for NoPrintHandler {
-    fn println(&self, _: &str) {}
+impl PrintHandler for IgnorePrintHandler {
+    fn print(&self, _: &str) {}
 }
 
 pub struct StdoutPrintHandler;
 
 impl PrintHandler for StdoutPrintHandler {
     #[allow(clippy::print_stdout)]
-    fn println(&self, s: &str) {
-        println!("{s}");
+    fn print(&self, s: &str) {
+        print!("{s}");
     }
 }
 
@@ -33,7 +33,7 @@ impl CollectPrintHandler {
 }
 
 impl PrintHandler for CollectPrintHandler {
-    fn println(&self, s: &str) {
+    fn print(&self, s: &str) {
         self.0.lock().unwrap().push(s.to_string());
     }
 }
