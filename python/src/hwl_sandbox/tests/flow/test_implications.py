@@ -64,3 +64,6 @@ def test_variable_checked():
     """
     c = compile_custom(source)
     _ = c.resolve("top.foo")
+
+# TODO test bool implies itself in if
+# TODO test match implications, for bool, int eq, int range

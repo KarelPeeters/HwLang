@@ -1,5 +1,5 @@
-use crate::{Compile, Function, IncRange, Module, Type, UnsupportedValue};
-use hwl_language::front::value::{CompileCompoundValue, RangeEnd, RangeValue, SimpleCompileValue};
+use crate::{Compile, Function, IncRange, Module, Type, Value};
+use hwl_language::front::value::{CompileCompoundValue, SimpleCompileValue};
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::{EmptyVec, GrowVec, NonEmptyVec};
@@ -21,6 +21,15 @@ use pyo3::{
 use std::sync::Arc;
 
 pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue) -> PyResult<Py<PyAny>> {
+    // TODO get rid of this, actually expose all values to python
+    let fallback = || {
+        Value {
+            compile: state.clone_ref(py),
+            value: value.clone(),
+        }
+        .into_py_any(py)
+    };
+
     match value {
         CompileValue::Simple(value) => match value {
             SimpleCompileValue::Type(x) => Type {
@@ -51,14 +60,13 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                 };
                 f.into_py_any(py)
             }
-            // TODO actually expose these to python
-            SimpleCompileValue::Interface(_) => UnsupportedValue("interface".to_owned()).into_py_any(py),
-            SimpleCompileValue::InterfaceView(_) => UnsupportedValue("interface view".to_owned()).into_py_any(py),
+            SimpleCompileValue::Interface(_) => fallback(),
+            SimpleCompileValue::InterfaceView(_) => fallback(),
         },
         CompileValue::Compound(value) => match value {
             CompileCompoundValue::String(x) => x.as_str().into_py_any(py),
             CompileCompoundValue::Range(x) => {
-                let RustIncRange { start_inc, end_inc } = x.as_range();
+                let RustIncRange { start_inc, end_inc } = x;
                 IncRange {
                     start_inc: start_inc.clone().map(BigInt::into_num_bigint).clone(),
                     end_inc: end_inc.clone().map(BigInt::into_num_bigint).clone(),
@@ -73,8 +81,8 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                     .try_collect()?;
                 PyTuple::new(py, items.into_iter())?.into_py_any(py)
             }
-            CompileCompoundValue::Struct(_) => UnsupportedValue("struct".to_owned()).into_py_any(py),
-            CompileCompoundValue::Enum(_) => UnsupportedValue("enum".to_owned()).into_py_any(py),
+            CompileCompoundValue::Struct(_) => fallback(),
+            CompileCompoundValue::Enum(_) => fallback(),
         },
         CompileValue::Hardware(n) => n.unreachable(),
     }
@@ -85,6 +93,9 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
 
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
+    if let Ok(value) = value.extract::<PyRef<Value>>() {
+        return Ok(value.value.clone());
+    }
     if let Ok(value) = value.extract::<PyRef<Type>>() {
         return Ok(CompileValue::new_ty(value.ty.clone()));
     }
@@ -109,14 +120,12 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
         return Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(items))));
     }
     if let Ok(value) = value.extract::<PyRef<IncRange>>() {
-        // TODO this can't roundtrip, is that okay?
         let IncRange { start_inc, end_inc } = &*value;
-        return Ok(CompileValue::Compound(CompileCompoundValue::Range(
-            RangeValue::StartEnd {
-                start: start_inc.clone().map(BigInt::from_num_bigint),
-                end: RangeEnd::Exclusive(end_inc.clone().map(BigInt::from_num_bigint)),
-            },
-        )));
+        let value = RustIncRange {
+            start_inc: start_inc.clone().map(BigInt::from_num_bigint),
+            end_inc: end_inc.clone().map(BigInt::from_num_bigint),
+        };
+        return Ok(CompileValue::Compound(CompileCompoundValue::Range(value)));
     }
     if let Ok(module) = value.extract::<PyRef<Module>>() {
         return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));

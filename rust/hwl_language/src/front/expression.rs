@@ -10,7 +10,7 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{
-    BoolImplications, HardwareValueWithImplications, Implication, ImplicationIntOp, ValueWithImplications,
+    BoolImplications, HardwareValueWithImplications, Implication, IncRangeMulti, ValueWithImplications,
 };
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -546,7 +546,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                         expr: self.large.push_expr(expr),
                                     })
                                 }
-                                _ => return Err(err_not_tuple(&value.ty.value_str(elab))),
+                                _ => return Err(err_not_tuple(&value.ty.value_string(elab))),
                             }
                         }
                         ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().value_string(elab))),
@@ -724,7 +724,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
                     debug_info_id: Spanned::new(span_keyword, None),
-                    debug_info_ty: ty_hw.clone().value_str(elab),
+                    debug_info_ty: ty_hw.clone().value_string(elab),
                     debug_info_domain: clocked_domain.inner.diagnostic_string(self),
                 };
                 let reg = ir_registers.push(reg_info);
@@ -895,7 +895,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
                                 .add_error(
                                     base.span,
-                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_str(elab)),
+                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
                                 )
                                 .footer(
                                     Level::Help,
@@ -956,9 +956,9 @@ impl<'a> CompileItemContext<'a, '_> {
         let eval_enum = |elab| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
             let variant_index = info.find_variant(diags, Spanned::new(index.span, index_str))?;
-            let (_, content_ty) = &info.variants[variant_index];
+            let variant_info = &info.variants[variant_index];
 
-            let result = match content_ty {
+            let result = match &variant_info.payload_ty {
                 None => Value::Compound(MixedCompoundValue::Enum(EnumValue {
                     ty: elab,
                     variant: variant_index,
@@ -1876,8 +1876,6 @@ fn eval_int_ty_call(
         }
         CompileValue::Compound(CompileCompoundValue::Range(new_range)) => {
             // int range arg, this is the new range
-            let new_range = new_range.as_range();
-
             if !target_range.inner.contains_range(&new_range) {
                 let base_ty_name = match target_signed {
                     true => "int",
@@ -2280,15 +2278,16 @@ pub fn eval_binary_expression(
         BinaryOp::BoolOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
         BinaryOp::BoolXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // (T, T)
-        // TODO expand eq/neq to bools/tuples/structs/enums, for the latter only if the type is the same
+        // TODO expand eq/neq to bools/tuples/strings/structs/enums, for the latter only if the type is the same
         BinaryOp::CmpEq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Eq),
         BinaryOp::CmpNeq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Neq),
         BinaryOp::CmpLt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lt),
         BinaryOp::CmpLte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lte),
         BinaryOp::CmpGt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gt),
         BinaryOp::CmpGte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gte),
-        // (int, range)
+        // (int, range) or (T:Eq, array)
         // TODO share code with match "in" pattern
+        // TODO for hardware ranges, also check if start <(=) end, otherwise this might have false positives
         BinaryOp::In => return Err(diags.report_todo(expr_span, "binary op In")),
         // (bool, bool)
         // TODO support boolean arrays
@@ -2502,20 +2501,20 @@ fn implications_lt(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new_int(left, ImplicationIntOp::Lt, right_range.end_inc));
-        if_false.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Gt,
-            right_range.start_inc - 1,
-        ));
+        let range_true = IncRangeMulti::from_range(IncRange {
+            start_inc: None,
+            end_inc: Some(right_range.end_inc - 1),
+        });
+        if_true.push(Implication::new_int(left, range_true.clone()));
+        if_false.push(Implication::new_int(left, range_true.complement()));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new_int(right, ImplicationIntOp::Gt, left_range.start_inc));
-        if_false.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Lt,
-            left_range.end_inc + 1,
-        ));
+        let range_true = IncRangeMulti::from_range(IncRange {
+            start_inc: Some(left_range.start_inc + 1),
+            end_inc: None,
+        });
+        if_true.push(Implication::new_int(right, range_true.clone()));
+        if_false.push(Implication::new_int(right, range_true.complement()));
     }
 
     BoolImplications { if_true, if_false }
@@ -2531,20 +2530,20 @@ fn implications_lte(
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Lt,
-            right_range.end_inc + 1,
-        ));
-        if_false.push(Implication::new_int(left, ImplicationIntOp::Gt, right_range.start_inc));
+        let range_true = IncRangeMulti::from_range(IncRange {
+            start_inc: None,
+            end_inc: Some(right_range.end_inc),
+        });
+        if_true.push(Implication::new_int(left, range_true.clone()));
+        if_false.push(Implication::new_int(left, range_true.complement()));
     }
     if let Some(right) = right {
-        if_true.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Gt,
-            left_range.start_inc - 1,
-        ));
-        if_false.push(Implication::new_int(right, ImplicationIntOp::Lt, left_range.end_inc));
+        let range_true = IncRangeMulti::from_range(IncRange {
+            start_inc: Some(left_range.start_inc),
+            end_inc: None,
+        });
+        if_true.push(Implication::new_int(right, range_true.clone()));
+        if_false.push(Implication::new_int(right, range_true.complement()));
     }
 
     BoolImplications { if_true, if_false }
@@ -2562,34 +2561,28 @@ fn implications_eq(
     if let Some(left) = left {
         if_true.push(Implication::new_int(
             left,
-            ImplicationIntOp::Lt,
-            &right_range.end_inc + 1,
-        ));
-        if_true.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Gt,
-            &right_range.start_inc - 1,
+            IncRangeMulti::from_range(right_range.clone().into_range()),
         ));
 
-        if let Some(right) = right_range.as_single() {
-            if_false.push(Implication::new_int(left, ImplicationIntOp::Neq, right.clone()));
+        if let Some(right_single) = right_range.as_single() {
+            if_false.push(Implication::new_int(
+                left,
+                IncRangeMulti::single(right_single.clone()).complement(),
+            ));
         }
     }
 
     if let Some(right) = right {
         if_true.push(Implication::new_int(
             right,
-            ImplicationIntOp::Lt,
-            &left_range.end_inc + 1,
-        ));
-        if_true.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Gt,
-            &left_range.start_inc - 1,
+            IncRangeMulti::from_range(left_range.clone().into_range()),
         ));
 
-        if let Some(left) = left_range.as_single() {
-            if_false.push(Implication::new_int(right, ImplicationIntOp::Neq, left.clone()));
+        if let Some(left_single) = left_range.as_single() {
+            if_false.push(Implication::new_int(
+                right,
+                IncRangeMulti::single(left_single.clone()).complement(),
+            ));
         }
     }
 

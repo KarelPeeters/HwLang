@@ -101,9 +101,9 @@ impl HardwareEnumInfo {
         Ok(large.push_expr(ir_expr))
     }
 
-    pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: &HardwareValue, variant: usize) -> IrExpression {
+    pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: IrExpression, variant: usize) -> IrExpression {
         let tag = large.push_expr(IrExpressionLarge::TupleIndex {
-            base: value.expr.clone(),
+            base: value,
             index: BigUint::ZERO,
         });
 
@@ -142,7 +142,8 @@ impl HardwareEnumInfo {
 }
 
 // TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+// TODO clarify and enforce invariants (ie. start <= end)
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct IncRange<T> {
     pub start_inc: Option<T>,
     pub end_inc: Option<T>,
@@ -199,7 +200,7 @@ impl Type {
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
             (Type::Builtin, Type::Builtin) => Type::Builtin,
 
-            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
+            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b.as_ref()).cloned()),
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
@@ -350,6 +351,30 @@ impl<T> IncRange<T> {
         end_inc: None,
     };
 
+    pub fn single(value: T) -> Self
+    where
+        T: Clone,
+    {
+        IncRange {
+            start_inc: Some(value.clone()),
+            end_inc: Some(value),
+        }
+    }
+
+    pub fn as_ref(&self) -> IncRange<&T> {
+        IncRange {
+            start_inc: self.start_inc.as_ref(),
+            end_inc: self.end_inc.as_ref(),
+        }
+    }
+
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> IncRange<U> {
+        IncRange {
+            start_inc: self.start_inc.map(&mut f),
+            end_inc: self.end_inc.map(&mut f),
+        }
+    }
+
     pub fn try_into_closed(self) -> Result<ClosedIncRange<T>, Self> {
         let IncRange { start_inc, end_inc } = self;
 
@@ -415,7 +440,7 @@ impl<T> IncRange<T> {
         start_contains && end_contains
     }
 
-    pub fn union(&self, other: &IncRange<T>) -> IncRange<T>
+    pub fn union<'a>(&'a self, other: IncRange<&'a T>) -> IncRange<&'a T>
     where
         T: Ord + Clone,
     {
@@ -438,14 +463,61 @@ impl<T> IncRange<T> {
         };
 
         IncRange {
-            start_inc: start.cloned(),
-            end_inc: end.cloned(),
+            start_inc: start,
+            end_inc: end,
+        }
+    }
+
+    pub fn intersect<'a>(&'a self, other: IncRange<&'a T>) -> Option<IncRange<&'a T>>
+    where
+        T: Ord + Clone,
+    {
+        let IncRange {
+            start_inc: a_start,
+            end_inc: a_end,
+        } = self;
+        let IncRange {
+            start_inc: b_start,
+            end_inc: b_end,
+        } = other;
+
+        let start = match (a_start, b_start) {
+            (Some(a_start), Some(b_start)) => Some(a_start.max(b_start)),
+            (Some(a_start), None) => Some(a_start),
+            (None, Some(b_start)) => Some(b_start),
+            (None, None) => None,
+        };
+        let end = match (a_end, b_end) {
+            (Some(a_end), Some(b_end)) => Some(a_end.min(b_end)),
+            (Some(a_end), None) => Some(a_end),
+            (None, Some(b_end)) => Some(b_end),
+            (None, None) => None,
+        };
+
+        if let (Some(start), Some(end)) = (start, end)
+            && start > end
+        {
+            None
+        } else {
+            Some(IncRange {
+                start_inc: start,
+                end_inc: end,
+            })
+        }
+    }
+}
+
+impl<T: Clone> IncRange<&T> {
+    pub fn cloned(self) -> IncRange<T> {
+        IncRange {
+            start_inc: self.start_inc.cloned(),
+            end_inc: self.end_inc.cloned(),
         }
     }
 }
 
 impl<T> ClosedIncRange<T> {
-    pub fn single(value: T) -> ClosedIncRange<T>
+    pub fn single(value: T) -> Self
     where
         T: Clone,
     {

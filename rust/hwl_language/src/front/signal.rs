@@ -32,7 +32,7 @@ pub enum SignalOrVariable {
     Variable(Variable),
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum WireOrPort<W = Wire, P = Port> {
     Wire(W),
     Port(P),
@@ -189,7 +189,7 @@ impl WireInfo {
                         let ir = ir_wires.push(IrWireInfo {
                             ty: suggest.inner.as_ir(refs),
                             debug_info_id: slf.id.spanned_string(),
-                            debug_info_ty: suggest.inner.clone().value_str(&refs.shared.elaboration_arenas),
+                            debug_info_ty: suggest.inner.clone().value_string(&refs.shared.elaboration_arenas),
                             // will be filled in later during the inference checking pass
                             debug_info_domain: String::new(),
                         });

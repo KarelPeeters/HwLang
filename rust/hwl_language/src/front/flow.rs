@@ -49,6 +49,8 @@ trait FlowPrivate: Sized {
     fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
 
     fn apply_implications(&self, large: &mut IrLargeArena, value: HardwareValueWithVersion) -> ValueWithVersion {
+        // TODO move this to the implications module
+        // TODO make this "fallible", ie. "abandon this branch because it is actually unreachable"
         match &value.value.ty {
             HardwareType::Bool => {
                 let mut known_false = false;
@@ -78,15 +80,16 @@ trait FlowPrivate: Sized {
             }
             HardwareType::Int(ty) => {
                 let mut range = ClosedIncRangeMulti::from_range(ty.clone());
+
                 self.for_each_implication(value.version, |implication| {
                     let &Implication { version, ref kind } = implication;
                     assert_eq!(value.version, version);
-                    if let &ImplicationKind::IntOp(op, ref right) = kind {
-                        range.apply_implication(op, right);
+                    if let ImplicationKind::IntIn(implication_range) = kind {
+                        range = range.subtract(&implication_range.complement());
                     }
                 });
 
-                match range.to_range() {
+                match range.enclosing_range() {
                     // TODO support never type or maybe specifically empty ranges
                     // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
                     None => Value::Hardware(value),
@@ -1588,7 +1591,7 @@ fn merge_branch_values(
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
                             branch_value.last_assignment_span,
-                            format!("value in branch assigned here has type `{}`", ty.value_str(elab)),
+                            format!("value in branch assigned here has type `{}`", ty.value_string(elab)),
                         )
                     }
                 }

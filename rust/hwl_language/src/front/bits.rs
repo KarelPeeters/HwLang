@@ -81,7 +81,7 @@ impl HardwareType {
                 format!(
                     "failed to convert value `{}` to bits of type `{}`",
                     value.value_string(&refs.shared.elaboration_arenas),
-                    self.value_str(&refs.shared.elaboration_arenas)
+                    self.value_string(&refs.shared.elaboration_arenas)
                 ),
             )
         };
@@ -195,7 +195,7 @@ impl HardwareType {
                 span,
                 format!(
                     "failed to convert bits to value of type `{}`",
-                    self.value_str(&refs.shared.elaboration_arenas)
+                    self.value_string(&refs.shared.elaboration_arenas)
                 ),
             )
         };

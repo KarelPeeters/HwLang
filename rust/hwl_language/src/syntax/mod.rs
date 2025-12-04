@@ -43,6 +43,10 @@ impl LocationBuilder {
             end_byte,
         }
     }
+
+    pub fn pos(&self, byte: usize) -> Pos {
+        Pos { file: self.file, byte }
+    }
 }
 
 pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseError> {

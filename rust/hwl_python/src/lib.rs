@@ -12,6 +12,7 @@ use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
+use hwl_language::front::value::CompileValue as RustCompileValue;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
@@ -75,13 +76,19 @@ struct CapturePrintsContext {
     prev_capture: Option<Py<CapturePrints>>,
 }
 
+// TODO rework this, put all values into an inheritance hierarchy that matches CompileValue
+//   (and obviously support all values)
 #[pyclass]
-struct UnsupportedValue(String);
+struct Value {
+    compile: Py<Compile>,
+    value: RustCompileValue,
+}
 
 #[pymethods]
-impl UnsupportedValue {
-    fn __repr__(&self) -> String {
-        format!("Unsupported({})", self.0)
+impl Value {
+    fn __repr__(&self, py: Python) -> String {
+        let elab = &self.compile.borrow(py).state.elaboration_arenas;
+        self.value.value_string(elab)
     }
 }
 
@@ -193,7 +200,7 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Compile>()?;
     m.add_class::<CapturePrints>()?;
     m.add_class::<CapturePrintsContext>()?;
-    m.add_class::<UnsupportedValue>()?;
+    m.add_class::<Value>()?;
     m.add_class::<Type>()?;
     m.add_class::<IncRange>()?;
     m.add_class::<Function>()?;
@@ -367,6 +374,7 @@ impl Parsed {
 
 #[pymethods]
 impl Compile {
+    // TODO add variants that check the type, eg. resolve_function, resolve_module, ...
     fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
         // TODO move this somewhere common, the commandline will also need this
         // unwrap self

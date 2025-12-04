@@ -484,3 +484,20 @@ pub fn check_hardware_type_for_bit_operation(
         diags.report(diag)
     })
 }
+
+pub fn check_type_is_range_compile(
+    diags: &Diagnostics,
+    elab: &ElaborationArenas,
+    reason: TypeContainsReason,
+    value: Spanned<CompileValue>,
+) -> DiagResult<IncRange<BigInt>> {
+    check_type_contains_value(diags, elab, reason, &Type::Range, value.as_ref())?;
+
+    match value.inner {
+        CompileValue::Compound(CompileCompoundValue::Range(range)) => Ok(range),
+        CompileValue::Compound(_) | CompileValue::Simple(_) => {
+            Err(diags.report_internal_error(value.span, "expected range value"))
+        }
+        CompileValue::Hardware(never) => never.unreachable(),
+    }
+}

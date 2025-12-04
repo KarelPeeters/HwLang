@@ -408,7 +408,7 @@ fn print_hardware_sub(
 
             let mut rest = IrStatement::Print(vec![IrStringPiece::Literal("<unknown>".to_owned())]);
             for (variant, (variant_name, _)) in enumerate(&ty_info.variants).rev() {
-                let cond = ty_info_hw.check_tag_matches(large, value, variant);
+                let cond = ty_info_hw.check_tag_matches(large, value.expr.clone(), variant);
                 let payload = ty_info_hw.extract_payload(large, value, variant);
 
                 let mut block_case = vec![];
@@ -423,7 +423,7 @@ fn print_hardware_sub(
                 rest = IrStatement::If(IrIfStatement {
                     condition: cond,
                     then_block: IrBlock { statements: block_case },
-                    else_block: Some(IrBlock::single(span, rest)),
+                    else_block: Some(IrBlock::new_single(span, rest)),
                 })
             }
 
@@ -501,25 +501,25 @@ impl Type {
             }
             Type::Struct(ty) => {
                 let ty_info = elab.struct_info(*ty);
-                ty_info.name.clone()
+                format!("<struct {}>", ty_info.name)
             }
             Type::Enum(ty) => {
                 let ty_info = elab.enum_info(*ty);
-                ty_info.name.clone()
+                format!("<enum {}>", ty_info.name)
             }
-            Type::Range => "range".to_string(),
+            Type::Range => "<range>".to_string(),
             // TODO include names
-            Type::Function => "function".to_string(),
-            Type::Module => "module".to_string(),
-            Type::Interface => "interface".to_string(),
-            Type::InterfaceView => "interface_view".to_string(),
-            Type::Builtin => TOKEN_STR_BUILTIN.to_owned(),
+            Type::Function => "<function>".to_string(),
+            Type::Module => "<module>".to_string(),
+            Type::Interface => "<interface>".to_string(),
+            Type::InterfaceView => "<interface_view>".to_string(),
+            Type::Builtin => format!("<{TOKEN_STR_BUILTIN}>"),
         }
     }
 }
 
 impl HardwareType {
-    pub fn value_str(&self, elab: &ElaborationArenas) -> String {
+    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
         self.as_type().value_string(elab)
     }
 }
@@ -529,27 +529,15 @@ impl CompileCompoundValue {
         match self {
             CompileCompoundValue::String(v) => v.as_ref().clone(),
             CompileCompoundValue::Range(v) => {
-                let mut f = String::new();
-                match v {
-                    RangeValue::StartEnd { start, end } => {
-                        let (op, end) = match end {
-                            RangeEnd::Exclusive(end) => ("..", end.as_ref()),
-                            RangeEnd::Inclusive(end) => ("..=", Some(end)),
-                        };
+                let IncRange { start_inc, end_inc } = v;
 
-                        if let Some(start) = start {
-                            swrite!(f, "{start}");
-                        }
-                        swrite!(f, "{}", op);
-                        if let Some(end) = end {
-                            swrite!(f, "{end}");
-                        }
-                    }
-                    RangeValue::StartLength { start, length } => {
-                        swrite!(f, "{start}");
-                        swrite!(f, "+..");
-                        swrite!(f, "{length}");
-                    }
+                let mut f = String::new();
+                if let Some(start) = start_inc {
+                    swrite!(f, "{start}");
+                }
+                swrite!(f, "..");
+                if let Some(end) = end_inc {
+                    swrite!(f, "{end}");
                 }
                 f
             }

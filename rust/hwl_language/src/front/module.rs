@@ -519,7 +519,7 @@ fn push_connector_single(
             direction: direction.inner,
             ty: ty.inner.as_ir(ctx.refs),
             debug_span: id.span,
-            debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_str(elab)),
+            debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(elab)),
             debug_info_domain: domain.inner.diagnostic_string(ctx),
         });
 
@@ -592,7 +592,7 @@ fn push_connector_interface(
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
-                debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_str(elab)),
+                debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(elab)),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             });
             let port = ctx.ports.push(PortInfo {
@@ -1630,7 +1630,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             let extra_ir_wire = self.ir_wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(self.ctx.refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
-                                debug_info_ty: ty.inner.clone().value_str(&self.ctx.refs.shared.elaboration_arenas),
+                                debug_info_ty: ty.inner.clone().value_string(&self.ctx.refs.shared.elaboration_arenas),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(self.ctx),
                             });
 
@@ -2307,7 +2307,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     let wire_ir_info = IrWireInfo {
                         ty: ty.inner.as_ir(refs),
                         debug_info_id: Spanned::new(id.span, Some(ir_name)),
-                        debug_info_ty: ty.inner.value_str(elab),
+                        debug_info_ty: ty.inner.value_string(elab),
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
@@ -2394,7 +2394,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: ty.inner.as_ir(ctx.refs),
             debug_info_id: id.spanned_string(),
-            debug_info_ty: ty.inner.value_str(elab),
+            debug_info_ty: ty.inner.value_string(elab),
             debug_info_domain,
         });
         let reg = ctx.registers.push(RegisterInfo {
@@ -2500,7 +2500,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let ir_reg = self.ir_registers.push(IrRegisterInfo {
             ty: port_info.ty.inner.as_ir(ctx.refs),
             debug_info_id: id.map_inner(|s| Some(s.to_owned())),
-            debug_info_ty: port_info.ty.inner.value_str(elab),
+            debug_info_ty: port_info.ty.inner.value_string(elab),
             debug_info_domain: domain.diagnostic_string(ctx),
         });
         let domain_spanned = Spanned {

@@ -56,7 +56,7 @@ pub enum MixedCompoundValue {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileCompoundValue {
     String(Arc<String>),
-    Range(RangeValue<BigInt, BigUint>),
+    Range(IncRange<BigInt>),
     Tuple(NonEmptyVec<CompileValue>),
     Struct(StructValue<CompileValue>),
     Enum(EnumValue<Box<CompileValue>>),
@@ -71,7 +71,7 @@ pub struct HardwareValue<T = HardwareType, E = IrExpression> {
     pub expr: E,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum RangeValue<B, L> {
     // TODO remove inclusive/exclude distinction, it's messy especially for eq/hash
     //   is that even enough? start/length can also equal the same range!
@@ -79,7 +79,7 @@ pub enum RangeValue<B, L> {
     StartLength { start: B, length: L },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub enum RangeEnd<B> {
     Exclusive(Option<B>),
     Inclusive(B),
@@ -474,7 +474,7 @@ fn err_hw_type_mismatch(refs: CompileRefs, span: Span, ty: &HardwareType) -> Dia
     let elab = &refs.shared.elaboration_arenas;
     let msg = format!(
         "wrong type when converting to hardware value with type {}",
-        ty.value_str(elab)
+        ty.value_string(elab)
     );
     Diagnostic::new_internal_error(msg).add_error(span, "here").finish()
 }
@@ -556,19 +556,13 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
             CompileCompoundValue::String(v) => {
                 MixedCompoundValue::String(Arc::new(vec![StringPiece::Literal(Arc::unwrap_or_clone(v))]))
             }
-            CompileCompoundValue::Range(v) => match v {
-                RangeValue::StartEnd { start, end } => MixedCompoundValue::Range(RangeValue::StartEnd {
-                    start: start.map(MaybeCompile::Compile),
-                    end: match end {
-                        RangeEnd::Exclusive(end) => RangeEnd::Exclusive(end.map(MaybeCompile::Compile)),
-                        RangeEnd::Inclusive(end) => RangeEnd::Inclusive(MaybeCompile::Compile(end)),
-                    },
-                }),
-                RangeValue::StartLength { start, length } => MixedCompoundValue::Range(RangeValue::StartLength {
-                    start: MaybeCompile::Compile(start),
-                    length: MaybeCompile::Compile(length),
-                }),
-            },
+            CompileCompoundValue::Range(v) => {
+                // TODO this is really weird
+                MixedCompoundValue::Range(RangeValue::StartEnd {
+                    start: v.start_inc.map(MaybeCompile::Compile),
+                    end: RangeEnd::Exclusive(v.end_inc.map(|x| MaybeCompile::Compile(x + 1))),
+                })
+            }
             CompileCompoundValue::Tuple(v) => MixedCompoundValue::Tuple(v.map(Value::from)),
             CompileCompoundValue::Struct(StructValue { ty, fields }) => {
                 let fields = fields.into_iter().map(Value::from).collect();
@@ -641,19 +635,19 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
                     }
                 }
                 match v {
-                    RangeValue::StartEnd { start, end } => Ok(CompileCompoundValue::Range(RangeValue::StartEnd {
-                        start: start.as_ref().map(try_map_bound).transpose()?,
-                        end: match end {
-                            RangeEnd::Exclusive(end) => {
-                                RangeEnd::Exclusive(end.as_ref().map(try_map_bound).transpose()?)
-                            }
-                            RangeEnd::Inclusive(end) => RangeEnd::Inclusive(try_map_bound(end)?),
+                    RangeValue::StartEnd { start, end } => Ok(CompileCompoundValue::Range(IncRange {
+                        start_inc: start.as_ref().map(try_map_bound).transpose()?,
+                        end_inc: match end {
+                            RangeEnd::Exclusive(end) => end.as_ref().map(try_map_bound).transpose()?.map(|x| x - 1),
+                            RangeEnd::Inclusive(end) => Some(try_map_bound(end)?),
                         },
                     })),
                     RangeValue::StartLength { start, length } => {
-                        Ok(CompileCompoundValue::Range(RangeValue::StartLength {
-                            start: try_map_bound(start)?,
-                            length: try_map_bound(length)?,
+                        let start = try_map_bound(start)?;
+                        let end = &start + try_map_bound(length)? - 1;
+                        Ok(CompileCompoundValue::Range(IncRange {
+                            start_inc: Some(start),
+                            end_inc: Some(end),
                         }))
                     }
                 }

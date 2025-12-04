@@ -857,7 +857,7 @@ impl Context<'_> {
     fn fmt_match<B>(&self, stmt: &MatchStatement<B>, f: impl Fn(&B) -> HNode) -> HNode {
         let &MatchStatement {
             target,
-            span_branches: _,
+            pos_end: _,
             ref branches,
         } = stmt;
 
@@ -867,16 +867,22 @@ impl Context<'_> {
 
             let pattern_node = match pattern.inner {
                 MatchPattern::Wildcard => token(TT::Underscore),
-                MatchPattern::Val(id) => HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)]),
-                MatchPattern::Equal(value) => self.fmt_expr(value),
-                MatchPattern::In(value) => HNode::Sequence(vec![token(TT::In), HNode::Space, self.fmt_expr(value)]),
-                MatchPattern::EnumVariant(variant, content) => {
-                    // TODO check that fuzzing would find a missing `val`
+                MatchPattern::WildcardVal(id) => {
+                    HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_maybe_id(id)])
+                }
+                MatchPattern::EqualTo(value) => self.fmt_expr(value),
+                MatchPattern::InRange { span_in: _, range } => {
+                    HNode::Sequence(vec![token(TT::In), HNode::Space, self.fmt_expr(range)])
+                }
+                MatchPattern::IsEnumVariant {
+                    variant,
+                    payload_id: payload,
+                } => {
                     let node_variant = HNode::Sequence(vec![token(TT::Dot), self.fmt_id(variant)]);
-                    match content {
+                    match payload {
                         None => node_variant,
-                        Some(content) => {
-                            let node_content = match content {
+                        Some(payload) => {
+                            let node_payload = match payload {
                                 MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
                                 MaybeIdentifier::Identifier(id) => {
                                     HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)])
@@ -884,7 +890,7 @@ impl Context<'_> {
                             };
                             HNode::Sequence(vec![
                                 node_variant,
-                                surrounded_group_indent(SurroundKind::Round, node_content),
+                                surrounded_group_indent(SurroundKind::Round, node_payload),
                             ])
                         }
                     }

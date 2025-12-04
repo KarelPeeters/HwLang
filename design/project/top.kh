@@ -1,1 +1,16 @@
-module top ports() {}
+import std.util.print;
+import std.types.[bool, int, Option];
+
+module top ports(x: in async Option(bool)) {
+    comb {
+        match (x) {
+            .None => {
+                print("None");
+            }
+            .Some(val x) => {
+                print("Some({x})");
+            }
+            _ => {}
+        }
+    }
+}

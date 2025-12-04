@@ -1,4 +1,4 @@
-import std.types.[any, bool, str, uint];
+import std.types.[any, bool, int, uint, str];
 
 // TODO add named-only args?
 pub fn print(value: any, end: str = "\n") {

@@ -440,7 +440,7 @@ pub enum ValueAccess {
 }
 
 impl IrBlock {
-    pub fn single(span: Span, stmt: IrStatement) -> Self {
+    pub fn new_single(span: Span, stmt: IrStatement) -> Self {
         IrBlock {
             statements: vec![Spanned::new(span, stmt)],
         }

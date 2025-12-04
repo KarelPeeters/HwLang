@@ -1,6 +1,7 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
+    check_type_is_range_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -8,30 +9,30 @@ use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowHardware, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
-use crate::front::implication::HardwareValueWithImplications;
+use crate::front::implication::{
+    ClosedIncRangeMulti, HardwareValueWithImplications, Implication, IncRangeMulti, ValueWithImplications,
+};
+use crate::front::item::{ElaboratedEnum, HardwareChecked};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::{HardwareType, IncRange, Type, Typed};
+use crate::front::types::{HardwareType, IncRange, NonHardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value,
+    CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
 };
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, Identifier,
-    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement,
-    VariableDeclaration, WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, IfCondBlockPair,
+    IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, VariableDeclaration,
+    WhileStatement,
 };
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::BigInt;
 use crate::util::iter::IterExt;
 use crate::util::{ResultExt, result_pair};
-use annotate_snippets::Level;
 use itertools::{Either, Itertools, enumerate, zip_eq};
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -199,23 +200,36 @@ impl ExitMask<1> {
     }
 }
 
-enum BranchMatched {
-    Yes(Option<(MaybeIdentifier, CompileValue)>),
+#[derive(Debug)]
+enum CompileBranchMatched {
+    Yes(Option<BranchDeclare<CompileValue>>),
     No,
 }
 
-impl BranchMatched {
-    fn from_bool(b: bool) -> Self {
-        if b { BranchMatched::Yes(None) } else { BranchMatched::No }
-    }
+#[derive(Debug)]
+struct HardwareBranchMatched {
+    cond: Option<IrExpression>,
+    declare: Option<BranchDeclare<HardwareValue>>,
+    implications: Vec<Implication>,
 }
 
-enum PatternEqual {
-    Bool(bool),
-    Int(BigInt),
+#[derive(Debug)]
+struct BranchDeclare<V> {
+    id: MaybeIdentifier,
+    value: V,
 }
 
-type CheckedMatchPattern<'a> = MatchPattern<PatternEqual, IncRange<BigInt>, usize, Identifier>;
+#[derive(Debug)]
+pub enum EvaluatedMatchPattern {
+    Wildcard,
+    WildcardVal(MaybeIdentifier),
+    EqualTo(Spanned<CompileValue>),
+    InRange(Spanned<IncRange<BigInt>>),
+    IsEnumVariant {
+        variant_index: usize,
+        payload_id: Option<MaybeIdentifier>,
+    },
+}
 
 impl CompileItemContext<'_, '_> {
     pub fn elaborate_const_block(&mut self, scope: &Scope, flow: &mut impl Flow, block: &ConstBlock) -> DiagResult {
@@ -576,250 +590,130 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
-        // TODO completely rewrite this, also share code with string printing
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let &MatchStatement {
             target,
-            span_branches,
+            pos_end,
             ref branches,
         } = stmt.inner;
 
         // eval target
-        let target = self.eval_expression(scope, flow, &Type::Any, target)?;
+        let target = self.eval_expression_with_implications(scope, flow, &Type::Any, target)?;
         let target_ty = target.inner.ty();
 
-        // track pattern coverage
-        // TODO handle coverage checking of empty enums properly
-        // TODO don't check coverage for compile-time cases, it's weird and not that useful
-        let mut cover_all = false;
-        let mut cover_bool_false = false;
-        let mut cover_bool_true = false;
-        let mut cover_enum_variant: HashMap<usize, Span> = HashMap::new();
-
-        // some type-specific handling
-        let cover_enum_count = if let &Type::Enum(elab) = &target_ty {
-            let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            Some(info.variants.len())
-        } else {
-            None
-        };
-        let eq_expected_ty = if matches!(&target_ty, Type::Int(_)) && matches!(&target.inner, Value::Simple(_)) {
-            &Type::Int(IncRange::OPEN)
-        } else {
-            &target_ty
-        };
-
-        // eval all branch patterns before visiting any bodies, to check for coverage and to get nice error messages
-        let reason = "match pattern";
+        // eval branches
         let branch_patterns = branches
             .iter()
-            .map(|branch| -> DiagResult<CheckedMatchPattern> {
-                if cover_all {
-                    // TODO turn into warning
-                    let diag = Diagnostic::new("redundant match branch")
-                        .add_error(branch.pattern.span, "this branch is unreachable")
-                        .finish();
-                    diags.report(diag);
-                }
-
-                match &branch.pattern.inner {
-                    MatchPattern::Wildcard => {
-                        cover_all = true;
-                        Ok(MatchPattern::Wildcard)
-                    }
-                    &MatchPattern::Val(i) => {
-                        cover_all = true;
-                        Ok(MatchPattern::Val(i))
-                    }
-                    &MatchPattern::Equal(value) => {
-                        // TODO support tuples, arrays, structs, enums (by value), all recursively
-                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
-                        check_type_contains_value(
-                            diags,
-                            elab,
-                            TypeContainsReason::MatchPattern(target.span),
-                            eq_expected_ty,
-                            value.as_ref(),
-                        )?;
-
-                        let pattern = match value.inner {
-                            CompileValue::Simple(SimpleCompileValue::Bool(value)) => {
-                                cover_bool_true |= value;
-                                cover_bool_false |= !value;
-                                cover_all |= cover_bool_true && cover_bool_false;
-                                PatternEqual::Bool(value)
-                            }
-                            CompileValue::Simple(SimpleCompileValue::Int(value)) => {
-                                // TODO track covered int ranges
-                                PatternEqual::Int(value)
-                            }
-                            _ => {
-                                return Err(diags.report_simple(
-                                    "unsupported match type",
-                                    value.span,
-                                    format!("pattern has type `{}`", value.inner.ty().value_string(elab)),
-                                ));
-                            }
-                        };
-
-                        Ok(MatchPattern::Equal(pattern))
-                    }
-                    &MatchPattern::In(value) => {
-                        if !matches!(target_ty, Type::Int(_)) {
-                            return Err(diags.report_simple(
-                                "range patterns are only supported for int values",
-                                value.span,
-                                format!("value has type `{}`", target_ty.value_string(elab)),
-                            ));
-                        }
-
-                        let value = self.eval_expression_as_compile(scope, flow, &target_ty, value, reason)?;
-                        let value = match value.inner {
-                            CompileValue::Compound(CompileCompoundValue::Range(range)) => range,
-                            _ => {
-                                return Err(diags.report_simple(
-                                    "expected range for in pattern",
-                                    value.span,
-                                    format!("pattern has type `{}`", value.inner.ty().value_string(elab)),
-                                ));
-                            }
-                        };
-
-                        Ok(MatchPattern::In(value.as_range()))
-                    }
-                    &MatchPattern::EnumVariant(variant, id_content) => {
-                        let elab = match target_ty {
-                            Type::Enum(elab) => elab,
-                            _ => {
-                                return Err(diags.report_simple(
-                                    "expected enum type for enum variant pattern",
-                                    variant.span,
-                                    format!("value has type `{}`", target_ty.value_string(elab)),
-                                ));
-                            }
-                        };
-                        let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-
-                        let variant_str = variant.str(self.refs.fixed.source);
-                        let variant_index = info.find_variant(diags, Spanned::new(variant.span, variant_str))?;
-
-                        // check reachable
-                        match cover_enum_variant.entry(variant_index) {
-                            Entry::Occupied(entry) => {
-                                let prev = *entry.get();
-                                let diag = Diagnostic::new("redundant match branch")
-                                    .add_error(branch.pattern.span, "this branch is unreachable")
-                                    .add_info(prev, "this enum variant was already handled here")
-                                    .finish();
-                                return Err(diags.report(diag));
-                            }
-                            Entry::Vacant(entry) => {
-                                entry.insert(branch.pattern.span);
-
-                                if cover_enum_count == Some(cover_enum_variant.len()) {
-                                    cover_all = true;
-                                }
-                            }
-                        }
-
-                        // check content
-                        let (variant_decl, variant_content) = &info.variants[variant_index];
-                        match (variant_content, id_content) {
-                            (Some(_), Some(_)) | (None, None) => {}
-                            (Some(variant_content), None) => {
-                                let diag = Diagnostic::new("mismatch between enum and match content")
-                                    .add_info(variant_content.span, "enum variant declared with content here")
-                                    .add_error(branch.pattern.span, "match pattern without content here")
-                                    .footer(Level::Help, "use (_) to ignore the content")
-                                    .finish();
-                                return Err(diags.report(diag));
-                            }
-                            (None, Some(id_content)) => {
-                                let diag = Diagnostic::new("mismatch between enum and match content")
-                                    .add_info(variant_decl.span, "enum variant declared without content here")
-                                    .add_error(id_content.span(), "match pattern with content here")
-                                    .finish();
-                                return Err(diags.report(diag));
-                            }
-                        }
-
-                        Ok(MatchPattern::EnumVariant(variant_index, id_content))
-                    }
-                }
-            })
+            .map(|branch| self.eval_match_pattern(scope, flow, target.span, &target_ty, branch.pattern.as_ref()))
             .try_collect_all_vec()?;
 
-        // check that all cases have been handled
-        if !cover_all {
-            let msg;
-            let msg = match target_ty {
-                Type::Bool => match (cover_bool_false, cover_bool_true) {
-                    (false, false) => "values not covered: false, true",
-                    (false, true) => "value not covered: false",
-                    (true, false) => "value not covered: true",
-                    _ => unreachable!(),
-                },
-                Type::Enum(elab) => {
-                    let info = self.refs.shared.elaboration_arenas.enum_info(elab);
+        match CompileValue::try_from(&target.inner) {
+            Ok(target_inner) => {
+                // compile-time target value, we can handle the entire match at compile-time
+                let target = Spanned::new(target.span, target_inner);
+                self.elaborate_match_statement_compile(scope, flow, stack, target, pos_end, branches, branch_patterns)
+            }
+            Err(NotCompile) => {
+                // hardware target value (at least partially), convert the target to full hardware
+                //   and handle the match at hardware time
+                let flow = flow.check_hardware(stmt.span, "match on hardware target")?;
 
-                    let mut not_covered = vec![];
-                    for (i, (id, _)) in info.variants.iter().enumerate() {
-                        if !cover_enum_variant.contains_key(&i) {
-                            not_covered.push(id);
+                let target_ty = target_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
+                    diags.report_simple(
+                        "failed to fully convert non-compile match target to hardware",
+                        target.span,
+                        format!("match target has non-hardware type {}", target_ty.value_string(elab)),
+                    )
+                })?;
+
+                let target_inner = match target.inner {
+                    ValueWithImplications::Simple(t) => HardwareValueWithImplications::simple(
+                        t.as_hardware_value_unchecked(self.refs, &mut self.large, target.span, target_ty.clone())?,
+                    ),
+                    ValueWithImplications::Compound(t) => HardwareValueWithImplications::simple(
+                        t.as_hardware_value_unchecked(self.refs, &mut self.large, target.span, target_ty.clone())?,
+                    ),
+                    ValueWithImplications::Hardware(t) => t,
+                };
+                let target = Spanned::new(target.span, target_inner);
+
+                self.elaborate_match_statement_hardware(
+                    scope,
+                    flow,
+                    stack,
+                    stmt.span,
+                    target,
+                    pos_end,
+                    branches,
+                    branch_patterns,
+                )
+            }
+        }
+    }
+
+    fn eval_match_pattern(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        target_span: Span,
+        target_ty: &Type,
+        pattern: Spanned<&MatchPattern>,
+    ) -> DiagResult<EvaluatedMatchPattern> {
+        let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
+        let reason_compile = "match branch";
+
+        match *pattern.inner {
+            MatchPattern::Wildcard => Ok(EvaluatedMatchPattern::Wildcard),
+            MatchPattern::WildcardVal(id) => Ok(EvaluatedMatchPattern::WildcardVal(id)),
+            MatchPattern::EqualTo(value) => {
+                let value = self.eval_expression_as_compile(scope, flow, target_ty, value, reason_compile)?;
+                Ok(EvaluatedMatchPattern::EqualTo(value))
+            }
+            MatchPattern::InRange { span_in, range } => {
+                let value = self.eval_expression_as_compile(scope, flow, target_ty, range, reason_compile)?;
+                let value = check_type_is_range_compile(diags, elab, TypeContainsReason::Operator(span_in), value)?;
+                Ok(EvaluatedMatchPattern::InRange(Spanned::new(range.span, value)))
+            }
+            MatchPattern::IsEnumVariant { variant, payload_id } => {
+                if let &Type::Enum(target_ty) = target_ty {
+                    let enum_info = self.refs.shared.elaboration_arenas.enum_info(target_ty);
+
+                    let variant_str = variant.spanned_str(self.refs.fixed.source);
+                    let variant_index = enum_info.find_variant(diags, variant_str)?;
+                    let variant_info = &enum_info.variants[variant_index];
+
+                    match (payload_id, &variant_info.payload_ty) {
+                        (None, None) | (Some(_), Some(_)) => {}
+                        (None, Some(variant_pyload_ty)) => {
+                            let diag = Diagnostic::new("enum variant payload mismatch")
+                                .add_info(variant_pyload_ty.span, "declared with a payload here")
+                                .add_error(pattern.span, "matched without a payload here")
+                                .finish();
+                            return Err(diags.report(diag));
+                        }
+                        (Some(payload), None) => {
+                            let diag = Diagnostic::new("enum variant payload mismatch")
+                                .add_info(variant_info.id.span, "declared without a payload here")
+                                .add_error(payload.span(), "matched with a payload here")
+                                .finish();
+                            return Err(diags.report(diag));
                         }
                     }
-                    let prefix = if not_covered.len() > 1 { "variant" } else { "variants" };
-                    msg = format!("{prefix} not covered: {}", not_covered.iter().join(","));
-                    &msg
-                }
-                _ => "not all values are covered",
-            };
 
-            let diag = Diagnostic::new("match does not cover all values")
-                .add_error(span_branches, msg)
-                .add_info(
-                    target.span,
-                    format!("value has type `{}`", target_ty.value_string(elab)),
-                )
-                .footer(Level::Help, "add missing cases, or")
-                .footer(
-                    Level::Help,
-                    "add a default case using `_` to cover all remaining values",
-                )
-                .finish();
-            return Err(diags.report(diag));
-        }
-
-        // evaluate match itself
-        match CompileValue::try_from(&target.inner) {
-            Ok(target_inner) => self.elaborate_match_statement_compile(
-                scope,
-                flow,
-                stack,
-                stmt.span,
-                target_inner,
-                branches,
-                branch_patterns,
-            ),
-            Err(NotCompile) => {
-                match target.inner {
-                    Value::Simple(_) => Err(diags
-                        .report_internal_error(span_branches, "match compile target should have been handled earlier")),
-                    Value::Compound(_) => Err(diags.report_todo(span_branches, "match compound target")),
-                    Value::Hardware(target_inner) => {
-                        let flow = flow.check_hardware(target.span, "hardware value")?;
-                        self.elaborate_match_statement_hardware(
-                            scope,
-                            flow,
-                            stack,
-                            stmt.span,
-                            Spanned::new(target.span, target_inner),
-                            branches,
-                            branch_patterns,
-                        )
-                    }
+                    Ok(EvaluatedMatchPattern::IsEnumVariant {
+                        variant_index,
+                        payload_id,
+                    })
+                } else {
+                    let diag = Diagnostic::new("enum match pattern with non-enum target type")
+                        .add_info(target_span, format!("target has type {}", target_ty.value_string(elab)))
+                        .add_error(pattern.span, "enum match pattern used here")
+                        .finish();
+                    Err(diags.report(diag))
                 }
             }
         }
@@ -827,282 +721,460 @@ impl CompileItemContext<'_, '_> {
 
     fn elaborate_match_statement_compile(
         &mut self,
-        scope: &Scope,
+        scope_parent: &Scope,
         flow: &mut impl Flow,
         stack: &mut ExitStack,
-        stmt_span: Span,
-        target: CompileValue,
+        target: Spanned<CompileValue>,
+        pos_end: Pos,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
-        branch_patterns: Vec<CheckedMatchPattern>,
+        branch_patterns: Vec<EvaluatedMatchPattern>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
+        // compile-time match, just check each pattern in sequence with early exit
         for (branch, pattern) in zip_eq(branches, branch_patterns) {
-            let MatchBranch {
-                pattern: pattern_raw,
-                block,
-            } = branch;
-            let pattern_span = pattern_raw.span;
+            let MatchBranch { pattern: _, block } = branch;
+            let pattern_span = branch.pattern.span;
 
-            let matched: BranchMatched = match pattern {
-                MatchPattern::Wildcard => BranchMatched::Yes(None),
-                MatchPattern::Val(id) => BranchMatched::Yes(Some((MaybeIdentifier::Identifier(id), target.clone()))),
-                MatchPattern::Equal(pattern) => {
-                    let c = match (&pattern, &target) {
-                        (PatternEqual::Bool(p), CompileValue::Simple(SimpleCompileValue::Bool(v))) => p == v,
-                        (PatternEqual::Int(p), CompileValue::Simple(SimpleCompileValue::Int(v))) => p == v,
-                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected pattern/value")),
-                    };
-
-                    BranchMatched::from_bool(c)
+            let matched = match pattern {
+                EvaluatedMatchPattern::Wildcard => CompileBranchMatched::Yes(None),
+                EvaluatedMatchPattern::WildcardVal(id) => CompileBranchMatched::Yes(Some(BranchDeclare {
+                    id,
+                    value: target.inner.clone(),
+                })),
+                EvaluatedMatchPattern::EqualTo(value) => {
+                    if target.inner == value.inner {
+                        CompileBranchMatched::Yes(None)
+                    } else {
+                        CompileBranchMatched::No
+                    }
                 }
-                MatchPattern::In(pattern) => match &target {
-                    CompileValue::Simple(SimpleCompileValue::Int(value)) => {
-                        BranchMatched::from_bool(pattern.contains(value))
+                EvaluatedMatchPattern::InRange(range) => {
+                    if let CompileValue::Simple(SimpleCompileValue::Int(target)) = &target.inner
+                        && range.inner.contains(target)
+                    {
+                        CompileBranchMatched::Yes(None)
+                    } else {
+                        CompileBranchMatched::No
                     }
-                    _ => return Err(diags.report_internal_error(pattern_span, "unexpected range/value")),
-                },
-                MatchPattern::EnumVariant(pattern_variant, id_content) => match &target {
-                    CompileValue::Compound(CompileCompoundValue::Enum(target)) => {
-                        let &EnumValue {
-                            ty: _,
-                            variant: target_variant,
-                            payload: ref target_payload,
-                        } = target;
-                        if pattern_variant == target_variant {
-                            let declare_content = match (id_content, target_payload) {
-                                (Some(id_content), Some(value_content)) => {
-                                    Some((id_content, (**value_content).clone()))
-                                }
-                                (None, None) => None,
-                                _ => unreachable!(),
-                            };
-                            BranchMatched::Yes(declare_content)
-                        } else {
-                            BranchMatched::No
-                        }
+                }
+                EvaluatedMatchPattern::IsEnumVariant {
+                    variant_index,
+                    payload_id,
+                } => {
+                    if let CompileValue::Compound(CompileCompoundValue::Enum(target)) = &target.inner
+                        && target.variant == variant_index
+                    {
+                        let declare = match (payload_id, &target.payload) {
+                            (None, None) => None,
+                            (Some(payload_id), Some(target_payload)) => Some(BranchDeclare {
+                                id: payload_id,
+                                value: target_payload.as_ref().clone(),
+                            }),
+                            (None, Some(_)) | (Some(_), None) => {
+                                return Err(diags.report_internal_error(pattern_span, "payload mismatch"));
+                            }
+                        };
+
+                        CompileBranchMatched::Yes(declare)
+                    } else {
+                        CompileBranchMatched::No
                     }
-                    _ => return Err(diags.report_internal_error(pattern_span, "unexpected enum/value")),
-                },
+                }
             };
 
             match matched {
-                BranchMatched::No => continue,
-                BranchMatched::Yes(declare) => {
-                    let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope);
-
-                    let scoped_used = if let Some((declare_id, declare_value)) = declare {
+                CompileBranchMatched::Yes(declare) => {
+                    // declare any pattern variables
+                    let mut scope_branch = Scope::new_child(pattern_span.join(block.span), scope_parent);
+                    if let Some(BranchDeclare {
+                        id: declare_id,
+                        value: declare_value,
+                    }) = declare
+                    {
                         let var = flow.var_new_immutable_init(
                             declare_id.span(),
                             VariableId::Id(declare_id),
                             pattern_span,
                             Ok(Value::from(declare_value)),
                         );
-                        scope_inner.maybe_declare(
+                        scope_branch.maybe_declare(
                             diags,
                             Ok(declare_id.spanned_str(self.refs.fixed.source)),
                             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
                         );
-                        &scope_inner
-                    } else {
-                        scope
-                    };
+                    }
 
-                    return self.elaborate_block(scoped_used, flow, stack, block);
+                    // evaluate the branch and exit
+                    return self.elaborate_block(&scope_branch, flow, stack, block);
+                }
+                CompileBranchMatched::No => {
+                    // continue to next branch
                 }
             }
         }
 
-        // we should never get here, we already checked that all cases are handled
-        Err(diags.report_internal_error(stmt_span, "reached end of match statement"))
+        let diag = Diagnostic::new("match statement reached end without matching any branch")
+            .add_info(
+                target.span,
+                format!("target value `{}`", target.inner.value_string(elab)),
+            )
+            .add_error(Span::empty_at(pos_end), "did not match any branch")
+            .finish();
+        Err(diags.report(diag))
     }
 
-    // TODO write some tests for this
     fn elaborate_match_statement_hardware(
         &mut self,
         scope_parent: &Scope,
-        flow: &mut FlowHardware,
+        flow_parent: &mut FlowHardware,
         stack: &mut ExitStack,
-        stmt_span: Span,
-        target: Spanned<HardwareValue>,
+        span_match: Span,
+        target: Spanned<HardwareValueWithImplications>,
+        pos_end: Pos,
         branches: &Vec<MatchBranch<Block<BlockStatement>>>,
-        branch_patterns: Vec<CheckedMatchPattern>,
+        branch_patterns: Vec<EvaluatedMatchPattern>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
 
-        let mut if_branch_conditions = vec![];
-        let mut if_branch_flows = vec![];
-        let mut if_branch_ends = vec![];
+        let target_version = target.inner.version;
+        let target_value = target.inner.value;
+        let target_domain = Spanned::new(target.span, target_value.domain);
 
-        for (branch, pattern) in zip_eq(branches, branch_patterns) {
+        // TODO extract function
+        let mut coverage_remaining = match &target_value.ty {
+            HardwareType::Bool => MatchCoverage::Bool {
+                rem_false: true,
+                rem_true: true,
+            },
+            HardwareType::Int(ty) => MatchCoverage::Int {
+                rem_range: ClosedIncRangeMulti::from_range(ty.clone()),
+            },
+            &HardwareType::Enum(ty) => {
+                let elab_enum = elab.enum_info(ty.inner());
+                MatchCoverage::Enum {
+                    target_ty: ty,
+                    rem_variants: vec![true; elab_enum.variants.len()],
+                }
+            }
+            _ => {
+                return Err(diags.report_todo(
+                    target.span,
+                    format!(
+                        "hardware matching for target type {}",
+                        target_value.ty.value_string(elab)
+                    ),
+                ));
+            }
+        };
+
+        let mut all_conds = vec![];
+        let mut all_contents = vec![];
+        let mut all_ends = vec![];
+
+        // TODO emit warning if parts are already covered
+        for (branch, branch_pattern) in zip_eq(branches, branch_patterns) {
             let MatchBranch {
-                pattern: pattern_raw,
-                block,
+                pattern: _,
+                block: branch_block,
             } = branch;
-            let pattern_span = pattern_raw.span;
-            let large = &mut self.large;
+            let branch_pattern_span = branch.pattern.span;
 
-            // evaluate the pattern as a boolean condition and collect the variable to declare if any
-            let (cond, declare): (Option<IrExpression>, Option<(MaybeIdentifier, HardwareValue)>) = match pattern {
-                MatchPattern::Wildcard => (None, None),
-                MatchPattern::Val(id) => (None, Some((MaybeIdentifier::Identifier(id), target.inner.clone()))),
-                MatchPattern::Equal(pattern) => {
-                    let cond = match (&target.inner.ty, pattern) {
-                        (HardwareType::Bool, PatternEqual::Bool(pattern)) => {
-                            let cond_expr = target.inner.expr.clone();
-                            if pattern {
-                                cond_expr
+            // TODO extract function
+            let matched = match branch_pattern {
+                EvaluatedMatchPattern::Wildcard => {
+                    coverage_remaining.clear();
+                    HardwareBranchMatched {
+                        cond: None,
+                        declare: None,
+                        implications: vec![],
+                    }
+                }
+                EvaluatedMatchPattern::WildcardVal(id) => {
+                    coverage_remaining.clear();
+                    HardwareBranchMatched {
+                        cond: None,
+                        declare: Some(BranchDeclare {
+                            id,
+                            value: target_value.clone(),
+                        }),
+                        implications: vec![],
+                    }
+                }
+                EvaluatedMatchPattern::EqualTo(value) => {
+                    check_type_contains_value(
+                        diags,
+                        elab,
+                        TypeContainsReason::MatchPattern(value.span),
+                        &target_value.ty.as_type(),
+                        value.as_ref(),
+                    )?;
+
+                    let (cond, implications) = match &mut coverage_remaining {
+                        MatchCoverage::Bool { rem_false, rem_true } => {
+                            let value = unwrap_match!(value.inner, CompileValue::Simple(SimpleCompileValue::Bool(value)) => value);
+
+                            // TODO should we also imply that the bool itself is true/false? How does this work for ifs?
+                            //  Or do the implications already cover that?
+                            if value {
+                                *rem_true = false;
+                                (target_value.expr.clone(), target.inner.implications.if_true.clone())
                             } else {
-                                large.push_expr(IrExpressionLarge::BoolNot(cond_expr))
+                                *rem_false = false;
+                                let cond = self
+                                    .large
+                                    .push_expr(IrExpressionLarge::BoolNot(target_value.expr.clone()));
+                                (cond, target.inner.implications.if_false.clone())
                             }
                         }
-                        (HardwareType::Int(_), PatternEqual::Int(pattern)) => {
-                            // TODO expand int range?
-                            large.push_expr(IrExpressionLarge::IntCompare(
+                        MatchCoverage::Int { rem_range } => {
+                            let value = unwrap_match!(value.inner, CompileValue::Simple(SimpleCompileValue::Int(value)) => value);
+                            let single_range = IncRangeMulti::from_range(IncRange::single(value.clone()));
+                            *rem_range = rem_range.subtract(&single_range);
+
+                            let cond = self.large.push_expr(IrExpressionLarge::IntCompare(
                                 IrIntCompareOp::Eq,
-                                target.inner.expr.clone(),
-                                IrExpression::Int(pattern),
-                            ))
+                                target_value.expr.clone(),
+                                IrExpression::Int(value.clone()),
+                            ));
+
+                            let implications = if let Some(target_version) = target_version {
+                                vec![Implication::new_int(target_version, IncRangeMulti::single(value))]
+                            } else {
+                                vec![]
+                            };
+                            (cond, implications)
                         }
-                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw pattern/value")),
-                    };
-
-                    (Some(cond), None)
-                }
-                MatchPattern::In(range) => {
-                    let IncRange { start_inc, end_inc } = range;
-
-                    let start_inc = start_inc.map(|start_inc| {
-                        large.push_expr(IrExpressionLarge::IntCompare(
-                            IrIntCompareOp::Lte,
-                            IrExpression::Int(start_inc),
-                            target.inner.expr.clone(),
-                        ))
-                    });
-                    let end_inc = end_inc.map(|end_inc| {
-                        large.push_expr(IrExpressionLarge::IntCompare(
-                            IrIntCompareOp::Lte,
-                            target.inner.expr.clone(),
-                            IrExpression::Int(end_inc),
-                        ))
-                    });
-
-                    let cond = match (start_inc, end_inc) {
-                        (None, None) => None,
-                        (Some(single), None) => Some(single),
-                        (None, Some(single)) => Some(single),
-                        (Some(start), Some(end)) => {
-                            let cond = large.push_expr(IrExpressionLarge::BoolBinary(IrBoolBinaryOp::And, start, end));
-                            Some(cond)
+                        MatchCoverage::Enum { .. } => {
+                            return Err(diags.report_todo(branch_pattern_span, "matching enum value by equality"));
                         }
                     };
 
-                    (cond, None)
+                    HardwareBranchMatched {
+                        cond: Some(cond),
+                        declare: None,
+                        implications,
+                    }
                 }
-                MatchPattern::EnumVariant(pattern_index, id_content) => {
-                    let target_ty = match &target.inner.ty {
-                        HardwareType::Enum(cond_ty) => cond_ty,
-                        _ => return Err(diags.report_internal_error(pattern_span, "unexpected hw enum/value")),
-                    };
+                EvaluatedMatchPattern::InRange(range) => match &mut coverage_remaining {
+                    MatchCoverage::Int { rem_range } => {
+                        // TODO warn if parts of range already covered
+                        // TODO share code with ordinary comparisons?
+                        let range_multi = IncRangeMulti::from_range(range.inner.clone());
+                        *rem_range = rem_range.subtract(&range_multi);
 
-                    let info = self.refs.shared.elaboration_arenas.enum_info(target_ty.inner());
-                    let info_hw = info.hw.as_ref().unwrap();
+                        let IncRange { start_inc, end_inc } = &range.inner;
+                        let cond_start = if let Some(start_inc) = start_inc {
+                            let cond_start = self.large.push_expr(IrExpressionLarge::IntCompare(
+                                IrIntCompareOp::Lte,
+                                IrExpression::Int(start_inc.clone()),
+                                target_value.expr.clone(),
+                            ));
+                            Some(cond_start)
+                        } else {
+                            None
+                        };
+                        let cond = if let Some(end_inc) = end_inc {
+                            let cond_end = self.large.push_expr(IrExpressionLarge::IntCompare(
+                                IrIntCompareOp::Lte,
+                                target_value.expr.clone(),
+                                IrExpression::Int(end_inc.clone()),
+                            ));
+                            match cond_start {
+                                None => Some(cond_end),
+                                Some(cond_start) => Some(self.large.push_expr(IrExpressionLarge::BoolBinary(
+                                    IrBoolBinaryOp::And,
+                                    cond_start,
+                                    cond_end,
+                                ))),
+                            }
+                        } else {
+                            cond_start
+                        };
 
-                    let cond = info_hw.check_tag_matches(large, &target.inner, pattern_index);
-                    let payload = info_hw.extract_payload(large, &target.inner, pattern_index);
+                        let implications = if let Some(target_version) = target_version {
+                            vec![Implication::new_int(
+                                target_version,
+                                IncRangeMulti::from_range(range.inner.clone()),
+                            )]
+                        } else {
+                            vec![]
+                        };
 
-                    let declare = match (id_content, payload) {
-                        (Some(id_content), Some(payload)) => Some((id_content, payload)),
-                        (None, None) => None,
-                        _ => unreachable!(),
-                    };
+                        HardwareBranchMatched {
+                            cond,
+                            declare: None,
+                            implications,
+                        }
+                    }
+                    _ => {
+                        let diag = Diagnostic::new("range match pattern with non-integer target type")
+                            .add_info(
+                                target.span,
+                                format!("target has type {}", target_value.ty.value_string(elab)),
+                            )
+                            .add_error(range.span, "integer range match pattern used here")
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                },
+                EvaluatedMatchPattern::IsEnumVariant {
+                    variant_index,
+                    payload_id,
+                } => match &mut coverage_remaining {
+                    MatchCoverage::Enum {
+                        target_ty,
+                        rem_variants,
+                    } => {
+                        rem_variants[variant_index] = false;
 
-                    (Some(cond), declare)
+                        let enum_info = elab.enum_info(target_ty.inner());
+                        let enum_info_hw = enum_info.hw.as_ref().unwrap();
+
+                        let cond =
+                            enum_info_hw.check_tag_matches(&mut self.large, target_value.expr.clone(), variant_index);
+                        let payload_hw = enum_info_hw.extract_payload(&mut self.large, &target_value, variant_index);
+                        let declare = match (payload_id, payload_hw) {
+                            (None, None) => None,
+                            (Some(id), Some(value)) => Some(BranchDeclare { id, value }),
+                            (None, Some(_)) | (Some(_), None) => {
+                                return Err(diags.report_internal_error(branch_pattern_span, "payload mismatch"));
+                            }
+                        };
+
+                        HardwareBranchMatched {
+                            cond: Some(cond),
+                            declare,
+                            implications: vec![],
+                        }
+                    }
+                    _ => {
+                        let diag = Diagnostic::new("enum variant match pattern with non-enum target type")
+                            .add_info(
+                                target.span,
+                                format!("target has type {}", target_value.ty.value_string(elab)),
+                            )
+                            .add_error(branch_pattern_span, "enum variant match pattern used here")
+                            .finish();
+                        return Err(diags.report(diag));
+                    }
+                },
+            };
+
+            let HardwareBranchMatched {
+                cond,
+                declare,
+                implications,
+            } = matched;
+
+            let mut branch_scope = Scope::new_child(branch.span(), scope_parent);
+            let mut branch_flow = flow_parent.new_child_branch(target_domain, implications);
+
+            if let Some(declare) = declare {
+                let BranchDeclare { id, value } = declare;
+                if let MaybeIdentifier::Identifier(id) = id {
+                    let var = branch_flow.as_flow().var_new_immutable_init(
+                        id.span(),
+                        VariableId::Id(MaybeIdentifier::Identifier(id)),
+                        id.span(),
+                        Ok(Value::Hardware(value)),
+                    );
+                    branch_scope.declare(
+                        diags,
+                        Ok(id.spanned_str(self.refs.fixed.source)),
+                        Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+                    );
                 }
-            };
+            }
 
-            // create child flow and scope
-            // TODO push implications for integer ranges and for booleans
-            let target_domain = Spanned::new(target.span, target.inner.domain);
-            let mut flow_branch = flow.new_child_branch(target_domain, vec![]);
-            let mut flow_branch_flow = flow_branch.as_flow();
+            let branch_end = self.elaborate_block(&branch_scope, &mut branch_flow.as_flow(), stack, branch_block)?;
+            let content = branch_flow.finish();
 
-            let mut scope_inner = Scope::new_child(pattern_span.join(block.span), scope_parent);
-            if let Some((declare_id, declare_value)) = declare {
-                let var = flow_branch_flow.var_new_immutable_init(
-                    declare_id.span(),
-                    VariableId::Id(declare_id),
-                    pattern_span,
-                    Ok(Value::Hardware(declare_value)),
-                );
-                scope_inner.maybe_declare(
-                    diags,
-                    Ok(declare_id.spanned_str(self.refs.fixed.source)),
-                    Ok(ScopedEntry::Named(NamedValue::Variable(var))),
-                );
-            };
+            all_conds.push(cond);
+            all_contents.push(content);
+            all_ends.push(branch_end);
+        }
 
-            // evaluate the child block
-            let end = self.elaborate_block(&scope_inner, &mut flow_branch_flow, stack, block)?;
+        // check coverage
+        // TODO move to separate function
+        let span_end = Span::empty_at(pos_end);
+        let title_non_exhaustive = "hardware match statement is not exhaustive";
+        let msg_target_type = format!("target has type {}", target_value.ty.value_string(elab));
+        match coverage_remaining {
+            MatchCoverage::Bool { rem_false, rem_true } => {
+                let values_not_covered = match (rem_false, rem_true) {
+                    (false, false) => None,
+                    (true, false) => Some("[false]"),
+                    (false, true) => Some("[true]"),
+                    (true, true) => Some("[false, true]"),
+                };
+                if let Some(values_not_covered) = values_not_covered {
+                    let diag = Diagnostic::new(title_non_exhaustive)
+                        .add_info(target.span, msg_target_type)
+                        .add_error(span_end, format!("values not covered: {}", values_not_covered))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+            }
+            MatchCoverage::Int { rem_range } => {
+                if !rem_range.is_empty() {
+                    let ranges_not_covered = rem_range.iter_ranges().format(", ");
+                    let diag = Diagnostic::new(title_non_exhaustive)
+                        .add_info(target.span, msg_target_type)
+                        .add_error(span_end, format!("ranges not covered: {}", ranges_not_covered))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+            }
+            MatchCoverage::Enum {
+                target_ty,
+                rem_variants,
+            } => {
+                if rem_variants.iter().any(|&x| x) {
+                    let enum_info = elab.enum_info(target_ty.inner());
+                    let variants_not_covered = enum_info
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, _)| rem_variants[i])
+                        .map(|(_, (name, _))| format!(".{name}"))
+                        .join(", ");
 
-            // build the if stack
-            let (cond, fully_covered) = match cond {
-                Some(cond) => (cond, false),
-                None => (IrExpression::Bool(true), true),
-            };
-            if_branch_conditions.push(cond);
-            if_branch_flows.push(flow_branch.finish());
-            if_branch_ends.push(end);
-
-            if fully_covered {
-                break;
+                    let diag = Diagnostic::new(title_non_exhaustive)
+                        .add_info(target.span, msg_target_type)
+                        .add_info(enum_info.unique.id().span(), "enum declared here")
+                        .add_error(span_end, format!("variants not covered: [{}]", variants_not_covered))
+                        .finish();
+                    return Err(diags.report(diag));
+                }
             }
         }
 
-        // merge flows
-        assert_eq!(if_branch_conditions.len(), if_branch_flows.len());
-        let if_branch_blocks = flow.join_child_branches(self.refs, &mut self.large, stmt_span, if_branch_flows)?;
+        // join things
+        let all_blocks = flow_parent.join_child_branches(self.refs, &mut self.large, span_match, all_contents)?;
+        let joined_end = join_block_ends_branches(&all_ends);
 
-        // merge ends
-        assert_eq!(if_branch_conditions.len(), if_branch_ends.len());
-        let end = join_block_ends_branches(&if_branch_ends);
-
-        // build complete if chain
-        // TODO generate if/elseif/else to keep the generated RTL shallow
-        let mut else_ir_block = None;
-        for ((curr_cond, curr_ir_block), is_last_branch) in zip_eq(
-            if_branch_conditions.into_iter().rev(),
-            if_branch_blocks.into_iter().rev(),
-        )
-        .with_first()
-        {
-            else_ir_block = if is_last_branch {
-                // this is the final branch, which means that the condition can be ignored
-                //   (this is easier to reason about for var merging and synthesis tools)
-                // TODO double check this, it's a bit sketchy that we have this "unchecked tail",
-                //   maybe we should add an assert
-                let _ = curr_cond;
-                Some(curr_ir_block)
-            } else {
-                build_ir_if_statement(&mut self.large, curr_cond, Some(curr_ir_block), else_ir_block).map(|if_stmt| {
-                    match if_stmt {
-                        Either::Left(if_stmt) => if_stmt,
-                        Either::Right(if_stmt) => {
-                            let if_stmt = Spanned::new(stmt_span, IrStatement::If(if_stmt));
-                            let statements = vec![if_stmt];
-                            IrBlock { statements }
-                        }
-                    }
-                })
+        // build the if statement
+        // TODO flatten this into single if/else-if/else structure or even a match?
+        let mut joined_statement = None;
+        for (cond, block) in zip_eq(all_conds.into_iter().rev(), all_blocks.into_iter().rev()) {
+            joined_statement = match cond {
+                None => Some(IrStatement::Block(block)),
+                Some(cond) => Some(IrStatement::If(IrIfStatement {
+                    condition: cond,
+                    then_block: block,
+                    else_block: joined_statement.map(|curr| IrBlock::new_single(span_match, curr)),
+                })),
             };
         }
 
-        // push the complete if statement
-        if let Some(else_ir_block) = else_ir_block {
-            flow.push_ir_statement(Spanned::new(stmt_span, IrStatement::Block(else_ir_block)));
+        if let Some(curr) = joined_statement {
+            flow_parent.push_ir_statement(Spanned::new(span_match, curr));
         }
 
-        Ok(end)
+        Ok(joined_end)
     }
 
     fn elaborate_while_statement(
@@ -1373,6 +1445,39 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
+#[derive(Debug)]
+enum MatchCoverage {
+    Bool {
+        rem_false: bool,
+        rem_true: bool,
+    },
+    Int {
+        rem_range: ClosedIncRangeMulti,
+    },
+    Enum {
+        target_ty: HardwareChecked<ElaboratedEnum>,
+        rem_variants: Vec<bool>,
+    },
+}
+
+impl MatchCoverage {
+    fn clear(&mut self) {
+        match self {
+            MatchCoverage::Bool { rem_false, rem_true } => {
+                *rem_false = false;
+                *rem_true = false;
+            }
+            MatchCoverage::Int { rem_range } => *rem_range = ClosedIncRangeMulti::EMPTY,
+            MatchCoverage::Enum {
+                target_ty: _,
+                rem_variants,
+            } => {
+                rem_variants.clear();
+            }
+        }
+    }
+}
+
 fn join_block_ends_sequence(first: BlockEnd, second: BlockEnd) -> BlockEnd {
     if first.is_certain_exit() {
         first
@@ -1390,6 +1495,7 @@ fn join_block_ends_branches(ends: &[BlockEnd]) -> BlockEnd {
         // all ends are the same, just return that
         Ok(&end) => return end,
         // array is empty, this shouldn't really happen and if it does it doesn't matter what we return here
+        // TODO maybe return unreachable here?
         Err(None) => return BlockEnd::Normal,
         // different ends found, fallthrough into hardware merge
         Err(Some((_, _))) => {}
