@@ -16,6 +16,7 @@ pub mod item;
 pub mod module;
 pub mod print;
 pub mod range;
+pub mod range_arithmetic;
 pub mod scope;
 pub mod signal;
 pub mod steps;

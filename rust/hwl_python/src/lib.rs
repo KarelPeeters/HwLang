@@ -10,8 +10,9 @@ use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::CollectPrintHandler;
+use hwl_language::front::range::IncRange as RustIncRange;
 use hwl_language::front::scope::ScopedEntry;
-use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
+use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::CompileValue as RustCompileValue;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{

@@ -1,6 +1,7 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
-use crate::front::types::{ClosedIncRange, HardwareType};
+use crate::front::range::ClosedIncRange;
+use crate::front::types::HardwareType;
 use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue};
 use crate::mid::ir::IrType;
 use crate::syntax::pos::Span;

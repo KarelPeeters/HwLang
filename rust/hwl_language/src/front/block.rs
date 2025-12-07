@@ -9,13 +9,12 @@ use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowHardware, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
-use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithImplications, Implication, IncRangeMulti, ValueWithImplications,
-};
+use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedEnum, HardwareChecked};
+use crate::front::range::{ClosedIncRangeMulti, IncRange, IncRangeMulti};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::{HardwareType, IncRange, NonHardwareType, Type, Typed};
+use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };

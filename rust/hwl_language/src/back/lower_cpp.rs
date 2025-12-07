@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
-use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,

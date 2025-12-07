@@ -1,10 +1,11 @@
 use crate::{Compile, Function, IncRange, Module, Type, Value};
+use hwl_language::front::range::IncRange as RustIncRange;
 use hwl_language::front::value::{CompileCompoundValue, SimpleCompileValue};
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::{EmptyVec, GrowVec, NonEmptyVec};
 use hwl_language::{
-    front::{types::IncRange as RustIncRange, types::Type as RustType, value::CompileValue},
+    front::{types::Type as RustType, value::CompileValue},
     syntax::{
         ast::{Arg, Args},
         pos::Span,

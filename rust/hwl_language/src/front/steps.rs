@@ -1,7 +1,8 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::ValueDomain;
-use crate::front::types::{ClosedIncRange, HardwareType, Type, Typed};
+use crate::front::range::ClosedIncRange;
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };

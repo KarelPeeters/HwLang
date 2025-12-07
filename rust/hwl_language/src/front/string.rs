@@ -2,8 +2,9 @@ use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::ElaborationArenas;
+use crate::front::range::{ClosedIncRange, IncRange};
 use crate::front::scope::Scope;
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type};
+use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, RangeEnd, RangeValue,
     SimpleCompileValue, StructValue, Value,

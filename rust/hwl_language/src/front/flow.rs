@@ -2,9 +2,10 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
+    HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
+use crate::front::range::ClosedIncRangeMulti;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
@@ -28,7 +29,6 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 

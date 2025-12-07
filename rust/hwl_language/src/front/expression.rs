@@ -9,14 +9,12 @@ use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAdda
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
-use crate::front::implication::{
-    BoolImplications, HardwareValueWithImplications, Implication, IncRangeMulti, ValueWithImplications,
-};
+use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, NonHardwareType, Type, Typed};
+use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MaybeCompile, MaybeUndefined, MixedCompoundValue,
     NotCompile, RangeEnd, RangeValue, SimpleCompileValue, Value, ValueCommon,
@@ -38,7 +36,8 @@ use crate::util::data::{NonEmptyVec, VecExt, vec_concat};
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
-use crate::front::range::{
+use crate::front::range::{ClosedIncRange, IncRange, IncRangeMulti};
+use crate::front::range_arithmetic::{
     range_binary_add, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow, range_binary_sub,
     range_unary_neg,
 };

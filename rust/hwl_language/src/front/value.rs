@@ -5,7 +5,8 @@ use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::front::range::{ClosedIncRange, IncRange};
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;

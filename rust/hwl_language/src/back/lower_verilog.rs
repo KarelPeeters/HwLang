@@ -1,7 +1,7 @@
 use crate::back::lower_verilog::non_zero_width::NonZeroWidthRange;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
-use crate::front::types::ClosedIncRange;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
@@ -1748,7 +1748,7 @@ fn lower_edge<'n>(
 
 mod non_zero_width {
     use crate::back::lower_verilog::ZeroWidth;
-    use crate::front::types::ClosedIncRange;
+    use crate::front::range::ClosedIncRange;
     use crate::util::big_int::BigInt;
     use crate::util::int::IntRepresentation;
 

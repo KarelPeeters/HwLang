@@ -1,5 +1,6 @@
+use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
-use crate::front::types::{ClosedIncRange, HardwareType};
+use crate::front::types::HardwareType;
 use crate::new_index_type;
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};

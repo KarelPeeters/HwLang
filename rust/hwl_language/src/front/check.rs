@@ -3,7 +3,8 @@ use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagno
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::item::ElaborationArenas;
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, Type, Typed};
+use crate::front::range::{ClosedIncRange, IncRange};
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, MixedCompoundValue, SimpleCompileValue, Value,
 };
