@@ -1,3 +1,4 @@
+import os
 import random
 import re
 import shutil
@@ -169,7 +170,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
     # check expression validness and extract the return type
     input_types = [f"int({r.start}..={r.end_inc})" if r is not None else "bool" for r in input_ranges]
     try:
-        ty_res_min = compare_get_type(ty_inputs=input_types, body=body)
+        ty_res_min = compare_get_type(ty_inputs=input_types, body=body, prefix="")
     except hwl.DiagnosticException as e:
         # check that this is once of the expected failure modes
         allowed_messages = [
@@ -189,7 +190,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
         res_ty = "bool"
     else:
         m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
-        assert m
+        assert m, f"failed to parse return type `{ty_res_min}`"
         range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
         range_res = sample_range(rng, must_contain=range_res_min)
         res_ty = f"int({range_res.start}..={range_res.end_inc})"
@@ -269,9 +270,11 @@ def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_ba
 
 def main():
     # settings
+    # TODO use multiprocessing, with ccache python itself becomes the bottleneck
     sample_count = 1024
     thread_count = 8
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
+    os.environ["OBJCACHE"] = "ccache"
 
     # random seed
     seed = 42 + 3

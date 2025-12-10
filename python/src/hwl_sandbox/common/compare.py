@@ -58,7 +58,7 @@ fn eval_func({args}) -> any {{
 module print_type_mod ports({ports_in}) {{
     wire w_res = eval_func({params});
     const {{
-        print(type(w_res));        
+        print(type(w_res), end="");        
     }}
 }}
 module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
