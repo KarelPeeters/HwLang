@@ -78,6 +78,7 @@ impl CompileItemContext<'_, '_> {
                     let info = flow.var_eval(diags, &mut self.large, Spanned::new(arg.span, var))?;
                     info.into_value().ty()
                 }
+                // TODO apply implications for ports/wires/registers
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
                 NamedValue::Wire(wire) => {
                     let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
