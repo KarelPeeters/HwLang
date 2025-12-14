@@ -1,6 +1,4 @@
-use crate::back::lower_verilog::non_zero_width::NonZeroWidthRange;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
@@ -16,6 +14,7 @@ use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
 use crate::{throw, try_inner};
 use hwl_util::{swrite, swriteln};
@@ -1134,11 +1133,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             }
                         };
 
-                        let start_inc = lower_int_constant(index_ty, &range.start_inc);
-                        let end_inc = lower_int_constant(index_ty, &range.end_inc);
+                        let start = lower_int_constant(index_ty, &range.start);
+                        let end = lower_int_constant(index_ty, &range.end);
                         swriteln!(
                             self.f,
-                            "{indent}for({index} = {start_inc}; {index} <= {end_inc}; {index} = {index} + 1) begin"
+                            "{indent}for({index} = {start}; {index} < {end}; {index} = {index} + 1) begin"
                         );
                         self.lower_block_indented(block)?;
                         swriteln!(self.f, "{indent}end");
@@ -1160,8 +1159,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         StringPiece::Substitute(p) => match p {
                             IrStringSubstitution::Integer(p, radix) => {
                                 // TODO how does signed bin/hex behave?
-                                let signed =
-                                    p.ty(self.module, self.locals).unwrap_int().as_ref().start_inc < &BigInt::ZERO;
+                                let signed = p.ty(self.module, self.locals).unwrap_int().as_ref().start.is_negative();
                                 let p = self.lower_expression(stmt.span, p)?;
 
                                 let radix = match radix {
@@ -1210,8 +1208,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 Evaluated::Str(s)
             }
             IrExpression::Int(x) => {
-                let range =
-                    NonZeroWidthRange::new(ClosedIncRange::single(x)).expect("already checked for zero-width earlier");
+                let range = ClosedNonEmptyRange::single(x.clone());
+                let range = NonZeroWidthRange::new(range.as_ref()).expect("already checked for zero-width earlier");
                 lower_int_constant(range, x)
             }
 
@@ -1264,7 +1262,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let left_raw = self.lower_expression_int_expanded(span, combined_range, left)?;
                         let right_raw = self.lower_expression_int_expanded(span, combined_range, right)?;
 
-                        let signed = combined_range.range().start_inc < &BigInt::ZERO;
+                        let signed = combined_range.range().start.is_negative();
                         let left = left_raw.as_signed_maybe(signed);
                         let right = right_raw.as_signed_maybe(signed);
 
@@ -1345,9 +1343,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                         let base_len =
                             unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
-                        let index_range = ClosedIncRange {
-                            start_inc: BigInt::ZERO,
-                            end_inc: base_len - 1,
+                        assert!(base_len.is_positive(), "cannot index into empty array");
+
+                        let index_range = ClosedNonEmptyRange {
+                            start: BigInt::ZERO,
+                            end: base_len.into(),
                         };
                         let index_range =
                             NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1366,9 +1366,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                         let base_len =
                             unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
-                        let start_range = ClosedIncRange {
-                            start_inc: BigInt::ZERO,
-                            end_inc: base_len.into(),
+
+                        let start_range = ClosedNonEmptyRange {
+                            start: BigInt::ZERO,
+                            end: BigInt::from(base_len + 1u8),
                         };
                         let start_range =
                             NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1517,13 +1518,13 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let b_raw = self.lower_expression_int_expanded(span, range_all, b)?;
 
         // cast operands to signed if necessary
-        let signed = range_all.range().start_inc < &BigInt::from(0);
+        let signed = range_all.range().start.is_negative();
         let a = a_raw.as_signed_maybe(signed);
         let b = b_raw.as_signed_maybe(signed);
 
         // make adjustments to match IR semantics (round down) instead of verilog (truncate towards zero)
-        let a_is_neg = MaybeBool::is_negative(&a, range_a.as_ref());
-        let b_is_neg = MaybeBool::is_negative(&b, range_b.as_ref());
+        let a_is_neg = MaybeBool::is_negative(&a, ClosedRange::from(range_a.as_ref()));
+        let b_is_neg = MaybeBool::is_negative(&b, ClosedRange::from(range_b.as_ref()));
         let signs_differ = MaybeBool::xor(&a_is_neg, &b_is_neg);
         let res_expr = match op {
             OperatorDivMod::Div => {
@@ -1535,8 +1536,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             OperatorDivMod::Mod => {
                 let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
                 swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
-                let should_adjust =
-                    MaybeBool::and(&MaybeBool::is_not_zero(&tmp_mod, result_range.range()), &signs_differ);
+                let should_adjust = MaybeBool::and(
+                    &MaybeBool::is_not_zero(&tmp_mod, ClosedRange::from(result_range.range())),
+                    &signs_differ,
+                );
                 should_adjust.select(&format!("{tmp_mod} + {b}"), &tmp_mod.to_string())
             }
         };
@@ -1579,7 +1582,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let value = match self.lower_expression(span, value)? {
             Ok(value) => lower_expand_int_range(range.range(), value_ty.as_ref(), value),
             Err(ZeroWidth) => {
-                let value = value_ty.as_single().unwrap();
+                let value = value_ty.as_ref().as_single().unwrap();
                 lower_int_constant(range, value)
             }
         };
@@ -1617,9 +1620,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
             match step {
                 IrTargetStep::ArrayIndex(index) => {
-                    let index_range = ClosedIncRange {
-                        start_inc: BigInt::ZERO,
-                        end_inc: curr_len - 1,
+                    assert!(curr_len.is_positive(), "cannot index into empty array");
+
+                    let index_range = ClosedNonEmptyRange {
+                        start: BigInt::ZERO,
+                        end: BigInt::from(curr_len),
                     };
                     let index_range =
                         NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1627,9 +1632,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     swrite!(g, "[{index}]");
                 }
                 IrTargetStep::ArraySlice(start, len) => {
-                    let start_range = ClosedIncRange {
-                        start_inc: BigInt::ZERO,
-                        end_inc: curr_len.into(),
+                    let start_range = ClosedNonEmptyRange {
+                        start: BigInt::ZERO,
+                        end: BigInt::from(curr_len + 1u8),
                     };
                     let start_range =
                         NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1656,8 +1661,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 }
 
 fn lower_expand_int_range<'n>(
-    target_ty: ClosedIncRange<&BigInt>,
-    value_ty: ClosedIncRange<&BigInt>,
+    target_ty: ClosedNonEmptyRange<&BigInt>,
+    value_ty: ClosedNonEmptyRange<&BigInt>,
     value: Evaluated<'n>,
 ) -> Evaluated<'n> {
     // cast the value to the right signedness
@@ -1696,10 +1701,11 @@ fn lower_int_constant(ty: NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> {
         Signed::Signed => {
             let s = match x.sign() {
                 Sign::Negative => {
-                    // Verilog does not actually have negative literals, it's just the unary not operator.
-                    // For the most negative value this fails though, the absolute value already underflows,
-                    //   so we should skip the preceding negative sign in that case.
-                    let prefix_sign = if x == &repr.range().start_inc { "" } else { "-" };
+                    // Verilog does not actually have negative literals, it's just the unary negation operator.
+                    // This makes it tricky to expression the most negative value.
+                    // The expression `max_pos_value` already overflows, becoming the most negative value,
+                    //   so we should skip adding a leading negative sign.
+                    let prefix_sign = if x == &repr.range().start { "" } else { "-" };
                     format!("{prefix_sign}{bits}'sd{}", x.abs())
                 }
                 Sign::Zero | Sign::Positive => format!("{bits}'sd{x}"),
@@ -1714,7 +1720,8 @@ fn lower_uint_str(x: &BigUint) -> String {
     // TODO double-check integer bit-width promotion rules
     // TODO avoid clone
     // TODO remove this redundant function and always use lower_int_constant
-    let repr = IntRepresentation::for_single(&x.into());
+    let range = ClosedNonEmptyRange::single(BigInt::from(x.clone()));
+    let repr = IntRepresentation::for_range(range.as_ref());
     format!("{}'d{}", repr.size_bits(), x)
 }
 
@@ -1746,33 +1753,28 @@ fn lower_edge<'n>(
     }
 }
 
-mod non_zero_width {
-    use crate::back::lower_verilog::ZeroWidth;
-    use crate::front::range::ClosedIncRange;
-    use crate::util::big_int::BigInt;
-    use crate::util::int::IntRepresentation;
+/// Range that is guaranteed to contain multiple values,
+///   which means that it will be represented with at least one bit in hardware.
+#[derive(Debug, Copy, Clone)]
+pub struct NonZeroWidthRange<'a>(ClosedNonEmptyRange<&'a BigInt>);
 
-    #[derive(Debug, Copy, Clone)]
-    pub struct NonZeroWidthRange<'a>(ClosedIncRange<&'a BigInt>);
+impl<'a> NonZeroWidthRange<'a> {
+    const ZERO_ONE: NonZeroWidthRange<'static> = NonZeroWidthRange(ClosedNonEmptyRange {
+        start: &BigInt::ZERO,
+        end: &BigInt::TWO,
+    });
 
-    impl<'a> NonZeroWidthRange<'a> {
-        pub const ZERO_ONE: NonZeroWidthRange<'static> = NonZeroWidthRange(ClosedIncRange {
-            start_inc: &BigInt::ZERO,
-            end_inc: &BigInt::ONE,
-        });
-
-        pub fn new(range: ClosedIncRange<&'a BigInt>) -> Result<Self, ZeroWidth> {
-            let repr = IntRepresentation::for_range(range);
-            if repr.size_bits() == 0 {
-                Err(ZeroWidth)
-            } else {
-                Ok(NonZeroWidthRange(range))
-            }
+    fn new(range: ClosedNonEmptyRange<&'a BigInt>) -> Result<Self, ZeroWidth> {
+        let repr = IntRepresentation::for_range(range);
+        if repr.size_bits() == 0 {
+            Err(ZeroWidth)
+        } else {
+            Ok(NonZeroWidthRange(range))
         }
+    }
 
-        pub fn range(&self) -> ClosedIncRange<&'a BigInt> {
-            self.0
-        }
+    fn range(&self) -> ClosedNonEmptyRange<&'a BigInt> {
+        self.0
     }
 }
 
@@ -1909,9 +1911,9 @@ enum MaybeBool {
 }
 
 impl MaybeBool {
-    fn is_not_zero(v: &impl Display, r: ClosedIncRange<&BigInt>) -> MaybeBool {
+    fn is_not_zero(v: &impl Display, r: ClosedRange<&BigInt>) -> MaybeBool {
         let can_be_zero = r.contains(&&BigInt::ZERO);
-        let can_be_non_zero = r != ClosedIncRange::single(&BigInt::ZERO);
+        let can_be_non_zero = r != ClosedRange::single(BigInt::ZERO).as_ref();
 
         if can_be_zero && can_be_non_zero {
             MaybeBool::Runtime(format!("({v} != 0)"))
@@ -1922,9 +1924,10 @@ impl MaybeBool {
         }
     }
 
-    fn is_negative(v: &impl Display, r: ClosedIncRange<&BigInt>) -> MaybeBool {
-        let can_be_neg = r.start_inc < &BigInt::ZERO;
-        let can_be_non_neg = r.end_inc >= &BigInt::ZERO;
+    fn is_negative(v: &impl Display, r: ClosedRange<&BigInt>) -> MaybeBool {
+        let can_be_neg = r.start.is_negative();
+        let can_be_non_neg = !r.end.is_negative();
+
         if can_be_neg && can_be_non_neg {
             MaybeBool::Runtime(format!("({v} < 0)"))
         } else if can_be_neg {

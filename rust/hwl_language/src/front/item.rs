@@ -21,6 +21,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
+use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
@@ -260,6 +261,7 @@ pub enum NonHardwareEnum {
 
 #[derive(Debug)]
 pub struct HardwareEnumInfo {
+    pub tag_range: ClosedNonEmptyRange<BigInt>,
     pub payload_types: Vec<Option<(HardwareType, IrType)>>,
     // TODO remove once this (or something similar enough) is cached in HardwareType
     pub max_payload_size: usize,
@@ -766,7 +768,7 @@ impl CompileItemContext<'_, '_> {
             })
             .try_collect_vec();
 
-        let name = type_name_inluding_params(source, elab, unique, params);
+        let name = type_name_including_params(source, elab, unique, params);
         Ok(ElaboratedStructInfo {
             unique,
             name,
@@ -826,7 +828,7 @@ impl CompileItemContext<'_, '_> {
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
-        let name = type_name_inluding_params(source, elab, unique, params);
+        let name = type_name_including_params(source, elab, unique, params);
         Ok(ElaboratedEnumInfo {
             unique,
             name,
@@ -837,7 +839,7 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn type_name_inluding_params(
+fn type_name_including_params(
     source: &SourceDatabase,
     elab: &ElaborationArenas,
     unique: UniqueDeclaration,
@@ -901,7 +903,12 @@ fn try_enum_as_hardware(
         .map_err(|size| diags.report_simple("enum size too large", span_body, format!("got size {size}")))?;
 
     // wrap
+    let tag_range = ClosedNonEmptyRange {
+        start: BigInt::ZERO,
+        end: BigInt::from(variants_eval.len()),
+    };
     let info = HardwareEnumInfo {
+        tag_range,
         payload_types: content_types,
         max_payload_size: max_content_size,
     };

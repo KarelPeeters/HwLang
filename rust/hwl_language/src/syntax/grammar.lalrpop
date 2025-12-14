@@ -582,8 +582,8 @@ ExprLevelRange: ExpressionKind = {
     // assoc none
     <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..">> <end:SpannedPushArena<ExprLevelLogical>?>
         => ExpressionKind::RangeLiteral(RangeLiteral::ExclusiveEnd { op_span, start, end }),
-    <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..=">> <end:SpannedPushArena<ExprLevelLogical>>
-        => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end }),
+    <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..=">> <end_inc:SpannedPushArena<ExprLevelLogical>>
+        => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end_inc }),
     <start:SpannedPushArena<ExprLevelLogical>> <op_span:Span<"+..">> <length:SpannedPushArena<ExprLevelLogical>>
         => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, length }),
     ExprLevelLogical,

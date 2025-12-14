@@ -5,14 +5,14 @@ use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
-use crate::front::range::{ClosedIncRange, IncRange};
-use crate::front::types::{HardwareType, Type, Typed};
+use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::NonEmptyVec;
 use crate::util::iter::IterExt;
+use crate::util::range::{ClosedNonEmptyRange, Range};
 use crate::util::{Never, ResultNeverExt};
 use itertools::zip_eq;
 use std::sync::Arc;
@@ -43,12 +43,7 @@ pub enum SimpleCompileValue {
 #[derive(Debug, Clone)]
 pub enum MixedCompoundValue {
     String(Arc<Vec<StringPiece<String, HardwareValue>>>),
-    Range(
-        RangeValue<
-            MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>,
-            MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>,
-        >,
-    ),
+    Range(RangeValue),
     Tuple(NonEmptyVec<Value>),
     Struct(StructValue<Value>),
     Enum(EnumValue<Box<Value>>),
@@ -57,7 +52,7 @@ pub enum MixedCompoundValue {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CompileCompoundValue {
     String(Arc<String>),
-    Range(IncRange<BigInt>),
+    Range(Range<BigInt>),
     Tuple(NonEmptyVec<CompileValue>),
     Struct(StructValue<CompileValue>),
     Enum(EnumValue<Box<CompileValue>>),
@@ -72,18 +67,15 @@ pub struct HardwareValue<T = HardwareType, E = IrExpression> {
     pub expr: E,
 }
 
-#[derive(Debug, Clone)]
-pub enum RangeValue<B, L> {
-    // TODO remove inclusive/exclude distinction, it's messy especially for eq/hash
-    //   is that even enough? start/length can also equal the same range!
-    StartEnd { start: Option<B>, end: RangeEnd<B> },
-    StartLength { start: B, length: L },
-}
+pub type HardwareInt = HardwareValue<ClosedNonEmptyRange<BigInt>>;
+pub type HardwareUInt = HardwareValue<ClosedNonEmptyRange<BigUint>>;
+pub type HardwareBool = HardwareValue<TypeBool>;
 
 #[derive(Debug, Clone)]
-pub enum RangeEnd<B> {
-    Exclusive(Option<B>),
-    Inclusive(B),
+pub enum RangeValue {
+    Normal(Range<MaybeCompile<BigInt, HardwareInt>>),
+    // TODO allow hardware length, really only useful for "in" expressions
+    HardwareStartLength { start: HardwareInt, length: BigUint },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -250,23 +242,16 @@ impl ValueCommon for MixedCompoundValue {
                     }
                 }
 
-                let mut domain = ValueDomain::CompileTime;
                 match v {
-                    RangeValue::StartEnd { start, end } => {
-                        let end_domain = match end {
-                            RangeEnd::Exclusive(end) => opt_domain(end.as_ref()),
-                            RangeEnd::Inclusive(end) => opt_domain(Some(end)),
-                        };
-                        domain = domain.join(opt_domain(start.as_ref()));
-                        domain = domain.join(end_domain);
+                    RangeValue::Normal(value) => {
+                        let Range { start, end } = value;
+                        ValueDomain::join(opt_domain(start.as_ref()), opt_domain(end.as_ref()))
                     }
-                    RangeValue::StartLength { start, length } => {
-                        domain = domain.join(opt_domain(Some(start)));
-                        domain = domain.join(opt_domain(Some(length)));
+                    RangeValue::HardwareStartLength { start, length } => {
+                        let _: &BigUint = length;
+                        start.domain
                     }
                 }
-
-                domain
             }
             MixedCompoundValue::Tuple(v) => ValueDomain::fold(v.iter().map(Value::domain)),
             MixedCompoundValue::Struct(v) => {
@@ -518,30 +503,6 @@ impl<T, E> HardwareValue<T, E> {
     }
 }
 
-impl RangeValue<BigInt, BigUint> {
-    pub fn as_range(&self) -> IncRange<BigInt> {
-        match self {
-            RangeValue::StartEnd { start, end } => {
-                let end_inc = match end {
-                    RangeEnd::Exclusive(end) => end.as_ref().map(|end| end - 1),
-                    RangeEnd::Inclusive(end) => Some(end.clone()),
-                };
-                IncRange {
-                    start_inc: start.clone(),
-                    end_inc,
-                }
-            }
-            RangeValue::StartLength { start, length } => {
-                let end_inc = start + length - 1;
-                IncRange {
-                    start_inc: Some(start.clone()),
-                    end_inc: Some(end_inc),
-                }
-            }
-        }
-    }
-}
-
 impl<H> From<CompileValue> for Value<SimpleCompileValue, MixedCompoundValue, H> {
     fn from(v: CompileValue) -> Self {
         match v {
@@ -558,11 +519,7 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
                 MixedCompoundValue::String(Arc::new(vec![StringPiece::Literal(Arc::unwrap_or_clone(v))]))
             }
             CompileCompoundValue::Range(v) => {
-                // TODO this is really weird
-                MixedCompoundValue::Range(RangeValue::StartEnd {
-                    start: v.start_inc.map(MaybeCompile::Compile),
-                    end: RangeEnd::Exclusive(v.end_inc.map(|x| MaybeCompile::Compile(x + 1))),
-                })
+                MixedCompoundValue::Range(RangeValue::Normal(v.map(MaybeCompile::Compile)))
             }
             CompileCompoundValue::Tuple(v) => MixedCompoundValue::Tuple(v.map(Value::from)),
             CompileCompoundValue::Struct(StructValue { ty, fields }) => {
@@ -576,24 +533,28 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
         }
     }
 }
-impl<C> From<MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>>
-    for Value<SimpleCompileValue, C, HardwareValue>
-{
-    fn from(value: MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>) -> Self {
-        match value {
-            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Int(v)),
-            MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(HardwareType::Int)),
-        }
+
+impl From<HardwareInt> for HardwareValue {
+    fn from(value: HardwareInt) -> Self {
+        value.map_type(HardwareType::Int)
+    }
+}
+impl From<HardwareUInt> for HardwareValue {
+    fn from(value: HardwareUInt) -> Self {
+        value.map_type(|range| HardwareType::Int(range.map(BigInt::from)))
+    }
+}
+impl From<HardwareBool> for HardwareValue {
+    fn from(value: HardwareBool) -> Self {
+        value.map_type(|_: TypeBool| HardwareType::Bool)
     }
 }
 
-impl<C> From<MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>>
-    for Value<SimpleCompileValue, C, HardwareValue>
-{
-    fn from(value: MaybeCompile<BigUint, HardwareValue<ClosedIncRange<BigUint>>>) -> Self {
+impl<C, H: Into<HardwareValue>> From<MaybeCompile<BigInt, H>> for Value<SimpleCompileValue, C, HardwareValue> {
+    fn from(value: MaybeCompile<BigInt, H>) -> Self {
         match value {
-            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Int(v.into())),
-            MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|r| HardwareType::Int(r.map(BigInt::from)))),
+            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Int(v)),
+            MaybeCompile::Hardware(v) => Value::Hardware(v.into()),
         }
     }
 }
@@ -628,7 +589,7 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
             }
             MixedCompoundValue::Range(v) => {
                 fn try_map_bound<I: Clone>(
-                    b: &MaybeCompile<I, HardwareValue<ClosedIncRange<I>>>,
+                    b: &MaybeCompile<I, HardwareValue<ClosedNonEmptyRange<I>>>,
                 ) -> Result<I, NotCompile> {
                     match b {
                         MaybeCompile::Compile(b) => Ok(b.clone()),
@@ -636,21 +597,11 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
                     }
                 }
                 match v {
-                    RangeValue::StartEnd { start, end } => Ok(CompileCompoundValue::Range(IncRange {
-                        start_inc: start.as_ref().map(try_map_bound).transpose()?,
-                        end_inc: match end {
-                            RangeEnd::Exclusive(end) => end.as_ref().map(try_map_bound).transpose()?.map(|x| x - 1),
-                            RangeEnd::Inclusive(end) => Some(try_map_bound(end)?),
-                        },
+                    RangeValue::Normal(Range { start, end }) => Ok(CompileCompoundValue::Range(Range {
+                        start: start.as_ref().map(try_map_bound).transpose()?,
+                        end: end.as_ref().map(try_map_bound).transpose()?,
                     })),
-                    RangeValue::StartLength { start, length } => {
-                        let start = try_map_bound(start)?;
-                        let end = &start + try_map_bound(length)? - 1;
-                        Ok(CompileCompoundValue::Range(IncRange {
-                            start_inc: Some(start),
-                            end_inc: Some(end),
-                        }))
-                    }
+                    RangeValue::HardwareStartLength { start: _, length: _ } => Err(NotCompile),
                 }
             }
             MixedCompoundValue::Tuple(v) => {
@@ -747,7 +698,7 @@ impl Typed for SimpleCompileValue {
         match self {
             SimpleCompileValue::Type(_) => Type::Type,
             SimpleCompileValue::Bool(_) => Type::Bool,
-            SimpleCompileValue::Int(v) => Type::Int(ClosedIncRange::single(v.clone()).into_range()),
+            SimpleCompileValue::Int(v) => Type::Int(Range::from(ClosedNonEmptyRange::single(v.clone()))),
             SimpleCompileValue::Array(values) => {
                 // TODO precompute this once? this can get slow for large arrays
                 let ty_inner = Type::union_all(values.iter().map(CompileValue::ty));
@@ -818,6 +769,24 @@ impl<C, H> MaybeCompile<C, H> {
         match self {
             MaybeCompile::Compile(v) => Ok(v),
             MaybeCompile::Hardware(_) => Err(NotCompile),
+        }
+    }
+}
+
+impl MaybeCompile<BigInt, HardwareInt> {
+    pub fn range(&self) -> ClosedNonEmptyRange<BigInt> {
+        match self {
+            MaybeCompile::Compile(value) => ClosedNonEmptyRange::single(value.clone()),
+            MaybeCompile::Hardware(value) => value.ty.clone(),
+        }
+    }
+}
+
+impl MaybeCompile<BigUint, HardwareUInt> {
+    pub fn range(&self) -> ClosedNonEmptyRange<BigUint> {
+        match self {
+            MaybeCompile::Compile(value) => ClosedNonEmptyRange::single(value.clone()),
+            MaybeCompile::Hardware(value) => value.ty.clone(),
         }
     }
 }

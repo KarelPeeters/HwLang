@@ -1,5 +1,4 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
@@ -14,6 +13,7 @@ use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
+use crate::util::range::ClosedNonEmptyRange;
 use crate::util::{Indent, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use itertools::enumerate;
@@ -779,12 +779,12 @@ impl CodegenBlockContext<'_> {
                         ref range,
                         ref block,
                     } = for_stmt;
-                    let ClosedIncRange { start_inc, end_inc } = range;
+                    let ClosedNonEmptyRange { start, end } = range;
 
                     let index_var = Evaluated::Inline(var_str(index, &self.locals[index]));
                     swrite!(
                         self.f,
-                        "{indent}for ({index_var} = {start_inc}; {index_var} <= {end_inc}; {index_var}++)"
+                        "{indent}for ({index_var} = {start}; {index_var} < {end}; {index_var}++)"
                     );
                     self.generate_nested_block(indent, block, stage_read)?;
                     swriteln!(self.f);
@@ -891,10 +891,10 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Strin
     let result = match ty {
         IrType::Bool => "bool".to_owned(),
         IrType::Int(range) => {
-            let ClosedIncRange { start_inc, end_inc } = range;
+            let ClosedNonEmptyRange { start, end } = range;
 
-            if &BigInt::from(-i64::MAX) <= start_inc && end_inc <= &BigInt::from(i64::MAX) {
-                // TODO use smaller types when appropriate
+            if &BigInt::from(-i64::MAX) <= start && end <= &BigInt::from(i64::MAX) {
+                // TODO use smaller types when appropriate?
                 "int64_t".to_string()
             } else {
                 return Err(diags.report_todo(span, format!("simulator wide integer type: {range}")));

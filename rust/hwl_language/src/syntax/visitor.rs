@@ -1182,11 +1182,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         self.visit_expression(scope, end)?;
                     }
                 }
-                RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
+                RangeLiteral::InclusiveEnd {
+                    op_span: _,
+                    start,
+                    end_inc,
+                } => {
                     if let Some(start) = start {
                         self.visit_expression(scope, start)?;
                     }
-                    self.visit_expression(scope, end)?;
+                    self.visit_expression(scope, end_inc)?;
                 }
                 RangeLiteral::Length {
                     op_span: _,

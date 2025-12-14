@@ -1,10 +1,10 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo};
-use crate::front::range::{ClosedIncRange, IncRange};
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::{ClosedNonEmptyRange, Range};
 use crate::util::{Never, ResultExt};
 use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ pub enum Type {
 
     Bool,
     String,
-    Int(IncRange<BigInt>),
+    Int(Range<BigInt>),
     // TODO empty tuples should be convertible to hardware
     Tuple(Arc<Vec<Type>>),
     Array(Arc<Type>, BigUint),
@@ -44,21 +44,17 @@ pub enum Type {
 pub enum HardwareType {
     Undefined,
     Bool,
-    Int(ClosedIncRange<BigInt>),
+    Int(ClosedNonEmptyRange<BigInt>),
     Tuple(Arc<Vec<HardwareType>>),
     Array(Arc<HardwareType>, BigUint),
     Struct(HardwareChecked<ElaboratedStruct>),
     Enum(HardwareChecked<ElaboratedEnum>),
 }
 
-impl HardwareEnumInfo {
-    pub fn tag_range(&self) -> ClosedIncRange<BigInt> {
-        ClosedIncRange {
-            start_inc: BigInt::ZERO,
-            end_inc: BigInt::from(self.payload_types.len()) - 1,
-        }
-    }
+#[derive(Debug, Copy, Clone)]
+pub struct TypeBool;
 
+impl HardwareEnumInfo {
     pub fn padding_for_variant(&self, variant: usize) -> usize {
         let content_size = match &self.payload_types[variant] {
             None => 0,
@@ -78,8 +74,8 @@ impl HardwareEnumInfo {
         assert_eq!(self.payload_types[variant].is_some(), content_bits.is_some());
 
         // tag
-        let tag_range = self.tag_range();
-        let ir_tag = IrExpressionLarge::ExpandIntRange(tag_range, IrExpression::Int(BigInt::from(variant)));
+        let ir_tag =
+            IrExpressionLarge::ExpandIntRange(self.tag_range.clone(), IrExpression::Int(BigInt::from(variant)));
 
         // content
         let mut ir_elements = vec![];
@@ -243,8 +239,8 @@ impl Type {
         match self {
             Type::Undefined => Ok(HardwareType::Undefined),
             Type::Bool => Ok(HardwareType::Bool),
-            Type::Int(range) => match range.clone().try_into_closed() {
-                Ok(closed_range) => Ok(HardwareType::Int(closed_range)),
+            Type::Int(range) => match ClosedNonEmptyRange::try_from(range.as_ref()) {
+                Ok(closed_range) => Ok(HardwareType::Int(closed_range.cloned())),
                 Err(_) => Err(NonHardwareType),
             },
             Type::Tuple(inner) => inner
@@ -287,7 +283,7 @@ impl HardwareType {
         match self {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
-            HardwareType::Int(range) => Type::Int(range.clone().into_range()),
+            HardwareType::Int(range) => Type::Int(Range::from(range.clone())),
             HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
             HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
@@ -311,10 +307,7 @@ impl HardwareType {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
-                let tag_ty = IrType::Int(ClosedIncRange {
-                    start_inc: BigInt::ZERO,
-                    end_inc: BigInt::from(info.variants.len()) - 1,
-                });
+                let tag_ty = IrType::Int(info_hw.tag_range.clone());
                 let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_payload_size));
                 IrType::Tuple(vec![tag_ty, data_ty])
             }

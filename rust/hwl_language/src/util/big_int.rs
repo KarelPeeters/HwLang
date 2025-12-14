@@ -9,6 +9,13 @@ pub struct BigUint(Storage);
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BigInt(Storage);
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Sign {
+    Negative,
+    Zero,
+    Positive,
+}
+
 // TODO benchmark i128 vs i64
 type IStorage = i128;
 
@@ -16,13 +23,6 @@ type IStorage = i128;
 enum Storage {
     Small(IStorage),
     Big(num_bigint::BigInt),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Sign {
-    Negative,
-    Zero,
-    Positive,
 }
 
 impl Storage {
@@ -70,10 +70,6 @@ impl Storage {
             },
         }
     }
-
-    fn is_zero(&self) -> bool {
-        self.sign() == Sign::Zero
-    }
 }
 
 impl BigUint {
@@ -96,7 +92,11 @@ impl BigUint {
     }
 
     pub fn is_zero(&self) -> bool {
-        self.storage().is_zero()
+        self.storage().sign() == Sign::Zero
+    }
+
+    pub fn is_positive(&self) -> bool {
+        self.storage().sign() == Sign::Positive
     }
 
     pub fn into_num_biguint(self) -> num_bigint::BigUint {
@@ -196,8 +196,20 @@ impl BigInt {
         self.0
     }
 
+    pub fn sign(&self) -> Sign {
+        self.storage().sign()
+    }
+
     pub fn is_zero(&self) -> bool {
-        self.storage().is_zero()
+        self.sign() == Sign::Zero
+    }
+
+    pub fn is_negative(&self) -> bool {
+        self.sign() == Sign::Negative
+    }
+
+    pub fn is_positive(&self) -> bool {
+        self.sign() == Sign::Positive
     }
 
     pub fn into_num_bigint(self) -> num_bigint::BigInt {
@@ -206,10 +218,6 @@ impl BigInt {
 
     pub fn from_num_bigint(value: num_bigint::BigInt) -> Self {
         BigInt::new(Storage::from_maybe_big(value))
-    }
-
-    pub fn sign(&self) -> Sign {
-        self.storage().sign()
     }
 
     pub fn abs(&self) -> BigUint {

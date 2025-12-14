@@ -1,6 +1,5 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
-use crate::front::range::ClosedIncRange;
 use crate::front::types::HardwareType;
 use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue};
 use crate::mid::ir::IrType;
@@ -41,15 +40,13 @@ impl HardwareType {
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // The tag needs to be fully valid.
-                let tag_range = ClosedIncRange {
-                    start_inc: BigInt::ZERO,
-                    end_inc: BigInt::from(info.variants.len()) - 1,
-                };
-                let tag_repr = IntRepresentation::for_range(tag_range.as_ref());
-                if tag_repr.range() != tag_range {
+                let tag_repr = IntRepresentation::for_range(info_hw.tag_range.as_ref());
+                if tag_repr.range() != info_hw.tag_range {
                     return false;
                 }
 
+                // TODO rethink this, this makes enum comparisons trickier,
+                //   it would be nicer to enforce zero bits for padding.
                 // We don't need all variants to be the same size:
                 //   the bits they don't cover will never be used, since the tag should be checked first.
                 // Each variant being valid individually is enough.
@@ -135,7 +132,7 @@ impl HardwareType {
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
-                let tag_range = info_hw.tag_range();
+                let tag_range = info_hw.tag_range.clone();
                 HardwareType::Int(tag_range).value_to_bits_impl(
                     refs,
                     span,
@@ -258,7 +255,7 @@ impl HardwareType {
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
-                let tag_ty = HardwareType::Int(info_hw.tag_range());
+                let tag_ty = HardwareType::Int(info_hw.tag_range.clone());
                 let tag_value = tag_ty.value_from_bits_impl(refs, span, bits)?;
                 let tag_value = unwrap_match!(tag_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
                 let tag_value = usize::try_from(tag_value).unwrap();

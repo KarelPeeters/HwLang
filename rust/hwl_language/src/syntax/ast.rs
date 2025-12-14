@@ -767,7 +767,7 @@ pub enum RangeLiteral {
     InclusiveEnd {
         op_span: Span,
         start: Option<Expression>,
-        end: Expression,
+        end_inc: Expression,
     },
     Length {
         op_span: Span,

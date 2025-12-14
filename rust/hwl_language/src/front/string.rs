@@ -2,12 +2,11 @@ use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::ElaborationArenas;
-use crate::front::range::{ClosedIncRange, IncRange};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, RangeEnd, RangeValue,
-    SimpleCompileValue, StructValue, Value,
+    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, RangeValue, SimpleCompileValue,
+    StructValue, Value,
 };
 use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
@@ -18,6 +17,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
+use crate::util::range::{ClosedNonEmptyRange, Range};
 use hwl_util::swrite;
 use itertools::{Itertools, enumerate, zip_eq};
 use std::borrow::Cow;
@@ -60,27 +60,20 @@ impl StringBuilder {
                     }
                 }
                 MixedCompoundValue::Range(value) => match value {
-                    RangeValue::StartEnd { start, end } => {
+                    RangeValue::Normal(range) => {
+                        let Range { start, end } = range;
                         if let Some(start) = start {
                             self.push_value(elab, &Value::from(start.clone()));
                         }
-                        match end {
-                            RangeEnd::Exclusive(end) => {
-                                self.push_str("..");
-                                if let Some(end) = end {
-                                    self.push_value(elab, &Value::from(end.clone()));
-                                }
-                            }
-                            RangeEnd::Inclusive(end) => {
-                                self.push_str("..=");
-                                self.push_value(elab, &Value::from(end.clone()));
-                            }
+                        self.push_str("..");
+                        if let Some(end) = end {
+                            self.push_value(elab, &Value::from(end.clone()));
                         }
                     }
-                    RangeValue::StartLength { start, length } => {
-                        self.push_value(elab, &Value::from(start.clone()));
+                    RangeValue::HardwareStartLength { start, length } => {
+                        self.push_value(elab, &Value::Hardware(start.clone().map_type(HardwareType::Int)));
                         self.push_str("+..");
-                        self.push_value(elab, &Value::from(length.clone()));
+                        self.push_str(length.to_string());
                     }
                 },
                 MixedCompoundValue::Tuple(elements) => {
@@ -314,7 +307,7 @@ fn print_hardware_sub(
             };
 
             if len.is_zero() {
-                // empty array
+                // empty array, don't do anything
             } else if len == &BigUint::ONE {
                 // single element, just print it
                 // TODO also do this for short arrays with simplem elements?
@@ -322,14 +315,13 @@ fn print_hardware_sub(
                 block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &element_value));
             } else {
                 // multiple elements, emit a loop
-
                 // print any pending pieces before the loop
                 builder.print_and_clear(&mut block_parent);
 
                 // create index variable
-                let range = ClosedIncRange {
-                    start_inc: BigInt::ZERO,
-                    end_inc: len - 1,
+                let range = ClosedNonEmptyRange {
+                    start: BigInt::ZERO,
+                    end: BigInt::from(len),
                 };
                 let index = new_ir_var(IrVariableInfo {
                     ty: IrType::Int(range.clone()),
@@ -346,7 +338,7 @@ fn print_hardware_sub(
                 let if_cond = IrExpressionLarge::IntCompare(
                     IrIntCompareOp::Lt,
                     IrExpression::Variable(index),
-                    IrExpression::Int(range.end_inc.clone()),
+                    IrExpression::Int(len - 1),
                 );
                 let if_stmt = IrIfStatement {
                     condition: large.push_expr(if_cond),
@@ -474,10 +466,10 @@ impl Type {
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
             Type::Int(range) => {
-                let range_int = IncRange::OPEN;
-                let range_uint = IncRange {
-                    start_inc: Some(BigInt::ZERO),
-                    end_inc: None,
+                let range_int = Range::OPEN;
+                let range_uint = Range {
+                    start: Some(BigInt::ZERO),
+                    end: None,
                 };
                 if range == &range_int {
                     "int".to_owned()
@@ -530,14 +522,14 @@ impl CompileCompoundValue {
         match self {
             CompileCompoundValue::String(v) => v.as_ref().clone(),
             CompileCompoundValue::Range(v) => {
-                let IncRange { start_inc, end_inc } = v;
+                let Range { start, end } = v;
 
                 let mut f = String::new();
-                if let Some(start) = start_inc {
+                if let Some(start) = start {
                     swrite!(f, "{start}");
                 }
                 swrite!(f, "..");
-                if let Some(end) = end_inc {
+                if let Some(end) = end {
                     swrite!(f, "{end}");
                 }
                 f

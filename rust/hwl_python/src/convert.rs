@@ -1,9 +1,9 @@
-use crate::{Compile, Function, IncRange, Module, Type, Value};
-use hwl_language::front::range::IncRange as RustIncRange;
+use crate::{Compile, Function, Module, Range, Type, Value};
 use hwl_language::front::value::{CompileCompoundValue, SimpleCompileValue};
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::{EmptyVec, GrowVec, NonEmptyVec};
+use hwl_language::util::range::Range as RustRange;
 use hwl_language::{
     front::{types::Type as RustType, value::CompileValue},
     syntax::{
@@ -67,10 +67,10 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
         CompileValue::Compound(value) => match value {
             CompileCompoundValue::String(x) => x.as_str().into_py_any(py),
             CompileCompoundValue::Range(x) => {
-                let RustIncRange { start_inc, end_inc } = x;
-                IncRange {
-                    start_inc: start_inc.clone().map(BigInt::into_num_bigint).clone(),
-                    end_inc: end_inc.clone().map(BigInt::into_num_bigint).clone(),
+                let RustRange { start, end } = x;
+                Range {
+                    start: start.clone().map(BigInt::into_num_bigint).clone(),
+                    end: end.clone().map(BigInt::into_num_bigint).clone(),
                 }
                 .into_py_any(py)
             }
@@ -120,11 +120,11 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
         let items: Vec<_> = value.into_iter().map(|v| compile_value_from_py(&v)).try_collect()?;
         return Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(items))));
     }
-    if let Ok(value) = value.extract::<PyRef<IncRange>>() {
-        let IncRange { start_inc, end_inc } = &*value;
-        let value = RustIncRange {
-            start_inc: start_inc.clone().map(BigInt::from_num_bigint),
-            end_inc: end_inc.clone().map(BigInt::from_num_bigint),
+    if let Ok(value) = value.extract::<PyRef<Range>>() {
+        let Range { start, end } = &*value;
+        let value = RustRange {
+            start: start.clone().map(BigInt::from_num_bigint),
+            end: end.clone().map(BigInt::from_num_bigint),
         };
         return Ok(CompileValue::Compound(CompileCompoundValue::Range(value)));
     }
@@ -144,7 +144,7 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
             return Ok(CompileValue::new_ty(RustType::Bool));
         }
         if py_type.is(&py.get_type::<PyInt>()) {
-            return Ok(CompileValue::new_ty(RustType::Int(RustIncRange::OPEN)));
+            return Ok(CompileValue::new_ty(RustType::Int(RustRange::OPEN)));
         }
         if py_type.is(&py.get_type::<PyAny>()) {
             return Ok(CompileValue::new_ty(RustType::Any));

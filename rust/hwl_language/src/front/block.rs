@@ -11,10 +11,9 @@ use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedEnum, HardwareChecked};
-use crate::front::range::{ClosedIncRangeMulti, IncRange, IncRangeMulti};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
+use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
@@ -30,6 +29,7 @@ use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::BigInt;
 use crate::util::iter::IterExt;
+use crate::util::range::{ClosedMultiRange, MultiRange, Range};
 use crate::util::{ResultExt, result_pair};
 use itertools::{Either, Itertools, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
@@ -223,7 +223,7 @@ pub enum EvaluatedMatchPattern {
     Wildcard,
     WildcardVal(MaybeIdentifier),
     EqualTo(Spanned<CompileValue>),
-    InRange(Spanned<IncRange<BigInt>>),
+    InRange(Spanned<Range<BigInt>>),
     IsEnumVariant {
         variant_index: usize,
         payload_id: Option<MaybeIdentifier>,
@@ -849,7 +849,7 @@ impl CompileItemContext<'_, '_> {
                 rem_true: true,
             },
             HardwareType::Int(ty) => MatchCoverage::Int {
-                rem_range: ClosedIncRangeMulti::from_range(ty.clone()),
+                rem_range: ClosedMultiRange::from(ty.clone()),
             },
             &HardwareType::Enum(ty) => {
                 let elab_enum = elab.enum_info(ty.inner());
@@ -869,7 +869,7 @@ impl CompileItemContext<'_, '_> {
             }
         };
 
-        let mut all_conds = vec![];
+        let mut all_conditions = vec![];
         let mut all_contents = vec![];
         let mut all_ends = vec![];
 
@@ -930,8 +930,8 @@ impl CompileItemContext<'_, '_> {
                         }
                         MatchCoverage::Int { rem_range } => {
                             let value = unwrap_match!(value.inner, CompileValue::Simple(SimpleCompileValue::Int(value)) => value);
-                            let single_range = IncRangeMulti::from_range(IncRange::single(value.clone()));
-                            *rem_range = rem_range.subtract(&single_range);
+                            let value_range = MultiRange::from(Range::single(value.clone()));
+                            *rem_range = rem_range.subtract(&value_range);
 
                             let cond = self.large.push_expr(IrExpressionLarge::IntCompare(
                                 IrIntCompareOp::Eq,
@@ -940,7 +940,7 @@ impl CompileItemContext<'_, '_> {
                             ));
 
                             let implications = if let Some(target_version) = target_version {
-                                vec![Implication::new_int(target_version, IncRangeMulti::single(value))]
+                                vec![Implication::new_int(target_version, value_range)]
                             } else {
                                 vec![]
                             };
@@ -961,42 +961,15 @@ impl CompileItemContext<'_, '_> {
                     MatchCoverage::Int { rem_range } => {
                         // TODO warn if parts of range already covered
                         // TODO share code with ordinary comparisons?
-                        let range_multi = IncRangeMulti::from_range(range.inner.clone());
+                        let range_multi = MultiRange::from(range.inner.clone());
                         *rem_range = rem_range.subtract(&range_multi);
 
-                        let IncRange { start_inc, end_inc } = &range.inner;
-                        let cond_start = if let Some(start_inc) = start_inc {
-                            let cond_start = self.large.push_expr(IrExpressionLarge::IntCompare(
-                                IrIntCompareOp::Lte,
-                                IrExpression::Int(start_inc.clone()),
-                                target_value.expr.clone(),
-                            ));
-                            Some(cond_start)
-                        } else {
-                            None
-                        };
-                        let cond = if let Some(end_inc) = end_inc {
-                            let cond_end = self.large.push_expr(IrExpressionLarge::IntCompare(
-                                IrIntCompareOp::Lte,
-                                target_value.expr.clone(),
-                                IrExpression::Int(end_inc.clone()),
-                            ));
-                            match cond_start {
-                                None => Some(cond_end),
-                                Some(cond_start) => Some(self.large.push_expr(IrExpressionLarge::BoolBinary(
-                                    IrBoolBinaryOp::And,
-                                    cond_start,
-                                    cond_end,
-                                ))),
-                            }
-                        } else {
-                            cond_start
-                        };
+                        let cond = build_ir_int_in_range(&mut self.large, &target_value.expr, range.inner.clone());
 
                         let implications = if let Some(target_version) = target_version {
                             vec![Implication::new_int(
                                 target_version,
-                                IncRangeMulti::from_range(range.inner.clone()),
+                                MultiRange::from(range.inner.clone()),
                             )]
                         } else {
                             vec![]
@@ -1091,7 +1064,7 @@ impl CompileItemContext<'_, '_> {
             let branch_end = self.elaborate_block(&branch_scope, &mut branch_flow.as_flow(), stack, branch_block)?;
             let content = branch_flow.finish();
 
-            all_conds.push(cond);
+            all_conditions.push(cond);
             all_contents.push(content);
             all_ends.push(branch_end);
         }
@@ -1158,7 +1131,7 @@ impl CompileItemContext<'_, '_> {
         // build the if statement
         // TODO flatten this into single if/else-if/else structure or even a match?
         let mut joined_statement = None;
-        for (cond, block) in zip_eq(all_conds.into_iter().rev(), all_blocks.into_iter().rev()) {
+        for (cond, block) in zip_eq(all_conditions.into_iter().rev(), all_blocks.into_iter().rev()) {
             joined_statement = match cond {
                 None => Some(IrStatement::Block(block)),
                 Some(cond) => Some(IrStatement::If(IrIfStatement {
@@ -1337,7 +1310,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         flow: &mut FlowHardware,
         span: Span,
-        cond: Spanned<HardwareValueWithImplications<()>>,
+        cond: Spanned<HardwareValueWithImplications<TypeBool>>,
         mut f: impl FnMut(&mut Self, &mut FlowHardware, bool) -> DiagResult<R>,
     ) -> DiagResult<(R, R)> {
         let cond_domain = Spanned::new(cond.span, cond.inner.value.domain);
@@ -1451,7 +1424,7 @@ enum MatchCoverage {
         rem_true: bool,
     },
     Int {
-        rem_range: ClosedIncRangeMulti,
+        rem_range: ClosedMultiRange<BigInt>,
     },
     Enum {
         target_ty: HardwareChecked<ElaboratedEnum>,
@@ -1466,7 +1439,7 @@ impl MatchCoverage {
                 *rem_false = false;
                 *rem_true = false;
             }
-            MatchCoverage::Int { rem_range } => *rem_range = ClosedIncRangeMulti::EMPTY,
+            MatchCoverage::Int { rem_range } => *rem_range = ClosedMultiRange::EMPTY,
             MatchCoverage::Enum {
                 target_ty: _,
                 rem_variants,
@@ -1562,4 +1535,32 @@ fn build_ir_if_statement(
     };
 
     res.map(Either::Right)
+}
+
+fn build_ir_int_in_range(large: &mut IrLargeArena, value: &IrExpression, range: Range<BigInt>) -> Option<IrExpression> {
+    range.assert_valid();
+    let Range { start, end } = range;
+
+    let cond_start = start.map(|start| {
+        large.push_expr(IrExpressionLarge::IntCompare(
+            IrIntCompareOp::Lte,
+            IrExpression::Int(start),
+            value.clone(),
+        ))
+    });
+    let cond_end = end.map(|end| {
+        large.push_expr(IrExpressionLarge::IntCompare(
+            IrIntCompareOp::Lt,
+            value.clone(),
+            IrExpression::Int(end),
+        ))
+    });
+
+    match (cond_start, cond_end) {
+        (None, None) => None,
+        (Some(cond), None) | (None, Some(cond)) => Some(cond),
+        (Some(cond_start), Some(cond_end)) => {
+            Some(large.push_expr(IrExpressionLarge::BoolBinary(IrBoolBinaryOp::And, cond_start, cond_end)))
+        }
+    }
 }

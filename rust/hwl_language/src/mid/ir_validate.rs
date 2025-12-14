@@ -1,5 +1,4 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
@@ -11,6 +10,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::IndexSet;
 use itertools::zip_eq;
 use std::borrow::Cow;
@@ -204,7 +204,13 @@ impl IrBlock {
                     let index_ty = IrExpression::Variable(index).ty(module, locals);
                     let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
 
-                    if !index_range.contains_range(range.as_ref()) {
+                    // the for loop index type must also contain the end value itself for easier codegen
+                    let range_inc = ClosedRange {
+                        start: range.start.clone(),
+                        end: &range.end + 1,
+                    };
+
+                    if !index_range.contains_range(range_inc.as_ref()) {
                         let msg = format!("IR for loop range mismatch: loop index {index_range:?} but range {range:?}");
                         return Err(diags.report_internal_error(stmt.span, msg));
                     }
@@ -340,7 +346,7 @@ fn check_type_is_int<'t>(
     diags: &Diagnostics,
     span: Span,
     actual: &'t IrType,
-) -> DiagResult<&'t ClosedIncRange<BigInt>> {
+) -> DiagResult<&'t ClosedNonEmptyRange<BigInt>> {
     match actual {
         IrType::Int(range) => Ok(range),
         _ => {

@@ -10,7 +10,6 @@ use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::CollectPrintHandler;
-use hwl_language::front::range::IncRange as RustIncRange;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::CompileValue as RustCompileValue;
@@ -26,6 +25,7 @@ use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::data::GrowVec;
+use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
@@ -100,11 +100,11 @@ struct Type {
 }
 
 #[pyclass]
-struct IncRange {
+struct Range {
     #[pyo3(get)]
-    start_inc: Option<num_bigint::BigInt>,
+    start: Option<num_bigint::BigInt>,
     #[pyo3(get)]
-    end_inc: Option<num_bigint::BigInt>,
+    end: Option<num_bigint::BigInt>,
 }
 
 #[pyclass]
@@ -203,7 +203,7 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CapturePrintsContext>()?;
     m.add_class::<Value>()?;
     m.add_class::<Type>()?;
-    m.add_class::<IncRange>()?;
+    m.add_class::<Range>()?;
     m.add_class::<Function>()?;
     m.add_class::<Module>()?;
     m.add_class::<ModuleVerilog>()?;
@@ -532,18 +532,18 @@ impl Type {
 }
 
 #[pymethods]
-impl IncRange {
+impl Range {
     #[new]
-    fn new(start_inc: Option<num_bigint::BigInt>, end_inc: Option<num_bigint::BigInt>) -> Self {
-        Self { start_inc, end_inc }
+    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> Self {
+        Self { start, end }
     }
 
     fn __str__(&self) -> String {
-        let range = RustIncRange {
-            start_inc: self.start_inc.as_ref(),
-            end_inc: self.end_inc.as_ref(),
+        let range = RustRange {
+            start: self.start.as_ref(),
+            end: self.end.as_ref(),
         };
-        format!("IncRange({range})")
+        format!("Range({range})")
     }
 }
 

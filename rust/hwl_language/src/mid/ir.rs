@@ -1,4 +1,3 @@
-use crate::front::range::ClosedIncRange;
 use crate::front::signal::Polarized;
 use crate::front::types::HardwareType;
 use crate::new_index_type;
@@ -6,6 +5,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::ClosedNonEmptyRange;
 use derive_more::From;
 use hwl_util::swrite;
 use indexmap::IndexSet;
@@ -58,7 +58,7 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<Ir
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {
     Bool,
-    Int(ClosedIncRange<BigInt>),
+    Int(ClosedNonEmptyRange<BigInt>),
     Tuple(Vec<IrType>),
     Array(Box<IrType>, BigUint),
 }
@@ -248,7 +248,7 @@ pub struct IrIfStatement {
 #[derive(Debug, Clone)]
 pub struct IrForStatement {
     pub index: IrVariable,
-    pub range: ClosedIncRange<BigInt>,
+    pub range: ClosedNonEmptyRange<BigInt>,
     pub block: IrBlock,
 }
 
@@ -299,7 +299,13 @@ pub enum IrExpressionLarge {
     // actual expressions
     BoolNot(IrExpression),
     BoolBinary(IrBoolBinaryOp, IrExpression, IrExpression),
-    IntArithmetic(IrIntArithmeticOp, ClosedIncRange<BigInt>, IrExpression, IrExpression),
+    IntArithmetic(
+        IrIntArithmeticOp,
+        // the range of the resulting value
+        ClosedNonEmptyRange<BigInt>,
+        IrExpression,
+        IrExpression,
+    ),
     IntCompare(IrIntCompareOp, IrExpression, IrExpression),
 
     // concat
@@ -329,9 +335,9 @@ pub enum IrExpressionLarge {
     //   if so the result is undefined
     FromBits(IrType, IrExpression),
     // expand can never fail, this is just a re-encoding
-    ExpandIntRange(ClosedIncRange<BigInt>, IrExpression),
+    ExpandIntRange(ClosedNonEmptyRange<BigInt>, IrExpression),
     // constrain can fail, if it fails the resulting value is undefined
-    ConstrainIntRange(ClosedIncRange<BigInt>, IrExpression),
+    ConstrainIntRange(ClosedNonEmptyRange<BigInt>, IrExpression),
 }
 
 // TODO move to separate utils module?
@@ -429,7 +435,7 @@ impl IrType {
         }
     }
 
-    pub fn unwrap_int(self) -> ClosedIncRange<BigInt> {
+    pub fn unwrap_int(self) -> ClosedNonEmptyRange<BigInt> {
         unwrap_match!(self, IrType::Int(range) => range)
     }
 }
@@ -528,7 +534,7 @@ impl IrExpression {
     pub fn ty(&self, module: &IrModuleInfo, locals: &IrVariables) -> IrType {
         match self {
             IrExpression::Bool(_) => IrType::Bool,
-            IrExpression::Int(v) => IrType::Int(ClosedIncRange::single(v.clone())),
+            IrExpression::Int(v) => IrType::Int(ClosedNonEmptyRange::single(v.clone())),
 
             &IrExpression::Signal(signal) => match signal {
                 IrSignal::Port(port) => module.ports[port].ty.clone(),

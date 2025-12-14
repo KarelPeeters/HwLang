@@ -5,7 +5,6 @@ use crate::front::implication::{
     HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
-use crate::front::range::ClosedIncRangeMulti;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
@@ -23,6 +22,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
+use crate::util::range::ClosedMultiRange;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, zip_eq};
@@ -79,7 +79,7 @@ trait FlowPrivate: Sized {
                 }
             }
             HardwareType::Int(ty) => {
-                let mut range = ClosedIncRangeMulti::from_range(ty.clone());
+                let mut range = ClosedMultiRange::from(ty.clone());
 
                 self.for_each_implication(value.version, |implication| {
                     let &Implication { version, ref kind } = implication;
@@ -94,12 +94,12 @@ trait FlowPrivate: Sized {
                     // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
                     None => Value::Hardware(value),
                     Some(range) => {
-                        if &range == ty {
+                        if range == ty.as_ref() {
                             Value::Hardware(value)
                         } else {
-                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
+                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.cloned(), value.value.expr);
                             let value_constr = HardwareValue {
-                                ty: HardwareType::Int(range),
+                                ty: HardwareType::Int(range.cloned()),
                                 domain: value.value.domain,
                                 expr: large.push_expr(expr_constr),
                             };

@@ -1,7 +1,8 @@
 use crate::front::flow::ValueVersion;
-use crate::front::range::IncRangeMulti;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
+use crate::util::big_int::BigInt;
+use crate::util::range::MultiRange;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone)]
@@ -20,7 +21,7 @@ pub struct Implication<V = ValueVersion> {
 #[derive(Debug, Clone)]
 pub enum ImplicationKind {
     BoolEq(bool),
-    IntIn(IncRangeMulti),
+    IntIn(MultiRange<BigInt>),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -93,7 +94,7 @@ impl Implication {
         }
     }
 
-    pub fn new_int(value: ValueVersion, range: IncRangeMulti) -> Self {
+    pub fn new_int(value: ValueVersion, range: MultiRange<BigInt>) -> Self {
         Self {
             version: value,
             kind: ImplicationKind::IntIn(range),

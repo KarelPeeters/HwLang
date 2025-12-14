@@ -1,132 +1,145 @@
 //! Module to compute output ranges of expressions.
 //!
-//! Proofs validness of these range bounds integer ranges can be found in `int_range_proofs.py`.
+//! Proofs of the validity of these range bounds can be found in `int_range_proofs.py`.
 
-use crate::front::range::ClosedIncRange;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::ClosedNonEmptyRange;
 use std::cmp::{max, min};
 
-pub fn range_unary_neg(a: ClosedIncRange<&BigInt>) -> ClosedIncRange<BigInt> {
-    ClosedIncRange {
-        start_inc: -a.end_inc,
-        end_inc: -a.start_inc,
-    }
+pub fn range_unary_neg(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    range_from_min_max(-a_max, -a_min)
 }
 
-pub fn range_unary_abs(a: ClosedIncRange<&BigInt>) -> ClosedIncRange<BigInt> {
-    if a.end_inc < &BigInt::ZERO {
-        ClosedIncRange {
-            start_inc: -a.end_inc,
-            end_inc: -a.start_inc,
-        }
+pub fn range_unary_abs(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    if a_max < BigInt::ZERO {
+        range_from_min_max(-a_max, -a_min)
     } else {
-        ClosedIncRange {
-            start_inc: max(a.start_inc.clone(), BigInt::ZERO),
-            end_inc: max(-a.start_inc, a.end_inc.clone()),
-        }
+        range_from_min_max(max(a_min.clone(), BigInt::ZERO), max(-a_min, a_max.clone()))
     }
 }
 
-pub fn range_binary_add(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) -> ClosedIncRange<BigInt> {
-    ClosedIncRange {
-        start_inc: a.start_inc + b.start_inc,
-        end_inc: a.end_inc + b.end_inc,
-    }
+pub fn range_binary_add(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    let (b_min, b_max) = range_to_min_max(b);
+    range_from_min_max(a_min + b_min, a_max + b_max)
 }
 
-pub fn range_binary_sub(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) -> ClosedIncRange<BigInt> {
-    ClosedIncRange {
-        start_inc: a.start_inc - b.end_inc,
-        end_inc: a.end_inc - b.start_inc,
-    }
+pub fn range_binary_sub(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    let (b_min, b_max) = range_to_min_max(b);
+    range_from_min_max(a_min - b_max, a_max - b_min)
 }
 
-pub fn range_binary_mul(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) -> ClosedIncRange<BigInt> {
-    let extremes = [
-        a.start_inc * b.start_inc,
-        a.start_inc * b.end_inc,
-        a.end_inc * b.start_inc,
-        a.end_inc * b.end_inc,
-    ];
-    ClosedIncRange {
-        start_inc: extremes.iter().min().unwrap().clone(),
-        end_inc: extremes.iter().max().unwrap().clone(),
-    }
+pub fn range_binary_mul(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    let (b_min, b_max) = range_to_min_max(b);
+    let extremes = [a_min * b_min, a_min * &b_max, &a_max * b_min, a_max * b_max];
+    range_from_min_max(
+        extremes.iter().min().unwrap().clone(),
+        extremes.iter().max().unwrap().clone(),
+    )
 }
 
-pub fn range_binary_div(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) -> Option<ClosedIncRange<BigInt>> {
+pub fn range_binary_div(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> Option<ClosedNonEmptyRange<BigInt>> {
+    let (a_min, a_max) = range_to_min_max(a);
+    let (b_min, b_max) = range_to_min_max(b);
+
     // check for potential division by zero
     if b.contains(&&BigInt::ZERO) {
         return None;
     }
 
     // TODO these ranges can probably be tightened
-    let right_positive = b.start_inc > &BigInt::ZERO;
+    let right_positive = b_min > &BigInt::ZERO;
     if right_positive {
-        Some(ClosedIncRange {
-            start_inc: min(
-                a.start_inc.div_floor(b.end_inc).unwrap(),
-                a.start_inc.div_floor(b.start_inc).unwrap(),
-            ),
-            end_inc: max(
-                a.end_inc.div_floor(b.end_inc).unwrap(),
-                a.end_inc.div_floor(b.start_inc).unwrap(),
-            ),
-        })
+        Some(range_from_min_max(
+            min(a_min.div_floor(&b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
+            max(a_max.div_floor(&b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
+        ))
     } else {
-        Some(ClosedIncRange {
-            start_inc: min(
-                a.end_inc.div_floor(b.end_inc).unwrap(),
-                a.end_inc.div_floor(b.start_inc).unwrap(),
-            ),
-            end_inc: max(
-                a.start_inc.div_floor(b.end_inc).unwrap(),
-                a.start_inc.div_floor(b.start_inc).unwrap(),
-            ),
-        })
+        Some(range_from_min_max(
+            min(a_max.div_floor(&b_max).unwrap(), a_max.div_floor(b_min).unwrap()),
+            max(a_min.div_floor(&b_max).unwrap(), a_min.div_floor(b_min).unwrap()),
+        ))
     }
 }
 
-pub fn range_binary_mod(_a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigInt>) -> Option<ClosedIncRange<BigInt>> {
+pub fn range_binary_mod(
+    _a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> Option<ClosedNonEmptyRange<BigInt>> {
+    let (b_min, b_max) = range_to_min_max(b);
+
     // check for potential division by zero
     if b.contains(&&BigInt::ZERO) {
         return None;
     }
 
-    // Note: Python modulo's range only depends on the divisor `b`, not the dividend `a`
-    // The result has the same sign as `b` (or is zero)
-    let right_positive = b.start_inc > &BigInt::ZERO;
+    // TODO this could be tightened depending on the range of `a`
+    let right_positive = b_min > &BigInt::ZERO;
     if right_positive {
-        Some(ClosedIncRange {
-            start_inc: BigInt::ZERO,
-            end_inc: b.end_inc - 1,
-        })
+        Some(range_from_min_max(BigInt::ZERO, b_max - 1))
     } else {
-        Some(ClosedIncRange {
-            start_inc: b.start_inc + 1,
-            end_inc: BigInt::ZERO,
-        })
+        Some(range_from_min_max(b_min + 1, BigInt::ZERO))
     }
 }
 
-pub fn range_binary_pow(a: ClosedIncRange<&BigInt>, b: ClosedIncRange<&BigUint>) -> Option<ClosedIncRange<BigInt>> {
+pub fn range_binary_pow(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigUint>,
+) -> Option<ClosedNonEmptyRange<BigInt>> {
+    let (a_min, a_max) = range_to_min_max(a);
+    let (b_min, b_max) = uint_range_to_min_max(b);
+
     // check for potential 0**0
     if a.contains(&&BigInt::ZERO) && b.contains(&&BigUint::ZERO) {
         return None;
     }
 
-    let mut result_min = min(a.start_inc.clone().pow(b.start_inc), a.start_inc.clone().pow(b.end_inc));
-    let mut result_max = max(a.start_inc.clone().pow(b.end_inc), a.end_inc.clone().pow(b.end_inc));
+    let mut result_min = min(a_min.clone().pow(b_min), a_min.clone().pow(&b_max));
+    let mut result_max = max(a_min.clone().pow(&b_max), a_max.clone().pow(&b_max));
 
     // If base is negative, even/odd powers can cause extremes.
     // To guard this, try the second highest exponent too if it exists.
-    if let Ok(b_end_inc_1) = BigUint::try_from(b.end_inc - 1) {
-        result_min = min(result_min, a.start_inc.clone().pow(&b_end_inc_1));
-        result_max = max(result_max, a.start_inc.clone().pow(&b_end_inc_1));
+    if let Ok(b_end_inc_1) = BigUint::try_from(b_max - 1) {
+        result_min = min(result_min, a_min.clone().pow(&b_end_inc_1));
+        result_max = max(result_max, a_min.clone().pow(&b_end_inc_1));
     }
 
-    Some(ClosedIncRange {
-        start_inc: result_min,
-        end_inc: result_max,
-    })
+    Some(range_from_min_max(result_min, result_max))
+}
+
+// for arithmetic, reasoning about min/max(inclusive) is easier than start/end(exclusive)
+fn range_to_min_max(a: ClosedNonEmptyRange<&BigInt>) -> (&BigInt, BigInt) {
+    let ClosedNonEmptyRange { start, end } = a;
+    (start, end - 1)
+}
+
+fn uint_range_to_min_max(a: ClosedNonEmptyRange<&BigUint>) -> (&BigUint, BigUint) {
+    let ClosedNonEmptyRange { start, end } = a;
+    (
+        start,
+        BigUint::try_from(end - 1).expect("non-empty, so max will not be negative"),
+    )
+}
+
+fn range_from_min_max(min: BigInt, max: BigInt) -> ClosedNonEmptyRange<BigInt> {
+    ClosedNonEmptyRange {
+        start: min,
+        end: max + 1,
+    }
 }

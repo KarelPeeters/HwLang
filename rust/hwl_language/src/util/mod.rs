@@ -7,6 +7,7 @@ pub mod big_int;
 pub mod data;
 pub mod int;
 pub mod iter;
+pub mod range;
 pub mod regex;
 pub mod store;
 pub mod sync;

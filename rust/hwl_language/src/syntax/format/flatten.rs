@@ -1054,10 +1054,14 @@ impl Context<'_> {
                     start.map(|e| self.fmt_expr(e)),
                     end.map(|e| self.fmt_expr(e)),
                 ),
-                RangeLiteral::InclusiveEnd { op_span: _, start, end } => wrapping_binary_op(
+                RangeLiteral::InclusiveEnd {
+                    op_span: _,
+                    start,
+                    end_inc,
+                } => wrapping_binary_op(
                     token(TT::DotDotEq),
                     start.map(|e| self.fmt_expr(e)),
-                    Some(self.fmt_expr(end)),
+                    Some(self.fmt_expr(end_inc)),
                 ),
                 RangeLiteral::Length {
                     op_span: _,
