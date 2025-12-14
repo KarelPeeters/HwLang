@@ -20,7 +20,7 @@ use crate::front::value::{
     MixedCompoundValue, NotCompile, RangeValue, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTar7get, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
+    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
     IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrSignal, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
@@ -308,11 +308,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             let end_range = end.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.end < end_range.start) {
+                            if !(start_range.end <= end_range.start) {
+                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
+                                let msg_end = message_range_or_single("end", end_range.as_ref(), None);
                                 let diag = Diagnostic::new("range requires that start < end")
                                     .add_error(op_span, "range constructed here")
-                                    .add_info(start.span, format!("start has range `{}`", start_range))
-                                    .add_info(end.span, format!("end has range `{}`", end_range))
+                                    .add_info(start.span, msg_start)
+                                    .add_info(end.span, msg_end)
                                     .finish();
                                 return Err(diags.report(diag));
                             }
@@ -341,11 +343,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             let end_inc_range = end_inc.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.end <= end_inc_range.start) {
+                            if !(&start_range.end - 1 <= end_inc_range.start) {
+                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
+                                let msg_end = message_range_or_single("end", end_inc_range.as_ref(), None);
                                 let diag = Diagnostic::new("inclusive range requires that start <= end")
-                                    .add_error(op_span, "range constructed here")
-                                    .add_info(start.span, format!("start has range `{}`", start_range))
-                                    .add_info(end_inc.span, format!("end has range `{}`", end_inc_range))
+                                    .add_error(op_span, "inclusive range constructed here")
+                                    .add_info(start.span, msg_start)
+                                    .add_info(end_inc.span, msg_end)
                                     .finish();
                                 return Err(diags.report(diag));
                             }
@@ -2215,11 +2219,9 @@ pub fn eval_binary_expression(
             // check nonzero
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
+                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("division by zero is not allowed")
-                    .add_error(
-                        right_span,
-                        format!("right hand side has range `{}` which contains zero", right_range),
-                    )
+                    .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
                     .finish();
                 return Err(diags.report(diag));
@@ -2245,11 +2247,9 @@ pub fn eval_binary_expression(
             // check nonzero
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
+                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("modulo by zero is not allowed")
-                    .add_error(
-                        right_span,
-                        format!("right hand side has range `{}` which contains zero", right_range),
-                    )
+                    .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
                     .finish();
                 return Err(diags.report(diag));
@@ -2282,17 +2282,20 @@ pub fn eval_binary_expression(
             if exp_range.start < zero {
                 let diag = Diagnostic::new("invalid power operation")
                     .add_error(expr_span, "exponent must be non-negative")
-                    .add_info(exp_span, format!("exponent range is `{exp_range}`"))
+                    .add_info(exp_span, message_range_or_single("exponent", exp_range.as_ref(), None))
                     .finish();
                 return Err(diags.report(diag));
             }
 
             // check not 0 ** 0
+            // TODO is there actually a reason to ban this? `1` makes sense as the answer
             if base_range.contains(&zero) && exp_range.contains(&zero) {
+                let msg_base = message_range_or_single("base", base_range.as_ref(), Some("which contains zero"));
+                let msg_exp = message_range_or_single("exponent", exp_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("invalid power operation `0 ** 0`")
-                    .add_error(expr_span, "base and exponent can both be zero")
-                    .add_info(base_span, format!("base range is `{base_range}`"))
-                    .add_info(exp_span, format!("exponent range is `{exp_range}`"))
+                    .add_error(expr_span, "base and exponent could both be zero")
+                    .add_info(base_span, msg_base)
+                    .add_info(exp_span, msg_exp)
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -2737,5 +2740,23 @@ fn array_literal_combine_values(
             }
         }
         Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(result))))
+    }
+}
+
+fn message_range_or_single<'a>(
+    name: &str,
+    range: impl Into<Range<&'a BigInt>>,
+    suffix_if_multiple: Option<&str>,
+) -> String {
+    let range = range.into();
+
+    let (suffix_sep, suffix) = match suffix_if_multiple {
+        None => ("", ""),
+        Some(suffix) => (" ", suffix),
+    };
+
+    match range.as_single() {
+        None => format!("{name} has range {range}{suffix_sep}{suffix}"),
+        Some(single) => format!("{name} is {single}"),
     }
 }
