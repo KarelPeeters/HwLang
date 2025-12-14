@@ -24,8 +24,9 @@ use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
+use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
-use hwl_language::util::range::Range as RustRange;
+use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
@@ -101,10 +102,12 @@ struct Type {
 
 #[pyclass]
 struct Range {
-    #[pyo3(get)]
-    start: Option<num_bigint::BigInt>,
-    #[pyo3(get)]
-    end: Option<num_bigint::BigInt>,
+    range: RustRange<BigInt>,
+}
+
+#[pyclass]
+struct NonEmptyRange {
+    range: RustNonEmptyRange<BigInt>,
 }
 
 #[pyclass]
@@ -534,16 +537,75 @@ impl Type {
 #[pymethods]
 impl Range {
     #[new]
-    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> Self {
-        Self { start, end }
+    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> PyResult<Range> {
+        let start = start.map(BigInt::from_num_bigint);
+        let end = end.map(BigInt::from_num_bigint);
+
+        if let (Some(start), Some(end)) = (&start, &end) {
+            #[allow(clippy::nonminimal_bool)]
+            if !(start <= end) {
+                return Err(PyValueError::new_err("Range requires `start <= end`"));
+            }
+        }
+
+        let range = RustRange { start, end };
+        Ok(Range { range })
+    }
+
+    #[getter]
+    fn start(&self) -> Option<num_bigint::BigInt> {
+        self.range.start.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    #[getter]
+    fn end(&self) -> Option<num_bigint::BigInt> {
+        self.range.end.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    fn contains(&self, value: num_bigint::BigInt) -> bool {
+        let value = BigInt::from_num_bigint(value);
+        self.range.contains(&value)
+    }
+
+    fn contains_range(&self, other: &Range) -> bool {
+        self.range.contains_range(other.range.as_ref())
     }
 
     fn __str__(&self) -> String {
-        let range = RustRange {
-            start: self.start.as_ref(),
-            end: self.end.as_ref(),
-        };
-        format!("Range({range})")
+        format!("Range({})", self.range)
+    }
+}
+
+#[pymethods]
+impl NonEmptyRange {
+    #[new]
+    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> PyResult<NonEmptyRange> {
+        let start = start.map(BigInt::from_num_bigint);
+        let end = end.map(BigInt::from_num_bigint);
+
+        if let (Some(start), Some(end)) = (&start, &end) {
+            #[allow(clippy::nonminimal_bool)]
+            if !(start < end) {
+                return Err(PyValueError::new_err("NonEmptyRange requires `start < end`"));
+            }
+        }
+
+        let range = RustNonEmptyRange { start, end };
+        Ok(NonEmptyRange { range })
+    }
+
+    #[getter]
+    fn start(&self) -> Option<num_bigint::BigInt> {
+        self.range.start.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    #[getter]
+    fn end(&self) -> Option<num_bigint::BigInt> {
+        self.range.end.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    fn __str__(&self) -> String {
+        format!("NonEmptyRange({})", self.range)
     }
 }
 

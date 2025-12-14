@@ -66,15 +66,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
         },
         CompileValue::Compound(value) => match value {
             CompileCompoundValue::String(x) => x.as_str().into_py_any(py),
-            CompileCompoundValue::Range(x) => {
-                let RustRange { start, end } = x;
-                Range {
-                    start: start.clone().map(BigInt::into_num_bigint).clone(),
-                    end: end.clone().map(BigInt::into_num_bigint).clone(),
-                }
-                .into_py_any(py)
-            }
-
+            CompileCompoundValue::Range(x) => Range { range: x.clone() }.into_py_any(py),
             CompileCompoundValue::Tuple(x) => {
                 let items: Vec<_> = x
                     .iter()
@@ -121,12 +113,7 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
         return Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(items))));
     }
     if let Ok(value) = value.extract::<PyRef<Range>>() {
-        let Range { start, end } = &*value;
-        let value = RustRange {
-            start: start.clone().map(BigInt::from_num_bigint),
-            end: end.clone().map(BigInt::from_num_bigint),
-        };
-        return Ok(CompileValue::Compound(CompileCompoundValue::Range(value)));
+        return Ok(CompileValue::Compound(CompileCompoundValue::Range(value.range.clone())));
     }
     if let Ok(module) = value.extract::<PyRef<Module>>() {
         return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));
