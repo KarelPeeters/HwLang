@@ -22,7 +22,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
-use crate::util::range::ClosedMultiRange;
+use crate::util::range_multi::ClosedMultiRange;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, zip_eq};

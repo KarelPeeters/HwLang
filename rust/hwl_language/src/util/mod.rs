@@ -8,6 +8,7 @@ pub mod data;
 pub mod int;
 pub mod iter;
 pub mod range;
+pub mod range_multi;
 pub mod regex;
 pub mod store;
 pub mod sync;

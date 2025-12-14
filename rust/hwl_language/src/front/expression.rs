@@ -41,7 +41,8 @@ use crate::front::range_arithmetic::{
     range_unary_neg,
 };
 use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, MultiRange, Range};
+use crate::util::range::{ClosedNonEmptyRange, Range};
+use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultDoubleExt, result_pair};
 use annotate_snippets::Level;

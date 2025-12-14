@@ -2,7 +2,7 @@ use crate::front::flow::ValueVersion;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
 use crate::util::big_int::BigInt;
-use crate::util::range::MultiRange;
+use crate::util::range_multi::MultiRange;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone)]
