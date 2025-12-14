@@ -354,8 +354,8 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 
 // TODO don't require parentheses?
 MatchStatement<B>: MatchStatement<B> = {
-    "match" "(" <target:Expr> ")" "{" <start_branches:@L> <branches:MatchBranch<B>*> <end_branches:@R> "}"
-        => MatchStatement { target, branches, span_branches: loc.span(start_branches, end_branches) },
+    "match" "(" <target:Expr> ")" "{" <branches:MatchBranch<B>*> <pos_end:@L> "}"
+        => MatchStatement { target, branches, pos_end: loc.pos(pos_end) },
 }
 
 MatchBranch<B>: MatchBranch<B> = {
@@ -366,12 +366,12 @@ MatchPattern: MatchPattern = {
     <value:Expr> => {
         match &arena_expr[value.inner] {
             ExpressionKind::Dummy => MatchPattern::Wildcard,
-            _ => MatchPattern::Equal(value),
+            _ => MatchPattern::EqualTo(value),
         }
     },
-    "val" <id:Id> => MatchPattern::Val(id),
-    "in" <value:Expr> => MatchPattern::In(value),
-    "." <variant:Id> <id_content:("(" <MaybeValId> ")")?> => MatchPattern::EnumVariant(variant, id_content),
+    "val" <id:MaybeId> => MatchPattern::WildcardVal(id),
+    <span_in:Span<"in">> <range:Expr> => MatchPattern::InRange { span_in, range },
+    "." <variant:Id> <payload_id:("(" <MaybeValId> ")")?> => MatchPattern::IsEnumVariant { variant, payload_id },
 }
 
 MaybeValId: MaybeIdentifier = {
@@ -582,8 +582,8 @@ ExprLevelRange: ExpressionKind = {
     // assoc none
     <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..">> <end:SpannedPushArena<ExprLevelLogical>?>
         => ExpressionKind::RangeLiteral(RangeLiteral::ExclusiveEnd { op_span, start, end }),
-    <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..=">> <end:SpannedPushArena<ExprLevelLogical>>
-        => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end }),
+    <start:SpannedPushArena<ExprLevelLogical>?> <op_span:Span<"..=">> <end_inc:SpannedPushArena<ExprLevelLogical>>
+        => ExpressionKind::RangeLiteral(RangeLiteral::InclusiveEnd { op_span, start, end_inc }),
     <start:SpannedPushArena<ExprLevelLogical>> <op_span:Span<"+..">> <length:SpannedPushArena<ExprLevelLogical>>
         => ExpressionKind::RangeLiteral(RangeLiteral::Length { op_span, start, length }),
     ExprLevelLogical,

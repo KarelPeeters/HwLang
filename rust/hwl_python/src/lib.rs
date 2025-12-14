@@ -11,7 +11,8 @@ use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
-use hwl_language::front::types::{IncRange as RustIncRange, Type as RustType};
+use hwl_language::front::types::Type as RustType;
+use hwl_language::front::value::CompileValue as RustCompileValue;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
@@ -23,7 +24,9 @@ use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::Span;
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
+use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
+use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
@@ -75,13 +78,19 @@ struct CapturePrintsContext {
     prev_capture: Option<Py<CapturePrints>>,
 }
 
+// TODO rework this, put all values into an inheritance hierarchy that matches CompileValue
+//   (and obviously support all values)
 #[pyclass]
-struct UnsupportedValue(String);
+struct Value {
+    compile: Py<Compile>,
+    value: RustCompileValue,
+}
 
 #[pymethods]
-impl UnsupportedValue {
-    fn __repr__(&self) -> String {
-        format!("Unsupported({})", self.0)
+impl Value {
+    fn __repr__(&self, py: Python) -> String {
+        let elab = &self.compile.borrow(py).state.elaboration_arenas;
+        self.value.value_string(elab)
     }
 }
 
@@ -92,11 +101,13 @@ struct Type {
 }
 
 #[pyclass]
-struct IncRange {
-    #[pyo3(get)]
-    start_inc: Option<num_bigint::BigInt>,
-    #[pyo3(get)]
-    end_inc: Option<num_bigint::BigInt>,
+struct Range {
+    range: RustRange<BigInt>,
+}
+
+#[pyclass]
+struct NonEmptyRange {
+    range: RustNonEmptyRange<BigInt>,
 }
 
 #[pyclass]
@@ -193,9 +204,9 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Compile>()?;
     m.add_class::<CapturePrints>()?;
     m.add_class::<CapturePrintsContext>()?;
-    m.add_class::<UnsupportedValue>()?;
+    m.add_class::<Value>()?;
     m.add_class::<Type>()?;
-    m.add_class::<IncRange>()?;
+    m.add_class::<Range>()?;
     m.add_class::<Function>()?;
     m.add_class::<Module>()?;
     m.add_class::<ModuleVerilog>()?;
@@ -367,6 +378,7 @@ impl Parsed {
 
 #[pymethods]
 impl Compile {
+    // TODO add variants that check the type, eg. resolve_function, resolve_module, ...
     fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
         // TODO move this somewhere common, the commandline will also need this
         // unwrap self
@@ -523,18 +535,77 @@ impl Type {
 }
 
 #[pymethods]
-impl IncRange {
+impl Range {
     #[new]
-    fn new(start_inc: Option<num_bigint::BigInt>, end_inc: Option<num_bigint::BigInt>) -> Self {
-        Self { start_inc, end_inc }
+    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> PyResult<Range> {
+        let start = start.map(BigInt::from_num_bigint);
+        let end = end.map(BigInt::from_num_bigint);
+
+        if let (Some(start), Some(end)) = (&start, &end) {
+            #[allow(clippy::nonminimal_bool)]
+            if !(start <= end) {
+                return Err(PyValueError::new_err("Range requires `start <= end`"));
+            }
+        }
+
+        let range = RustRange { start, end };
+        Ok(Range { range })
+    }
+
+    #[getter]
+    fn start(&self) -> Option<num_bigint::BigInt> {
+        self.range.start.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    #[getter]
+    fn end(&self) -> Option<num_bigint::BigInt> {
+        self.range.end.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    fn contains(&self, value: num_bigint::BigInt) -> bool {
+        let value = BigInt::from_num_bigint(value);
+        self.range.contains(&value)
+    }
+
+    fn contains_range(&self, other: &Range) -> bool {
+        self.range.contains_range(other.range.as_ref())
     }
 
     fn __str__(&self) -> String {
-        let range = RustIncRange {
-            start_inc: self.start_inc.as_ref(),
-            end_inc: self.end_inc.as_ref(),
-        };
-        format!("IncRange({range})")
+        format!("Range({})", self.range)
+    }
+}
+
+#[pymethods]
+impl NonEmptyRange {
+    #[new]
+    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> PyResult<NonEmptyRange> {
+        let start = start.map(BigInt::from_num_bigint);
+        let end = end.map(BigInt::from_num_bigint);
+
+        if let (Some(start), Some(end)) = (&start, &end) {
+            #[allow(clippy::nonminimal_bool)]
+            if !(start < end) {
+                return Err(PyValueError::new_err("NonEmptyRange requires `start < end`"));
+            }
+        }
+
+        let range = RustNonEmptyRange { start, end };
+        Ok(NonEmptyRange { range })
+    }
+
+    #[getter]
+    fn start(&self) -> Option<num_bigint::BigInt> {
+        self.range.start.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    #[getter]
+    fn end(&self) -> Option<num_bigint::BigInt> {
+        self.range.end.as_ref().map(|b| b.clone().into_num_bigint())
+    }
+
+    fn __str__(&self) -> String {
+        format!("NonEmptyRange({})", self.range)
     }
 }
 

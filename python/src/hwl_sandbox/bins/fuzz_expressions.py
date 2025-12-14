@@ -1,28 +1,16 @@
+import os
 import random
 import re
 import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, Optional, List
+from typing import Optional, List
 
 import hwl
 
 from hwl_sandbox.common.compare import compare_compile, compare_get_type
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
-
-
-# TODO use hwl.Range and hwl.Types once those are convenient enough
-@dataclass(frozen=True)
-class Range:
-    start: int
-    end_inc: int
-
-    def __contains__(self, item: Union[int, "Range"]) -> bool:
-        if isinstance(item, Range):
-            return self.start <= item.start and item.end_inc <= self.end_inc
-        else:
-            return self.start <= item <= self.end_inc
 
 
 def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
@@ -43,7 +31,8 @@ def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
             return rng.randint(-max_abs, max_abs)
 
 
-def sample_range(rng: random.Random, must_contain: Optional[Range] = None, max_abs: Optional[int] = None) -> Range:
+def sample_range(rng: random.Random, must_contain: Optional[hwl.Range] = None,
+                 max_abs: Optional[int] = None) -> hwl.Range:
     # TODO allow empty ranges?
     tries = 0
     while True:
@@ -57,41 +46,41 @@ def sample_range(rng: random.Random, must_contain: Optional[Range] = None, max_a
         else:
             end = sample_range_edge(rng, max_abs=max_abs)
 
-        if start <= end:
-            r = Range(start=start, end_inc=end)
-            if must_contain is None or must_contain in r:
+        if start < end:
+            r = hwl.Range(start=start, end=end)
+            if must_contain is None or r.contains_range(must_contain):
                 return r
 
 
-def sample_from_range(rng: random.Random, r: Optional[Range]) -> int:
+def sample_from_range(rng: random.Random, r: Optional[hwl.Range]) -> int:
     if r is None:
         return rng.random() < .5
 
     if rng.random() < 0.3:
         choices = []
-        for a in [0, r.start, r.end_inc]:
+        for a in [0, r.start, r.end - 1]:
             for d in [-2, -1, 0, 1, 2]:
                 v = a + d
-                if v in r:
+                if r.contains(v):
                     choices.append(v)
         if choices:
             return rng.choice(choices)
 
-    return rng.randint(r.start, r.end_inc)
+    return rng.randrange(r.start, r.end)
 
 
 @dataclass
 class SampledCode:
     # "None" means this is a boolean input
     # TODO replace this with hwl Type instances once those are convenient enough
-    input_ranges: List[Range | None]
+    input_ranges: List[hwl.Range | None]
     input_tys: List[str]
     res_ty: str
     body: str
 
 
 def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
-    input_ranges = []
+    input_ranges: List[hwl.Range | None] = []
     next_var_index = 0
     available_values_int = []
     available_values_bool = []
@@ -167,9 +156,9 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
     body += f"return {return_value};"
 
     # check expression validness and extract the return type
-    input_types = [f"int({r.start}..={r.end_inc})" if r is not None else "bool" for r in input_ranges]
+    input_types = [f"int({r.start}..{r.end})" if r is not None else "bool" for r in input_ranges]
     try:
-        ty_res_min = compare_get_type(ty_inputs=input_types, body=body)
+        ty_res_min = compare_get_type(ty_inputs=input_types, body=body, prefix="")
     except hwl.DiagnosticException as e:
         # check that this is once of the expected failure modes
         allowed_messages = [
@@ -188,11 +177,11 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
     if ty_res_min == "bool":
         res_ty = "bool"
     else:
-        m = re.fullmatch(r"int\((-?\d+)\.\.=(-?\d+)\)", ty_res_min)
-        assert m
-        range_res_min = Range(start=int(m[1]), end_inc=int(m[2]))
+        m = re.fullmatch(r"int\((-?\d+)\.\.(-?\d+)\)", ty_res_min)
+        assert m, f"failed to parse return type `{ty_res_min}`"
+        range_res_min = hwl.Range(start=int(m[1]), end=int(m[2]))
         range_res = sample_range(rng, must_contain=range_res_min)
-        res_ty = f"int({range_res.start}..={range_res.end_inc})"
+        res_ty = f"int({range_res.start}..{range_res.end})"
 
     return SampledCode(input_ranges=input_ranges, input_tys=input_types, res_ty=res_ty, body=body)
 
@@ -253,11 +242,15 @@ class Common:
 
     counter_lock: threading.Lock
     counter_next: int
+    counter_max: Optional[int]
 
 
 def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_base: int):
     try:
         while not common.stopped:
+            if common.counter_max is not None and common.counter_next >= common.counter_max:
+                break
+
             with common.counter_lock:
                 i = common.counter_next
                 common.counter_next += 1
@@ -269,9 +262,12 @@ def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_ba
 
 def main():
     # settings
+    # TODO use multiprocessing, with ccache python itself becomes the bottleneck
     sample_count = 1024
-    thread_count = 8
+    thread_count = 16
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
+    os.environ["OBJCACHE"] = "ccache"
+    max_iter_count = None
 
     # random seed
     seed = 42 + 3
@@ -283,6 +279,7 @@ def main():
         stopped=False,
         counter_lock=threading.Lock(),
         counter_next=start_iter,
+        counter_max=start_iter + max_iter_count if max_iter_count is not None else None,
     )
     threads = [
         threading.Thread(target=main_thread, args=(common, build_dir_base, sample_count, seed,))

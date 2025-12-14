@@ -781,7 +781,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 let &MatchStatement {
                     target,
-                    span_branches: _,
+                    pos_end: _,
                     ref branches,
                 } = stmt;
                 self.visit_expression(scope, target)?;
@@ -792,18 +792,21 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     let mut scope_inner = scope.new_child();
                     match &pattern.inner {
                         MatchPattern::Wildcard => {}
-                        &MatchPattern::Val(id) => {
+                        &MatchPattern::WildcardVal(id) => {
                             self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                         }
-                        &MatchPattern::Equal(expr) => {
+                        &MatchPattern::EqualTo(expr) => {
                             self.visit_expression(scope, expr)?;
                         }
-                        &MatchPattern::In(expr) => {
-                            self.visit_expression(scope, expr)?;
+                        &MatchPattern::InRange { span_in: _, range } => {
+                            self.visit_expression(scope, range)?;
                         }
-                        &MatchPattern::EnumVariant(_variant, id) => {
-                            if let Some(id) = id {
-                                self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
+                        &MatchPattern::IsEnumVariant {
+                            variant: _,
+                            payload_id: payload,
+                        } => {
+                            if let Some(payload) = payload {
+                                self.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
                             }
                         }
                     }
@@ -1179,11 +1182,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         self.visit_expression(scope, end)?;
                     }
                 }
-                RangeLiteral::InclusiveEnd { op_span: _, start, end } => {
+                RangeLiteral::InclusiveEnd {
+                    op_span: _,
+                    start,
+                    end_inc,
+                } => {
                     if let Some(start) = start {
                         self.visit_expression(scope, start)?;
                     }
-                    self.visit_expression(scope, end)?;
+                    self.visit_expression(scope, end_inc)?;
                 }
                 RangeLiteral::Length {
                     op_span: _,

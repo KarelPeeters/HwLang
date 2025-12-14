@@ -1,5 +1,5 @@
-use crate::front::types::ClosedIncRange;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::ClosedNonEmptyRange;
 use std::cmp::max;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -18,12 +18,11 @@ pub enum IntRepresentation {
 pub struct InvalidRange;
 
 impl IntRepresentation {
-    pub fn for_range(range: ClosedIncRange<&BigInt>) -> Self {
-        let ClosedIncRange {
-            start_inc: start,
-            end_inc: end,
-        } = range;
-        assert!(start <= end, "Range must be valid, got {start}..={end}");
+    pub fn for_range(range: ClosedNonEmptyRange<&BigInt>) -> Self {
+        let ClosedNonEmptyRange { start, end } = range;
+        range.assert_valid();
+
+        let end_inc = end - 1;
 
         // TODO consider switching to zero-width range when there is only a single possible value
         //    this is a bit tricky for signed, and also only a partial optimization
@@ -31,12 +30,12 @@ impl IntRepresentation {
         match BigUint::try_from(start) {
             Ok(_) => {
                 // non-negative start => unsigned
-                let end = BigUint::try_from(end).unwrap();
+                let end = BigUint::try_from(end_inc).unwrap();
                 IntRepresentation::Unsigned { width: end.size_bits() }
             }
             Err(_) => {
                 // negative start => signed
-                let end_non_neg = BigUint::try_from(end).unwrap_or(BigUint::ZERO);
+                let end_non_neg = BigUint::try_from(end_inc).unwrap_or(BigUint::ZERO);
                 let width_1 = max(
                     BigUint::try_from(-start - 1u8).unwrap().size_bits(),
                     end_non_neg.size_bits(),
@@ -44,10 +43,6 @@ impl IntRepresentation {
                 IntRepresentation::Signed { width_1 }
             }
         }
-    }
-
-    pub fn for_single(value: &BigInt) -> Self {
-        Self::for_range(ClosedIncRange::single(value))
     }
 
     pub fn signed(self) -> Signed {
@@ -64,15 +59,15 @@ impl IntRepresentation {
         }
     }
 
-    pub fn range(self) -> ClosedIncRange<BigInt> {
+    pub fn range(self) -> ClosedNonEmptyRange<BigInt> {
         match self {
-            IntRepresentation::Unsigned { width } => ClosedIncRange {
-                start_inc: BigInt::ZERO,
-                end_inc: BigUint::pow_2_to(&BigUint::from(width)) - 1u8,
+            IntRepresentation::Unsigned { width } => ClosedNonEmptyRange {
+                start: BigInt::ZERO,
+                end: BigUint::pow_2_to(&BigUint::from(width)).into(),
             },
-            IntRepresentation::Signed { width_1 } => ClosedIncRange {
-                start_inc: -BigUint::pow_2_to(&BigUint::from(width_1)),
-                end_inc: BigUint::pow_2_to(&BigUint::from(width_1)) - 1u8,
+            IntRepresentation::Signed { width_1 } => ClosedNonEmptyRange {
+                start: -BigUint::pow_2_to(&BigUint::from(width_1)),
+                end: BigUint::pow_2_to(&BigUint::from(width_1)).into(),
             },
         }
     }
@@ -149,9 +144,9 @@ impl IntRepresentation {
 
 #[cfg(test)]
 mod test {
-    use crate::front::types::ClosedIncRange;
     use crate::util::big_int::BigInt;
     use crate::util::int::{IntRepresentation, Signed};
+    use crate::util::range::ClosedNonEmptyRange;
     use std::ops::Range;
 
     #[track_caller]
@@ -164,10 +159,13 @@ mod test {
             }
             Signed::Unsigned => IntRepresentation::Unsigned { width },
         };
-        let range = ClosedIncRange {
-            start_inc: BigInt::from(range.start),
-            end_inc: BigInt::from(range.end) - 1,
+
+        let range = ClosedNonEmptyRange {
+            start: BigInt::from(range.start),
+            end: BigInt::from(range.end),
         };
+        range.assert_valid();
+
         let result = IntRepresentation::for_range(range.as_ref());
         println!("range {range:?} => {result:?}");
         assert_eq!(expected, result, "mismatch for range {range:?}");

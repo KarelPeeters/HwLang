@@ -1,4 +1,4 @@
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
 use crate::util::arena::Arena;
@@ -410,8 +410,8 @@ pub struct IfCondBlockPair<B> {
 #[derive(Debug, Clone)]
 pub struct MatchStatement<B> {
     pub target: Expression,
-    pub span_branches: Span,
     pub branches: Vec<MatchBranch<B>>,
+    pub pos_end: Pos,
 }
 
 #[derive(Debug, Clone)]
@@ -420,13 +420,19 @@ pub struct MatchBranch<B> {
     pub block: B,
 }
 
-#[derive(Debug, Clone)]
-pub enum MatchPattern<E = Expression, R = Expression, V = Identifier, I = Identifier> {
+#[derive(Debug, Copy, Clone)]
+pub enum MatchPattern {
     Wildcard,
-    Val(I),
-    Equal(E),
-    In(R),
-    EnumVariant(V, Option<MaybeIdentifier>),
+    WildcardVal(MaybeIdentifier),
+    EqualTo(Expression),
+    InRange {
+        span_in: Span,
+        range: Expression,
+    },
+    IsEnumVariant {
+        variant: Identifier,
+        payload_id: Option<MaybeIdentifier>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -761,7 +767,7 @@ pub enum RangeLiteral {
     InclusiveEnd {
         op_span: Span,
         start: Option<Expression>,
-        end: Expression,
+        end_inc: Expression,
     },
     Length {
         op_span: Span,
@@ -1240,6 +1246,19 @@ impl HasSpan for CommonDeclarationNamedKind {
             CommonDeclarationNamedKind::Enum(decl) => decl.span,
             CommonDeclarationNamedKind::Function(decl) => decl.span,
         }
+    }
+}
+
+impl<B: HasSpan> HasSpan for MatchBranch<B> {
+    fn span(&self) -> Span {
+        let MatchBranch { pattern, block } = self;
+        pattern.span.join(block.span())
+    }
+}
+
+impl<B: HasSpan> HasSpan for Block<B> {
+    fn span(&self) -> Span {
+        self.span
     }
 }
 

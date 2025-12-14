@@ -40,7 +40,7 @@ class CompiledCompare:
         assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
 
 
-def compare_codegen(ty_inputs: List[str], ty_res: str, body: str) -> hwl.Compile:
+def compare_codegen(ty_inputs: List[str], ty_res: str, body: str, prefix: str) -> hwl.Compile:
     args = ", ".join(f"a{i}: {t}" for i, t in enumerate(ty_inputs))
     ports_in = ", ".join(f"p{i}: in async {t}" for i, t in enumerate(ty_inputs))
     params = ", ".join(f"a{i}=p{i}" for i in range(len(ty_inputs)))
@@ -51,13 +51,14 @@ def compare_codegen(ty_inputs: List[str], ty_res: str, body: str) -> hwl.Compile
     src = f"""
 import std.types.[any, bool, int, uint];
 import std.util.print;
+{prefix}
 fn eval_func({args}) -> any {{
 {body_indented}
 }}
 module print_type_mod ports({ports_in}) {{
     wire w_res = eval_func({params});
     const {{
-        print(type(w_res));        
+        print(type(w_res), end="");        
     }}
 }}
 module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
@@ -72,8 +73,8 @@ module eval_mod ports({ports_in}{ports_comma}p_res: out async {ty_res}) {{
     return compile_custom(src)
 
 
-def compare_get_type(ty_inputs: List[str], body: str) -> str:
-    c = compare_codegen(ty_inputs, "dummy", body)
+def compare_get_type(ty_inputs: List[str], body: str, prefix: str) -> str:
+    c = compare_codegen(ty_inputs, "dummy", body, prefix)
     with c.capture_prints() as capture:
         c.resolve("top.print_type_mod")
 
@@ -81,8 +82,14 @@ def compare_get_type(ty_inputs: List[str], body: str) -> str:
     return capture.prints[0]
 
 
-def compare_compile(ty_inputs: List[str], ty_res: str, body: str, build_dir: Path) -> CompiledCompare:
-    c = compare_codegen(ty_inputs, ty_res, body)
+def compare_compile(
+        ty_inputs: List[str],
+        ty_res: str,
+        body: str,
+        build_dir: Path,
+        prefix: str = ""
+) -> CompiledCompare:
+    c = compare_codegen(ty_inputs, ty_res, body, prefix)
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
 

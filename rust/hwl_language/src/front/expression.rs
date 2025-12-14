@@ -9,17 +9,15 @@ use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAdda
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
-use crate::front::implication::{
-    BoolImplications, HardwareValueWithImplications, Implication, ImplicationIntOp, ValueWithImplications,
-};
+use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
-use crate::front::types::{ClosedIncRange, HardwareType, IncRange, NonHardwareType, Type, Typed};
+use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MaybeCompile, MaybeUndefined, MixedCompoundValue,
-    NotCompile, RangeEnd, RangeValue, SimpleCompileValue, Value, ValueCommon,
+    CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MaybeUndefined,
+    MixedCompoundValue, NotCompile, RangeValue, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
@@ -38,11 +36,12 @@ use crate::util::data::{NonEmptyVec, VecExt, vec_concat};
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
-use crate::front::range::{
+use crate::front::range_arithmetic::{
     range_binary_add, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow, range_binary_sub,
     range_unary_neg,
 };
 use crate::util::iter::IterExt;
+use crate::util::range::{ClosedNonEmptyRange, MultiRange, Range};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultDoubleExt, result_pair};
 use annotate_snippets::Level;
@@ -282,11 +281,13 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::TupleLiteral(values) => self.eval_tuple_literal(scope, flow, expected_ty, values)?,
             ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: Expression, op_span: Span| {
-                    self.eval_expression(scope, flow, &Type::Int(IncRange::OPEN), bound)
-                        .and_then(|bound| {
-                            let reason = TypeContainsReason::Operator(op_span);
-                            check_type_is_int(diags, elab, reason, bound)
-                        })
+                    let bound_span = bound.span;
+                    let bound = self.eval_expression(scope, flow, &Type::Int(Range::OPEN), bound)?;
+
+                    let reason = TypeContainsReason::Operator(op_span);
+                    let bound = check_type_is_int(diags, elab, reason, bound)?;
+
+                    Ok(Spanned::new(bound_span, bound))
                 };
 
                 match *literal {
@@ -298,28 +299,92 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start.map(|start| eval_bound(start, op_span)).transpose();
                         let end = end.map(|end| eval_bound(end, op_span)).transpose();
 
-                        let range = RangeValue::StartEnd {
-                            start: start?,
-                            end: RangeEnd::Exclusive(end?),
-                        };
+                        let start = start?;
+                        let end = end?;
+
+                        // check that `start < end`
+                        if let (Some(start), Some(end)) = (&start, &end) {
+                            let start_range = start.inner.range();
+                            let end_range = end.inner.range();
+
+                            #[allow(clippy::nonminimal_bool)]
+                            if !(start_range.end <= end_range.start) {
+                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
+                                let msg_end = message_range_or_single("end", end_range.as_ref(), None);
+                                let diag = Diagnostic::new("range requires that start < end")
+                                    .add_error(op_span, "range constructed here")
+                                    .add_info(start.span, msg_start)
+                                    .add_info(end.span, msg_end)
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                        }
+
+                        let start = start.map(|s| s.inner);
+                        let end = end.map(|e| e.inner);
+                        let range = RangeValue::Normal(Range { start, end });
                         Value::Compound(MixedCompoundValue::Range(range))
                     }
-                    RangeLiteral::InclusiveEnd { op_span, start, end } => {
+                    RangeLiteral::InclusiveEnd {
+                        op_span,
+                        start,
+                        end_inc,
+                    } => {
+                        // eval bounds
                         let start = start.map(|start| eval_bound(start, op_span)).transpose();
-                        let end = eval_bound(end, op_span);
+                        let end_inc = eval_bound(end_inc, op_span);
 
-                        let range = RangeValue::StartEnd {
-                            start: start?,
-                            end: RangeEnd::Inclusive(end?),
+                        let start = start?;
+                        let end_inc = end_inc?;
+
+                        // check that `start <= end_inc`
+                        if let Some(start) = &start {
+                            let start_range = start.inner.range();
+                            let end_inc_range = end_inc.inner.range();
+
+                            #[allow(clippy::nonminimal_bool)]
+                            if !(&start_range.end - 1 <= end_inc_range.start) {
+                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
+                                let msg_end = message_range_or_single("end", end_inc_range.as_ref(), None);
+                                let diag = Diagnostic::new("inclusive range requires that start <= end")
+                                    .add_error(op_span, "inclusive range constructed here")
+                                    .add_info(start.span, msg_start)
+                                    .add_info(end_inc.span, msg_end)
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                        }
+
+                        // map end to exclusive
+                        let end = match end_inc.inner {
+                            MaybeCompile::Compile(end_inc) => MaybeCompile::Compile(end_inc + 1),
+                            MaybeCompile::Hardware(end_inc) => {
+                                let end_range = end_inc.ty.map(|x| x + 1);
+
+                                let end_expr = IrExpressionLarge::IntArithmetic(
+                                    IrIntArithmeticOp::Add,
+                                    end_range.clone(),
+                                    end_inc.expr,
+                                    IrExpression::Int(BigInt::ONE),
+                                );
+                                MaybeCompile::Hardware(HardwareInt {
+                                    ty: end_range.clone(),
+                                    domain: end_inc.domain,
+                                    expr: self.large.push_expr(end_expr),
+                                })
+                            }
                         };
+
+                        let start = start.map(|s| s.inner);
+                        let range = RangeValue::Normal(Range { start, end: Some(end) });
                         Value::Compound(MixedCompoundValue::Range(range))
                     }
                     RangeLiteral::Length { op_span, start, length } => {
                         let start = eval_bound(start, op_span);
 
-                        let range_uint = IncRange {
-                            start_inc: Some(BigInt::ZERO),
-                            end_inc: None,
+                        let range_uint = Range {
+                            start: Some(BigInt::ZERO),
+                            end: None,
                         };
                         let length = self
                             .eval_expression(scope, flow, &Type::Int(range_uint), length)
@@ -328,10 +393,47 @@ impl<'a> CompileItemContext<'a, '_> {
                                 check_type_is_uint(diags, elab, reason, length)
                             });
 
-                        let range = RangeValue::StartLength {
-                            start: start?,
-                            length: length?,
+                        let start = start?;
+                        let length = length?;
+
+                        let range = match (start.inner, length) {
+                            (MaybeCompile::Hardware(start), MaybeCompile::Compile(length)) => {
+                                // preserve full information to allow for hardware slicing
+                                RangeValue::HardwareStartLength { start, length }
+                            }
+                            (start, length) => {
+                                // decay to normal range by calculating `end = start + length`
+                                let length = match length {
+                                    MaybeCompile::Compile(length) => MaybeCompile::Compile(BigInt::from(length)),
+                                    MaybeCompile::Hardware(length) => MaybeCompile::Hardware(HardwareInt {
+                                        ty: length.ty.map(BigInt::from),
+                                        domain: length.domain,
+                                        expr: length.expr,
+                                    }),
+                                };
+                                let end = match pair_compile_int(start.clone(), length) {
+                                    MaybeCompile::Compile((start, length)) => MaybeCompile::Compile(start + length),
+                                    MaybeCompile::Hardware((start, length)) => {
+                                        let range = range_binary_add(start.ty.as_ref(), length.ty.as_ref());
+                                        let result = build_binary_int_arithmetic_op(
+                                            IrIntArithmeticOp::Add,
+                                            &mut self.large,
+                                            range,
+                                            start,
+                                            length,
+                                        );
+                                        MaybeCompile::Hardware(result)
+                                    }
+                                };
+
+                                // length is unsigned, so end >= start always holds
+                                RangeValue::Normal(Range {
+                                    start: Some(start),
+                                    end: Some(end),
+                                })
+                            }
                         };
+
                         Value::Compound(MixedCompoundValue::Range(range))
                     }
                 }
@@ -467,12 +569,11 @@ impl<'a> CompileItemContext<'a, '_> {
                                 return Err(diags.report_todo(len.span(), "spread in array type lengths"));
                             }
                         };
-                        let len_expected_ty = Type::Int(IncRange {
-                            start_inc: Some(BigInt::ZERO),
-                            end_inc: None,
+                        let ty_uint = Type::Int(Range {
+                            start: Some(BigInt::ZERO),
+                            end: None,
                         });
-                        let len =
-                            self.eval_expression_as_compile(scope, flow, &len_expected_ty, len, "array type length")?;
+                        let len = self.eval_expression_as_compile(scope, flow, &ty_uint, len, "array type length")?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, elab, reason, len)
                     })
@@ -546,7 +647,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                         expr: self.large.push_expr(expr),
                                     })
                                 }
-                                _ => return Err(err_not_tuple(&value.ty.value_str(elab))),
+                                _ => return Err(err_not_tuple(&value.ty.value_string(elab))),
                             }
                         }
                         ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().value_string(elab))),
@@ -724,7 +825,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let reg_info = IrRegisterInfo {
                     ty: ty_hw.as_ir(refs),
                     debug_info_id: Spanned::new(span_keyword, None),
-                    debug_info_ty: ty_hw.clone().value_str(elab),
+                    debug_info_ty: ty_hw.clone().value_string(elab),
                     debug_info_domain: clocked_domain.inner.diagnostic_string(self),
                 };
                 let reg = ir_registers.push(reg_info);
@@ -895,7 +996,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
                                 .add_error(
                                     base.span,
-                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_str(elab)),
+                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
                                 )
                                 .footer(
                                     Level::Help,
@@ -956,9 +1057,9 @@ impl<'a> CompileItemContext<'a, '_> {
         let eval_enum = |elab| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
             let variant_index = info.find_variant(diags, Spanned::new(index.span, index_str))?;
-            let (_, content_ty) = &info.variants[variant_index];
+            let variant_info = &info.variants[variant_index];
 
-            let result = match content_ty {
+            let result = match &variant_info.payload_ty {
                 None => Value::Compound(MixedCompoundValue::Enum(EnumValue {
                     ty: elab,
                     variant: variant_index,
@@ -1164,12 +1265,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 .eval_expression(scope, flow, &Type::Any, start)
                 .and_then(|start| check_type_is_int(diags, elab, reason, start));
 
-            let len_expected_ty = Type::Int(IncRange {
-                start_inc: Some(BigInt::ZERO),
-                end_inc: None,
+            let ty_uint = Type::Int(Range {
+                start: Some(BigInt::ZERO),
+                end: None,
             });
             let len = self
-                .eval_expression_as_compile(scope, flow, &len_expected_ty, len, "range length")
+                .eval_expression_as_compile(scope, flow, &ty_uint, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len));
 
             let start = start?;
@@ -1209,7 +1310,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 },
                 Value::Compound(index) => match index {
                     MixedCompoundValue::Range(range) => match range {
-                        RangeValue::StartEnd { start, end } => {
+                        RangeValue::Normal(Range { start, end }) => {
                             let start = match start {
                                 None => BigInt::ZERO,
                                 Some(start) => match start {
@@ -1219,24 +1320,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             };
 
                             let length = match end {
-                                RangeEnd::Exclusive(None) => None,
-                                RangeEnd::Exclusive(Some(end)) => match end {
-                                    MaybeCompile::Compile(end_ex) => {
-                                        Some(BigUint::try_from(&end_ex - &start).map_err(|_| {
+                                None => None,
+                                Some(end) => match end {
+                                    MaybeCompile::Compile(end) => {
+                                        Some(BigUint::try_from(&end - &start).map_err(|_| {
                                             diags.report_internal_error(
                                                 index_span,
-                                                format!("slice range cannot be decreasing, got `{start}..{end_ex}`"),
-                                            )
-                                        })?)
-                                    }
-                                    MaybeCompile::Hardware(_) => return Err(err_hardware_not_len()),
-                                },
-                                RangeEnd::Inclusive(end) => match end {
-                                    MaybeCompile::Compile(end_inc) => {
-                                        Some(BigUint::try_from(&end_inc - &start + 1).map_err(|_| {
-                                            diags.report_internal_error(
-                                                index_span,
-                                                format!("slice range cannot be decreasing, got `{start}..={end_inc}`"),
+                                                format!("slice range cannot be decreasing, got `{start}..{end}`"),
                                             )
                                         })?)
                                     }
@@ -1246,27 +1336,8 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length })
                         }
-                        RangeValue::StartLength { start, length } => {
-                            let length = match length {
-                                MaybeCompile::Compile(length) => length,
-                                MaybeCompile::Hardware(_) => {
-                                    return Err(diags.report_simple(
-                                        "array slice length must be compile-time constant",
-                                        index_span,
-                                        "got non-constant length",
-                                    ));
-                                }
-                            };
-
-                            match start {
-                                MaybeCompile::Compile(start) => ArrayStep::Compile(ArrayStepCompile::ArraySlice {
-                                    start,
-                                    length: Some(length),
-                                }),
-                                MaybeCompile::Hardware(start) => {
-                                    ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length })
-                                }
-                            }
+                        RangeValue::HardwareStartLength { start, length } => {
+                            ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length })
                         }
                     },
                     _ => return Err(err_wrong_type()),
@@ -1685,7 +1756,8 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let result = match iter.inner {
             Value::Compound(MixedCompoundValue::Range(iter)) => {
-                fn unwrap_compile<C, H>(
+                // TODO allow hardware-length range?
+                fn expect_compile<C, H>(
                     diags: &Diagnostics,
                     iter_span: Span,
                     v: MaybeCompile<C, H>,
@@ -1701,22 +1773,16 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
 
                 match iter {
-                    RangeValue::StartEnd { start, end } => {
+                    RangeValue::Normal(Range { start, end }) => {
                         // check compile
-                        let start = start.map(|start| unwrap_compile(diags, iter_span, start)).transpose()?;
-                        let end_inc = match end {
-                            RangeEnd::Exclusive(end_ex) => end_ex
-                                .map(|end| unwrap_compile(diags, iter_span, end))
-                                .transpose()?
-                                .map(|end_ex| end_ex - 1),
-                            RangeEnd::Inclusive(end_inc) => Some(unwrap_compile(diags, iter_span, end_inc)?),
-                        };
+                        let start = start.map(|start| expect_compile(diags, iter_span, start)).transpose()?;
+                        let end = end.map(|end| expect_compile(diags, iter_span, end)).transpose()?;
 
                         // check start
                         let start = start.ok_or_else(|| {
-                            let range = IncRange {
-                                start_inc: None,
-                                end_inc: end_inc.clone(),
+                            let range = Range {
+                                start: None,
+                                end: end.clone(),
                             };
                             diags.report_simple(
                                 "iterator range must have start value",
@@ -1724,16 +1790,16 @@ impl<'a> CompileItemContext<'a, '_> {
                                 format!("got range `{}`", range),
                             )
                         })?;
-                        ForIterator::Int { next: start, end_inc }
+
+                        ForIterator::Int { next: start, end }
                     }
-                    RangeValue::StartLength { start, length } => {
-                        let start = unwrap_compile(diags, iter_span, start)?;
-                        let length = unwrap_compile(diags, iter_span, length)?;
-                        let end_inc = &start + length - 1;
-                        ForIterator::Int {
-                            next: start,
-                            end_inc: Some(end_inc),
-                        }
+                    RangeValue::HardwareStartLength { start, length: _ } => {
+                        let _: HardwareInt = start;
+                        return Err(diags.report_simple(
+                            "iterator range must be compile-time value",
+                            iter_span,
+                            "got hardware value here",
+                        ));
                     }
                 }
             }
@@ -1790,21 +1856,18 @@ impl<'a> CompileItemContext<'a, '_> {
 fn eval_int_ty_call(
     refs: CompileRefs,
     span_call: Span,
-    target_range: Spanned<IncRange<BigInt>>,
+    target_range: Spanned<Range<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-) -> DiagResult<IncRange<BigInt>> {
+) -> DiagResult<Range<BigInt>> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
     // int calls should only work for `int` and `uint`, detect which of these it is here
     let target_signed = match target_range.inner {
-        IncRange {
-            start_inc: None,
-            end_inc: None,
-        } => true,
-        IncRange {
-            start_inc: Some(BigInt::ZERO),
-            end_inc: None,
+        Range { start: None, end: None } => true,
+        Range {
+            start: Some(BigInt::ZERO),
+            end: None,
         } => false,
         _ => {
             let diag = Diagnostic::new("base type must be int or uint for int type constraining")
@@ -1863,22 +1926,20 @@ fn eval_int_ty_call(
                 })?;
 
                 let pow = BigUint::pow_2_to(&width_m1);
-                IncRange {
-                    start_inc: Some(-&pow),
-                    end_inc: Some(pow - 1),
+                Range {
+                    start: Some(-&pow),
+                    end: Some(BigInt::from(pow)),
                 }
             } else {
-                IncRange {
-                    start_inc: Some(BigInt::ZERO),
-                    end_inc: Some(BigUint::pow_2_to(&width) - 1),
+                Range {
+                    start: Some(BigInt::ZERO),
+                    end: Some(BigInt::from(BigUint::pow_2_to(&width))),
                 }
             }
         }
         CompileValue::Compound(CompileCompoundValue::Range(new_range)) => {
             // int range arg, this is the new range
-            let new_range = new_range.as_range();
-
-            if !target_range.inner.contains_range(&new_range) {
+            if !target_range.inner.contains_range(new_range.as_ref()) {
                 let base_ty_name = match target_signed {
                     true => "int",
                     false => "uint",
@@ -1908,7 +1969,8 @@ fn eval_int_ty_call(
 pub enum ForIterator {
     Int {
         next: BigInt,
-        end_inc: Option<BigInt>,
+        // exclusive
+        end: Option<BigInt>,
     },
     CompileArray {
         next: usize,
@@ -1923,9 +1985,7 @@ pub enum ForIterator {
 impl ForIterator {
     pub fn len(&self) -> Option<BigUint> {
         match self {
-            ForIterator::Int { next, end_inc } => end_inc
-                .as_ref()
-                .map(|end_inc| BigUint::try_from(end_inc - next + 1u32).unwrap()),
+            ForIterator::Int { next, end } => end.as_ref().map(|end| BigUint::try_from(end - next).unwrap()),
             ForIterator::CompileArray { next, array } => Some(BigUint::from(array.len() - *next)),
             ForIterator::HardwareArray { next, base } => {
                 let (_, len) = &base.ty;
@@ -1940,16 +2000,14 @@ impl Iterator for ForIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            ForIterator::Int { next, end_inc } => {
-                if let Some(end_inc) = end_inc
-                    && next > end_inc
-                {
-                    return None;
+            ForIterator::Int { next, end } => {
+                if end.as_ref().is_none_or(|end| &*next < end) {
+                    let curr = Value::new_int(next.clone());
+                    *next += 1;
+                    Some(curr)
+                } else {
+                    None
                 }
-
-                let curr = Value::new_int(next.clone());
-                *next += 1;
-                Some(curr)
             }
             ForIterator::CompileArray { next, array } => {
                 if *next < array.len() {
@@ -1967,42 +2025,37 @@ impl Iterator for ForIterator {
                     expr: base_expr,
                 } = &*base;
 
-                if &*next >= ty_len {
-                    return None;
-                }
-                let index_expr = IrExpression::Int(BigInt::from(next.clone()));
-                *next += 1u8;
+                if &*next < ty_len {
+                    let index_expr = IrExpression::Int(BigInt::from(next.clone()));
+                    *next += 1u8;
 
-                let element_expr = IrExpressionLarge::ArrayIndex {
-                    base: base_expr.clone(),
-                    index: index_expr,
-                };
-                Some(Value::Hardware(HardwareValue {
-                    ty: (*ty_inner).clone(),
-                    domain: *domain,
-                    expr: element_expr,
-                }))
+                    let element_expr = IrExpressionLarge::ArrayIndex {
+                        base: base_expr.clone(),
+                        index: index_expr,
+                    };
+                    Some(Value::Hardware(HardwareValue {
+                        ty: (*ty_inner).clone(),
+                        domain: *domain,
+                        expr: element_expr,
+                    }))
+                } else {
+                    None
+                }
             }
         }
     }
 }
 
 fn pair_compile_int(
-    left: MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>,
-    right: MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>,
-) -> MaybeCompile<
-    (BigInt, BigInt),
-    (
-        HardwareValue<ClosedIncRange<BigInt>>,
-        HardwareValue<ClosedIncRange<BigInt>>,
-    ),
-> {
+    left: MaybeCompile<BigInt, HardwareInt>,
+    right: MaybeCompile<BigInt, HardwareInt>,
+) -> MaybeCompile<(BigInt, BigInt), (HardwareInt, HardwareInt)> {
     match (left, right) {
         (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => MaybeCompile::Compile((left, right)),
         (left, right) => {
-            let map = |x: MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>| match x {
-                MaybeCompile::Compile(x) => HardwareValue {
-                    ty: ClosedIncRange::single(x.clone()),
+            let map = |x: MaybeCompile<BigInt, HardwareInt>| match x {
+                MaybeCompile::Compile(x) => HardwareInt {
+                    ty: ClosedNonEmptyRange::single(x.clone()),
                     domain: ValueDomain::Const,
                     expr: IrExpression::Int(x),
                 },
@@ -2051,7 +2104,7 @@ pub fn eval_binary_expression(
                 MaybeCompile::Hardware((left, right)) => {
                     let range = range_binary_add(left.ty.as_ref(), right.ty.as_ref());
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Add, large, range, left, right);
-                    Value::Hardware(result)
+                    Value::Hardware(HardwareValue::from(result))
                 }
             }
         }
@@ -2063,7 +2116,7 @@ pub fn eval_binary_expression(
                 MaybeCompile::Hardware((left, right)) => {
                     let range = range_binary_sub(left.ty.as_ref(), right.ty.as_ref());
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Sub, large, range, left, right);
-                    Value::Hardware(result)
+                    Value::Hardware(HardwareValue::from(result))
                 }
             }
         }
@@ -2145,7 +2198,7 @@ pub fn eval_binary_expression(
                             let range = range_binary_mul(left.ty.as_ref(), right.ty.as_ref());
                             let result =
                                 build_binary_int_arithmetic_op(IrIntArithmeticOp::Mul, large, range, left, right);
-                            Value::Hardware(result)
+                            Value::Hardware(HardwareValue::from(result))
                         }
                     }
                 }
@@ -2164,15 +2217,11 @@ pub fn eval_binary_expression(
                 check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             // check nonzero
-            if int_value_range(&right).contains(&&BigInt::ZERO) {
+            let right_range = right.range();
+            if right_range.contains(&BigInt::ZERO) {
+                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("division by zero is not allowed")
-                    .add_error(
-                        right_span,
-                        format!(
-                            "right hand side has range `{}` which contains zero",
-                            int_value_range(&right)
-                        ),
-                    )
+                    .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
                     .finish();
                 return Err(diags.report(diag));
@@ -2187,7 +2236,7 @@ pub fn eval_binary_expression(
                     let range =
                         range_binary_div(left.ty.as_ref(), right.ty.as_ref()).expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Div, large, range, left, right);
-                    Value::Hardware(result)
+                    Value::Hardware(HardwareValue::from(result))
                 }
             }
         }
@@ -2196,15 +2245,11 @@ pub fn eval_binary_expression(
                 check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             // check nonzero
-            if int_value_range(&right).contains(&&BigInt::ZERO) {
+            let right_range = right.range();
+            if right_range.contains(&BigInt::ZERO) {
+                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("modulo by zero is not allowed")
-                    .add_error(
-                        right_span,
-                        format!(
-                            "right hand side has range `{}` which contains zero",
-                            int_value_range(&right)
-                        ),
-                    )
+                    .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
                     .finish();
                 return Err(diags.report(diag));
@@ -2219,7 +2264,7 @@ pub fn eval_binary_expression(
                     let range =
                         range_binary_mod(left.ty.as_ref(), right.ty.as_ref()).expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Mod, large, range, left, right);
-                    Value::Hardware(result)
+                    Value::Hardware(HardwareValue::from(result))
                 }
             }
         }
@@ -2230,24 +2275,27 @@ pub fn eval_binary_expression(
             let (base, exp) = check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
             let zero = BigInt::ZERO;
-            let base_range = int_value_range(&base);
-            let exp_range = int_value_range(&exp);
+            let base_range = base.range();
+            let exp_range = exp.range();
 
             // check exp >= 0
-            if exp_range.start_inc < &zero {
+            if exp_range.start < zero {
                 let diag = Diagnostic::new("invalid power operation")
                     .add_error(expr_span, "exponent must be non-negative")
-                    .add_info(exp_span, format!("exponent range is `{exp_range}`"))
+                    .add_info(exp_span, message_range_or_single("exponent", exp_range.as_ref(), None))
                     .finish();
                 return Err(diags.report(diag));
             }
 
             // check not 0 ** 0
-            if base_range.contains(&&zero) && exp_range.contains(&&zero) {
+            // TODO is there actually a reason to ban this? `1` makes sense as the answer
+            if base_range.contains(&zero) && exp_range.contains(&zero) {
+                let msg_base = message_range_or_single("base", base_range.as_ref(), Some("which contains zero"));
+                let msg_exp = message_range_or_single("exponent", exp_range.as_ref(), Some("which contains zero"));
                 let diag = Diagnostic::new("invalid power operation `0 ** 0`")
-                    .add_error(expr_span, "base and exponent can both be zero")
-                    .add_info(base_span, format!("base range is `{base_range}`"))
-                    .add_info(exp_span, format!("exponent range is `{exp_range}`"))
+                    .add_error(expr_span, "base and exponent could both be zero")
+                    .add_info(base_span, msg_base)
+                    .add_info(exp_span, msg_exp)
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -2259,18 +2307,16 @@ pub fn eval_binary_expression(
                     Value::new_int(base.pow(&exp))
                 }
                 MaybeCompile::Hardware((base, exp)) => {
-                    let exp_start_inc = BigUint::try_from(&exp.ty.start_inc)
-                        .map_err(|_| diags.report_internal_error(exp_span, "got negative exp start"))?;
-                    let exp_end_inc = BigUint::try_from(&exp.ty.end_inc)
-                        .map_err(|_| diags.report_internal_error(exp_span, "got negative exp end"))?;
-                    let exp_range = ClosedIncRange {
-                        start_inc: &exp_start_inc,
-                        end_inc: &exp_end_inc,
+                    // we checked that exp is non-negative earlier
+                    let exp_range = ClosedNonEmptyRange {
+                        start: BigUint::try_from(&exp.ty.start).unwrap(),
+                        end: BigUint::try_from(&exp.ty.end).unwrap(),
                     };
 
-                    let range = range_binary_pow(base.ty.as_ref(), exp_range).expect("already checked for 0**0");
+                    let range =
+                        range_binary_pow(base.ty.as_ref(), exp_range.as_ref()).expect("already checked for 0**0");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Pow, large, range, base, exp);
-                    Value::Hardware(result)
+                    Value::Hardware(HardwareValue::from(result))
                 }
             }
         }
@@ -2280,15 +2326,16 @@ pub fn eval_binary_expression(
         BinaryOp::BoolOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
         BinaryOp::BoolXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // (T, T)
-        // TODO expand eq/neq to bools/tuples/structs/enums, for the latter only if the type is the same
+        // TODO expand eq/neq to bools/tuples/strings/structs/enums, for the latter only if the type is the same
         BinaryOp::CmpEq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Eq),
         BinaryOp::CmpNeq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Neq),
         BinaryOp::CmpLt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lt),
         BinaryOp::CmpLte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lte),
         BinaryOp::CmpGt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gt),
         BinaryOp::CmpGte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gte),
-        // (int, range)
+        // (int, range) or (T:Eq, array)
         // TODO share code with match "in" pattern
+        // TODO for hardware ranges, also check if start <(=) end, otherwise this might have false positives
         BinaryOp::In => return Err(diags.report_todo(expr_span, "binary op In")),
         // (bool, bool)
         // TODO support boolean arrays
@@ -2302,13 +2349,6 @@ pub fn eval_binary_expression(
     };
 
     Ok(ValueWithImplications::simple(result_simple))
-}
-
-fn int_value_range(value: &MaybeCompile<BigInt, HardwareValue<ClosedIncRange<BigInt>>>) -> ClosedIncRange<&BigInt> {
-    match value {
-        MaybeCompile::Compile(value) => ClosedIncRange::single(value),
-        MaybeCompile::Hardware(value) => value.ty.as_ref(),
-    }
 }
 
 fn eval_binary_bool(
@@ -2330,7 +2370,7 @@ fn eval_binary_bool(
 
     let result = match eval_binary_bool_typed(large, op, left, right) {
         MaybeCompile::Compile(v) => Value::new_bool(v),
-        MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|()| HardwareType::Bool)),
+        MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|_: TypeBool| HardwareType::Bool)),
     };
     Ok(result)
 }
@@ -2338,9 +2378,9 @@ fn eval_binary_bool(
 pub fn eval_binary_bool_typed(
     large: &mut IrLargeArena,
     op: IrBoolBinaryOp,
-    left: MaybeCompile<bool, HardwareValueWithImplications<()>>,
-    right: MaybeCompile<bool, HardwareValueWithImplications<()>>,
-) -> MaybeCompile<bool, HardwareValueWithImplications<()>> {
+    left: MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>,
+    right: MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>,
+) -> MaybeCompile<bool, HardwareValueWithImplications<TypeBool>> {
     match (left, right) {
         // full compile-time eval
         (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => MaybeCompile::Compile(op.eval(left, right)),
@@ -2356,7 +2396,7 @@ pub fn eval_binary_bool_typed(
         // full hardware
         (MaybeCompile::Hardware(left), MaybeCompile::Hardware(right)) => {
             let expr = HardwareValue {
-                ty: (),
+                ty: TypeBool,
                 domain: left.value.domain.join(right.value.domain),
                 expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left.value.expr, right.value.expr)),
             };
@@ -2384,9 +2424,9 @@ pub fn eval_binary_bool_typed(
 
 fn build_unary_bool_gate(
     large: &mut IrLargeArena,
-    value: HardwareValueWithImplications<()>,
+    value: HardwareValueWithImplications<TypeBool>,
     op: impl Fn(bool) -> bool,
-) -> MaybeCompile<bool, HardwareValueWithImplications<()>> {
+) -> MaybeCompile<bool, HardwareValueWithImplications<TypeBool>> {
     match (op(false), op(true)) {
         // constants
         (false, false) => MaybeCompile::Compile(false),
@@ -2396,7 +2436,7 @@ fn build_unary_bool_gate(
         // not gate
         (true, false) => MaybeCompile::Hardware(HardwareValueWithImplications {
             value: HardwareValue {
-                ty: (),
+                ty: TypeBool,
                 domain: value.value.domain,
                 expr: large.push_expr(IrExpressionLarge::BoolNot(value.value.expr)),
             },
@@ -2454,10 +2494,10 @@ fn eval_binary_int_compare(
             let lr = left_int.ty;
             let rr = right_int.ty;
             let implications = match op {
-                IrIntCompareOp::Lt => implications_lt(lv, lr, rv, rr),
-                IrIntCompareOp::Lte => implications_lte(lv, lr, rv, rr),
-                IrIntCompareOp::Gt => implications_lt(rv, rr, lv, lr),
-                IrIntCompareOp::Gte => implications_lte(rv, rr, lv, lr),
+                IrIntCompareOp::Lt => implications_lt(false, lv, lr, rv, rr),
+                IrIntCompareOp::Lte => implications_lt(true, lv, lr, rv, rr),
+                IrIntCompareOp::Gt => implications_lt(false, rv, rr, lv, lr),
+                IrIntCompareOp::Gte => implications_lt(true, rv, rr, lv, lr),
                 IrIntCompareOp::Eq => implications_eq(lv, lr, rv, rr),
                 IrIntCompareOp::Neq => implications_eq(lv, lr, rv, rr).invert(),
             };
@@ -2480,81 +2520,77 @@ fn eval_binary_int_compare(
 fn build_binary_int_arithmetic_op(
     op: IrIntArithmeticOp,
     large: &mut IrLargeArena,
-    range: ClosedIncRange<BigInt>,
-    left: HardwareValue<ClosedIncRange<BigInt>>,
-    right: HardwareValue<ClosedIncRange<BigInt>>,
-) -> HardwareValue {
+    range: ClosedNonEmptyRange<BigInt>,
+    left: HardwareInt,
+    right: HardwareInt,
+) -> HardwareInt {
     let result_expr = IrExpressionLarge::IntArithmetic(op, range.clone(), left.expr, right.expr);
-    HardwareValue {
-        ty: HardwareType::Int(range),
+    HardwareInt {
+        ty: range,
         domain: left.domain.join(right.domain),
         expr: large.push_expr(result_expr),
     }
 }
 
+// TODO move these to the implications module
+// TODO rework implications entirely first
 fn implications_lt(
+    eq: bool,
     left: Option<ValueVersion>,
-    left_range: ClosedIncRange<BigInt>,
+    left_range: ClosedNonEmptyRange<BigInt>,
     right: Option<ValueVersion>,
-    right_range: ClosedIncRange<BigInt>,
+    right_range: ClosedNonEmptyRange<BigInt>,
 ) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(Implication::new_int(left, ImplicationIntOp::Lt, right_range.end_inc));
-        if_false.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Gt,
-            right_range.start_inc - 1,
-        ));
+        if_true.push(implication_lt_is(true, eq, left, &right_range));
+        if_false.push(implication_lt_is(false, eq, left, &right_range));
     }
+
+    #[allow(clippy::nonminimal_bool)]
     if let Some(right) = right {
-        if_true.push(Implication::new_int(right, ImplicationIntOp::Gt, left_range.start_inc));
-        if_false.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Lt,
-            left_range.end_inc + 1,
-        ));
+        // flip left/right by inverting the eval and eq flags
+        if_true.push(implication_lt_is(!true, !eq, right, &left_range));
+        if_false.push(implication_lt_is(!false, !eq, right, &left_range));
     }
 
     BoolImplications { if_true, if_false }
 }
 
-fn implications_lte(
-    left: Option<ValueVersion>,
-    left_range: ClosedIncRange<BigInt>,
-    right: Option<ValueVersion>,
-    right_range: ClosedIncRange<BigInt>,
-) -> BoolImplications {
-    let mut if_true = vec![];
-    let mut if_false = vec![];
-
-    if let Some(left) = left {
-        if_true.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Lt,
-            right_range.end_inc + 1,
-        ));
-        if_false.push(Implication::new_int(left, ImplicationIntOp::Gt, right_range.start_inc));
-    }
-    if let Some(right) = right {
-        if_true.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Gt,
-            left_range.start_inc - 1,
-        ));
-        if_false.push(Implication::new_int(right, ImplicationIntOp::Lt, left_range.end_inc));
-    }
-
-    BoolImplications { if_true, if_false }
+/// Construct the implication for `left <(=) right == eval`. `eq` indicates whether the comparison is `<` or `<=`.
+fn implication_lt_is(eval: bool, eq: bool, left: ValueVersion, right: &ClosedNonEmptyRange<BigInt>) -> Implication {
+    let range = match (eval, eq) {
+        // left <= right
+        (true, true) => Range {
+            start: None,
+            end: Some(right.end.clone()),
+        },
+        // left < right
+        (true, false) => Range {
+            start: None,
+            end: Some(&right.end - 1),
+        },
+        // left > right
+        (false, true) => Range {
+            start: Some(&right.start + 1),
+            end: None,
+        },
+        // left >= right
+        (false, false) => Range {
+            start: Some(right.start.clone()),
+            end: None,
+        },
+    };
+    Implication::new_int(left, MultiRange::from(range))
 }
 
 fn implications_eq(
     left: Option<ValueVersion>,
-    left_range: ClosedIncRange<BigInt>,
+    left_range: ClosedNonEmptyRange<BigInt>,
     right: Option<ValueVersion>,
-    right_range: ClosedIncRange<BigInt>,
+    right_range: ClosedNonEmptyRange<BigInt>,
 ) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
@@ -2562,34 +2598,28 @@ fn implications_eq(
     if let Some(left) = left {
         if_true.push(Implication::new_int(
             left,
-            ImplicationIntOp::Lt,
-            &right_range.end_inc + 1,
-        ));
-        if_true.push(Implication::new_int(
-            left,
-            ImplicationIntOp::Gt,
-            &right_range.start_inc - 1,
+            MultiRange::from(Range::from(right_range.clone())),
         ));
 
-        if let Some(right) = right_range.as_single() {
-            if_false.push(Implication::new_int(left, ImplicationIntOp::Neq, right.clone()));
+        if let Some(right_single) = right_range.as_ref().as_single() {
+            if_false.push(Implication::new_int(
+                left,
+                MultiRange::from(Range::single(right_single.clone())).complement(),
+            ));
         }
     }
 
     if let Some(right) = right {
         if_true.push(Implication::new_int(
             right,
-            ImplicationIntOp::Lt,
-            &left_range.end_inc + 1,
-        ));
-        if_true.push(Implication::new_int(
-            right,
-            ImplicationIntOp::Gt,
-            &left_range.start_inc - 1,
+            MultiRange::from(Range::from(left_range.clone())),
         ));
 
-        if let Some(left) = left_range.as_single() {
-            if_false.push(Implication::new_int(right, ImplicationIntOp::Neq, left.clone()));
+        if let Some(left_single) = left_range.as_ref().as_single() {
+            if_false.push(Implication::new_int(
+                right,
+                MultiRange::from(Range::single(left_single.clone())).complement(),
+            ));
         }
     }
 
@@ -2710,5 +2740,23 @@ fn array_literal_combine_values(
             }
         }
         Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(result))))
+    }
+}
+
+fn message_range_or_single<'a>(
+    name: &str,
+    range: impl Into<Range<&'a BigInt>>,
+    suffix_if_multiple: Option<&str>,
+) -> String {
+    let range = range.into();
+
+    let (suffix_sep, suffix) = match suffix_if_multiple {
+        None => ("", ""),
+        Some(suffix) => (" ", suffix),
+    };
+
+    match range.as_single() {
+        None => format!("{name} has range {range}{suffix_sep}{suffix}"),
+        Some(single) => format!("{name} is {single}"),
     }
 }

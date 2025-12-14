@@ -21,6 +21,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
+use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
@@ -242,8 +243,14 @@ pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
     pub name: String,
     pub span_body: Span,
-    pub variants: IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
+    pub variants: IndexMap<String, ElaboratedEnumVariantInfo>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
+}
+
+#[derive(Debug)]
+pub struct ElaboratedEnumVariantInfo {
+    pub id: Identifier,
+    pub payload_ty: Option<Spanned<Type>>,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +261,7 @@ pub enum NonHardwareEnum {
 
 #[derive(Debug)]
 pub struct HardwareEnumInfo {
+    pub tag_range: ClosedNonEmptyRange<BigInt>,
     pub payload_types: Vec<Option<(HardwareType, IrType)>>,
     // TODO remove once this (or something similar enough) is cached in HardwareType
     pub max_payload_size: usize,
@@ -760,7 +768,7 @@ impl CompileItemContext<'_, '_> {
             })
             .try_collect_vec();
 
-        let name = type_name_inluding_params(source, elab, unique, params);
+        let name = type_name_including_params(source, elab, unique, params);
         Ok(ElaboratedStructInfo {
             unique,
             name,
@@ -790,17 +798,19 @@ impl CompileItemContext<'_, '_> {
         let mut visit_variant = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, variant: &EnumVariant| {
             let &EnumVariant { span: _, id, content } = variant;
 
-            let content = content
+            let payload_ty = content
                 .map(|content| s.eval_expression_as_ty(scope, flow, content))
                 .transpose()?;
 
+            let variant_info = ElaboratedEnumVariantInfo { id, payload_ty };
+
             match variants_eval.entry(id.str(source).to_owned()) {
                 Entry::Vacant(entry) => {
-                    entry.insert((id, content));
+                    entry.insert(variant_info);
                 }
                 Entry::Occupied(entry) => {
                     let diag = Diagnostic::new("duplicate enum variant name")
-                        .add_info(entry.get().0.span, "previously declared here")
+                        .add_info(entry.get().id.span, "previously declared here")
                         .add_error(id.span, "declared again here")
                         .finish();
                     any_variant_err = Err(diags.report(diag));
@@ -818,7 +828,7 @@ impl CompileItemContext<'_, '_> {
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
-        let name = type_name_inluding_params(source, elab, unique, params);
+        let name = type_name_including_params(source, elab, unique, params);
         Ok(ElaboratedEnumInfo {
             unique,
             name,
@@ -829,7 +839,7 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn type_name_inluding_params(
+fn type_name_including_params(
     source: &SourceDatabase,
     elab: &ElaborationArenas,
     unique: UniqueDeclaration,
@@ -855,7 +865,7 @@ fn type_name_inluding_params(
 
 fn try_enum_as_hardware(
     refs: CompileRefs,
-    variants_eval: &IndexMap<String, (Identifier, Option<Spanned<Type>>)>,
+    variants_eval: &IndexMap<String, ElaboratedEnumVariantInfo>,
     span_body: Span,
 ) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
     let diags = refs.diags;
@@ -868,8 +878,8 @@ fn try_enum_as_hardware(
 
     // map fields to hardware
     let mut content_types = vec![];
-    for (i, (_, (_, ty))) in variants_eval.iter().enumerate() {
-        let ty_hw = match ty {
+    for (i, (_, info)) in variants_eval.iter().enumerate() {
+        let ty_hw = match &info.payload_ty {
             None => None,
             Some(ty) => match ty.inner.as_hardware_type(elab) {
                 Ok(ty_hw) => {
@@ -893,7 +903,12 @@ fn try_enum_as_hardware(
         .map_err(|size| diags.report_simple("enum size too large", span_body, format!("got size {size}")))?;
 
     // wrap
+    let tag_range = ClosedNonEmptyRange {
+        start: BigInt::ZERO,
+        end: BigInt::from(variants_eval.len()),
+    };
     let info = HardwareEnumInfo {
+        tag_range,
         payload_types: content_types,
         max_payload_size: max_content_size,
     };

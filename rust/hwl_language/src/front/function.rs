@@ -5,7 +5,10 @@ use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAdda
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
 use crate::front::flow::{Flow, FlowCompile};
-use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody, UniqueDeclaration};
+use crate::front::item::{
+    ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
+    UniqueDeclaration,
+};
 use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
 use crate::front::scope::{NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
@@ -475,11 +478,16 @@ impl CompileItemContext<'_, '_> {
         args: &Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> DiagResult<Value> {
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
-        let &(variant_id, ref variant_content) = &enum_info.variants[variant_index];
-        let variant_payload_ty = variant_content.as_ref().unwrap();
+        let &ElaboratedEnumVariantInfo {
+            id: variant_id,
+            ref payload_ty,
+        } = &enum_info.variants[variant_index];
+        let payload_ty = payload_ty
+            .as_ref()
+            .expect("enum new only exists for variants with payloads");
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
-        let payload = matcher.resolve_param(variant_id, variant_payload_ty.as_ref(), None)?;
+        let payload = matcher.resolve_param(variant_id, payload_ty.as_ref(), None)?;
         matcher.finish()?;
 
         let result = EnumValue {
@@ -719,7 +727,11 @@ impl CompileItemContext<'_, '_> {
                 let result = match value {
                     MaybeCompile::Compile(v) => {
                         let result = ty_hw.value_from_bits(self.refs, span_call, &v).map_err(|_| {
-                            let msg = format!("while converting value `{:?}` into type `{}`", v, ty_hw.value_str(elab));
+                            let msg = format!(
+                                "while converting value `{:?}` into type `{}`",
+                                v,
+                                ty_hw.value_string(elab)
+                            );
                             diags.report_simple("`from_bits` failed", span_call, msg)
                         })?;
                         Value::from(result)

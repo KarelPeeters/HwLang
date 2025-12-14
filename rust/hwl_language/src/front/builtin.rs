@@ -10,13 +10,14 @@ use crate::front::flow::{Flow, FlowKind};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::string::hardware_print_string;
-use crate::front::types::{HardwareType, IncRange, Type, Typed};
+use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, Value};
 use crate::mid::ir::IrExpression;
 use crate::syntax::ast::{Arg, Args, ExpressionKind};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::data::VecExt;
+use crate::util::range::Range;
 use crate::util::store::ArcOrRef;
 
 impl CompileItemContext<'_, '_> {
@@ -77,6 +78,7 @@ impl CompileItemContext<'_, '_> {
                     let info = flow.var_eval(diags, &mut self.large, Spanned::new(arg.span, var))?;
                     info.into_value().ty()
                 }
+                // TODO apply implications for ports/wires/registers
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
                 NamedValue::Wire(wire) => {
                     let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
@@ -143,7 +145,7 @@ impl CompileItemContext<'_, '_> {
             ("type", "bool", &[]) => Ok(Value::new_ty(Type::Bool)),
             ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
             ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
-            ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(IncRange::OPEN))),
+            ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(Range::OPEN))),
             // print
             ("fn", "print", &[msg]) => {
                 let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;

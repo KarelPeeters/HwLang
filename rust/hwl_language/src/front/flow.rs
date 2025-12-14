@@ -2,7 +2,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
-    ClosedIncRangeMulti, HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
+    HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
 };
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
@@ -22,13 +22,13 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
+use crate::util::range::ClosedMultiRange;
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -49,6 +49,8 @@ trait FlowPrivate: Sized {
     fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
 
     fn apply_implications(&self, large: &mut IrLargeArena, value: HardwareValueWithVersion) -> ValueWithVersion {
+        // TODO move this to the implications module
+        // TODO make this "fallible", ie. "abandon this branch because it is actually unreachable"
         match &value.value.ty {
             HardwareType::Bool => {
                 let mut known_false = false;
@@ -77,26 +79,27 @@ trait FlowPrivate: Sized {
                 }
             }
             HardwareType::Int(ty) => {
-                let mut range = ClosedIncRangeMulti::from_range(ty.clone());
+                let mut range = ClosedMultiRange::from(ty.clone());
+
                 self.for_each_implication(value.version, |implication| {
                     let &Implication { version, ref kind } = implication;
                     assert_eq!(value.version, version);
-                    if let &ImplicationKind::IntOp(op, ref right) = kind {
-                        range.apply_implication(op, right);
+                    if let ImplicationKind::IntIn(implication_range) = kind {
+                        range = range.subtract(&implication_range.complement());
                     }
                 });
 
-                match range.to_range() {
+                match range.enclosing_range() {
                     // TODO support never type or maybe specifically empty ranges
                     // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
                     None => Value::Hardware(value),
                     Some(range) => {
-                        if &range == ty {
+                        if range == ty.as_ref() {
                             Value::Hardware(value)
                         } else {
-                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.clone(), value.value.expr);
+                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.cloned(), value.value.expr);
                             let value_constr = HardwareValue {
-                                ty: HardwareType::Int(range),
+                                ty: HardwareType::Int(range.cloned()),
                                 domain: value.value.domain,
                                 expr: large.push_expr(expr_constr),
                             };
@@ -1588,7 +1591,7 @@ fn merge_branch_values(
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
                             branch_value.last_assignment_span,
-                            format!("value in branch assigned here has type `{}`", ty.value_str(elab)),
+                            format!("value in branch assigned here has type `{}`", ty.value_string(elab)),
                         )
                     }
                 }

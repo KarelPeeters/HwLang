@@ -158,6 +158,8 @@ impl DiagnosticStringSettings {
 // TODO make it clear in which phase each diagnostic was reported: file loading, parsing, type checking, lowering
 // TODO clarify constructor naming: start_ for builders and new_ for complete?
 //   what is the point of complete constructors in the first place?
+// TODO ensure type-safe construction of diagnostics with at least one error, one warning, nothing yet, ...
+//   to avoid mistakes and downstream crashes
 impl Diagnostic {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(title: impl Into<String>) -> DiagnosticBuilder {

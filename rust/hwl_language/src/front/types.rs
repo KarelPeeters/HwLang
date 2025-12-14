@@ -4,11 +4,9 @@ use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaborationArenas, Ha
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::range::{ClosedNonEmptyRange, Range};
 use crate::util::{Never, ResultExt};
 use itertools::{Itertools, zip_eq};
-use std::collections::Bound;
-use std::fmt::{Display, Formatter};
-use std::ops::{AddAssign, RangeBounds};
 use std::sync::Arc;
 
 // TODO add an arena for types?
@@ -23,7 +21,7 @@ pub enum Type {
 
     Bool,
     String,
-    Int(IncRange<BigInt>),
+    Int(Range<BigInt>),
     // TODO empty tuples should be convertible to hardware
     Tuple(Arc<Vec<Type>>),
     Array(Arc<Type>, BigUint),
@@ -46,21 +44,17 @@ pub enum Type {
 pub enum HardwareType {
     Undefined,
     Bool,
-    Int(ClosedIncRange<BigInt>),
+    Int(ClosedNonEmptyRange<BigInt>),
     Tuple(Arc<Vec<HardwareType>>),
     Array(Arc<HardwareType>, BigUint),
     Struct(HardwareChecked<ElaboratedStruct>),
     Enum(HardwareChecked<ElaboratedEnum>),
 }
 
-impl HardwareEnumInfo {
-    pub fn tag_range(&self) -> ClosedIncRange<BigInt> {
-        ClosedIncRange {
-            start_inc: BigInt::ZERO,
-            end_inc: BigInt::from(self.payload_types.len()) - 1,
-        }
-    }
+#[derive(Debug, Copy, Clone)]
+pub struct TypeBool;
 
+impl HardwareEnumInfo {
     pub fn padding_for_variant(&self, variant: usize) -> usize {
         let content_size = match &self.payload_types[variant] {
             None => 0,
@@ -80,8 +74,8 @@ impl HardwareEnumInfo {
         assert_eq!(self.payload_types[variant].is_some(), content_bits.is_some());
 
         // tag
-        let tag_range = self.tag_range();
-        let ir_tag = IrExpressionLarge::ExpandIntRange(tag_range, IrExpression::Int(BigInt::from(variant)));
+        let ir_tag =
+            IrExpressionLarge::ExpandIntRange(self.tag_range.clone(), IrExpression::Int(BigInt::from(variant)));
 
         // content
         let mut ir_elements = vec![];
@@ -101,9 +95,9 @@ impl HardwareEnumInfo {
         Ok(large.push_expr(ir_expr))
     }
 
-    pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: &HardwareValue, variant: usize) -> IrExpression {
+    pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: IrExpression, variant: usize) -> IrExpression {
         let tag = large.push_expr(IrExpressionLarge::TupleIndex {
-            base: value.expr.clone(),
+            base: value,
             index: BigUint::ZERO,
         });
 
@@ -139,26 +133,6 @@ impl HardwareEnumInfo {
             expr: payload,
         })
     }
-}
-
-// TODO rename to min/max? more intuitive than start/end, min and max are clearly inclusive
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct IncRange<T> {
-    pub start_inc: Option<T>,
-    pub end_inc: Option<T>,
-}
-
-// TODO can this represent the empty range? maybe exclusive is better after all...
-//   we don't really want empty ranges for int types, but for for loops and slices we do
-// TODO switch to exclusive ranges, much more intuitive to program with, especially for arrays and loops
-//   match code becomes harder, but that's fine
-// TODO transition this to multi-range as the int type
-// TODO make sure that people can only construct non-decreasing ranges,
-//   there are still some panics in the compiler because of this
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ClosedIncRange<T> {
-    pub start_inc: T,
-    pub end_inc: T,
 }
 
 pub trait Typed {
@@ -199,7 +173,7 @@ impl Type {
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
             (Type::Builtin, Type::Builtin) => Type::Builtin,
 
-            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
+            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b.as_ref()).cloned()),
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
@@ -265,8 +239,8 @@ impl Type {
         match self {
             Type::Undefined => Ok(HardwareType::Undefined),
             Type::Bool => Ok(HardwareType::Bool),
-            Type::Int(range) => match range.clone().try_into_closed() {
-                Ok(closed_range) => Ok(HardwareType::Int(closed_range)),
+            Type::Int(range) => match ClosedNonEmptyRange::try_from(range.as_ref()) {
+                Ok(closed_range) => Ok(HardwareType::Int(closed_range.cloned())),
                 Err(_) => Err(NonHardwareType),
             },
             Type::Tuple(inner) => inner
@@ -309,7 +283,7 @@ impl HardwareType {
         match self {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
-            HardwareType::Int(range) => Type::Int(range.clone().into_range()),
+            HardwareType::Int(range) => Type::Int(Range::from(range.clone())),
             HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
             HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
@@ -333,317 +307,10 @@ impl HardwareType {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
-                let tag_ty = IrType::Int(ClosedIncRange {
-                    start_inc: BigInt::ZERO,
-                    end_inc: BigInt::from(info.variants.len()) - 1,
-                });
+                let tag_ty = IrType::Int(info_hw.tag_range.clone());
                 let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_payload_size));
                 IrType::Tuple(vec![tag_ty, data_ty])
             }
-        }
-    }
-}
-
-impl<T> IncRange<T> {
-    pub const OPEN: IncRange<T> = IncRange {
-        start_inc: None,
-        end_inc: None,
-    };
-
-    pub fn try_into_closed(self) -> Result<ClosedIncRange<T>, Self> {
-        let IncRange { start_inc, end_inc } = self;
-
-        let start_inc = match start_inc {
-            Some(start_inc) => start_inc,
-            None => {
-                return Err(IncRange {
-                    start_inc: None,
-                    end_inc,
-                });
-            }
-        };
-        let end_inc = match end_inc {
-            Some(end_inc) => end_inc,
-            None => {
-                return Err(IncRange {
-                    start_inc: Some(start_inc),
-                    end_inc: None,
-                });
-            }
-        };
-
-        Ok(ClosedIncRange { start_inc, end_inc })
-    }
-
-    pub fn contains(&self, other: &T) -> bool
-    where
-        T: Ord,
-    {
-        let IncRange { start_inc, end_inc } = self;
-        match (start_inc, end_inc) {
-            (None, None) => true,
-            (Some(start_inc), None) => start_inc <= other,
-            (None, Some(end_inc)) => other <= end_inc,
-            (Some(start_inc), Some(end_inc)) => start_inc <= other && other <= end_inc,
-        }
-    }
-
-    pub fn contains_range(&self, other: &IncRange<T>) -> bool
-    where
-        T: Ord,
-    {
-        let IncRange {
-            start_inc: self_start_inc,
-            end_inc: self_end_inc,
-        } = self;
-        let IncRange {
-            start_inc: other_start_inc,
-            end_inc: other_end_inc,
-        } = other;
-
-        let start_contains = match (self_start_inc, other_start_inc) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(self_start_inc), Some(other_start_inc)) => self_start_inc <= other_start_inc,
-        };
-        let end_contains = match (self_end_inc, other_end_inc) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(self_end_inc), Some(other_end_inc)) => self_end_inc >= other_end_inc,
-        };
-
-        start_contains && end_contains
-    }
-
-    pub fn union(&self, other: &IncRange<T>) -> IncRange<T>
-    where
-        T: Ord + Clone,
-    {
-        let IncRange {
-            start_inc: a_start,
-            end_inc: a_end,
-        } = self;
-        let IncRange {
-            start_inc: b_start,
-            end_inc: b_end,
-        } = other;
-
-        let start = match (a_start, b_start) {
-            (Some(a_start), Some(b_start)) => Some(a_start.min(b_start)),
-            (None, _) | (_, None) => None,
-        };
-        let end = match (a_end, b_end) {
-            (Some(a_end), Some(b_end)) => Some(a_end.max(b_end)),
-            (None, _) | (_, None) => None,
-        };
-
-        IncRange {
-            start_inc: start.cloned(),
-            end_inc: end.cloned(),
-        }
-    }
-}
-
-impl<T> ClosedIncRange<T> {
-    pub fn single(value: T) -> ClosedIncRange<T>
-    where
-        T: Clone,
-    {
-        ClosedIncRange {
-            start_inc: value.clone(),
-            end_inc: value,
-        }
-    }
-
-    pub fn into_range(self) -> IncRange<T> {
-        let ClosedIncRange { start_inc, end_inc } = self;
-        IncRange {
-            start_inc: Some(start_inc),
-            end_inc: Some(end_inc),
-        }
-    }
-
-    pub fn as_ref(&self) -> ClosedIncRange<&T> {
-        ClosedIncRange {
-            start_inc: &self.start_inc,
-            end_inc: &self.end_inc,
-        }
-    }
-
-    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> ClosedIncRange<U> {
-        let ClosedIncRange { start_inc, end_inc } = self;
-        ClosedIncRange {
-            start_inc: f(start_inc),
-            end_inc: f(end_inc),
-        }
-    }
-
-    pub fn contains(&self, value: &T) -> bool
-    where
-        T: Ord,
-    {
-        let ClosedIncRange { start_inc, end_inc } = self;
-        start_inc <= value && value <= end_inc
-    }
-
-    pub fn contains_range(&self, other: ClosedIncRange<&T>) -> bool
-    where
-        T: Ord,
-    {
-        // TODO always accept less-than-empty `other` ranges?
-        let ClosedIncRange { start_inc, end_inc } = self;
-        let ClosedIncRange {
-            start_inc: other_start_inc,
-            end_inc: other_end_inc,
-        } = other;
-        start_inc <= other_start_inc && other_end_inc <= end_inc
-    }
-
-    pub fn as_single(&self) -> Option<&T>
-    where
-        T: Eq,
-    {
-        if self.start_inc == self.end_inc {
-            Some(&self.start_inc)
-        } else {
-            None
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = T> + '_
-    where
-        T: Clone + AddAssign<u32> + Ord,
-    {
-        let mut next = self.start_inc.clone();
-        std::iter::from_fn(move || {
-            if next <= self.end_inc {
-                let curr = next.clone();
-                next += 1;
-                Some(curr)
-            } else {
-                None
-            }
-        })
-    }
-
-    pub fn union(self, other: ClosedIncRange<T>) -> ClosedIncRange<T>
-    where
-        T: Ord + Clone,
-    {
-        let ClosedIncRange {
-            start_inc: a_start,
-            end_inc: a_end,
-        } = self;
-        let ClosedIncRange {
-            start_inc: b_start,
-            end_inc: b_end,
-        } = other;
-
-        ClosedIncRange {
-            start_inc: a_start.min(b_start),
-            end_inc: a_end.max(b_end),
-        }
-    }
-}
-
-impl<T: Display> Display for IncRange<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let IncRange { start_inc, end_inc } = self;
-        match (start_inc, end_inc) {
-            (None, None) => write!(f, ".."),
-            (Some(start_inc), None) => write!(f, "{start_inc}.."),
-            (None, Some(end_inc)) => write!(f, "..={end_inc}"),
-            (Some(start_inc), Some(end_inc)) => write!(f, "{start_inc}..={end_inc}"),
-        }
-    }
-}
-
-impl<T: Display> Display for ClosedIncRange<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let ClosedIncRange { start_inc, end_inc } = self;
-        write!(f, "{start_inc}..={end_inc}")
-    }
-}
-
-impl<T> RangeBounds<T> for IncRange<T> {
-    fn start_bound(&self) -> Bound<&T> {
-        match &self.start_inc {
-            None => Bound::Unbounded,
-            Some(start_inc) => Bound::Included(start_inc),
-        }
-    }
-
-    fn end_bound(&self) -> Bound<&T> {
-        match &self.end_inc {
-            None => Bound::Unbounded,
-            Some(end_inc) => Bound::Included(end_inc),
-        }
-    }
-}
-
-impl<T> RangeBounds<T> for ClosedIncRange<T> {
-    fn start_bound(&self) -> Bound<&T> {
-        Bound::Included(&self.start_inc)
-    }
-
-    fn end_bound(&self) -> Bound<&T> {
-        Bound::Included(&self.end_inc)
-    }
-}
-
-pub struct ClosedIncRangeIterator<T> {
-    next: T,
-    end_inc: T,
-}
-
-impl IntoIterator for ClosedIncRange<BigUint> {
-    type Item = BigUint;
-    type IntoIter = ClosedIncRangeIterator<BigUint>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ClosedIncRangeIterator {
-            next: self.start_inc,
-            end_inc: self.end_inc,
-        }
-    }
-}
-
-impl Iterator for ClosedIncRangeIterator<BigUint> {
-    type Item = BigUint;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next <= self.end_inc {
-            let curr = self.next.clone();
-            self.next += 1u8;
-            Some(curr)
-        } else {
-            None
-        }
-    }
-}
-
-impl IntoIterator for ClosedIncRange<BigInt> {
-    type Item = BigInt;
-    type IntoIter = ClosedIncRangeIterator<BigInt>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ClosedIncRangeIterator {
-            next: self.start_inc,
-            end_inc: self.end_inc,
-        }
-    }
-}
-
-impl Iterator for ClosedIncRangeIterator<BigInt> {
-    type Item = BigInt;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next <= self.end_inc {
-            let curr = self.next.clone();
-            self.next += 1u8;
-            Some(curr)
-        } else {
-            None
         }
     }
 }
