@@ -5,7 +5,7 @@ from hwl_sandbox.common.util import compile_custom
 
 
 def test_signal_does_not_fit():
-    source = """
+    src = """
     import std.types.uint;
     module foo ports(p: in async uint(0..8)) {
         comb {
@@ -13,14 +13,14 @@ def test_signal_does_not_fit():
         }
     }
     """
-    c = compile_custom(source)
+    c = compile_custom(src)
 
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         _ = c.resolve("top.foo")
 
 
 def test_signal_checked():
-    source = """
+    src = """
     import std.types.uint;
     module foo ports(p: in async uint(0..8)) {
         comb {
@@ -30,12 +30,12 @@ def test_signal_checked():
         }
     }
     """
-    c = compile_custom(source)
+    c = compile_custom(src)
     _ = c.resolve("top.foo")
 
 
 def test_variable_does_not_fit():
-    source = """
+    src = """
     import std.types.uint;
     module foo ports(p: in async uint(0..8)) {
         comb {
@@ -44,14 +44,14 @@ def test_variable_does_not_fit():
         }
     }
     """
-    c = compile_custom(source)
+    c = compile_custom(src)
 
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         _ = c.resolve("top.foo")
 
 
 def test_variable_checked():
-    source = """
+    src = """
     import std.types.uint;
     module foo ports(p: in async uint(0..8)) {
         comb {
@@ -62,7 +62,7 @@ def test_variable_checked():
         }
     }
     """
-    c = compile_custom(source)
+    c = compile_custom(src)
     _ = c.resolve("top.foo")
 
 
@@ -145,3 +145,38 @@ def test_implied_type_int_int():
     check("b >= a", "0..6", "3..8")
     check("b < a", "3..8", "0..6")
     check("b <= a", "2..8", "0..5")
+
+
+def test_bool_implies_itself():
+    src = """
+    import std.types.bool;
+    import std.util.print;
+    module foo ports(p: in async bool) {
+        comb {
+            if (p) {
+                const { print("true"); }
+                if (p) {
+                    const { print("true.true"); }
+                } else {
+                    const { print("true.false"); }
+                }
+            } else {
+                const { print("false"); }
+                if (p) {
+                    const { print("false.true"); }
+                } else {
+                    const { print("false.false"); }
+                }
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.foo")
+    assert cap.prints == [
+        "true\n",
+        "true.true\n",
+        "false\n",
+        "false.false\n",
+    ]
