@@ -94,7 +94,7 @@ jobs:
     name: Webdemo deploy
     runs-on: ubuntu-latest
     needs: webdemo-build
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/download-artifact@v4
         with:
