@@ -96,10 +96,7 @@ impl HardwareEnumInfo {
     }
 
     pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: IrExpression, variant: usize) -> IrExpression {
-        let tag = large.push_expr(IrExpressionLarge::TupleIndex {
-            base: value,
-            index: BigUint::ZERO,
-        });
+        let tag = large.push_expr(IrExpressionLarge::TupleIndex { base: value, index: 0 });
 
         large.push_expr(IrExpressionLarge::IntCompare(
             IrIntCompareOp::Eq,
@@ -118,7 +115,7 @@ impl HardwareEnumInfo {
 
         let payload_bits_all = large.push_expr(IrExpressionLarge::TupleIndex {
             base: value.expr.clone(),
-            index: BigUint::ONE,
+            index: 1,
         });
         let payload_bits = large.push_expr(IrExpressionLarge::ArraySlice {
             base: payload_bits_all,

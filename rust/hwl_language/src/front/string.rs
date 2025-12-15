@@ -274,7 +274,7 @@ fn print_hardware_sub(
             for (index, ty) in enumerate(element_types.as_ref()) {
                 let element_expr = large.push_expr(IrExpressionLarge::TupleIndex {
                     base: value.expr.clone(),
-                    index: BigUint::from(index),
+                    index,
                 });
                 let element_value = HardwareValue {
                     ty: ty.clone(),
@@ -373,7 +373,7 @@ fn print_hardware_sub(
             for (field_index, ((field_name, _), field_ty)) in enumerate(zip_eq(&ty_info.fields, ty_fields_hw)) {
                 let field_expr = large.push_expr(IrExpressionLarge::TupleIndex {
                     base: value.expr.clone(),
-                    index: BigUint::from(field_index),
+                    index: field_index,
                 });
                 let field_value = HardwareValue {
                     ty: field_ty.clone(),

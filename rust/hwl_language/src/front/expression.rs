@@ -581,11 +581,11 @@ impl<'a> CompileItemContext<'a, '_> {
                     .try_collect_all_vec();
                 let base = self.eval_expression_as_ty(scope, flow, base);
 
-                let lengths = lens?;
+                let lens = lens?;
                 let base = base?;
 
                 // apply lengths inside-out
-                let result = lengths
+                let result = lens
                     .into_iter()
                     .rev()
                     .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
@@ -640,7 +640,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                                     let expr = IrExpressionLarge::TupleIndex {
                                         base: value.expr,
-                                        index: index.into(),
+                                        index,
                                     };
                                     Value::Hardware(HardwareValue {
                                         ty: inner_tys[index].clone(),
@@ -1013,7 +1013,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                     let func = FunctionBits {
                         ty_hw,
-                        kind: FunctionBitsKind::FromBits,
+                        kind: FunctionBitsKind::FromBits { is_unsafe: false },
                     };
                     let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func)));
                     return Ok(ValueInner::Value(result));
@@ -1022,7 +1022,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let func = FunctionBits {
                         ty_hw,
-                        kind: FunctionBitsKind::FromBits,
+                        kind: FunctionBitsKind::FromBits { is_unsafe: true },
                     };
                     let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func)));
                     return Ok(ValueInner::Value(result));
@@ -1126,7 +1126,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             let expr = IrExpressionLarge::TupleIndex {
                                 base: base_eval.expr,
-                                index: field_index.into(),
+                                index: field_index,
                             };
                             Value::Hardware(HardwareValue {
                                 ty: field_types[field_index].clone(),

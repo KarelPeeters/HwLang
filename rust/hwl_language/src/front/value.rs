@@ -386,7 +386,7 @@ impl ValueCommon for HardwareValue {
                     .map(|i| {
                         let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
                             base: self.expr.clone(),
-                            index: BigUint::from(i),
+                            index: i,
                         });
                         let curr_elem_hw = HardwareValue {
                             ty: ty_curr[i].clone(),

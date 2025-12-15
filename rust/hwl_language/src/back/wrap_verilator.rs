@@ -1,4 +1,4 @@
-use crate::front::bits::WrongType;
+use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::item::ElaborationArenas;
@@ -25,6 +25,7 @@ pub enum VerilatorError {
     ApiError(u8, &'static str),
     PortTooLarge(BigUint),
     InternalError(&'static str),
+    FromBitsInvalidValue(Vec<bool>, String),
     SetOutputPort(String),
     PathContainsZeroByte,
 }
@@ -37,6 +38,7 @@ impl Display for VerilatorError {
             VerilatorError::ApiError(code, context) => write!(f, "API error {code} in context '{context}'"),
             VerilatorError::PortTooLarge(size) => write!(f, "Port size too large: {size} bits"),
             VerilatorError::InternalError(msg) => write!(f, "Internal error: {msg}"),
+            VerilatorError::FromBitsInvalidValue(bits, ty) => write!(f, "Invalid bit pattern for type {ty}: {bits:?}"),
             VerilatorError::SetOutputPort(port) => write!(f, "Cannot set output port `{port}`"),
             VerilatorError::PathContainsZeroByte => write!(f, "Path cannot contain a zero byte"),
         }
@@ -184,10 +186,12 @@ impl VerilatedInstance {
             .map(|i| (buffer[i / 8] >> (i % 8)) & 1 != 0)
             .collect_vec();
 
-        let value = port_info
-            .ty
-            .value_from_bits(&bits)
-            .map_err(|_: WrongType| VerilatorError::InternalError("from_bits failed"))?;
+        let value = port_info.ty.value_from_bits(&bits).map_err(|e| match e {
+            Either::Left(FromBitsInvalidValue) => {
+                VerilatorError::FromBitsInvalidValue(bits, port_info.ty.diagnostic_string())
+            }
+            Either::Right(FromBitsWrongLength) => VerilatorError::InternalError("from bits wrong length"),
+        })?;
 
         Ok(value)
     }
@@ -215,7 +219,7 @@ impl VerilatedInstance {
         let bits = port_info
             .ty
             .value_to_bits(value.inner)
-            .map_err(|_: WrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
+            .map_err(|_: ToBitsWrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
 
         let size_bits = bits.len();
         let size_bytes = port_size_bytes(size_bits);

@@ -1,3 +1,4 @@
+use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
@@ -27,7 +28,7 @@ use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use itertools::{Itertools, enumerate};
+use itertools::{Either, Itertools, enumerate};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
@@ -52,7 +53,7 @@ pub struct FunctionBits {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum FunctionBitsKind {
     ToBits,
-    FromBits,
+    FromBits { is_unsafe: bool },
 }
 
 // TODO find a better name for this
@@ -370,7 +371,7 @@ impl CompileItemContext<'_, '_> {
 
         match function {
             FunctionValue::User(function) => self.call_user_function(flow, function, args),
-            FunctionValue::Bits(function) => self.call_bits_function(span_call, function, args),
+            FunctionValue::Bits(function) => self.call_bits_function(span_call, span_target, function, args),
             &FunctionValue::StructNew(struct_elab) => self.call_struct_new(span_call, struct_elab, args),
             &FunctionValue::StructNewInfer(func_unique) => match *expected_ty {
                 Type::Struct(expected_elab) => {
@@ -645,6 +646,7 @@ impl CompileItemContext<'_, '_> {
     fn call_bits_function(
         &mut self,
         span_call: Span,
+        span_target: Span,
         function: &FunctionBits,
         args: Args<Option<Spanned<&str>>, Spanned<Value>>,
     ) -> DiagResult<Value> {
@@ -672,6 +674,7 @@ impl CompileItemContext<'_, '_> {
                 ));
             }
         };
+        let span_value = value.span;
 
         // actual implementation
         let FunctionBits { ty_hw, kind } = function;
@@ -685,13 +688,12 @@ impl CompileItemContext<'_, '_> {
                     value.as_ref(),
                 )?;
 
-                let ty_ir = ty_hw.as_ir(self.refs);
-                let width = ty_ir.size_bits();
-
                 // try as compile-time first so we get compile-time bits back
                 match CompileValue::try_from(&value.inner) {
                     Ok(value) => {
-                        let bits = ty_hw.value_to_bits(self.refs, span_call, &value)?;
+                        let bits = ty_hw.value_to_bits(self.refs, &value).map_err(|_: ToBitsWrongType| {
+                            diags.report_internal_error(span_call, "value_to_bits wrong type")
+                        })?;
                         let bits_wrapped = bits.into_iter().map(CompileValue::new_bool).collect_vec();
                         Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(bits_wrapped))))
                     }
@@ -702,17 +704,19 @@ impl CompileItemContext<'_, '_> {
                             span_call,
                             ty_hw.clone(),
                         )?;
-                        let ty_bits = HardwareType::Array(Arc::new(HardwareType::Bool), width);
-                        let bits_hw = HardwareValue {
+
+                        let ty_ir = ty_hw.as_ir(self.refs);
+                        let ty_bits = HardwareType::Array(Arc::new(HardwareType::Bool), ty_ir.size_bits());
+                        let value_bits = HardwareValue {
                             ty: ty_bits,
                             domain: value.domain,
                             expr: self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr)),
                         };
-                        Ok(Value::Hardware(bits_hw))
+                        Ok(Value::Hardware(value_bits))
                     }
                 }
             }
-            FunctionBitsKind::FromBits => {
+            &FunctionBitsKind::FromBits { is_unsafe } => {
                 let ty_ir = ty_hw.as_ir(self.refs);
                 let width = ty_ir.size_bits();
 
@@ -726,13 +730,24 @@ impl CompileItemContext<'_, '_> {
 
                 let result = match value {
                     MaybeCompile::Compile(v) => {
-                        let result = ty_hw.value_from_bits(self.refs, span_call, &v).map_err(|_| {
-                            let msg = format!(
-                                "while converting value `{:?}` into type `{}`",
-                                v,
-                                ty_hw.value_string(elab)
-                            );
-                            diags.report_simple("`from_bits` failed", span_call, msg)
+                        let result = ty_hw.value_from_bits(self.refs, &v).map_err(|e| match e {
+                            Either::Left(FromBitsInvalidValue) => {
+                                if is_unsafe {
+                                    let diag = Diagnostic::new("invalid bit pattern for type")
+                                        .add_info(span_target, format!("target type `{}`", ty_hw.value_string(elab)))
+                                        .add_error(span_value, format!("got bits `{:?}`", v))
+                                        .finish();
+                                    diags.report(diag)
+                                } else {
+                                    diags.report_internal_error(
+                                        span_call,
+                                        "value_from_bits invalid value but not unsafe",
+                                    )
+                                }
+                            }
+                            Either::Right(FromBitsWrongLength) => {
+                                diags.report_internal_error(span_call, "value_from_bits wrong length")
+                            }
                         })?;
                         Value::from(result)
                     }

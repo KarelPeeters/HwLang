@@ -316,7 +316,7 @@ pub enum IrExpressionLarge {
     // slice
     TupleIndex {
         base: IrExpression,
-        index: BigUint,
+        index: usize,
     },
     ArrayIndex {
         base: IrExpression,
@@ -558,9 +558,9 @@ impl IrExpression {
                         IrType::Array(Box::new(ty_inner.clone()), len.clone())
                     }
 
-                    IrExpressionLarge::TupleIndex { base, index } => {
+                    &IrExpressionLarge::TupleIndex { ref base, index } => {
                         let inner = unwrap_match!(base.ty(module, locals), IrType::Tuple(inner) => inner);
-                        inner[usize::try_from(index).unwrap()].clone()
+                        inner[index].clone()
                     }
                     // TODO store resulting type in expression instead?
                     IrExpressionLarge::ArrayIndex { base, .. } => {

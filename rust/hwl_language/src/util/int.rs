@@ -14,9 +14,6 @@ pub enum IntRepresentation {
     Signed { width_1: u64 },
 }
 
-#[derive(Debug)]
-pub struct InvalidRange;
-
 impl IntRepresentation {
     pub fn for_range(range: ClosedNonEmptyRange<&BigInt>) -> Self {
         let ClosedNonEmptyRange { start, end } = range;
@@ -72,11 +69,10 @@ impl IntRepresentation {
         }
     }
 
-    pub fn value_to_bits(self, value: &BigInt, bits: &mut Vec<bool>) -> Result<(), InvalidRange> {
+    pub fn value_to_bits(self, value: &BigInt, bits: &mut Vec<bool>) {
         let range = self.range();
-        if !range.contains(value) {
-            return Err(InvalidRange);
-        }
+        assert!(range.contains(value));
+
         let len_start = bits.len();
 
         match self {
@@ -93,17 +89,14 @@ impl IntRepresentation {
             }
         }
 
-        assert_eq!(BigUint::from(bits.len()), BigUint::from(len_start) + self.size_bits());
-        Ok(())
+        assert_eq!(len_start as u64 + self.size_bits(), bits.len() as u64);
     }
 
-    pub fn value_from_bits(self, bits: &[bool]) -> Result<BigInt, InvalidRange> {
-        if bits.len() as u64 != self.size_bits() {
-            return Err(InvalidRange);
-        }
+    pub fn value_from_bits(self, bits: &[bool]) -> BigInt {
+        assert_eq!(self.size_bits(), bits.len() as u64);
 
         // TODO this is really inefficient, just construct from bits directly
-        match self {
+        let result = match self {
             IntRepresentation::Unsigned { width } => {
                 let mut result = BigUint::ZERO;
 
@@ -115,9 +108,7 @@ impl IntRepresentation {
                     }
                 }
 
-                let result = BigInt::from(result);
-                assert!(self.range().contains(&result));
-                Ok(result)
+                BigInt::from(result)
             }
             IntRepresentation::Signed { width_1 } => {
                 let mut result = BigUint::ZERO;
@@ -135,10 +126,12 @@ impl IntRepresentation {
                     result -= BigUint::pow_2_to(&BigUint::from(width_1));
                 }
 
-                assert!(self.range().contains(&result));
-                Ok(result)
+                result
             }
-        }
+        };
+
+        assert!(self.range().contains(&result));
+        result
     }
 }
 
