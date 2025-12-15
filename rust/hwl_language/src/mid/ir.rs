@@ -5,7 +5,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::range::ClosedNonEmptyRange;
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use derive_more::From;
 use hwl_util::swrite;
 use indexmap::IndexSet;
@@ -248,7 +248,7 @@ pub struct IrIfStatement {
 #[derive(Debug, Clone)]
 pub struct IrForStatement {
     pub index: IrVariable,
-    pub range: ClosedNonEmptyRange<BigInt>,
+    pub range: ClosedRange<BigInt>,
     pub block: IrBlock,
 }
 

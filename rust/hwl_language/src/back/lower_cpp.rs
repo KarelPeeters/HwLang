@@ -13,7 +13,7 @@ use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
-use crate::util::range::ClosedNonEmptyRange;
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use itertools::enumerate;
@@ -774,12 +774,14 @@ impl CodegenBlockContext<'_> {
                     swriteln!(self.f);
                 }
                 IrStatement::For(for_stmt) => {
+                    // TODO when properly implementing int types,
+                    //   be careful about end maybe not fitting inside the variable ty
                     let &IrForStatement {
                         index,
                         ref range,
                         ref block,
                     } = for_stmt;
-                    let ClosedNonEmptyRange { start, end } = range;
+                    let ClosedRange { start, end } = range;
 
                     let index_var = Evaluated::Inline(var_str(index, &self.locals[index]));
                     swrite!(

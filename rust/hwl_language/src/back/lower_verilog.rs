@@ -1119,31 +1119,38 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
             IrStatement::For(IrForStatement { index, range, block }) => {
                 let index = *index;
-                let index_ty = IrExpression::Variable(index).ty(self.module, self.locals).unwrap_int();
 
-                match NonZeroWidthRange::new(index_ty.as_ref()) {
-                    Ok(index_ty) => {
-                        let index = match self.name_map.map_var(index) {
-                            Ok(index) => index,
-                            Err(Either::Left(ZeroWidth)) => {
-                                return Err(diags.report_internal_error(stmt.span, "index var zero-width"));
-                            }
-                            Err(Either::Right(NotRead)) => {
-                                return Err(diags.report_internal_error(stmt.span, "index var not read"));
-                            }
-                        };
+                // we will need to form an inclusive range, which will give weird results for empty ranges
+                if !range.is_empty() {
+                    let ClosedRange { start, end } = range;
+                    let end_inc = end - 1;
 
-                        let start = lower_int_constant(index_ty, &range.start);
-                        let end = lower_int_constant(index_ty, &range.end);
-                        swriteln!(
-                            self.f,
-                            "{indent}for({index} = {start}; {index} < {end}; {index} = {index} + 1) begin"
-                        );
-                        self.lower_block_indented(block)?;
-                        swriteln!(self.f, "{indent}end");
-                    }
-                    Err(ZeroWidth) => {
-                        // the loop would also run for zero iterations, so just skip it
+                    let index_ty = IrExpression::Variable(index).ty(self.module, self.locals).unwrap_int();
+
+                    match NonZeroWidthRange::new(index_ty.as_ref()) {
+                        Ok(index_ty) => {
+                            let index = match self.name_map.map_var(index) {
+                                Ok(index) => index,
+                                Err(Either::Left(ZeroWidth)) => {
+                                    return Err(diags.report_internal_error(stmt.span, "index var zero-width"));
+                                }
+                                Err(Either::Right(NotRead)) => {
+                                    return Err(diags.report_internal_error(stmt.span, "index var not read"));
+                                }
+                            };
+
+                            let start = lower_int_constant(index_ty, start);
+                            let end_inc = lower_int_constant(index_ty, &end_inc);
+                            swriteln!(
+                                self.f,
+                                "{indent}for({index} = {start}; {index} <= {end_inc}; {index} = {index} + 1) begin"
+                            );
+                            self.lower_block_indented(block)?;
+                            swriteln!(self.f, "{indent}end");
+                        }
+                        Err(ZeroWidth) => {
+                            // the loop would also run for zero iterations, so just skip it
+                        }
                     }
                 }
             }

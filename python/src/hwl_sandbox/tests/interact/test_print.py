@@ -1,11 +1,12 @@
+import hwl
+
 from hwl_sandbox.common.util import compile_custom
 
 
-# TODO also test hardware prints
 def test_print_compile():
     c = compile_custom("""
-        import std.util.print;
         import std.types.[int, str];
+        import std.util.print;
         
         struct Point(T: type) { x: T, y: T }
         enum Option(T: type) { None, Some(T) }
@@ -43,3 +44,29 @@ def test_print_compile():
     with c.capture_prints() as capture:
         f()
     assert capture.prints == expected_prints
+
+
+# TODO capture outputs and check that they are correct
+def test_print_hardware():
+    c = compile_custom("""
+        import std.types.[bool, int, uint, str];
+        import std.util.print;
+        
+        struct Point(T: type) { x: T, y: T }
+        enum Option(T: type) { None, Some(T) }
+        
+        module f ports(x: in async uint(4)) {
+            comb {
+                print("{x == 0}");
+                print("{x}");
+                print("{(x)}");
+                print("{(x, x)}");
+                print("{[x, x]}");
+                print("{Point(uint(4)).new(x=x, y=x)}");
+                print("{Option(uint(4)).None}");
+                print("{Option(uint(4)).Some(x)}");
+            }
+        }
+    """)
+    f: hwl.Module = c.resolve("top.f")
+    print(f.as_verilog())

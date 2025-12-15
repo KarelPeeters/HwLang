@@ -17,7 +17,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, Range};
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
 use hwl_util::swrite;
 use itertools::{Itertools, enumerate, zip_eq};
 use std::borrow::Cow;
@@ -355,7 +355,7 @@ fn print_hardware_sub(
                 // push the loop
                 let for_stmt = IrForStatement {
                     index,
-                    range,
+                    range: ClosedRange::from(range),
                     block: IrBlock {
                         statements: element_block,
                     },
