@@ -309,8 +309,8 @@ pub enum IrExpressionLarge {
     IntCompare(IrIntCompareOp, IrExpression, IrExpression),
 
     // concat
+    // TODO always store these in intermediate variable to avoid large repeated expressions
     TupleLiteral(Vec<IrExpression>),
-    // TODO remove spread operator from this, replace with concat operator?
     ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
 
     // slice
