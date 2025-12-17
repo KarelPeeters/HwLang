@@ -14,6 +14,7 @@ use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
+use crate::util::range_multi::MultiRange;
 use annotate_snippets::Level;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -256,7 +257,7 @@ pub fn check_type_is_int(
     reason: TypeContainsReason,
     value: Spanned<Value>,
 ) -> DiagResult<MaybeCompile<BigInt, HardwareInt>> {
-    check_type_contains_value(diags, elab, reason, &Type::Int(Range::OPEN), value.as_ref())?;
+    check_type_contains_value(diags, elab, reason, &Type::Int(MultiRange::open()), value.as_ref())?;
 
     let err = || diags.report_internal_error(value.span, "unexpected value kind for int type");
     match value.inner {
@@ -282,11 +283,11 @@ pub fn check_type_is_uint(
     reason: TypeContainsReason,
     value: Spanned<Value>,
 ) -> DiagResult<MaybeCompile<BigUint, HardwareUInt>> {
-    let range = Range {
+    let ty_uint = Type::Int(MultiRange::from(Range {
         start: Some(BigInt::ZERO),
         end: None,
-    };
-    check_type_contains_value(diags, elab, reason, &Type::Int(range), value.as_ref())?;
+    }));
+    check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
 
     let err = || diags.report_internal_error(value.span, "unexpected value kind for uint type");
     match value.inner {
@@ -313,7 +314,7 @@ pub fn check_type_is_int_hardware(
     value: Spanned<HardwareValue>,
 ) -> DiagResult<HardwareInt> {
     let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
-    check_type_contains_type(diags, elab, reason, &Type::Int(Range::OPEN), value_ty.as_ref())?;
+    check_type_contains_type(diags, elab, reason, &Type::Int(MultiRange::open()), value_ty.as_ref())?;
 
     match value.inner.ty {
         HardwareType::Int(ty) => Ok(HardwareValue {
@@ -331,11 +332,11 @@ pub fn check_type_is_uint_compile(
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<BigUint> {
-    let target_ty = Type::Int(Range {
+    let ty_uint = Type::Int(MultiRange::from(Range {
         start: Some(BigInt::ZERO),
         end: None,
-    });
-    check_type_contains_value(diags, elab, reason, &target_ty, value.as_ref())?;
+    }));
+    check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
 
     let err = || diags.report_internal_error(value.span, "expected uint value");
     match value.inner {

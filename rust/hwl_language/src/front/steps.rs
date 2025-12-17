@@ -10,6 +10,7 @@ use crate::syntax::pos::Span;
 use crate::syntax::pos::Spanned;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::ClosedNonEmptyRange;
+use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
 use itertools::Itertools;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -130,7 +131,7 @@ impl ArraySteps<ArrayStep> {
                     ArrayStepCompile::ArrayIndex(index) => {
                         check_range_index(
                             diags,
-                            Spanned::new(step.span, ClosedNonEmptyRange::single(index.clone()).as_ref()),
+                            Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(index.clone())),
                             ty_array_len,
                         )?;
                         let step_ir = IrTargetStep::ArrayIndex(IrExpression::Int(index.clone()));
@@ -139,7 +140,7 @@ impl ArraySteps<ArrayStep> {
                     ArrayStepCompile::ArraySlice { start, length: len } => {
                         let len = check_range_slice(
                             diags,
-                            Spanned::new(step.span, ClosedNonEmptyRange::single(start.clone()).as_ref()),
+                            Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(start.clone())),
                             len.as_ref().map(|len| Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
@@ -149,14 +150,14 @@ impl ArraySteps<ArrayStep> {
                 },
                 ArrayStep::Hardware(step_inner) => match step_inner {
                     ArrayStepHardware::ArrayIndex(index) => {
-                        check_range_index(diags, Spanned::new(step.span, index.ty.as_ref()), ty_array_len)?;
+                        check_range_index(diags, Spanned::new(step.span, &index.ty), ty_array_len)?;
                         let step_ir = IrTargetStep::ArrayIndex(index.expr.clone());
                         (step_ir, None)
                     }
                     ArrayStepHardware::ArraySlice { start, length: len } => {
                         let len = check_range_slice(
                             diags,
-                            Spanned::new(step.span, start.ty.as_ref()),
+                            Spanned::new(step.span, &start.ty),
                             Some(Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
@@ -277,7 +278,7 @@ impl ArraySteps<ArrayStep> {
                         ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)) => {
                             check_range_index(
                                 diags,
-                                Spanned::new(step.span, ClosedNonEmptyRange::single(index.clone()).as_ref()),
+                                Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(index.clone())),
                                 curr_array_len.as_ref(),
                             )?;
                             (
@@ -292,7 +293,7 @@ impl ArraySteps<ArrayStep> {
                         ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length: len }) => {
                             let len = check_range_slice(
                                 diags,
-                                Spanned::new(step.span, ClosedNonEmptyRange::single(start.clone()).as_ref()),
+                                Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(start.clone())),
                                 len.as_ref().map(|len| Spanned::new(step.span, len)),
                                 curr_array_len.as_ref(),
                             )?;
@@ -307,11 +308,7 @@ impl ArraySteps<ArrayStep> {
                             )
                         }
                         ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index)) => {
-                            check_range_index(
-                                diags,
-                                Spanned::new(step.span, index.ty.as_ref()),
-                                curr_array_len.as_ref(),
-                            )?;
+                            check_range_index(diags, Spanned::new(step.span, &index.ty), curr_array_len.as_ref())?;
                             (
                                 IrExpressionLarge::ArrayIndex {
                                     base: curr_inner.expr,
@@ -324,7 +321,7 @@ impl ArraySteps<ArrayStep> {
                         ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length: len }) => {
                             let len = check_range_slice(
                                 diags,
-                                Spanned::new(step.span, start.ty.as_ref()),
+                                Spanned::new(step.span, &start.ty),
                                 Some(Spanned::new(step.span, len)),
                                 curr_array_len.as_ref(),
                             )?;
@@ -503,13 +500,13 @@ impl ArraySteps<&ArrayStepCompile> {
 
 pub fn check_range_index(
     diags: &Diagnostics,
-    index: Spanned<ClosedNonEmptyRange<&BigInt>>,
+    index: Spanned<&ClosedNonEmptyMultiRange<BigInt>>,
     array_len: Spanned<&BigUint>,
 ) -> DiagResult {
     let ClosedNonEmptyRange {
         start: index_start,
         end: index_end,
-    } = index.inner;
+    } = index.inner.enclosing_range();
 
     if &BigInt::ZERO <= index_start && index_end <= &BigInt::from(array_len.inner.clone()) {
         Ok(())
@@ -536,18 +533,14 @@ pub fn check_range_index_compile(
     index: Spanned<&BigInt>,
     array_len: Spanned<usize>,
 ) -> DiagResult<usize> {
-    let index_range = index.cloned().map_inner(ClosedNonEmptyRange::single);
-    check_range_index(
-        diags,
-        index_range.as_ref().map_inner(ClosedNonEmptyRange::as_ref),
-        array_len.map_inner(BigUint::from).as_ref(),
-    )?;
+    let index_range = index.cloned().map_inner(ClosedNonEmptyMultiRange::single);
+    check_range_index(diags, index_range.as_ref(), array_len.map_inner(BigUint::from).as_ref())?;
     Ok(usize::try_from(index.inner).unwrap())
 }
 
 pub fn check_range_slice(
     diags: &Diagnostics,
-    slice_start: Spanned<ClosedNonEmptyRange<&BigInt>>,
+    slice_start: Spanned<&ClosedNonEmptyMultiRange<BigInt>>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<&BigUint>,
 ) -> DiagResult<BigUint> {
@@ -575,7 +568,7 @@ pub fn check_range_slice(
     let ClosedNonEmptyRange {
         start: slice_start_start,
         end: slice_start_end,
-    } = slice_start.inner;
+    } = slice_start.inner.enclosing_range();
 
     if slice_start_start < &BigInt::ZERO || slice_start_end > &BigInt::from(array_len.inner.clone()) {
         let diag = Diagnostic::new("array slice start out of bounds")
@@ -627,10 +620,10 @@ pub fn check_range_slice_compile(
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<usize>,
 ) -> DiagResult<SliceInfo> {
-    let start_range = slice_start.cloned().map_inner(ClosedNonEmptyRange::single);
+    let start_range = slice_start.cloned().map_inner(ClosedNonEmptyMultiRange::single);
     check_range_slice(
         diags,
-        start_range.as_ref().map_inner(ClosedNonEmptyRange::as_ref),
+        start_range.as_ref(),
         slice_len,
         array_len.map_inner(BigUint::from).as_ref(),
     )?;

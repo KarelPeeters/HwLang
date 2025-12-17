@@ -1,10 +1,11 @@
-use crate::util::range::{ClosedNonEmptyRange, ClosedRange, NonEmptyRange, Range, RangeEmpty};
-use itertools::Itertools;
+use crate::util::data::VecExt;
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange, NonEmptyRange, Range, RangeEmpty, RangeOpen};
+use itertools::{Either, Itertools};
 use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct MultiRange<T> {
-    // TODO use SmallVec?
+    // TODO use SmallVec
     ranges: Vec<NonEmptyRange<T>>,
 }
 
@@ -13,21 +14,80 @@ pub struct ClosedMultiRange<T> {
     inner: MultiRange<T>,
 }
 
-impl<T> MultiRange<T> {
-    pub const EMPTY: MultiRange<T> = MultiRange { ranges: vec![] };
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub struct ClosedNonEmptyMultiRange<T> {
+    inner: MultiRange<T>,
+}
 
-    #[must_use]
-    pub fn contains(&self, x: &T) -> bool
+pub trait AnyMultiRange<T> {
+    fn as_multi_range(&self) -> &MultiRange<T>;
+
+    fn is_empty(&self) -> bool {
+        self.as_multi_range().ranges.is_empty()
+    }
+
+    fn as_single<'a>(&'a self) -> Option<&'a T>
+    where
+        T: Ord,
+        &'a T: std::ops::Add<u8, Output = T>,
+    {
+        self.as_multi_range().ranges.single_ref()?.as_ref().as_single()
+    }
+
+    fn contains(&self, value: &T) -> bool
     where
         T: Ord,
     {
-        // TODO speed up with binary search?
-        self.ranges.iter().any(|r| r.contains(x))
+        // TODO binary search
+        self.as_multi_range().ranges.iter().any(|r| r.contains(value))
     }
 
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
+    fn contains_range<'a>(&self, other: impl Into<Range<&'a T>>) -> bool
+    where
+        T: Ord + 'a,
+    {
+        // TODO binary search
+        let other = other.into();
+        self.as_multi_range().ranges.iter().any(|r| r.contains_range(other))
+    }
+
+    fn contains_multi_range(&self, other: &impl AnyMultiRange<T>) -> bool
+    where
+        T: Ord,
+    {
+        // TODO joint iteration
+        other
+            .as_multi_range()
+            .ranges
+            .iter()
+            .all(|other_range| self.contains_range(other_range.as_ref()))
+    }
+}
+
+impl<T> MultiRange<T> {
+    pub const EMPTY: MultiRange<T> = MultiRange { ranges: vec![] };
+
+    pub fn open() -> MultiRange<T> {
+        MultiRange {
+            ranges: vec![NonEmptyRange::OPEN],
+        }
+    }
+
+    pub fn single(value: T) -> MultiRange<T>
+    where
+        for<'a> &'a T: std::ops::Add<u8, Output = T>,
+    {
+        MultiRange {
+            ranges: vec![NonEmptyRange::single(value)],
+        }
+    }
+
+    pub fn ranges(&self) -> impl Iterator<Item = NonEmptyRange<&T>> {
+        self.ranges.iter().map(NonEmptyRange::as_ref)
+    }
+
+    pub fn as_single_range(&self) -> Option<&NonEmptyRange<T>> {
+        self.ranges.single_ref()
     }
 
     fn assert_valid(&self)
@@ -44,7 +104,7 @@ impl<T> MultiRange<T> {
                 let curr_end = curr.end.as_ref().unwrap();
                 let next_start = next.start.as_ref().unwrap();
                 assert!(
-                    curr_end <= next_start,
+                    curr_end < next_start,
                     "multi ranges must be non-overlapping and non-adjacent"
                 );
             }
@@ -181,6 +241,24 @@ impl<T> MultiRange<T> {
     {
         self.complement().union(range).complement()
     }
+
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> MultiRange<U> {
+        let ranges = self
+            .ranges
+            .into_iter()
+            .map(|r| NonEmptyRange {
+                start: r.start.map(&mut f),
+                end: r.end.map(&mut f),
+            })
+            .collect();
+        MultiRange { ranges }
+    }
+}
+
+impl<T> AnyMultiRange<T> for MultiRange<T> {
+    fn as_multi_range(&self) -> &MultiRange<T> {
+        self
+    }
 }
 
 impl<T> ClosedMultiRange<T> {
@@ -193,22 +271,11 @@ impl<T> ClosedMultiRange<T> {
         T: Ord,
     {
         self.inner.assert_valid();
+
+        // check that enclosing range is closed
         if let Some(range) = self.enclosing_range() {
             range.assert_valid();
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
-    pub fn iter_ranges(&self) -> impl Iterator<Item = ClosedNonEmptyRange<T>>
-    where
-        T: Ord + Clone,
-    {
-        self.inner.ranges.iter().map(|r| {
-            ClosedNonEmptyRange::try_from(r.clone()).expect("started from closed, all ranges should be closed")
-        })
     }
 
     pub fn enclosing_range(&self) -> Option<ClosedNonEmptyRange<&T>>
@@ -221,14 +288,43 @@ impl<T> ClosedMultiRange<T> {
         )
     }
 
+    pub fn ranges(&self) -> impl Iterator<Item = ClosedNonEmptyRange<&T>>
+    where
+        T: Ord,
+    {
+        self.inner.ranges.iter().map(|r| {
+            let r = r.as_ref();
+            ClosedNonEmptyRange::try_from(r).unwrap()
+        })
+    }
+
     #[must_use]
-    pub fn subtract(&mut self, range: &MultiRange<T>) -> ClosedMultiRange<T>
+    pub fn subtract(&self, range: &MultiRange<T>) -> ClosedMultiRange<T>
     where
         T: Ord + Clone,
     {
-        // subtracting from a closed range will always yield a closed (or empty) range
+        // subtracting from a closed range will always yield a closed (possibly empty) range
         ClosedMultiRange {
             inner: self.inner.subtract(range),
+        }
+    }
+}
+
+impl<T> ClosedNonEmptyMultiRange<T> {
+    pub fn ranges(&self) -> impl Iterator<Item = ClosedNonEmptyRange<&T>>
+    where
+        T: Ord,
+    {
+        self.inner.ranges.iter().map(|r| {
+            let r = r.as_ref();
+            ClosedNonEmptyRange::try_from(r).unwrap()
+        })
+    }
+
+    pub fn enclosing_range(&self) -> ClosedNonEmptyRange<&T> {
+        ClosedNonEmptyRange {
+            start: self.inner.ranges.first().unwrap().start.as_ref().unwrap(),
+            end: self.inner.ranges.last().unwrap().end.as_ref().unwrap(),
         }
     }
 }
@@ -258,9 +354,48 @@ impl<T: Ord> From<ClosedRange<T>> for ClosedMultiRange<T> {
     }
 }
 
+impl<T: Ord> From<ClosedNonEmptyRange<T>> for ClosedNonEmptyMultiRange<T> {
+    fn from(value: ClosedNonEmptyRange<T>) -> Self {
+        ClosedNonEmptyMultiRange {
+            inner: MultiRange::from(Range::from(value)),
+        }
+    }
+}
+
 impl<T: Ord> From<ClosedNonEmptyRange<T>> for ClosedMultiRange<T> {
     fn from(value: ClosedNonEmptyRange<T>) -> Self {
         ClosedMultiRange::from(ClosedRange::from(value))
+    }
+}
+
+impl<T: Ord> From<ClosedNonEmptyMultiRange<T>> for ClosedMultiRange<T> {
+    fn from(value: ClosedNonEmptyMultiRange<T>) -> Self {
+        ClosedMultiRange { inner: value.inner }
+    }
+}
+
+impl<T> TryFrom<ClosedMultiRange<T>> for ClosedNonEmptyMultiRange<T> {
+    type Error = RangeEmpty;
+    fn try_from(value: ClosedMultiRange<T>) -> Result<Self, Self::Error> {
+        let ClosedMultiRange { inner } = value;
+        if inner.is_empty() {
+            Err(RangeEmpty)
+        } else {
+            Ok(ClosedNonEmptyMultiRange { inner })
+        }
+    }
+}
+
+impl<T> TryFrom<MultiRange<T>> for ClosedNonEmptyMultiRange<T> {
+    type Error = Either<RangeEmpty, RangeOpen>;
+    fn try_from(value: MultiRange<T>) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            Err(Either::Left(RangeEmpty))
+        } else if value.ranges.first().unwrap().start.is_none() || value.ranges.last().unwrap().end.is_none() {
+            Err(Either::Right(RangeOpen))
+        } else {
+            Ok(ClosedNonEmptyMultiRange { inner: value })
+        }
     }
 }
 
@@ -271,12 +406,63 @@ impl<T: Display> Debug for MultiRange<T> {
     }
 }
 
-impl<T: Display> Debug for ClosedMultiRange<T> {
+impl<T: Display> Display for MultiRange<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let ClosedMultiRange { inner } = self;
-        write!(f, "ClosedMultiRange({})", inner.ranges.iter().format(", "))
+        let MultiRange { ranges } = self;
+        write!(f, "{}", ranges.iter().format(", "))
     }
 }
+
+macro_rules! impl_common {
+    ($R:ident) => {
+        impl<T> AnyMultiRange<T> for $R<T> {
+            fn as_multi_range(&self) -> &MultiRange<T> {
+                &self.inner
+            }
+        }
+
+        impl<T> $R<T> {
+            pub fn map<U>(self, f: impl FnMut(T) -> U) -> $R<U> {
+                $R {
+                    inner: self.inner.map(f),
+                }
+            }
+        }
+
+        impl<T> $R<T>
+        where
+            for<'a> &'a T: std::ops::Add<u8, Output = T>,
+        {
+            pub fn single(value: T) -> $R<T> {
+                $R {
+                    inner: MultiRange::single(value),
+                }
+            }
+        }
+
+        impl<T: Display> Debug for $R<T> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                let $R { inner } = self;
+                write!(f, "{}({})", stringify!($R), inner.ranges.iter().format(", "))
+            }
+        }
+
+        impl<T: Display> Display for $R<T> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.inner)
+            }
+        }
+
+        impl<T> From<$R<T>> for MultiRange<T> {
+            fn from(value: $R<T>) -> Self {
+                value.inner
+            }
+        }
+    };
+}
+
+impl_common!(ClosedMultiRange);
+impl_common!(ClosedNonEmptyMultiRange);
 
 #[cfg(test)]
 mod test {

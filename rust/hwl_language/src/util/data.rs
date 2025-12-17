@@ -44,10 +44,9 @@ pub trait VecExt<T>: Sized {
         }
     }
 
-    #[allow(clippy::result_unit_err)]
-    fn single_ref(&self) -> Result<&T, ()> {
+    fn single_ref(&self) -> Option<&T> {
         let slf = self.as_vec();
-        if slf.len() == 1 { Ok(&slf[0]) } else { Err(()) }
+        if slf.len() == 1 { Some(&slf[0]) } else { None }
     }
 
     fn with_pushed<R>(&mut self, v: T, f: impl FnOnce(&mut Vec<T>) -> R) -> R {

@@ -12,7 +12,8 @@ use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::NonEmptyVec;
 use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, Range};
+use crate::util::range::Range;
+use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultNeverExt};
 use itertools::zip_eq;
 use std::sync::Arc;
@@ -67,8 +68,8 @@ pub struct HardwareValue<T = HardwareType, E = IrExpression> {
     pub expr: E,
 }
 
-pub type HardwareInt = HardwareValue<ClosedNonEmptyRange<BigInt>>;
-pub type HardwareUInt = HardwareValue<ClosedNonEmptyRange<BigUint>>;
+pub type HardwareInt = HardwareValue<ClosedNonEmptyMultiRange<BigInt>>;
+pub type HardwareUInt = HardwareValue<ClosedNonEmptyMultiRange<BigUint>>;
 pub type HardwareBool = HardwareValue<TypeBool>;
 
 #[derive(Debug, Clone)]
@@ -196,7 +197,8 @@ impl ValueCommon for SimpleCompileValue {
             },
             SimpleCompileValue::Int(v) => match &ty {
                 HardwareType::Int(ty) if ty.contains(v) => {
-                    let expr = IrExpressionLarge::ExpandIntRange(ty.clone(), IrExpression::Int(v.clone()));
+                    let expr =
+                        IrExpressionLarge::ExpandIntRange(ty.enclosing_range().cloned(), IrExpression::Int(v.clone()));
                     Ok(large.push_expr(expr))
                 }
                 _ => Err(err_type()),
@@ -371,8 +373,11 @@ impl ValueCommon for HardwareValue {
         match (&self.ty, &ty) {
             (HardwareType::Bool, HardwareType::Bool) => Ok(self.expr.clone()),
             (HardwareType::Int(ty_curr), HardwareType::Int(ty)) => {
-                if ty.contains_range(ty_curr.as_ref()) {
-                    Ok(large.push_expr(IrExpressionLarge::ExpandIntRange(ty.clone(), self.expr.clone())))
+                if ty.contains_multi_range(ty_curr) {
+                    Ok(large.push_expr(IrExpressionLarge::ExpandIntRange(
+                        ty.enclosing_range().cloned(),
+                        self.expr.clone(),
+                    )))
                 } else {
                     Err(err_type())
                 }
@@ -589,7 +594,7 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
             }
             MixedCompoundValue::Range(v) => {
                 fn try_map_bound<I: Clone>(
-                    b: &MaybeCompile<I, HardwareValue<ClosedNonEmptyRange<I>>>,
+                    b: &MaybeCompile<I, HardwareValue<ClosedNonEmptyMultiRange<I>>>,
                 ) -> Result<I, NotCompile> {
                     match b {
                         MaybeCompile::Compile(b) => Ok(b.clone()),
@@ -698,7 +703,7 @@ impl Typed for SimpleCompileValue {
         match self {
             SimpleCompileValue::Type(_) => Type::Type,
             SimpleCompileValue::Bool(_) => Type::Bool,
-            SimpleCompileValue::Int(v) => Type::Int(Range::from(ClosedNonEmptyRange::single(v.clone()))),
+            SimpleCompileValue::Int(v) => Type::Int(MultiRange::single(v.clone())),
             SimpleCompileValue::Array(values) => {
                 // TODO precompute this once? this can get slow for large arrays
                 let ty_inner = Type::union_all(values.iter().map(CompileValue::ty));
@@ -774,18 +779,18 @@ impl<C, H> MaybeCompile<C, H> {
 }
 
 impl MaybeCompile<BigInt, HardwareInt> {
-    pub fn range(&self) -> ClosedNonEmptyRange<BigInt> {
+    pub fn range(&self) -> ClosedNonEmptyMultiRange<BigInt> {
         match self {
-            MaybeCompile::Compile(value) => ClosedNonEmptyRange::single(value.clone()),
+            MaybeCompile::Compile(value) => ClosedNonEmptyMultiRange::single(value.clone()),
             MaybeCompile::Hardware(value) => value.ty.clone(),
         }
     }
 }
 
 impl MaybeCompile<BigUint, HardwareUInt> {
-    pub fn range(&self) -> ClosedNonEmptyRange<BigUint> {
+    pub fn range(&self) -> ClosedNonEmptyMultiRange<BigUint> {
         match self {
-            MaybeCompile::Compile(value) => ClosedNonEmptyRange::single(value.clone()),
+            MaybeCompile::Compile(value) => ClosedNonEmptyMultiRange::single(value.clone()),
             MaybeCompile::Hardware(value) => value.ty.clone(),
         }
     }

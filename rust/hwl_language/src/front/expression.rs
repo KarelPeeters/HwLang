@@ -37,12 +37,12 @@ use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
 use crate::front::module::ExtraRegisterInit;
 use crate::front::range_arithmetic::{
-    range_binary_add, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow, range_binary_sub,
-    range_unary_neg,
+    multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
+    multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
 use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, Range};
-use crate::util::range_multi::MultiRange;
+use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
+use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultDoubleExt, result_pair};
 use annotate_snippets::Level;
@@ -283,7 +283,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: Expression, op_span: Span| {
                     let bound_span = bound.span;
-                    let bound = self.eval_expression(scope, flow, &Type::Int(Range::OPEN), bound)?;
+                    let bound = self.eval_expression(scope, flow, &Type::Int(MultiRange::open()), bound)?;
 
                     let reason = TypeContainsReason::Operator(op_span);
                     let bound = check_type_is_int(diags, elab, reason, bound)?;
@@ -309,9 +309,9 @@ impl<'a> CompileItemContext<'a, '_> {
                             let end_range = end.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.end <= end_range.start) {
-                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
-                                let msg_end = message_range_or_single("end", end_range.as_ref(), None);
+                            if !(start_range.enclosing_range().end <= end_range.enclosing_range().start) {
+                                let msg_start = message_range_or_single("start", &start_range, None);
+                                let msg_end = message_range_or_single("end", &end_range, None);
                                 let diag = Diagnostic::new("range requires that start < end")
                                     .add_error(op_span, "range constructed here")
                                     .add_info(start.span, msg_start)
@@ -344,9 +344,9 @@ impl<'a> CompileItemContext<'a, '_> {
                             let end_inc_range = end_inc.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(&start_range.end - 1 <= end_inc_range.start) {
-                                let msg_start = message_range_or_single("start", start_range.as_ref(), None);
-                                let msg_end = message_range_or_single("end", end_inc_range.as_ref(), None);
+                            if !(start_range.enclosing_range().end - 1 <= *end_inc_range.enclosing_range().start) {
+                                let msg_start = message_range_or_single("start", &start_range, None);
+                                let msg_end = message_range_or_single("end", &end_inc_range, None);
                                 let diag = Diagnostic::new("inclusive range requires that start <= end")
                                     .add_error(op_span, "inclusive range constructed here")
                                     .add_info(start.span, msg_start)
@@ -364,12 +364,12 @@ impl<'a> CompileItemContext<'a, '_> {
 
                                 let end_expr = IrExpressionLarge::IntArithmetic(
                                     IrIntArithmeticOp::Add,
-                                    end_range.clone(),
+                                    end_range.enclosing_range().cloned(),
                                     end_inc.expr,
                                     IrExpression::Int(BigInt::ONE),
                                 );
                                 MaybeCompile::Hardware(HardwareInt {
-                                    ty: end_range.clone(),
+                                    ty: end_range,
                                     domain: end_inc.domain,
                                     expr: self.large.push_expr(end_expr),
                                 })
@@ -383,10 +383,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     RangeLiteral::Length { op_span, start, length } => {
                         let start = eval_bound(start, op_span);
 
-                        let range_uint = Range {
+                        let range_uint = MultiRange::from(Range {
                             start: Some(BigInt::ZERO),
                             end: None,
-                        };
+                        });
                         let length = self
                             .eval_expression(scope, flow, &Type::Int(range_uint), length)
                             .and_then(|length| {
@@ -415,7 +415,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let end = match pair_compile_int(start.clone(), length) {
                                     MaybeCompile::Compile((start, length)) => MaybeCompile::Compile(start + length),
                                     MaybeCompile::Hardware((start, length)) => {
-                                        let range = range_binary_add(start.ty.as_ref(), length.ty.as_ref());
+                                        let range = multi_range_binary_add(&start.ty, &length.ty);
                                         let result = build_binary_int_arithmetic_op(
                                             IrIntArithmeticOp::Add,
                                             &mut self.large,
@@ -511,10 +511,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     match operand_int {
                         MaybeCompile::Compile(c) => Value::new_int(-c),
                         MaybeCompile::Hardware(v) => {
-                            let range = range_unary_neg(v.ty.as_ref());
+                            let range = multi_range_unary_neg(&v.ty);
                             let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
                                 IrIntArithmeticOp::Sub,
-                                range.clone(),
+                                range.enclosing_range().cloned(),
                                 IrExpression::Int(BigInt::ZERO),
                                 v.expr,
                             ));
@@ -570,10 +570,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                 return Err(diags.report_todo(len.span(), "spread in array type lengths"));
                             }
                         };
-                        let ty_uint = Type::Int(Range {
+                        let ty_uint = Type::Int(MultiRange::from(Range {
                             start: Some(BigInt::ZERO),
                             end: None,
-                        });
+                        }));
                         let len = self.eval_expression_as_compile(scope, flow, &ty_uint, len, "array type length")?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, elab, reason, len)
@@ -700,7 +700,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let target_inner = match target.inner {
                     Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
                         // handle integer calls here
-                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, range), args?)?;
+                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, &range), args?)?;
                         return Ok(ValueInner::Value(Value::new_ty(Type::Int(result))));
                     }
                     Value::Simple(SimpleCompileValue::Function(f)) => f,
@@ -1266,10 +1266,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 .eval_expression(scope, flow, &Type::Any, start)
                 .and_then(|start| check_type_is_int(diags, elab, reason, start));
 
-            let ty_uint = Type::Int(Range {
+            let ty_uint = Type::Int(MultiRange::from(Range {
                 start: Some(BigInt::ZERO),
                 end: None,
-            });
+            }));
             let len = self
                 .eval_expression_as_compile(scope, flow, &ty_uint, len, "range length")
                 .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len));
@@ -1854,28 +1854,32 @@ impl<'a> CompileItemContext<'a, '_> {
     }
 }
 
+// TODO support multi-ranges
 fn eval_int_ty_call(
     refs: CompileRefs,
     span_call: Span,
-    target_range: Spanned<Range<BigInt>>,
+    target_range: Spanned<&MultiRange<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
-) -> DiagResult<Range<BigInt>> {
+) -> DiagResult<MultiRange<BigInt>> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
     // int calls should only work for `int` and `uint`, detect which of these it is here
-    let target_signed = match target_range.inner {
-        Range { start: None, end: None } => true,
-        Range {
+    let target_signed = match target_range.inner.as_single_range() {
+        Some(NonEmptyRange { start: None, end: None }) => true,
+        Some(NonEmptyRange {
             start: Some(BigInt::ZERO),
             end: None,
-        } => false,
+        }) => false,
         _ => {
             let diag = Diagnostic::new("base type must be int or uint for int type constraining")
                 .add_error(span_call, "attempt to constrain int type here")
                 .add_info(
                     target_range.span,
-                    format!("base type `{}` here", Type::Int(target_range.inner).value_string(elab)),
+                    format!(
+                        "base type `{}` here",
+                        Type::Int(target_range.inner.clone()).value_string(elab)
+                    ),
                 )
                 .finish();
             return Err(diags.report(diag));
@@ -1883,6 +1887,7 @@ fn eval_int_ty_call(
     };
 
     // ensure single unnamed compile-time arg
+    // TODO support multiple ranges
     let arg = args.inner.single().map_err(|_| {
         diags.report_simple(
             "expected single argument for int type",
@@ -1964,7 +1969,7 @@ fn eval_int_ty_call(
             return Err(diags.report(diag));
         }
     };
-    Ok(result)
+    Ok(MultiRange::from(result))
 }
 
 pub enum ForIterator {
@@ -2056,7 +2061,7 @@ fn pair_compile_int(
         (left, right) => {
             let map = |x: MaybeCompile<BigInt, HardwareInt>| match x {
                 MaybeCompile::Compile(x) => HardwareInt {
-                    ty: ClosedNonEmptyRange::single(x.clone()),
+                    ty: ClosedNonEmptyMultiRange::single(x.clone()),
                     domain: ValueDomain::Const,
                     expr: IrExpression::Int(x),
                 },
@@ -2103,7 +2108,7 @@ pub fn eval_binary_expression(
             match pair_compile_int(left, right) {
                 MaybeCompile::Compile((left, right)) => Value::new_int(left + right),
                 MaybeCompile::Hardware((left, right)) => {
-                    let range = range_binary_add(left.ty.as_ref(), right.ty.as_ref());
+                    let range = multi_range_binary_add(&left.ty, &right.ty);
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Add, large, range, left, right);
                     Value::Hardware(HardwareValue::from(result))
                 }
@@ -2115,7 +2120,7 @@ pub fn eval_binary_expression(
             match pair_compile_int(left, right) {
                 MaybeCompile::Compile((left, right)) => Value::new_int(left - right),
                 MaybeCompile::Hardware((left, right)) => {
-                    let range = range_binary_sub(left.ty.as_ref(), right.ty.as_ref());
+                    let range = multi_range_binary_sub(&left.ty, &right.ty);
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Sub, large, range, left, right);
                     Value::Hardware(HardwareValue::from(result))
                 }
@@ -2196,7 +2201,7 @@ pub fn eval_binary_expression(
                     match pair_compile_int(left, right) {
                         MaybeCompile::Compile((left, right)) => Value::new_int(left * right),
                         MaybeCompile::Hardware((left, right)) => {
-                            let range = range_binary_mul(left.ty.as_ref(), right.ty.as_ref());
+                            let range = multi_range_binary_mul(&left.ty, &right.ty);
                             let result =
                                 build_binary_int_arithmetic_op(IrIntArithmeticOp::Mul, large, range, left, right);
                             Value::Hardware(HardwareValue::from(result))
@@ -2220,7 +2225,7 @@ pub fn eval_binary_expression(
             // check nonzero
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
-                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
+                let msg_right = message_range_or_single("right", &right_range, Some("which contains zero"));
                 let diag = Diagnostic::new("division by zero is not allowed")
                     .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
@@ -2234,8 +2239,7 @@ pub fn eval_binary_expression(
                     Value::new_int(result)
                 }
                 MaybeCompile::Hardware((left, right)) => {
-                    let range =
-                        range_binary_div(left.ty.as_ref(), right.ty.as_ref()).expect("already checked for zero");
+                    let range = multi_range_binary_div(&left.ty, &right.ty).expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Div, large, range, left, right);
                     Value::Hardware(HardwareValue::from(result))
                 }
@@ -2248,7 +2252,7 @@ pub fn eval_binary_expression(
             // check nonzero
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
-                let msg_right = message_range_or_single("right", right_range.as_ref(), Some("which contains zero"));
+                let msg_right = message_range_or_single("right", &right_range, Some("which contains zero"));
                 let diag = Diagnostic::new("modulo by zero is not allowed")
                     .add_error(right_span, msg_right)
                     .add_info(op.span, "for operator here")
@@ -2262,8 +2266,7 @@ pub fn eval_binary_expression(
                     Value::new_int(result)
                 }
                 MaybeCompile::Hardware((left, right)) => {
-                    let range =
-                        range_binary_mod(left.ty.as_ref(), right.ty.as_ref()).expect("already checked for zero");
+                    let range = multi_range_binary_mod(&left.ty, &right.ty).expect("already checked for zero");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Mod, large, range, left, right);
                     Value::Hardware(HardwareValue::from(result))
                 }
@@ -2280,10 +2283,10 @@ pub fn eval_binary_expression(
             let exp_range = exp.range();
 
             // check exp >= 0
-            if exp_range.start < zero {
+            if *exp_range.enclosing_range().start < zero {
                 let diag = Diagnostic::new("invalid power operation")
                     .add_error(expr_span, "exponent must be non-negative")
-                    .add_info(exp_span, message_range_or_single("exponent", exp_range.as_ref(), None))
+                    .add_info(exp_span, message_range_or_single("exponent", &exp_range, None))
                     .finish();
                 return Err(diags.report(diag));
             }
@@ -2291,8 +2294,8 @@ pub fn eval_binary_expression(
             // check not 0 ** 0
             // TODO is there actually a reason to ban this? `1` makes sense as the answer
             if base_range.contains(&zero) && exp_range.contains(&zero) {
-                let msg_base = message_range_or_single("base", base_range.as_ref(), Some("which contains zero"));
-                let msg_exp = message_range_or_single("exponent", exp_range.as_ref(), Some("which contains zero"));
+                let msg_base = message_range_or_single("base", &base_range, Some("which contains zero"));
+                let msg_exp = message_range_or_single("exponent", &exp_range, Some("which contains zero"));
                 let diag = Diagnostic::new("invalid power operation `0 ** 0`")
                     .add_error(expr_span, "base and exponent could both be zero")
                     .add_info(base_span, msg_base)
@@ -2309,13 +2312,9 @@ pub fn eval_binary_expression(
                 }
                 MaybeCompile::Hardware((base, exp)) => {
                     // we checked that exp is non-negative earlier
-                    let exp_range = ClosedNonEmptyRange {
-                        start: BigUint::try_from(&exp.ty.start).unwrap(),
-                        end: BigUint::try_from(&exp.ty.end).unwrap(),
-                    };
+                    let exp_range = exp.ty.clone().map(|b| BigUint::try_from(b).unwrap());
 
-                    let range =
-                        range_binary_pow(base.ty.as_ref(), exp_range.as_ref()).expect("already checked for 0**0");
+                    let range = multi_range_binary_pow(&base.ty, &exp_range).expect("already checked for 0**0");
                     let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Pow, large, range, base, exp);
                     Value::Hardware(HardwareValue::from(result))
                 }
@@ -2492,8 +2491,8 @@ fn eval_binary_int_compare(
             // TODO warning if the result is always true/false (depending on the ranges)
             //   or maybe just return a compile-time value again?
             // build implications
-            let lr = left_int.ty;
-            let rr = right_int.ty;
+            let lr = left_int.ty.enclosing_range();
+            let rr = right_int.ty.enclosing_range();
             let implications = match op {
                 IrIntCompareOp::Lt => implications_lt(false, lv, lr, rv, rr),
                 IrIntCompareOp::Lte => implications_lt(true, lv, lr, rv, rr),
@@ -2521,11 +2520,11 @@ fn eval_binary_int_compare(
 fn build_binary_int_arithmetic_op(
     op: IrIntArithmeticOp,
     large: &mut IrLargeArena,
-    range: ClosedNonEmptyRange<BigInt>,
+    range: ClosedNonEmptyMultiRange<BigInt>,
     left: HardwareInt,
     right: HardwareInt,
 ) -> HardwareInt {
-    let result_expr = IrExpressionLarge::IntArithmetic(op, range.clone(), left.expr, right.expr);
+    let result_expr = IrExpressionLarge::IntArithmetic(op, range.enclosing_range().cloned(), left.expr, right.expr);
     HardwareInt {
         ty: range,
         domain: left.domain.join(right.domain),
@@ -2538,30 +2537,30 @@ fn build_binary_int_arithmetic_op(
 fn implications_lt(
     eq: bool,
     left: Option<ValueVersion>,
-    left_range: ClosedNonEmptyRange<BigInt>,
+    left_range: ClosedNonEmptyRange<&BigInt>,
     right: Option<ValueVersion>,
-    right_range: ClosedNonEmptyRange<BigInt>,
+    right_range: ClosedNonEmptyRange<&BigInt>,
 ) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
 
     if let Some(left) = left {
-        if_true.push(implication_lt_is(true, eq, left, &right_range));
-        if_false.push(implication_lt_is(false, eq, left, &right_range));
+        if_true.push(implication_lt_is(true, eq, left, right_range));
+        if_false.push(implication_lt_is(false, eq, left, right_range));
     }
 
     #[allow(clippy::nonminimal_bool)]
     if let Some(right) = right {
         // flip left/right by inverting the eval and eq flags
-        if_true.push(implication_lt_is(!true, !eq, right, &left_range));
-        if_false.push(implication_lt_is(!false, !eq, right, &left_range));
+        if_true.push(implication_lt_is(!true, !eq, right, left_range));
+        if_false.push(implication_lt_is(!false, !eq, right, left_range));
     }
 
     BoolImplications { if_true, if_false }
 }
 
 /// Construct the implication for `left <(=) right == eval`. `eq` indicates whether the comparison is `<` or `<=`.
-fn implication_lt_is(eval: bool, eq: bool, left: ValueVersion, right: &ClosedNonEmptyRange<BigInt>) -> Implication {
+fn implication_lt_is(eval: bool, eq: bool, left: ValueVersion, right: ClosedNonEmptyRange<&BigInt>) -> Implication {
     let range = match (eval, eq) {
         // left <= right
         (true, true) => Range {
@@ -2571,11 +2570,11 @@ fn implication_lt_is(eval: bool, eq: bool, left: ValueVersion, right: &ClosedNon
         // left < right
         (true, false) => Range {
             start: None,
-            end: Some(&right.end - 1),
+            end: Some(right.end - 1),
         },
         // left > right
         (false, true) => Range {
-            start: Some(&right.start + 1),
+            start: Some(right.start + 1),
             end: None,
         },
         // left >= right
@@ -2589,9 +2588,9 @@ fn implication_lt_is(eval: bool, eq: bool, left: ValueVersion, right: &ClosedNon
 
 fn implications_eq(
     left: Option<ValueVersion>,
-    left_range: ClosedNonEmptyRange<BigInt>,
+    left_range: ClosedNonEmptyRange<&BigInt>,
     right: Option<ValueVersion>,
-    right_range: ClosedNonEmptyRange<BigInt>,
+    right_range: ClosedNonEmptyRange<&BigInt>,
 ) -> BoolImplications {
     let mut if_true = vec![];
     let mut if_false = vec![];
@@ -2599,10 +2598,10 @@ fn implications_eq(
     if let Some(left) = left {
         if_true.push(Implication::new_int(
             left,
-            MultiRange::from(Range::from(right_range.clone())),
+            MultiRange::from(Range::from(right_range.cloned())),
         ));
 
-        if let Some(right_single) = right_range.as_ref().as_single() {
+        if let Some(right_single) = right_range.as_single() {
             if_false.push(Implication::new_int(
                 left,
                 MultiRange::from(Range::single(right_single.clone())).complement(),
@@ -2613,10 +2612,10 @@ fn implications_eq(
     if let Some(right) = right {
         if_true.push(Implication::new_int(
             right,
-            MultiRange::from(Range::from(left_range.clone())),
+            MultiRange::from(Range::from(left_range.cloned())),
         ));
 
-        if let Some(left_single) = left_range.as_ref().as_single() {
+        if let Some(left_single) = left_range.as_single() {
             if_false.push(Implication::new_int(
                 right,
                 MultiRange::from(Range::single(left_single.clone())).complement(),
@@ -2744,18 +2743,13 @@ fn array_literal_combine_values(
     }
 }
 
-fn message_range_or_single<'a>(
-    name: &str,
-    range: impl Into<Range<&'a BigInt>>,
-    suffix_if_multiple: Option<&str>,
-) -> String {
-    let range = range.into();
-
+fn message_range_or_single(name: &str, range: &impl AnyMultiRange<BigInt>, suffix_if_multiple: Option<&str>) -> String {
     let (suffix_sep, suffix) = match suffix_if_multiple {
         None => ("", ""),
         Some(suffix) => (" ", suffix),
     };
 
+    let range = range.as_multi_range();
     match range.as_single() {
         None => format!("{name} has range {range}{suffix_sep}{suffix}"),
         Some(single) => format!("{name} is {single}"),

@@ -6,6 +6,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
+use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
 use hwl_util::swrite;
 use indexmap::IndexSet;
@@ -409,7 +410,7 @@ impl IrType {
     pub fn as_type_hw(&self) -> HardwareType {
         match self {
             IrType::Bool => HardwareType::Bool,
-            IrType::Int(range) => HardwareType::Int(range.clone()),
+            IrType::Int(range) => HardwareType::Int(ClosedNonEmptyMultiRange::from(range.clone())),
             IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
             IrType::Array(inner, len) => HardwareType::Array(Arc::new(inner.as_type_hw()), len.clone()),
         }

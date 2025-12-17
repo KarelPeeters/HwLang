@@ -4,7 +4,7 @@ use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaborationArenas, Ha
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::range::{ClosedNonEmptyRange, Range};
+use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultExt};
 use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
@@ -21,9 +21,10 @@ pub enum Type {
 
     Bool,
     String,
-    Int(Range<BigInt>),
+    Int(MultiRange<BigInt>),
     // TODO empty tuples should be convertible to hardware
     Tuple(Arc<Vec<Type>>),
+    // TODO add list type
     Array(Arc<Type>, BigUint),
     // TODO make user type covariant? or allow users to define variance?
     Struct(ElaboratedStruct),
@@ -39,12 +40,11 @@ pub enum Type {
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
-// TODO add range
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
     Undefined,
     Bool,
-    Int(ClosedNonEmptyRange<BigInt>),
+    Int(ClosedNonEmptyMultiRange<BigInt>),
     Tuple(Arc<Vec<HardwareType>>),
     Array(Arc<HardwareType>, BigUint),
     Struct(HardwareChecked<ElaboratedStruct>),
@@ -170,7 +170,7 @@ impl Type {
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
             (Type::Builtin, Type::Builtin) => Type::Builtin,
 
-            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b.as_ref()).cloned()),
+            (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() == b.len() {
@@ -236,8 +236,8 @@ impl Type {
         match self {
             Type::Undefined => Ok(HardwareType::Undefined),
             Type::Bool => Ok(HardwareType::Bool),
-            Type::Int(range) => match ClosedNonEmptyRange::try_from(range.as_ref()) {
-                Ok(closed_range) => Ok(HardwareType::Int(closed_range.cloned())),
+            Type::Int(range) => match ClosedNonEmptyMultiRange::try_from(range.clone()) {
+                Ok(range) => Ok(HardwareType::Int(range)),
                 Err(_) => Err(NonHardwareType),
             },
             Type::Tuple(inner) => inner
@@ -280,7 +280,7 @@ impl HardwareType {
         match self {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
-            HardwareType::Int(range) => Type::Int(Range::from(range.clone())),
+            HardwareType::Int(range) => Type::Int(MultiRange::from(range.clone())),
             HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
             HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
@@ -292,7 +292,7 @@ impl HardwareType {
         match self {
             HardwareType::Undefined => IrType::Tuple(vec![]),
             HardwareType::Bool => IrType::Bool,
-            HardwareType::Int(range) => IrType::Int(range.clone()),
+            HardwareType::Int(range) => IrType::Int(range.enclosing_range().cloned()),
             HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir(refs)), len.clone()),
             &HardwareType::Struct(elab) => {

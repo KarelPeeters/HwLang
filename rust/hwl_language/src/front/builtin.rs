@@ -17,7 +17,7 @@ use crate::syntax::ast::{Arg, Args, ExpressionKind};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::data::VecExt;
-use crate::util::range::Range;
+use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
 
 impl CompileItemContext<'_, '_> {
@@ -37,7 +37,7 @@ impl CompileItemContext<'_, '_> {
             inner: args_inner,
         } = args;
         let arg = match args_inner.single_ref() {
-            Ok(&Arg { span: _, name, value }) => {
+            Some(&Arg { span: _, name, value }) => {
                 if let Some(name) = name {
                     return Err(diags.report_simple(
                         "typeof only takes a single unnamed argument",
@@ -48,7 +48,7 @@ impl CompileItemContext<'_, '_> {
                     value
                 }
             }
-            Err(()) => {
+            None => {
                 return Err(diags.report_simple(
                     "typeof only takes a single unnamed argument",
                     *args_span,
@@ -145,7 +145,7 @@ impl CompileItemContext<'_, '_> {
             ("type", "bool", &[]) => Ok(Value::new_ty(Type::Bool)),
             ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
             ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
-            ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(Range::OPEN))),
+            ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(MultiRange::open()))),
             // print
             ("fn", "print", &[msg]) => {
                 let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;

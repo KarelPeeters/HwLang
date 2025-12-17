@@ -7,6 +7,8 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::{EmptyVec, NonEmptyVec};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
+use crate::util::range_multi::AnyMultiRange;
+use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -34,8 +36,8 @@ impl HardwareType {
             HardwareType::Undefined => true,
             HardwareType::Bool => true,
             HardwareType::Int(range) => {
-                let repr = IntRepresentation::for_range(range.as_ref());
-                &repr.range() == range
+                let repr = IntRepresentation::for_range(range.enclosing_range());
+                &ClosedNonEmptyMultiRange::from(repr.range()) == range
             }
             HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
             HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(refs),
@@ -86,7 +88,7 @@ impl HardwareType {
                 Ok(())
             }
             (HardwareType::Int(range), CompileValue::Simple(SimpleCompileValue::Int(value))) => {
-                let repr = IntRepresentation::for_range(range.as_ref());
+                let repr = IntRepresentation::for_range(range.enclosing_range());
                 repr.value_to_bits(value, result);
                 Ok(())
             }
@@ -135,7 +137,7 @@ impl HardwareType {
 
                 // tag
                 let tag_range = info_hw.tag_range.clone();
-                HardwareType::Int(tag_range).value_to_bits_impl(
+                HardwareType::Int(ClosedNonEmptyMultiRange::from(tag_range)).value_to_bits_impl(
                     refs,
                     &CompileValue::new_int(BigInt::from(variant)),
                     result,
@@ -195,7 +197,7 @@ impl HardwareType {
                 Ok(CompileValue::new_bool(bit))
             }
             HardwareType::Int(range) => {
-                let repr = IntRepresentation::for_range(range.as_ref());
+                let repr = IntRepresentation::for_range(range.enclosing_range());
                 let bits: Vec<bool> = (0..repr.size_bits())
                     .map(|_| bits.next().ok_or(Either::Right(FromBitsWrongLength)))
                     .try_collect()?;
@@ -244,7 +246,7 @@ impl HardwareType {
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
-                let tag_ty = HardwareType::Int(info_hw.tag_range.clone());
+                let tag_ty = HardwareType::Int(ClosedNonEmptyMultiRange::from(info_hw.tag_range.clone()));
                 let tag_value = tag_ty.value_from_bits_impl(refs, bits)?;
                 let tag_value = unwrap_match!(tag_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
                 let tag_value = usize::try_from(tag_value).unwrap();

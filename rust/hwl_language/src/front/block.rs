@@ -30,7 +30,7 @@ use crate::throw;
 use crate::util::big_int::BigInt;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
-use crate::util::range_multi::{ClosedMultiRange, MultiRange};
+use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use crate::util::{ResultExt, result_pair};
 use itertools::{Either, Itertools, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
@@ -1093,10 +1093,9 @@ impl CompileItemContext<'_, '_> {
             }
             MatchCoverage::Int { rem_range } => {
                 if !rem_range.is_empty() {
-                    let ranges_not_covered = rem_range.iter_ranges().format(", ");
                     let diag = Diagnostic::new(title_non_exhaustive)
                         .add_info(target.span, msg_target_type)
-                        .add_error(span_end, format!("ranges not covered: {}", ranges_not_covered))
+                        .add_error(span_end, format!("ranges not covered: {rem_range}"))
                         .finish();
                     return Err(diags.report(diag));
                 }

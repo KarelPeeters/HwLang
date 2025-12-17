@@ -4,6 +4,7 @@ use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::{EmptyVec, GrowVec, NonEmptyVec};
 use hwl_language::util::range::Range as RustRange;
+use hwl_language::util::range_multi::MultiRange;
 use hwl_language::{
     front::{types::Type as RustType, value::CompileValue},
     syntax::{
@@ -131,7 +132,7 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
             return Ok(CompileValue::new_ty(RustType::Bool));
         }
         if py_type.is(&py.get_type::<PyInt>()) {
-            return Ok(CompileValue::new_ty(RustType::Int(RustRange::OPEN)));
+            return Ok(CompileValue::new_ty(RustType::Int(MultiRange::from(RustRange::OPEN))));
         }
         if py_type.is(&py.get_type::<PyAny>()) {
             return Ok(CompileValue::new_ty(RustType::Any));

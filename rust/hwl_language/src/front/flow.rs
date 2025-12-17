@@ -22,13 +22,15 @@ use crate::syntax::source::SourceDatabase;
 use crate::util::arena::RandomCheck;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
-use crate::util::range_multi::ClosedMultiRange;
+use crate::util::range::RangeEmpty;
+use crate::util::range_multi::{ClosedMultiRange, ClosedNonEmptyMultiRange};
 use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
+
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -89,25 +91,23 @@ trait FlowPrivate: Sized {
                     }
                 });
 
-                match range.enclosing_range() {
-                    // TODO support never type or maybe specifically empty ranges
-                    // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
-                    None => Value::Hardware(value),
-                    Some(range) => {
-                        if range == ty.as_ref() {
-                            Value::Hardware(value)
-                        } else {
-                            let expr_constr = IrExpressionLarge::ConstrainIntRange(range.cloned(), value.value.expr);
-                            let value_constr = HardwareValue {
-                                ty: HardwareType::Int(range.cloned()),
-                                domain: value.value.domain,
-                                expr: large.push_expr(expr_constr),
-                            };
-                            Value::Hardware(HardwareValueWithVersion {
-                                value: value_constr,
-                                version: value.version,
-                            })
-                        }
+                match ClosedNonEmptyMultiRange::try_from(range) {
+                    Ok(range) => {
+                        let enclosing_range = range.enclosing_range().cloned();
+                        let expr_constr = IrExpressionLarge::ConstrainIntRange(enclosing_range, value.value.expr);
+                        let value_constr = HardwareValue {
+                            ty: HardwareType::Int(range),
+                            domain: value.value.domain,
+                            expr: large.push_expr(expr_constr),
+                        };
+                        Value::Hardware(HardwareValueWithVersion {
+                            value: value_constr,
+                            version: value.version,
+                        })
+                    }
+                    Err(RangeEmpty) => {
+                        // TODO we should bail here, this turns out to be an unreachable branch
+                        Value::Hardware(value)
                     }
                 }
             }

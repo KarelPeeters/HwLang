@@ -18,6 +18,7 @@ use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
+use crate::util::range_multi::MultiRange;
 use hwl_util::swrite;
 use itertools::{Itertools, enumerate, zip_eq};
 use std::borrow::Cow;
@@ -466,11 +467,11 @@ impl Type {
             Type::Bool => "bool".to_string(),
             Type::String => "string".to_string(),
             Type::Int(range) => {
-                let range_int = Range::OPEN;
-                let range_uint = Range {
+                let range_int = MultiRange::open();
+                let range_uint = MultiRange::from(Range {
                     start: Some(BigInt::ZERO),
                     end: None,
-                };
+                });
                 if range == &range_int {
                     "int".to_owned()
                 } else if range == &range_uint {
