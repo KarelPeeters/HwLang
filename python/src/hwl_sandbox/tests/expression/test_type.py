@@ -15,6 +15,49 @@ def test_recursive_struct_simple():
         _ = c.resolve("top.S")
 
 
+def test_int():
+    src = """
+    import std.types.int;
+    fn f(x: int(0..8)) {}    
+    fn g(x: int(0..8, 20..30)) {}
+    """
+    f: hwl.Function = compile_custom(src).resolve("top.f")
+
+    f(0)
+    f(7)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f(8)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f(15)
+
+
+def test_int_multi():
+    src = """
+    import std.types.int;   
+    fn f_basic(x: int(0..8, 20..30)) {}
+    fn f_empty(x: int()) {}
+    fn f_shuffled(x: int(20..30, 0..8)) {}
+    """
+    f_basic: hwl.Function = compile_custom(src).resolve("top.f_basic")
+    f_empty: hwl.Function = compile_custom(src).resolve("top.f_empty")
+    f_shuffled: hwl.Function = compile_custom(src).resolve("top.f_shuffled")
+
+    for f in [f_basic, f_shuffled]:
+        f(0)
+        f(7)
+        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+            f(8)
+        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+            f(15)
+        f(20)
+        f(29)
+        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+            f(30)
+
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f_empty(0)
+
+
 # TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure
 @pytest.mark.skip
 def test_recursive_struct_generic():

@@ -1854,18 +1854,22 @@ impl<'a> CompileItemContext<'a, '_> {
     }
 }
 
-// TODO support multi-ranges
+/// Evaluate a call to `int` or `uint`, which is how integer range constraints are expressed.
+/// The arguments must be compile time, and either:
+/// * a single int, the bitwidth
+/// * a list of ranges which together form the multi-range
 fn eval_int_ty_call(
     refs: CompileRefs,
     span_call: Span,
-    target_range: Spanned<&MultiRange<BigInt>>,
+    target: Spanned<&MultiRange<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<Value>>,
 ) -> DiagResult<MultiRange<BigInt>> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
+    let args_span = args.span;
 
     // int calls should only work for `int` and `uint`, detect which of these it is here
-    let target_signed = match target_range.inner.as_single_range() {
+    let target_signed = match target.inner.as_single_range() {
         Some(NonEmptyRange { start: None, end: None }) => true,
         Some(NonEmptyRange {
             start: Some(BigInt::ZERO),
@@ -1875,10 +1879,10 @@ fn eval_int_ty_call(
             let diag = Diagnostic::new("base type must be int or uint for int type constraining")
                 .add_error(span_call, "attempt to constrain int type here")
                 .add_info(
-                    target_range.span,
+                    target.span,
                     format!(
                         "base type `{}` here",
-                        Type::Int(target_range.inner.clone()).value_string(elab)
+                        Type::Int(target.inner.clone()).value_string(elab)
                     ),
                 )
                 .finish();
@@ -1886,35 +1890,35 @@ fn eval_int_ty_call(
         }
     };
 
-    // ensure single unnamed compile-time arg
-    // TODO support multiple ranges
-    let arg = args.inner.single().map_err(|_| {
-        diags.report_simple(
-            "expected single argument for int type",
-            args.span,
-            "got multiple args here",
-        )
-    })?;
-    let Arg { span: _, name, value } = arg;
-    if let Some(name) = name {
-        return Err(diags.report_simple(
-            "expected unnamed argument for int type",
-            name.span,
-            "got named arg here",
-        ));
-    }
-    let arg_inner = CompileValue::try_from(&value.inner).map_err(|_: NotCompile| {
-        diags.report_simple(
-            "expected compile-time argument for int type",
-            value.span,
-            "got hardware value here",
-        )
-    })?;
+    // check that args are unnamed and compile-time
+    let args = args
+        .inner
+        .iter()
+        .map(|arg| {
+            let Arg { span: _, name, value } = arg;
+            if let Some(name) = name {
+                return Err(diags.report_simple(
+                    "expected unnamed arguments for int type",
+                    name.span,
+                    "got named arg here",
+                ));
+            }
 
-    let result = match arg_inner {
-        CompileValue::Simple(SimpleCompileValue::Int(width)) => {
-            // int arg, this is the number of bits in `int(bits)` or `uint(bits)`
-            let width = BigUint::try_from(width).map_err(|width| {
+            let arg_value = CompileValue::try_from(&value.inner).map_err(|_: NotCompile| {
+                diags.report_simple(
+                    "expected compile-time argument for int type",
+                    value.span,
+                    "got hardware value here",
+                )
+            })?;
+            Ok(Spanned::new(value.span, arg_value))
+        })
+        .try_collect_all_vec()?;
+
+    // if single integer arg, interpret as bitwidth
+    if let Some(arg) = args.single_ref() {
+        if let CompileValue::Simple(SimpleCompileValue::Int(width)) = &arg.inner {
+            let width = BigUint::try_from(width.clone()).map_err(|width| {
                 diags.report_simple(
                     format!("the bitwidth of an integer type cannot be negative, got `{width}`"),
                     arg.span,
@@ -1922,8 +1926,8 @@ fn eval_int_ty_call(
                 )
             })?;
 
-            if target_signed {
-                let width_m1 = BigUint::try_from(width - 1).map_err(|_| {
+            let range = if target_signed {
+                let width_m1 = BigUint::try_from(width - 1u8).map_err(|_| {
                     diags.report_simple(
                         "zero-width signed integers are not allowed",
                         arg.span,
@@ -1941,35 +1945,45 @@ fn eval_int_ty_call(
                     start: Some(BigInt::ZERO),
                     end: Some(BigInt::from(BigUint::pow_2_to(&width))),
                 }
-            }
+            };
+            return Ok(MultiRange::from(range));
         }
-        CompileValue::Compound(CompileCompoundValue::Range(new_range)) => {
-            // int range arg, this is the new range
-            if !target_range.inner.contains_range(new_range.as_ref()) {
-                let base_ty_name = match target_signed {
-                    true => "int",
-                    false => "uint",
-                };
-                let diag = Diagnostic::new("int range must be a subrange of the base type")
-                    .add_error(arg.span, format!("new range `{new_range}` is not a subrange"))
-                    .add_info(arg.span, format!("base type {base_ty_name}"))
+    }
+
+    // all args must be ranges, union them together
+    let mut result = MultiRange::EMPTY;
+    for arg in args {
+        let arg_range = match arg.inner {
+            CompileValue::Compound(CompileCompoundValue::Range(range)) => range,
+            _ => {
+                let diag = Diagnostic::new("int type constraint must be a single int int or multiple int ranges")
+                    .add_error(
+                        arg.span,
+                        format!("got value with type `{}` here", arg.inner.ty().value_string(elab)),
+                    )
                     .finish();
                 return Err(diags.report(diag));
             }
+        };
+        result = result.union(&MultiRange::from(arg_range));
+    }
 
-            new_range
-        }
-        _ => {
-            let diag = Diagnostic::new("int type constraint must be an int or int range")
-                .add_error(
-                    arg.span,
-                    format!("got value with type `{}` here", arg_inner.ty().value_string(elab)),
-                )
+    // check that the new range is a subrange of the base type
+    let base_ty_name = match target_signed {
+        true => "int",
+        false => "uint",
+    };
+    if let Some(enclosing_range) = result.enclosing_range() {
+        if !target.inner.contains_range(enclosing_range) {
+            let diag = Diagnostic::new("int range must be a subrange of the base type")
+                .add_error(args_span, format!("new range `{result}` is not a subrange"))
+                .add_info(target.span, format!("base type {base_ty_name}"))
                 .finish();
             return Err(diags.report(diag));
         }
-    };
-    Ok(MultiRange::from(result))
+    }
+
+    Ok(result)
 }
 
 pub enum ForIterator {

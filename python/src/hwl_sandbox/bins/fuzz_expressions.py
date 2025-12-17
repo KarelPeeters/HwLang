@@ -33,7 +33,7 @@ def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
 
 def sample_range(rng: random.Random, must_contain: Optional[hwl.Range] = None,
                  max_abs: Optional[int] = None) -> hwl.Range:
-    # TODO allow empty ranges?
+    # TODO include multi-ranges
     tries = 0
     while True:
         if must_contain is not None and tries > 40:

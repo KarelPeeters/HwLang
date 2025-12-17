@@ -180,3 +180,30 @@ def test_bool_implies_itself():
         "false\n",
         "false.false\n",
     ]
+
+
+def test_imply_non_zero():
+    src_raw = """
+    import std.types.int;
+    module foo ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
+        comb {
+            y = 4 / x;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="division by zero"):
+        _ = compile_custom(src_raw).resolve("top.foo")
+
+    src_checked = """
+    import std.types.int;
+    module foo ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
+        comb {
+            if (x != 0) {
+                y = 4 / x;
+            } else {
+                y = 0;
+            }
+        }
+    }
+    """
+    _ = compile_custom(src_checked).resolve("top.foo")
