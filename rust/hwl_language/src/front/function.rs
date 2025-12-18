@@ -829,6 +829,7 @@ fn check_function_end(
 
     // some of these should be impossible, but checking again here is redundant
     let is_certain_return = match end {
+        BlockEnd::Unreachable => true,
         BlockEnd::CompileExit(end) => match end {
             EarlyExitKind::Return => true,
             EarlyExitKind::Break => false,

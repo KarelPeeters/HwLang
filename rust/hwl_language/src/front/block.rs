@@ -41,11 +41,20 @@ use unwrap_match::unwrap_match;
 pub enum BlockEnd {
     /// No early exit, proceed normally.
     Normal,
+
+    /// This block turns out to have been unreachable. This can happen for conditions that are in hindsight always
+    /// false, for `assert(false)`-like constructs or in dead code after early exits.
+    /// This [BlockEnd] is the bottom value of the lattice,
+    /// for branch joining it should always decay and result in the other branches.
+    Unreachable,
+
     /// Definite early exit, known at compile time.
     CompileExit(EarlyExitKind),
+
     /// Definite early exit, but the kind depends on hardware conditions.
     /// The mask indicates which kinds of exits are possible.
     HardwareExit(ExitMask<2>),
+
     /// Maybe early exit, but the kind and whether there is actually an exit depends on hardware conditions.
     /// The mask indicates which kinds of exits are possible.
     HardwareMaybeExit(ExitMask<1>),
@@ -58,6 +67,17 @@ pub enum EarlyExitKind {
     Continue,
 }
 
+/// Another encoding of [BlockEnd] that's easier to use for merging and joining.
+#[derive(Debug, Copy, Clone)]
+pub enum BlockEndFlags {
+    /// Corresponds to [BlockEnd::Unreachable]
+    Unreachable,
+    /// Represents other [BlockEnd] variants.
+    /// `certain_exit` indicates whether the block definitely exits early,
+    /// `mask` indicates which kinds of exits are possible.
+    Normal { certain_exit: bool, mask: ExitMask<0> },
+}
+
 /// A set of possible exit kinds.
 /// The const generic [N] indicates the minimum number of exit kinds that are set.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -68,68 +88,101 @@ pub struct ExitMask<const N: u8> {
 }
 
 impl BlockEnd {
-    /// Construct the correct [BlockEnd] from `certain_exit` and `mask`.
-    ///
-    /// * `certain_exit` is whether we know for sure there has been an early exit.
-    /// * `mask` is the set of possible early exists that can have happened.
-    fn new(certain_exit: bool, mask: ExitMask<0>) -> BlockEnd {
+    fn from_flags(flags: BlockEndFlags) -> BlockEnd {
         #[allow(clippy::collapsible_else_if)]
-        if certain_exit {
-            if let Some(mask) = ExitMask::<2>::from_base(mask) {
-                BlockEnd::HardwareExit(mask)
-            } else {
-                if mask.can_return {
-                    BlockEnd::CompileExit(EarlyExitKind::Return)
-                } else if mask.can_break {
-                    BlockEnd::CompileExit(EarlyExitKind::Break)
-                } else if mask.can_continue {
-                    BlockEnd::CompileExit(EarlyExitKind::Continue)
+        match flags {
+            BlockEndFlags::Unreachable => BlockEnd::Unreachable,
+            BlockEndFlags::Normal { certain_exit, mask } => {
+                if certain_exit {
+                    if let Some(mask) = ExitMask::<2>::from_base(mask) {
+                        // at least two options, so hardware-dependant exit
+                        BlockEnd::HardwareExit(mask)
+                    } else {
+                        // at most one option, so definite compile-known exit
+                        if mask.can_return {
+                            BlockEnd::CompileExit(EarlyExitKind::Return)
+                        } else if mask.can_break {
+                            BlockEnd::CompileExit(EarlyExitKind::Break)
+                        } else if mask.can_continue {
+                            BlockEnd::CompileExit(EarlyExitKind::Continue)
+                        } else {
+                            unreachable!("certain exit but empty mask")
+                        }
+                    }
                 } else {
-                    BlockEnd::Normal
+                    if let Some(mask) = ExitMask::<1>::from_base(mask) {
+                        // at least one option, so maybe exit
+                        BlockEnd::HardwareMaybeExit(mask)
+                    } else {
+                        // no exit options, so normal
+                        BlockEnd::Normal
+                    }
                 }
             }
-        } else {
-            if let Some(mask) = ExitMask::<1>::from_base(mask) {
-                BlockEnd::HardwareMaybeExit(mask)
-            } else {
-                BlockEnd::Normal
-            }
         }
     }
 
-    pub fn is_certain_exit(self) -> bool {
+    fn into_flags(self) -> BlockEndFlags {
         match self {
+            BlockEnd::Normal => BlockEndFlags::Normal {
+                certain_exit: false,
+                mask: ExitMask::default(),
+            },
+            BlockEnd::Unreachable => BlockEndFlags::Unreachable,
+            BlockEnd::CompileExit(kind) => BlockEndFlags::Normal {
+                certain_exit: true,
+                mask: ExitMask::from_kind(kind).into_base(),
+            },
+            BlockEnd::HardwareExit(mask) => BlockEndFlags::Normal {
+                certain_exit: true,
+                mask: mask.into_base(),
+            },
+            BlockEnd::HardwareMaybeExit(mask) => BlockEndFlags::Normal {
+                certain_exit: false,
+                mask: mask.into_base(),
+            },
+        }
+    }
+
+    pub fn should_stop_sequence(self) -> bool {
+        match self {
+            BlockEnd::Unreachable | BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => true,
             BlockEnd::Normal | BlockEnd::HardwareMaybeExit(_) => false,
-            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => true,
         }
     }
 
-    pub fn possible_exit_mask(self) -> ExitMask<0> {
+    pub fn should_recheck_exit_flags(self) -> bool {
         match self {
-            BlockEnd::Normal => ExitMask::default(),
-            BlockEnd::CompileExit(kind) => ExitMask::from_kind(kind).into_base(),
-            BlockEnd::HardwareExit(mask) => mask.into_base(),
-            BlockEnd::HardwareMaybeExit(mask) => mask.into_base(),
+            BlockEnd::HardwareMaybeExit(_) => true,
+            BlockEnd::Normal | BlockEnd::Unreachable | BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => false,
         }
     }
 
     pub fn unwrap_normal(self, diags: &Diagnostics, span: Span) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
-            BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) | BlockEnd::HardwareMaybeExit(_) => {
-                Err(diags.report_internal_error(span, "unexpected early exit"))
-            }
+            _ => Err(diags.report_internal_error(span, "unexpected early exit")),
         }
     }
 
     pub fn remove(self, mask_remove: ExitMask<0>) -> BlockEnd {
-        let mask_self = self.possible_exit_mask();
-        let mask_result = ExitMask {
-            can_return: mask_self.can_return & !mask_remove.can_return,
-            can_break: mask_self.can_break & !mask_remove.can_break,
-            can_continue: mask_self.can_continue & !mask_remove.can_continue,
-        };
-        Self::new(self.is_certain_exit(), mask_result)
+        match self.into_flags() {
+            BlockEndFlags::Unreachable => BlockEnd::Unreachable,
+            BlockEndFlags::Normal { certain_exit, mask } => {
+                let result_mask = ExitMask {
+                    can_return: mask.can_return & !mask_remove.can_return,
+                    can_break: mask.can_break & !mask_remove.can_break,
+                    can_continue: mask.can_continue & !mask_remove.can_continue,
+                };
+
+                let result_certain_exit = certain_exit && ExitMask::<1>::from_base(result_mask).is_some();
+
+                BlockEnd::from_flags(BlockEndFlags::Normal {
+                    certain_exit: result_certain_exit,
+                    mask: result_mask,
+                })
+            }
+        }
     }
 }
 
@@ -305,26 +358,22 @@ impl CompileItemContext<'_, '_> {
 
                 let exit_cond = Spanned::new(span, exit_cond);
 
-                // TODO rework this end hack by adding BlockEnd::Unreachable
-                let mut actual_end = None;
-                let _ = self.elaborate_hardware_if(flow, span, exit_cond, |slf, branch_flow, branch_cond| {
+                self.elaborate_hardware_if(flow, span, exit_cond, |slf, branch_flow, branch_cond| {
                     if branch_cond {
                         // early exit, do nothing
+                        //   as far as block end merging is concerned this branch is not actually reachable,
+                        //   since we should have exited earlier already
+                        Ok(BlockEnd::Unreachable)
                     } else {
-                        // not exiting, actually run the statements
-                        let real_end = slf.elaborate_block_statements_without_immediate_exit_check(
+                        // no early exit, so actually run the statements
+                        slf.elaborate_block_statements_without_immediate_exit_check(
                             scope,
                             branch_flow,
                             stack,
                             statements,
-                        )?;
-                        actual_end = Some(real_end);
+                        )
                     }
-
-                    Ok(BlockEnd::Normal)
-                })?;
-
-                actual_end.unwrap_or(BlockEnd::Normal)
+                })?
             }
         };
         Ok(end)
@@ -343,20 +392,15 @@ impl CompileItemContext<'_, '_> {
             let end_curr = self.elaborate_statement(scope, flow, stack, stmt)?;
             end_joined = join_block_ends_sequence(end_joined, end_curr);
 
-            if end_joined.is_certain_exit() {
+            if end_joined.should_stop_sequence() {
                 break;
             }
 
-            let recheck_exit = match end_curr {
-                BlockEnd::Normal | BlockEnd::CompileExit(_) | BlockEnd::HardwareExit(_) => false,
-                BlockEnd::HardwareMaybeExit(_) => true,
-            };
-            if recheck_exit {
+            if end_curr.should_recheck_exit_flags() {
+                // recurse and return, instead of continuing the loop
                 let statements_rest = &statements[stmt_index + 1..];
                 let end_rest = self.elaborate_block_statements(scope, flow, stack, statements_rest)?;
                 return Ok(join_block_ends_sequence(end_joined, end_rest));
-            } else {
-                continue;
             }
         }
 
@@ -1281,18 +1325,17 @@ impl CompileItemContext<'_, '_> {
                 //   the body is responsible for checking the exit flags, that's typically handled in elaborate_block
                 let end_body_raw = body(self, flow, stack, iter_item)?;
 
-                // stop continue, those don't leak out of the loop or into the next iteration
+                // stop continue, it shouldn't leak into the next iteration
                 let end_body = end_body_raw.remove(ExitMask::from_kind(EarlyExitKind::Continue).into_base());
 
                 // handle end and stop elaborating if possible
-                // TODO absorb continue
                 end_joined = join_block_ends_sequence(end_joined, end_body);
-                if end_joined.is_certain_exit() {
+                if end_joined.should_stop_sequence() {
                     break;
                 }
             }
 
-            // stop break/continue, they don't leak out of the loop
+            // absorb break/continue, they don't leak out of the loop
             let mask_loop = ExitMask {
                 can_break: true,
                 can_continue: true,
@@ -1376,7 +1419,7 @@ impl CompileItemContext<'_, '_> {
             (None, None) => {
                 // both branches contradict, this basically means this entire flow is unreachable,
                 //  no need to do anything at all
-                Ok(BlockEnd::Normal)
+                Ok(BlockEnd::Unreachable)
             }
         }
     }
@@ -1485,44 +1528,56 @@ impl MatchCoverage {
 }
 
 fn join_block_ends_sequence(first: BlockEnd, second: BlockEnd) -> BlockEnd {
-    if first.is_certain_exit() {
-        first
-    } else {
-        BlockEnd::new(
-            second.is_certain_exit(),
-            first.possible_exit_mask() | second.possible_exit_mask(),
-        )
+    match first.into_flags() {
+        BlockEndFlags::Unreachable => BlockEnd::Unreachable,
+        BlockEndFlags::Normal {
+            certain_exit: first_certain_exit,
+            mask: first_mask,
+        } => {
+            if first_certain_exit {
+                first
+            } else {
+                match second.into_flags() {
+                    BlockEndFlags::Unreachable => first,
+                    BlockEndFlags::Normal {
+                        certain_exit: second_certain_exit,
+                        mask: second_mask,
+                    } => BlockEnd::from_flags(BlockEndFlags::Normal {
+                        certain_exit: second_certain_exit,
+                        mask: first_mask | second_mask,
+                    }),
+                }
+            }
+        }
     }
 }
 
 fn join_block_ends_branches(ends: &[BlockEnd]) -> BlockEnd {
-    // handle simple cases
-    match ends.iter().all_equal_value() {
-        // all ends are the same, just return that
-        Ok(&end) => return end,
-        // array is empty, this shouldn't really happen and if it does it doesn't matter what we return here
-        // TODO maybe return unreachable here?
-        Err(None) => return BlockEnd::Normal,
-        // different ends found, fallthrough into hardware merge
-        Err(Some((_, _))) => {}
-    }
-
-    // hardware merge
     let mut all_certain = true;
     let mut any_mask = ExitMask::<0>::default();
+    let mut any_non_unreachable = false;
 
     for &end in ends {
-        let (is_certain, mask) = match end {
-            BlockEnd::Normal => (false, ExitMask::default()),
-            BlockEnd::CompileExit(kind) => (true, ExitMask::from_kind(kind).into_base()),
-            BlockEnd::HardwareExit(mask) => (true, mask.into_base()),
-            BlockEnd::HardwareMaybeExit(mask) => (false, mask.into_base()),
-        };
-        all_certain &= is_certain;
-        any_mask = any_mask | mask;
+        match end.into_flags() {
+            BlockEndFlags::Unreachable => {
+                // ignore unreachable branches, it's as if they don't exist
+            }
+            BlockEndFlags::Normal { certain_exit, mask } => {
+                all_certain &= certain_exit;
+                any_mask = any_mask | mask;
+                any_non_unreachable = true;
+            }
+        }
     }
 
-    BlockEnd::new(all_certain, any_mask)
+    if any_non_unreachable {
+        BlockEnd::from_flags(BlockEndFlags::Normal {
+            certain_exit: all_certain,
+            mask: any_mask,
+        })
+    } else {
+        BlockEnd::Unreachable
+    }
 }
 
 fn build_ir_if_statement(
