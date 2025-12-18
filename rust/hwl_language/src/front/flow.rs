@@ -30,6 +30,7 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
+
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -1347,7 +1348,7 @@ type VariableValue = MaybeAssignedValue<FlowValue>;
 type VariableValueRef<'a> = MaybeAssignedValue<&'a FlowValue>;
 
 #[derive(Debug, Copy, Clone)]
-pub enum MaybeAssignedValue<V> {
+enum MaybeAssignedValue<V> {
     /// The undefined case acts as if the variable has been assigned a value, without that actually being true.
     /// This should only be used if the caller can somehow guarantee that
     /// the variable will _actually_ be assigned before any use, but [Flow] does not realize this by itself.
@@ -1358,9 +1359,9 @@ pub enum MaybeAssignedValue<V> {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct AssignedValue<V> {
-    pub last_assignment_span: Span,
-    pub value: V,
+struct AssignedValue<V> {
+    last_assignment_span: Span,
+    value: V,
 }
 
 impl<V> MaybeAssignedValue<V> {
@@ -1379,23 +1380,9 @@ impl<V> MaybeAssignedValue<V> {
     }
 }
 
-impl<V: Clone> MaybeAssignedValue<&V> {
-    pub fn cloned(&self) -> MaybeAssignedValue<V> {
-        match self {
-            MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(v.map_defined(|v| AssignedValue {
-                last_assignment_span: v.last_assignment_span,
-                value: v.value.clone(),
-            })),
-            MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
-            MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
-            &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
-        }
-    }
-}
-
+// TODO find a better name for this
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ValueVersion {
-    // TODO we could also _only_ use an index and ensure they're unique per signal, but that's sketchy to guarantee
     signal: SignalOrVariable,
     index: ValueVersionIndex,
 }
