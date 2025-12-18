@@ -1,9 +1,7 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::implication::{
-    HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion, join_implications,
-};
+use crate::front::implication::{HardwareValueWithVersion, Implication, ImplicationKind, ValueWithVersion};
 use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
@@ -19,7 +17,9 @@ use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::SourceDatabase;
+use crate::try_inner;
 use crate::util::arena::RandomCheck;
+use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::range::RangeEmpty;
@@ -30,7 +30,6 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -48,70 +47,37 @@ use unwrap_match::unwrap_match;
 trait FlowPrivate: Sized {
     fn root(&self) -> &FlowRoot<'_>;
 
-    fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication));
+    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType>;
 
-    fn apply_implications(&self, large: &mut IrLargeArena, value: HardwareValueWithVersion) -> ValueWithVersion {
-        // TODO move this to the implications module
-        // TODO make this "fallible", ie. "abandon this branch because it is actually unreachable"
-        match &value.value.ty {
-            HardwareType::Bool => {
-                let mut known_false = false;
-                let mut known_true = false;
-                self.for_each_implication(value.version, |implication| {
-                    let &Implication { version, ref kind } = implication;
-                    assert_eq!(value.version, version);
+    fn apply_impled_type(
+        &self,
+        large: &mut IrLargeArena,
+        value_with_version: HardwareValueWithVersion,
+    ) -> ValueWithVersion {
+        let HardwareValueWithVersion { value, version } = value_with_version;
 
-                    if let &ImplicationKind::BoolEq(value) = kind {
-                        match value {
-                            true => known_true = true,
-                            false => known_false = true,
-                        }
-                    }
-                });
+        match self.implied_type(version) {
+            None => Value::Hardware(HardwareValueWithVersion { value, version }),
+            Some(implied_ty) => match implied_ty {
+                &ImpliedType::Bool(value) => Value::Simple(SimpleCompileValue::Bool(value)),
+                ImpliedType::Int(implied_ty) => {
+                    let HardwareValue { ty, domain, expr } = value;
+                    assert!(matches!(ty, HardwareType::Int(_)));
 
-                match (known_false, known_true) {
-                    (false, false) => Value::Hardware(value),
-                    (true, false) => Value::new_bool(false),
-                    (false, true) => Value::new_bool(true),
-                    (true, true) => {
-                        // TODO support never type or maybe specifically empty ranges
-                        // TODO or better, once implications discover there's a contradiction we can stop evaluating the block
-                        Value::Hardware(value)
-                    }
+                    let expr_constrained = large.push_expr(IrExpressionLarge::ConstrainIntRange(
+                        implied_ty.enclosing_range().cloned(),
+                        expr,
+                    ));
+                    Value::Hardware(HardwareValueWithVersion {
+                        value: HardwareValue {
+                            ty: HardwareType::Int(implied_ty.clone()),
+                            domain,
+                            expr: expr_constrained,
+                        },
+                        version,
+                    })
                 }
-            }
-            HardwareType::Int(ty) => {
-                let mut range = ClosedMultiRange::from(ty.clone());
-
-                self.for_each_implication(value.version, |implication| {
-                    let &Implication { version, ref kind } = implication;
-                    assert_eq!(value.version, version);
-                    if let ImplicationKind::IntIn(implication_range) = kind {
-                        range = range.subtract(&implication_range.complement());
-                    }
-                });
-
-                match ClosedNonEmptyMultiRange::try_from(range) {
-                    Ok(range) => {
-                        let enclosing_range = range.enclosing_range().cloned();
-                        let expr_constr = IrExpressionLarge::ConstrainIntRange(enclosing_range, value.value.expr);
-                        let value_constr = HardwareValue {
-                            ty: HardwareType::Int(range),
-                            domain: value.value.domain,
-                            expr: large.push_expr(expr_constr),
-                        };
-                        Value::Hardware(HardwareValueWithVersion {
-                            value: value_constr,
-                            version: value.version,
-                        })
-                    }
-                    Err(RangeEmpty) => {
-                        // TODO we should bail here, this turns out to be an unreachable branch
-                        Value::Hardware(value)
-                    }
-                }
-            }
-            _ => Value::Hardware(value),
+            },
         }
     }
 
@@ -151,6 +117,7 @@ pub trait Flow: FlowPrivate {
         };
         self.var_set_maybe(var, assignment_span, assigned);
     }
+
     fn var_set_undefined(&mut self, var: Variable, assignment_span: Span) {
         let assigned = MaybeAssignedValue::Assigned(MaybeUndefined::Undefined);
         self.var_set_maybe(var, assignment_span, assigned);
@@ -186,7 +153,7 @@ pub trait Flow: FlowPrivate {
                             signal: SignalOrVariable::Variable(var.inner),
                             index,
                         });
-                        Ok(self.apply_implications(large, v))
+                        Ok(self.apply_impled_type(large, v))
                     }
                 },
             },
@@ -358,16 +325,15 @@ impl FlowPrivate for FlowCompile<'_> {
         self.root
     }
 
-    fn for_each_implication(&self, value: ValueVersion, f: impl FnMut(&Implication)) {
+    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType> {
         let mut curr = self;
         loop {
             curr = match &curr.kind {
-                FlowCompileKind::Root => break,
+                FlowCompileKind::Root => return None,
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
                 FlowCompileKind::ScopedHardware(parent) => {
-                    parent.for_each_implication(value, f);
-                    break;
+                    return parent.implied_type(value);
                 }
             }
         }
@@ -613,9 +579,13 @@ struct FlowHardwareCommon {
     variables: FlowHardwareVariables,
     signal_versions: IndexMap<Signal, ValueVersionIndex>,
     statements: Vec<Spanned<IrStatement>>,
-    // TODO store these as a map(version) -> type instead of this, so pre-applied
-    //   this should be faster and allow us to more easily cut dead branches
-    implications: Vec<Implication>,
+    implied_types: IndexMap<ValueVersion, ImpliedType>,
+}
+
+#[derive(Debug)]
+enum ImpliedType {
+    Bool(bool),
+    Int(ClosedNonEmptyMultiRange<BigInt>),
 }
 
 struct FlowHardwareVariables {
@@ -649,14 +619,14 @@ struct FlowHardwareScoped<'p> {
 }
 
 impl FlowHardwareCommon {
-    fn new(implications: Vec<Implication>) -> FlowHardwareCommon {
+    fn new(implied_types: IndexMap<ValueVersion, ImpliedType>) -> FlowHardwareCommon {
         FlowHardwareCommon {
             variables: FlowHardwareVariables {
                 combined: IndexMap::new(),
             },
             signal_versions: IndexMap::new(),
             statements: vec![],
-            implications,
+            implied_types,
         }
     }
 }
@@ -666,29 +636,21 @@ impl FlowPrivate for FlowHardware<'_> {
         self.root
     }
 
-    fn for_each_implication(&self, value: ValueVersion, mut f: impl FnMut(&Implication)) {
-        let mut visit = |common: &FlowHardwareCommon| {
-            common
-                .implications
-                .iter()
-                .filter(|imp| imp.version == value)
-                .for_each(&mut f);
-        };
-
-        // TODO extract self.for_each_common
+    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType> {
         let mut curr = self;
         loop {
             curr = match &curr.kind {
                 FlowHardwareKind::Root(root) => {
-                    visit(&root.common);
-                    break;
+                    return root.common.implied_types.get(&value);
                 }
                 FlowHardwareKind::Branch(branch) => {
-                    visit(&branch.common);
+                    if let Some(ty) = branch.common.implied_types.get(&value) {
+                        return Some(ty);
+                    }
                     branch.parent
                 }
                 FlowHardwareKind::Scoped(scoped) => scoped.parent,
-            };
+            }
         }
     }
 
@@ -816,7 +778,7 @@ impl<'p> FlowHardwareRoot<'p> {
             ir_wires,
             ir_registers,
             ir_variables: IrVariables::new(),
-            common: FlowHardwareCommon::new(vec![]),
+            common: FlowHardwareCommon::new(IndexMap::new()),
         }
     }
 
@@ -844,7 +806,7 @@ impl<'p> FlowHardwareRoot<'p> {
             variables: _,
             signal_versions: _,
             statements: ir_statements,
-            implications: _,
+            implied_types: _,
         } = common;
 
         let block = IrBlock {
@@ -853,6 +815,9 @@ impl<'p> FlowHardwareRoot<'p> {
         (ir_variables, block)
     }
 }
+
+#[derive(Debug, Copy, Clone)]
+pub struct ImplicationContradiction;
 
 impl<'p> FlowHardware<'p> {
     fn root_hw<'s>(&'s self) -> &'s FlowHardwareRoot<'p> {
@@ -879,17 +844,97 @@ impl<'p> FlowHardware<'p> {
 
     pub fn new_child_branch(
         &mut self,
+        ctx: &mut CompileItemContext,
+        span: Span,
         cond_domain: Spanned<ValueDomain>,
         cond_implications: Vec<Implication>,
-    ) -> FlowHardwareBranch<'_> {
+    ) -> DiagResult<Result<FlowHardwareBranch<'_>, ImplicationContradiction>> {
+        let implied_types = try_inner!(self.implications_to_implied_types(ctx, span, cond_implications)?);
+
         let root = self.root;
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
-        FlowHardwareBranch {
+        Ok(Ok(FlowHardwareBranch {
             root,
             parent: slf,
             cond_domain,
-            common: FlowHardwareCommon::new(cond_implications),
+            common: FlowHardwareCommon::new(implied_types),
+        }))
+    }
+
+    fn implications_to_implied_types(
+        &self,
+        ctx: &mut CompileItemContext,
+        span: Span,
+        implications: Vec<Implication>,
+    ) -> DiagResult<Result<IndexMap<ValueVersion, ImpliedType>, ImplicationContradiction>> {
+        let mut implied_types = IndexMap::new();
+
+        for implication in implications {
+            let Implication { version, kind } = implication;
+
+            let curr_implied = implied_types.get(&version).or_else(|| self.implied_type(version));
+
+            let curr_ty: Either<Option<bool>, &ClosedNonEmptyMultiRange<BigInt>> = match curr_implied {
+                // already has an implied type, use that
+                Some(curr_ty) => match curr_ty {
+                    &ImpliedType::Bool(value) => Either::Left(Some(value)),
+                    ImpliedType::Int(range) => Either::Right(range),
+                },
+                // no implied type yet, get the base type
+                None => {
+                    let base_ty = match version.signal {
+                        SignalOrVariable::Signal(signal) => {
+                            // According to the signature this can fail due to the type not yet being inferred,
+                            //  but here that isn't actually be possible: the signal is present in an implication,
+                            //  so it has been evaluated already.
+                            signal.ty(ctx, span)?.inner
+                        }
+                        SignalOrVariable::Variable(var) => {
+                            // We only care about variables that are assigned, defined and store a hardware value.
+                            let var_value = self.var_get_maybe(Spanned::new(span, var))?;
+                            if let VariableValueRef::Assigned(var_info) = var_value
+                                && let MaybeUndefined::Defined(var_info) = var_info
+                                && let Value::Hardware(var_value) = var_info.value
+                            {
+                                &var_value.value.ty
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    match base_ty {
+                        &HardwareType::Bool => Either::Left(None),
+                        HardwareType::Int(range) => Either::Right(range),
+                        _ => continue,
+                    }
+                }
+            };
+
+            match (kind, curr_ty) {
+                (ImplicationKind::BoolEq(implied_value), Either::Left(curr_value)) => {
+                    if curr_value.is_none_or(|curr_value| curr_value == implied_value) {
+                        implied_types.insert(version, ImpliedType::Bool(implied_value));
+                    } else {
+                        return Ok(Err(ImplicationContradiction));
+                    }
+                }
+                (ImplicationKind::IntIn(implied_range), Either::Right(curr_range)) => {
+                    let new_range = ClosedMultiRange::from(curr_range.clone()).intersect(&implied_range);
+
+                    match ClosedNonEmptyMultiRange::try_from(new_range) {
+                        Ok(new_range) => {
+                            implied_types.insert(version, ImpliedType::Int(new_range));
+                        }
+                        Err(RangeEmpty) => {
+                            return Ok(Err(ImplicationContradiction));
+                        }
+                    }
+                }
+                _ => return Err(self.root.diags.report_internal_error(span, "implication type mismatch")),
+            }
         }
+
+        Ok(Ok(implied_types))
     }
 
     pub fn new_child_scoped(&mut self) -> FlowHardware<'_> {
@@ -1010,7 +1055,7 @@ impl<'p> FlowHardware<'p> {
         }
 
         // extract blocks
-        let mut branch_implications = vec![];
+        let mut branch_implied_types = vec![];
         let branch_blocks = branches
             .into_iter()
             .map(|branch| {
@@ -1023,15 +1068,14 @@ impl<'p> FlowHardware<'p> {
                     variables: _,
                     signal_versions: _,
                     statements,
-                    implications,
+                    implied_types,
                 } = common;
-                branch_implications.push(implications);
+                branch_implied_types.push(implied_types);
                 IrBlock { statements }
             })
             .collect_vec();
 
-        let merged_implications = join_implications(&branch_implications);
-        self.first_common_mut().implications.extend(merged_implications);
+        merge_branch_implied_types(&mut self.first_common_mut().implied_types, &branch_implied_types);
 
         // TODO merge condition domains too?
         Ok(branch_blocks)
@@ -1174,7 +1218,7 @@ impl<'p> FlowHardware<'p> {
             value: value_raw,
             version,
         };
-        Ok(self.apply_implications(&mut ctx.large, value))
+        Ok(self.apply_impled_type(&mut ctx.large, value))
     }
 
     fn signal_set_version(&mut self, signal: Signal, version: ValueVersionIndex) {
@@ -1349,14 +1393,14 @@ impl<V: Clone> MaybeAssignedValue<&V> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ValueVersion {
     // TODO we could also _only_ use an index and ensure they're unique per signal, but that's sketchy to guarantee
     signal: SignalOrVariable,
     index: ValueVersionIndex,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct ValueVersionIndex(NonZeroUsize);
 
 struct NeedsHardwareMerge;
@@ -1703,6 +1747,15 @@ fn merge_branch_values(
         }),
     };
     Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(result_assigned)))
+}
+
+fn merge_branch_implied_types(
+    parent: &mut IndexMap<ValueVersion, ImpliedType>,
+    branch_implications: &[IndexMap<ValueVersion, ImpliedType>],
+) {
+    // TODO do something more interesting here, this placeholder implementation is correct but a missed opportunity
+    // TODO we might need to merge this with the actual values, all in merge_branch_values
+    let _ = (parent, branch_implications);
 }
 
 /// The borrow checking has trouble with nested chains of parent references,

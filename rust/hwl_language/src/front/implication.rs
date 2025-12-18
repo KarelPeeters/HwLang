@@ -80,12 +80,6 @@ impl BoolImplications {
     }
 }
 
-pub fn join_implications(branch_implications: &[Vec<Implication>]) -> Vec<Implication> {
-    // TODO do something more interesting here, this placeholder implementation is correct but a missed opportunity
-    let _ = branch_implications;
-    vec![]
-}
-
 impl Implication {
     pub fn new_bool(value: ValueVersion, equal: bool) -> Self {
         Self {

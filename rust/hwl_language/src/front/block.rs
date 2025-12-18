@@ -6,7 +6,7 @@ use crate::front::check::{
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
-use crate::front::flow::{Flow, FlowHardware, VariableId};
+use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
@@ -28,6 +28,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::BigInt;
+use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
@@ -303,25 +304,27 @@ impl CompileItemContext<'_, '_> {
                 let flow = flow.check_hardware(span, "hardware exit conditions")?;
 
                 let exit_cond = Spanned::new(span, exit_cond);
-                let (_, run_end) =
-                    self.elaborate_hardware_branch(flow, span, exit_cond, |slf, branch_flow, branch_cond| {
-                        if branch_cond {
-                            // early exit, do nothing
-                            Ok(BlockEnd::Normal)
-                        } else {
-                            // not exiting, actually run the statements
-                            slf.elaborate_block_statements_without_immediate_exit_check(
-                                scope,
-                                branch_flow,
-                                stack,
-                                statements,
-                            )
-                        }
-                    })?;
 
-                // we don't need to join ends here: if we got here,
-                //   this means that the run branch will be taken and it's only that end case that counts
-                run_end
+                // TODO rework this end hack by adding BlockEnd::Unreachable
+                let mut actual_end = None;
+                let _ = self.elaborate_hardware_if(flow, span, exit_cond, |slf, branch_flow, branch_cond| {
+                    if branch_cond {
+                        // early exit, do nothing
+                    } else {
+                        // not exiting, actually run the statements
+                        let real_end = slf.elaborate_block_statements_without_immediate_exit_check(
+                            scope,
+                            branch_flow,
+                            stack,
+                            statements,
+                        )?;
+                        actual_end = Some(real_end);
+                    }
+
+                    Ok(BlockEnd::Normal)
+                })?;
+
+                actual_end.unwrap_or(BlockEnd::Normal)
             }
         };
         Ok(end)
@@ -561,24 +564,13 @@ impl CompileItemContext<'_, '_> {
                 let flow = flow.check_hardware(cond_span, "hardware value")?;
 
                 let cond_value = Spanned::new(cond_span, cond_value);
-                let (then_end, else_end) =
-                    self.elaborate_hardware_branch(flow, span_if, cond_value, |slf, branch_flow, branch_cond| {
-                        if branch_cond {
-                            slf.elaborate_block(scope, branch_flow, stack, block)
-                        } else {
-                            slf.elaborate_if_statement(
-                                scope,
-                                branch_flow,
-                                stack,
-                                remaining_ifs.split_first(),
-                                final_else,
-                            )
-                        }
-                    })?;
-
-                // join ends
-                let end = join_block_ends_branches(&[then_end, else_end]);
-                Ok(end)
+                self.elaborate_hardware_if(flow, span_if, cond_value, |slf, branch_flow, branch_cond| {
+                    if branch_cond {
+                        slf.elaborate_block(scope, branch_flow, stack, block)
+                    } else {
+                        slf.elaborate_if_statement(scope, branch_flow, stack, remaining_ifs.split_first(), final_else)
+                    }
+                })
             }
         }
     }
@@ -1043,7 +1035,11 @@ impl CompileItemContext<'_, '_> {
             } = matched;
 
             let mut branch_scope = Scope::new_child(branch.span(), scope_parent);
-            let mut branch_flow = flow_parent.new_child_branch(target_domain, implications);
+            let mut branch_flow =
+                match flow_parent.new_child_branch(self, branch.span(), target_domain, implications)? {
+                    Ok(branch_flow) => branch_flow,
+                    Err(ImplicationContradiction) => continue,
+                };
 
             if let Some(declare) = declare {
                 let BranchDeclare { id, value } = declare;
@@ -1306,45 +1302,83 @@ impl CompileItemContext<'_, '_> {
         })
     }
 
-    fn elaborate_hardware_branch<R>(
+    fn elaborate_hardware_if(
         &mut self,
         flow: &mut FlowHardware,
         span: Span,
         cond: Spanned<HardwareValueWithImplications<TypeBool>>,
-        mut f: impl FnMut(&mut Self, &mut FlowHardware, bool) -> DiagResult<R>,
-    ) -> DiagResult<(R, R)> {
+        mut f: impl FnMut(&mut Self, &mut FlowHardware, bool) -> DiagResult<BlockEnd>,
+    ) -> DiagResult<BlockEnd> {
         let cond_domain = Spanned::new(cond.span, cond.inner.value.domain);
 
         // lower then
-        let mut then_flow = flow.new_child_branch(cond_domain, cond.inner.implications.if_true);
-        let then_result = f(self, &mut then_flow.as_flow(), true);
-        let then_flow = then_flow.finish();
+        let then_flow_end = match flow.new_child_branch(self, span, cond_domain, cond.inner.implications.if_true)? {
+            Ok(mut then_flow) => {
+                let then_end = f(self, &mut then_flow.as_flow(), true)?;
+                let then_flow = then_flow.finish();
+                Some((then_flow, then_end))
+            }
+            Err(ImplicationContradiction) => None,
+        };
 
         // lower else
-        let mut else_flow = flow.new_child_branch(cond_domain, cond.inner.implications.if_false);
-        let else_result = f(self, &mut else_flow.as_flow(), false);
-        let else_flow = else_flow.finish();
+        let else_flow_end = match flow.new_child_branch(self, span, cond_domain, cond.inner.implications.if_false)? {
+            Ok(mut else_flow) => {
+                let else_end = f(self, &mut else_flow.as_flow(), false)?;
+                let else_flow = else_flow.finish();
+                Some((else_flow, else_end))
+            }
+            Err(ImplicationContradiction) => None,
+        };
 
         // join
-        let (then_block, else_block) =
-            flow.join_child_branches_pair(self.refs, &mut self.large, span, (then_flow, else_flow))?;
+        match (then_flow_end, else_flow_end) {
+            (Some(then_flow_end), Some(else_flow_end)) => {
+                // both branches are possible
+                let (then_flow, then_end) = then_flow_end;
+                let (else_flow, else_end) = else_flow_end;
 
-        // build if
-        let ir_if = build_ir_if_statement(
-            &mut self.large,
-            cond.inner.value.expr,
-            Some(then_block),
-            Some(else_block),
-        );
-        if let Some(ir_if) = ir_if {
-            let ir_if = match ir_if {
-                Either::Left(ir_if) => IrStatement::Block(ir_if),
-                Either::Right(ir_if) => IrStatement::If(ir_if),
-            };
-            flow.push_ir_statement(Spanned::new(span, ir_if));
+                // join flows
+                let (then_block, else_block) =
+                    flow.join_child_branches_pair(self.refs, &mut self.large, span, (then_flow, else_flow))?;
+
+                // build if
+                let ir_if = build_ir_if_statement(
+                    &mut self.large,
+                    cond.inner.value.expr,
+                    Some(then_block),
+                    Some(else_block),
+                );
+                if let Some(ir_if) = ir_if {
+                    let ir_if = match ir_if {
+                        Either::Left(ir_if) => IrStatement::Block(ir_if),
+                        Either::Right(ir_if) => IrStatement::If(ir_if),
+                    };
+                    flow.push_ir_statement(Spanned::new(span, ir_if));
+                }
+
+                // join ends
+                Ok(join_block_ends_branches(&[then_end, else_end]))
+            }
+            (Some(flow_end), None) | (None, Some(flow_end)) => {
+                // only one branch is possible, so no need to build an if statement
+                let (case_flow, case_end) = flow_end;
+
+                let block = flow
+                    .join_child_branches(self.refs, &mut self.large, span, vec![case_flow])?
+                    .single()
+                    .unwrap();
+
+                flow.push_ir_statement(Spanned::new(span, IrStatement::Block(block)));
+
+                Ok(case_end)
+            }
+            (None, None) => {
+                // both branches contradict, this basically means this entire flow is unreachable,
+                //  no need to do anything at all
+                Ok(BlockEnd::Normal)
+            }
         }
-
-        Ok((then_result?, else_result?))
     }
 
     pub fn compile_elaborate_extra_list<'a, F: Flow, I: HasSpan>(

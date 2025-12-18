@@ -2408,6 +2408,8 @@ pub fn eval_binary_bool_typed(
         }
 
         // full hardware
+        // TODO these could be improved for multi-integer ranges,
+        //   we actually need to join/intersect allowed ranges per version
         (MaybeCompile::Hardware(left), MaybeCompile::Hardware(right)) => {
             let expr = HardwareValue {
                 ty: TypeBool,

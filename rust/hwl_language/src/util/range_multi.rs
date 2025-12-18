@@ -299,6 +299,17 @@ impl<T> ClosedMultiRange<T> {
     }
 
     #[must_use]
+    pub fn intersect(&self, other: &MultiRange<T>) -> ClosedMultiRange<T>
+    where
+        T: Ord + Clone,
+    {
+        // intersecting with a closed range will always yield a closed (possibly empty) range
+        ClosedMultiRange {
+            inner: self.inner.intersect(other),
+        }
+    }
+
+    #[must_use]
     pub fn subtract(&self, range: &MultiRange<T>) -> ClosedMultiRange<T>
     where
         T: Ord + Clone,

@@ -67,84 +67,104 @@ def test_variable_checked():
 
 
 def test_implied_type_int_const():
-    def check(cond: str, ty_true: str, ty_false: str):
-        ty_orig = "int(0..8)"
-        src = f"""
-        import std.types.[uint, int];
-        import std.util.print;
-        module foo ports(p: in async {ty_orig}) {{
-            comb {{
-                const {{ print(type(p)); }}
-                if ({cond}) {{
-                    val v = p;
-                    const {{ print(type(v)); }}            
-                }} else {{
-                    val v = p;
-                    const {{ print(type(v)); }}
-                }}
-            }}
-        }}
-        """
+    ty = "0..8"
 
-        c = compile_custom(src)
-        with c.capture_prints() as cap:
-            _ = c.resolve("top.foo")
-        assert cap.prints == [f"{ty_orig}\n", f"int({ty_true})\n", f"int({ty_false})\n"]
+    check_unary_cond(ty, "p < 4", "0..4", "4..8")
+    check_unary_cond(ty, "4 > p", "0..4", "4..8")
 
-    check("p < 4", "0..4", "4..8")
-    check("p <= 4", "0..5", "5..8")
-    check("p > 4", "5..8", "0..5")
-    check("p >= 4", "4..8", "0..4")
+    check_unary_cond(ty, "p <= 4", "0..5", "5..8")
+    check_unary_cond(ty, "4 >= p", "0..5", "5..8")
 
-    check("4 > p", "0..4", "4..8")
-    check("4 >= p", "0..5", "5..8")
-    check("4 < p", "5..8", "0..5")
-    check("4 <= p", "4..8", "0..4")
+    check_unary_cond(ty, "p > 4", "5..8", "0..5")
+    check_unary_cond(ty, "4 < p", "5..8", "0..5")
+
+    check_unary_cond(ty, "p >= 4", "4..8", "0..4")
+    check_unary_cond(ty, "4 <= p", "4..8", "0..4")
+
+    check_unary_cond(ty, "p == 4", "4..5", "0..4, 5..8")
+    check_unary_cond(ty, "4 == p", "4..5", "0..4, 5..8")
+
+    check_unary_cond(ty, "p != 4", "0..4, 5..8", "4..5")
+    check_unary_cond(ty, "4 != p", "0..4, 5..8", "4..5")
 
 
 def test_implied_type_int_int():
-    def check(cond: str, ty_true_a: str, ty_false_a: str):
-        ty_orig_a = "int(0..8)"
-        ty_orig_b = "int(2..6)"
-        src = f"""
-        import std.types.[uint, int];
-        import std.util.print;
-        module foo ports(a: in async {ty_orig_a}, b: in async {ty_orig_b}) {{
-            comb {{
-                const {{ print(type(a)); print(type(b)); }}
-                if ({cond}) {{
-                    val va = a;
-                    val vb = b;
-                    const {{ print(type(va)); print(type(vb)); }}
-                }} else {{
-                    val va = a;
-                    val vb = b;
-                    const {{ print(type(va)); print(type(vb)); }}
-                }}
+    ty_a = "0..8"
+    ty_b = "2..6"
+
+    check_binary_cond(ty_a, ty_b, "a < b", "0..5", "2..8")
+    check_binary_cond(ty_a, ty_b, "b > a", "0..5", "2..8")
+
+    check_binary_cond(ty_a, ty_b, "a <= b", "0..6", "3..8")
+    check_binary_cond(ty_a, ty_b, "b >= a", "0..6", "3..8")
+
+    check_binary_cond(ty_a, ty_b, "a > b", "3..8", "0..6")
+    check_binary_cond(ty_a, ty_b, "b < a", "3..8", "0..6")
+
+    check_binary_cond(ty_a, ty_b, "a >= b", "2..8", "0..5")
+    check_binary_cond(ty_a, ty_b, "b <= a", "2..8", "0..5")
+
+
+def test_implied_type_operators():
+    # TODO make these stricter once we have better range analysis for composite conditions
+    check_unary_cond("0..8", "2 <= p && p < 6", "2..6", "0..8")
+    check_unary_cond("0..8", "p < 2 || 6 <= p", "0..8", "2..6")
+    check_unary_cond("0..8", "2 <= p ^^ p < 6", "0..8", "0..8")
+    check_unary_cond("0..8", "!(2 <= p)", "0..2", "2..8")
+
+
+def check_unary_cond(ty: str, cond: str, ty_true: str, ty_false: str):
+    src = f"""
+    import std.types.[uint, int];
+    import std.util.print;
+    module foo ports(p: in async int({ty})) {{
+        comb {{
+            const {{ print(type(p)); }}
+            if ({cond}) {{
+                val v = p;
+                const {{ print(type(v)); }}            
+            }} else {{
+                val v = p;
+                const {{ print(type(v)); }}
             }}
         }}
-        """
+    }}
+    """
 
-        c = compile_custom(src)
-        with c.capture_prints() as cap:
-            _ = c.resolve("top.foo")
-        assert cap.prints == [
-            f"{ty_orig_a}\n", f"{ty_orig_b}\n",
-            f"int({ty_true_a})\n", f"{ty_orig_b}\n",
-            f"int({ty_false_a})\n", f"{ty_orig_b}\n"
-        ]
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.foo")
+    assert cap.prints == [f"int({ty})\n", f"int({ty_true})\n", f"int({ty_false})\n"]
 
-    # ty_orig_a = "int(0..8)"
-    # ty_orig_b = "int(2..6)"
-    check("a < b", "0..5", "2..8")
-    check("a <= b", "0..6", "3..8")
-    check("a > b", "3..8", "0..6")
-    check("a >= b", "2..8", "0..5")
 
-    check("b > a", "0..5", "2..8")
-    check("b >= a", "0..6", "3..8")
-    check("b < a", "3..8", "0..6")
-    check("b <= a", "2..8", "0..5")
+def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_a: str):
+    src = f"""
+    import std.types.[uint, int];
+    import std.util.print;
+    module foo ports(a: in async int({ty_a}), b: in async int({ty_b})) {{
+        comb {{
+            const {{ print(type(a)); print(type(b)); }}
+            if ({cond}) {{
+                val va = a;
+                val vb = b;
+                const {{ print(type(va)); print(type(vb)); }}
+            }} else {{
+                val va = a;
+                val vb = b;
+                const {{ print(type(va)); print(type(vb)); }}
+            }}
+        }}
+    }}
+    """
+
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.foo")
+    assert cap.prints == [
+        f"int({ty_a})\n", f"int({ty_b})\n",
+        f"int({ty_true_a})\n", f"int({ty_b})\n",
+        f"int({ty_false_a})\n", f"int({ty_b})\n"
+    ]
 
 
 def test_bool_implies_itself():
@@ -182,7 +202,7 @@ def test_bool_implies_itself():
     ]
 
 
-def test_imply_non_zero():
+def test_imply_non_zero_div():
     src_raw = """
     import std.types.int;
     module foo ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
