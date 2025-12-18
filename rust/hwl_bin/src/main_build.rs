@@ -129,13 +129,15 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     );
     let time_compile = start_compile.elapsed();
 
-    std::fs::write(
-        "../ignored/lowered.ir",
-        compiled
-            .as_ref()
-            .map_or("// failed".to_owned(), |s| format!("{:#?}", s)),
-    )
-    .unwrap();
+    // TODO don't hardcode paths here
+    // TODO make this configurable
+    // std::fs::write(
+    //     "../ignored/lowered.ir",
+    //     compiled
+    //         .as_ref()
+    //         .map_or("// failed".to_owned(), |s| format!("{:#?}", s)),
+    // )
+    // .unwrap();
 
     // TODO parallelize lowering?
     let lower_results = if skip_lower {
@@ -166,6 +168,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     }
 
     // TODO don't hardcode paths here
+    // TODO make this configurable
     if let Some((_, _, lowered, simulator_code)) = &lower_results {
         // save lowered verilog
         std::fs::create_dir_all("../ignored").unwrap();
