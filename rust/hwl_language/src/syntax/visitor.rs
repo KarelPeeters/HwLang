@@ -900,6 +900,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let &RegDeclaration {
                         vis,
+                        span_keyword: _,
                         id,
                         sync: _,
                         ty: _,
@@ -964,6 +965,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ModuleStatementKind::RegDeclaration(decl) => {
                     let &RegDeclaration {
                         vis,
+                        span_keyword: _,
                         id,
                         sync,
                         ty,

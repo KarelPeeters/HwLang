@@ -271,7 +271,7 @@ impl CompileRefs<'_, '_> {
                                         flow,
                                         &Type::InterfaceView,
                                         interface,
-                                        "interface view",
+                                        Spanned::new(interface.span, "interface view"),
                                     )
                                     .and_then(|view| match view.inner {
                                         CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
@@ -344,7 +344,7 @@ impl CompileRefs<'_, '_> {
                                                 flow,
                                                 &Type::InterfaceView,
                                                 interface,
-                                                "interface",
+                                                Spanned::new(interface.span, "interface"),
                                             )
                                             .and_then(|view| match view.inner {
                                                 CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
@@ -2263,7 +2263,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     .transpose();
 
                 let interface = ctx
-                    .eval_expression_as_compile(scope, flow_parent, &Type::Interface, interface, "wire interface")
+                    .eval_expression_as_compile(scope, flow_parent, &Type::Interface, interface, Spanned::new(interface.span, "wire interface"))
                     .and_then(|interface| match interface.inner {
                         CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
                             Ok(Spanned::new(interface.span, interface_inner))
@@ -2353,6 +2353,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         // declaration and visibility are handled in the caller
         let &RegDeclaration {
             vis: _,
+            span_keyword,
             id: _,
             sync,
             ty,
@@ -2373,7 +2374,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             &mut flow_inner,
             &ty.inner.as_type(),
             init,
-            "register reset value",
+            Spanned::new(span_keyword, "register reset value"),
         );
         let sync = sync?;
 
@@ -2449,7 +2450,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         // evaluate init
         let init_raw =
-            ctx.eval_expression_as_compile_or_undefined(scope_body, flow_body, &port_ty, init, "register reset value");
+            ctx.eval_expression_as_compile_or_undefined(scope_body, flow_body, &port_ty, init, Spanned::new(init.span, "register reset value"));
 
         // check port is output
         let port_info = &ctx.ports[port];

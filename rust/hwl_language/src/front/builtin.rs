@@ -1,6 +1,6 @@
 use crate::front::check::{
-    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string,
-    check_type_is_string_compile,
+    check_type_is_bool, check_type_is_bool_compile, check_type_is_string, check_type_is_string_compile,
+    TypeContainsReason,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
@@ -128,10 +128,20 @@ impl CompileItemContext<'_, '_> {
                 format!("{TOKEN_STR_BUILTIN} requires at least two arguments"),
             ));
         }
-        let arg_0 =
-            self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[0].value, "builtin arg 0")?;
-        let arg_1 =
-            self.eval_expression_as_compile(scope, flow, &Type::String, args_inner[1].value, "builtin arg 1")?;
+        let arg_0 = self.eval_expression_as_compile(
+            scope,
+            flow,
+            &Type::String,
+            args_inner[0].value,
+            Spanned::new(target_span, "builtin arg"),
+        )?;
+        let arg_1 = self.eval_expression_as_compile(
+            scope,
+            flow,
+            &Type::String,
+            args_inner[1].value,
+            Spanned::new(target_span, "builtin arg"),
+        )?;
         let args_rest = &args_inner[2..];
 
         let type_reason = TypeContainsReason::Operator(target_span);
@@ -177,11 +187,22 @@ impl CompileItemContext<'_, '_> {
             // assert
             ("fn", "assert", &[cond, msg]) => {
                 // TODO support hardware cond and msg
-                let cond =
-                    self.eval_expression_as_compile(scope, flow, &Type::Bool, cond.value, "assertion condition")?;
+                let cond = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::Bool,
+                    cond.value,
+                    Spanned::new(target_span, "assertion condition"),
+                )?;
                 let cond = check_type_is_bool_compile(diags, elab, TypeContainsReason::Internal(expr_span), cond)?;
 
-                let msg = self.eval_expression_as_compile(scope, flow, &Type::String, msg.value, "message")?;
+                let msg = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::String,
+                    msg.value,
+                    Spanned::new(target_span, "assertion message"),
+                )?;
                 let msg = check_type_is_string_compile(diags, elab, TypeContainsReason::Internal(expr_span), msg)?;
 
                 if cond {

@@ -537,6 +537,7 @@ impl Context<'_> {
             ModuleStatementKind::RegDeclaration(decl) => {
                 let &RegDeclaration {
                     vis,
+                    span_keyword: _,
                     id,
                     sync,
                     ty,

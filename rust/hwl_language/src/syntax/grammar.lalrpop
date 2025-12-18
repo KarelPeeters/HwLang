@@ -213,8 +213,8 @@ ModuleStatementKind: ModuleStatementKind = {
     ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
-    <vis:Vis> "reg" <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
-        let decl = RegDeclaration { vis, id, sync, ty, init };
+    <vis:Vis> <span_keyword:Span<"reg">> <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
+        let decl = RegDeclaration { vis, span_keyword, id, sync, ty, init };
         ModuleStatementKind::RegDeclaration(decl)
     },
     <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {

@@ -1,4 +1,4 @@
-use crate::front::check::{TypeContainsReason, check_type_contains_value};
+use crate::front::check::{check_type_contains_value, TypeContainsReason};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
@@ -18,18 +18,18 @@ use crate::syntax::ast::{
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
-use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
+use crate::util::ResultExt;
 use hwl_util::swrite;
-use indexmap::IndexMap;
 use indexmap::map::Entry;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use std::hash::Hash;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum ElaboratedModule<I = ElaboratedModuleInternal, E = ElaboratedModuleExternal> {
@@ -407,12 +407,12 @@ impl CompileItemContext<'_, '_> {
                 self.eval_maybe_generic_item(id.span(), body_span, scope, flow, params, body)
             }
             CommonDeclarationNamedKind::Const(decl) => {
-                let &ConstDeclaration { span: _, id, ty, value } = decl;
+                let &ConstDeclaration { span, id, ty, value } = decl;
 
                 let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
                 let expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                let value = self.eval_expression_as_compile(scope, flow, expected_ty, value, "const value")?;
+                let value = self.eval_expression_as_compile(scope, flow, expected_ty, value, Spanned::new(span, "const declaration"))?;
 
                 // check type
                 if let Some(ty) = ty {

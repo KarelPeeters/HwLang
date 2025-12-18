@@ -466,6 +466,7 @@ pub struct RegOutPortMarker {
 #[derive(Debug, Clone)]
 pub struct RegDeclaration {
     pub vis: Visibility,
+    pub span_keyword: Span,
     pub id: MaybeGeneralIdentifier,
     pub sync: Option<Spanned<SyncDomain<Expression>>>,
     pub ty: Expression,
