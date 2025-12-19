@@ -303,16 +303,16 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start?;
                         let end = end?;
 
-                        // check that `start < end`
+                        // check validness
                         if let (Some(start), Some(end)) = (&start, &end) {
                             let start_range = start.inner.range();
                             let end_range = end.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.enclosing_range().end <= end_range.enclosing_range().start) {
+                            if !(start_range.enclosing_range().end - 1 <= *end_range.enclosing_range().start) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_range, None);
-                                let diag = Diagnostic::new("range requires that start < end")
+                                let diag = Diagnostic::new("range requires that start <= end")
                                     .add_error(op_span, "range constructed here")
                                     .add_info(start.span, msg_start)
                                     .add_info(end.span, msg_end)
@@ -338,16 +338,16 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start?;
                         let end_inc = end_inc?;
 
-                        // check that `start <= end_inc`
+                        // check validness
                         if let Some(start) = &start {
                             let start_range = start.inner.range();
                             let end_inc_range = end_inc.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.enclosing_range().end - 1 <= *end_inc_range.enclosing_range().start) {
+                            if !(start_range.enclosing_range().end - 1 <= end_inc_range.enclosing_range().start + 1) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_inc_range, None);
-                                let diag = Diagnostic::new("inclusive range requires that start <= end")
+                                let diag = Diagnostic::new("inclusive range requires that start <= end_inc + 1")
                                     .add_error(op_span, "inclusive range constructed here")
                                     .add_info(start.span, msg_start)
                                     .add_info(end_inc.span, msg_end)
