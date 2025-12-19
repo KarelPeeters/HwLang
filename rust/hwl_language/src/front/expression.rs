@@ -1,14 +1,14 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool, check_type_is_int,
-    check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint, check_type_is_uint_compile,
-    TypeContainsReason,
+    TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool,
+    check_type_is_int, check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint,
+    check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
-use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -31,7 +31,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{vec_concat, NonEmptyVec, VecExt};
+use crate::util::data::{NonEmptyVec, VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
@@ -44,7 +44,7 @@ use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
-use crate::util::{result_pair, ResultDoubleExt};
+use crate::util::{ResultDoubleExt, result_pair};
 use annotate_snippets::Level;
 use itertools::Either;
 use std::sync::Arc;
@@ -78,7 +78,8 @@ impl<'a> CompileItemContext<'a, '_> {
         match id {
             GeneralIdentifier::Simple(id) => Ok(id.spanned_str(self.refs.fixed.source).map_inner(ArcOrRef::Ref)),
             GeneralIdentifier::FromString(span, expr) => {
-                let value = self.eval_expression_as_compile(scope, flow, &Type::String, expr, Spanned::new(span, "id string"))?;
+                let value =
+                    self.eval_expression_as_compile(scope, flow, &Type::String, expr, Spanned::new(span, "id string"))?;
                 let value = check_type_is_string_compile(diags, elab, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(id.span(), ArcOrRef::Arc(value)))
@@ -574,7 +575,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             start: Some(BigInt::ZERO),
                             end: None,
                         }));
-                        let len = self.eval_expression_as_compile(scope, flow, &ty_uint, len, Spanned::new(expr.span, "array type length"))?;
+                        let len = self.eval_expression_as_compile(
+                            scope,
+                            flow,
+                            &ty_uint,
+                            len,
+                            Spanned::new(expr.span, "array type length"),
+                        )?;
                         let reason = TypeContainsReason::ArrayLen { span_len: len.span };
                         check_type_is_uint_compile(diags, elab, reason, len)
                     })
@@ -660,7 +667,13 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
-                let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, Spanned::new(expr.span, "call target"))?;
+                let target = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::Any,
+                    target,
+                    Spanned::new(expr.span, "call target"),
+                )?;
 
                 // handle special cases that can't immediately evaluate their arguments
                 match target.inner {
@@ -775,8 +788,13 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // eval
                 let value = self.eval_expression(scope, flow, expected_ty, value);
-                let init =
-                    self.eval_expression_as_compile_or_undefined(scope, flow, expected_ty, init, Spanned::new(span_keyword, "register init"));
+                let init = self.eval_expression_as_compile_or_undefined(
+                    scope,
+                    flow,
+                    expected_ty,
+                    init,
+                    Spanned::new(span_keyword, "register init"),
+                );
                 let (value, init) = result_pair(value, init)?;
 
                 // figure out type
@@ -1842,7 +1860,8 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        let eval = self.eval_expression_as_compile(scope, flow, &Type::Module, expr, Spanned::new(expr.span, "module"))?;
+        let eval =
+            self.eval_expression_as_compile(scope, flow, &Type::Module, expr, Spanned::new(expr.span, "module"))?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
         check_type_contains_value(diags, elab, reason, &Type::Module, eval.as_ref())?;

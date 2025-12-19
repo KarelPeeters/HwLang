@@ -2263,7 +2263,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     .transpose();
 
                 let interface = ctx
-                    .eval_expression_as_compile(scope, flow_parent, &Type::Interface, interface, Spanned::new(interface.span, "wire interface"))
+                    .eval_expression_as_compile(
+                        scope,
+                        flow_parent,
+                        &Type::Interface,
+                        interface,
+                        Spanned::new(interface.span, "wire interface"),
+                    )
                     .and_then(|interface| match interface.inner {
                         CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
                             Ok(Spanned::new(interface.span, interface_inner))
@@ -2449,8 +2455,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let port_ty = port_info.ty.inner.as_type();
 
         // evaluate init
-        let init_raw =
-            ctx.eval_expression_as_compile_or_undefined(scope_body, flow_body, &port_ty, init, Spanned::new(init.span, "register reset value"));
+        let init_raw = ctx.eval_expression_as_compile_or_undefined(
+            scope_body,
+            flow_body,
+            &port_ty,
+            init,
+            Spanned::new(init.span, "register reset value"),
+        );
 
         // check port is output
         let port_info = &ctx.ports[port];

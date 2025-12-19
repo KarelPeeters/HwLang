@@ -1,6 +1,6 @@
 use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::block::{BlockEnd, EarlyExitKind};
-use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
@@ -26,11 +26,11 @@ use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
-use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, Either, Itertools};
-use std::collections::hash_map::Entry as HashMapEntry;
+use indexmap::map::Entry;
+use itertools::{Either, Itertools, enumerate};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -538,8 +538,13 @@ impl CompileItemContext<'_, '_> {
             let default = default
                 .as_ref()
                 .map(|&default| {
-                    let value =
-                        ctx.eval_expression_as_compile(scope, flow, &ty.inner, default, Spanned::new(param.span, "parameter default value"))?;
+                    let value = ctx.eval_expression_as_compile(
+                        scope,
+                        flow,
+                        &ty.inner,
+                        default,
+                        Spanned::new(param.span, "parameter default value"),
+                    )?;
                     Ok(value.map_inner(Value::from))
                 })
                 .transpose()?;

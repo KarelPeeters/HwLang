@@ -1,7 +1,7 @@
 use crate::front::assignment::store_ir_expression_in_new_variable;
 use crate::front::check::{
-    check_type_contains_value, check_type_is_bool, check_type_is_bool_compile, check_type_is_range_compile,
-    TypeContainsReason,
+    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
+    check_type_is_range_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
@@ -32,8 +32,8 @@ use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
-use crate::util::{result_pair, ResultExt};
-use itertools::{enumerate, zip_eq, Either, Itertools};
+use crate::util::{ResultExt, result_pair};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -704,11 +704,23 @@ impl CompileItemContext<'_, '_> {
             MatchPattern::Wildcard => Ok(EvaluatedMatchPattern::Wildcard),
             MatchPattern::WildcardVal(id) => Ok(EvaluatedMatchPattern::WildcardVal(id)),
             MatchPattern::EqualTo(value) => {
-                let value = self.eval_expression_as_compile(scope, flow, target_ty, value, Spanned::new(pattern.span, "match branch"))?;
+                let value = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    target_ty,
+                    value,
+                    Spanned::new(pattern.span, "match branch"),
+                )?;
                 Ok(EvaluatedMatchPattern::EqualTo(value))
             }
             MatchPattern::InRange { span_in, range } => {
-                let value = self.eval_expression_as_compile(scope, flow, target_ty, range, Spanned::new(pattern.span, "match branch"))?;
+                let value = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    target_ty,
+                    range,
+                    Spanned::new(pattern.span, "match branch"),
+                )?;
                 let value = check_type_is_range_compile(diags, elab, TypeContainsReason::Operator(span_in), value)?;
                 Ok(EvaluatedMatchPattern::InRange(Spanned::new(range.span, value)))
             }
@@ -1210,7 +1222,13 @@ impl CompileItemContext<'_, '_> {
             std::iter::repeat(()),
             |slf, flow, stack, ()| {
                 // eval condition
-                let cond = slf.eval_expression_as_compile(scope, flow, &Type::Bool, cond, Spanned::new(span_keyword, "while loop condition"))?;
+                let cond = slf.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::Bool,
+                    cond,
+                    Spanned::new(span_keyword, "while loop condition"),
+                )?;
 
                 // typecheck condition
                 let reason = TypeContainsReason::WhileCondition(span_keyword);
@@ -1472,7 +1490,13 @@ impl CompileItemContext<'_, '_> {
                 ref block,
             } = pair;
 
-            let cond = self.eval_expression_as_compile(scope, flow, &Type::Bool, cond, Spanned::new(span_if, "compile-time if condition"))?;
+            let cond = self.eval_expression_as_compile(
+                scope,
+                flow,
+                &Type::Bool,
+                cond,
+                Spanned::new(span_if, "compile-time if condition"),
+            )?;
 
             let reason = TypeContainsReason::IfCondition(span_if);
             let cond = check_type_is_bool_compile(diags, elab, reason, cond)?;
