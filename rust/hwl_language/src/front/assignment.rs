@@ -237,6 +237,7 @@ impl CompileItemContext<'_, '_> {
             stmt.span,
             target_base_signal,
             target_steps_ir,
+            target_ty,
             value_hw,
             value_compile,
         )?;

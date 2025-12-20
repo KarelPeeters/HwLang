@@ -1084,7 +1084,7 @@ impl<'p> FlowHardware<'p> {
         span_merge: Span,
         mut branches: Vec<FlowHardwareBranchContent>,
     ) -> DiagResult<Vec<IrBlock>> {
-        // TODO merge implications too
+        // TODO merge implied info
         // TODO do something else if children are empty, eg. push an instruction for `assert(false)`
 
         // collect the interesting vars and signals
@@ -1297,13 +1297,13 @@ impl<'p> FlowHardware<'p> {
         assign_span: Span,
         signal: Spanned<Signal>,
         steps: Vec<IrTargetStep>,
+        target_type: HardwareType,
         value_hardware: HardwareValue,
         value_compile: Option<CompileValue>,
     ) -> DiagResult {
         // TODO track partial drivers to avoid clashes and to generate extra concat blocks
         // TODO comb blocks: check that all written signals are _always_ written
         // TODO ban signal assignments in wire expressions and port connections
-
         // get signal info
         let (signal_ty, signal_ir) = signal.inner.expect_ty_and_ir(ctx, signal.span)?;
         let signal_ty = signal_ty.cloned();
@@ -1327,7 +1327,7 @@ impl<'p> FlowHardware<'p> {
 
         // expand value to target type
         let value_hardware_expanded =
-            value_hardware.as_hardware_value_unchecked(ctx.refs, &mut ctx.large, assign_span, signal_ty.inner)?;
+            value_hardware.as_hardware_value_unchecked(ctx.refs, &mut ctx.large, assign_span, target_type)?;
 
         // assign to both signal and the shadow variable
         let mut push_stmt = |target: IrSignalOrVariable, steps: Vec<IrTargetStep>, value: IrExpression| {
@@ -1335,25 +1335,32 @@ impl<'p> FlowHardware<'p> {
             let stmt = Spanned::new(assign_span, stmt);
             self.push_ir_statement(stmt);
         };
+        let steps_is_empty = steps.is_empty();
         push_stmt(signal_ir.into(), steps.clone(), value_hardware_expanded.expr.clone());
         push_stmt(shadow_var_ir.into(), steps, value_hardware_expanded.expr);
 
         // bump version
         let version = self.root.next_version();
         self.signal_set_version(signal.inner, version);
-
-        // store implied info if any
-        let implied_info = &mut self.first_common_mut().implied_info;
         let value_version = ValueVersion {
             signal: SignalOrVariable::Signal(signal.inner),
             index: version,
         };
-        if let Some(value_compile) = value_compile {
-            implied_info.insert(value_version, ImpliedInfo::Compile(value_compile));
-        } else if let HardwareType::Int(ty) = value_hardware.ty {
-            implied_info.insert(value_version, ImpliedInfo::IntRange(ty));
+
+        // store implied info if any
+        let implied_info = if steps_is_empty {
+            if let Some(value_compile) = value_compile {
+                Some(ImpliedInfo::Compile(value_compile))
+            } else if let HardwareType::Int(ty) = value_hardware.ty {
+                Some(ImpliedInfo::IntRange(ty))
+            } else {
+                None
+            }
         } else {
-            implied_info.swap_remove(&value_version);
+            None
+        };
+        if let Some(implied_info) = implied_info {
+            self.first_common_mut().implied_info.insert(value_version, implied_info);
         }
 
         Ok(())

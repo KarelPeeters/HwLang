@@ -187,7 +187,7 @@ impl ValueCommon for SimpleCompileValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, ty));
+        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
 
         match self {
             SimpleCompileValue::Type(_) => Err(err_type()),
@@ -281,7 +281,7 @@ impl ValueCommon for MixedCompoundValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, ty));
+        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
 
         match self {
             MixedCompoundValue::String(_) => Err(err_type()),
@@ -364,7 +364,7 @@ impl ValueCommon for HardwareValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, ty));
+        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
 
         if &self.ty == ty {
             return Ok(self.expr.clone());
@@ -461,11 +461,12 @@ impl ValueCommon for HardwareValue {
     }
 }
 
-fn err_hw_type_mismatch(refs: CompileRefs, span: Span, ty: &HardwareType) -> Diagnostic {
+fn err_hw_type_mismatch(refs: CompileRefs, span: Span, value: &impl Typed, target_ty: &HardwareType) -> Diagnostic {
     let elab = &refs.shared.elaboration_arenas;
     let msg = format!(
-        "wrong type when converting to hardware value with type {}",
-        ty.value_string(elab)
+        "wrong type when converting value with type {} to hardware value with type {}",
+        value.ty().value_string(elab),
+        target_ty.value_string(elab)
     );
     Diagnostic::new_internal_error(msg).add_error(span, "here").finish()
 }
