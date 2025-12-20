@@ -30,7 +30,6 @@ use itertools::{Either, Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-
 // TODO find all points where scopes are nested, and also create flow children to save memory
 // TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
@@ -594,7 +593,7 @@ struct FlowHardwareCommon {
     implied_info: IndexMap<ValueVersion, ImpliedInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ImpliedInfo {
     Compile(CompileValue),
     IntRange(ClosedNonEmptyMultiRange<BigInt>),
@@ -1084,8 +1083,8 @@ impl<'p> FlowHardware<'p> {
         span_merge: Span,
         mut branches: Vec<FlowHardwareBranchContent>,
     ) -> DiagResult<Vec<IrBlock>> {
-        // TODO merge implied info
         // TODO do something else if children are empty, eg. push an instruction for `assert(false)`
+        //    or maybe even compile-time error?
 
         // collect the interesting vars and signals
         // things we can skip:
@@ -1105,7 +1104,8 @@ impl<'p> FlowHardware<'p> {
             }
         }
 
-        // merge variables
+        // merge variables, approximately:
+        // * if all branches contain the same value use that, otherwise do a hardware merge
         for var in merged_vars {
             let var = Variable {
                 check: self.root.check,
@@ -1120,38 +1120,81 @@ impl<'p> FlowHardware<'p> {
             self.var_set_maybe(var, var_span_decl, value_merged);
         }
 
-        // merge signals
+        // merge signals, approximately:
+        // * if all branches contain the same version keep it, otherwise create a new version
+        // * for the implied type info of that new version,
+        //   use the union of all implied types for the last version of each branch
         for signal in merged_signals {
-            let version_parent = self.signal_get_version(signal);
+            #[derive(Debug)]
+            struct VersionMismatch;
+            #[derive(Debug)]
+            struct NoMergedInfo;
 
-            let mut merged: Option<Result<ValueVersionIndex, NeedsHardwareMerge>> = None;
+            let mut merged_version: Option<Result<ValueVersionIndex, VersionMismatch>> = None;
+            let mut merged_info: Option<Result<ImpliedInfo, NoMergedInfo>> = None;
+
+            let parent_version = self.signal_get_version(signal);
             for branch in &branches {
-                let version_child = branch
+                // get the latest version of the signal in this branch
+                let branch_version = branch
                     .common
                     .signal_versions
                     .get(&signal)
                     .copied()
-                    .unwrap_or(version_parent);
+                    .unwrap_or(parent_version);
 
-                merged = match merged {
-                    None => Some(Ok(version_child)),
+                // merge version
+                merged_version = match merged_version {
+                    None => Some(Ok(branch_version)),
                     Some(Ok(curr_version)) => {
-                        if curr_version == version_child {
+                        if curr_version == branch_version {
                             Some(Ok(curr_version))
                         } else {
-                            Some(Err(NeedsHardwareMerge))
+                            Some(Err(VersionMismatch))
                         }
                     }
-                    Some(Err(NeedsHardwareMerge)) => Some(Err(NeedsHardwareMerge)),
-                }
+                    Some(Err(VersionMismatch)) => Some(Err(VersionMismatch)),
+                };
+
+                // get the implied info for the latest version
+                let signal_version = ValueVersion {
+                    signal: SignalOrVariable::Signal(signal),
+                    index: branch_version,
+                };
+                let branch_info = branch
+                    .common
+                    .implied_info
+                    .get(&signal_version)
+                    .or_else(|| self.implied_info(signal_version))
+                    .ok_or(NoMergedInfo);
+
+                // merge implied info
+                let new_merged_info = match (merged_info, branch_info) {
+                    (None, branch_info) => branch_info.cloned(),
+                    (Some(Err(NoMergedInfo)), _) | (_, Err(NoMergedInfo)) => Err(NoMergedInfo),
+                    (Some(Ok(merged_info)), Ok(branch_info)) => {
+                        merge_implied_infos(merged_info, branch_info).ok_or(NoMergedInfo)
+                    }
+                };
+                merged_info = Some(new_merged_info);
             }
 
-            let merged_version = match merged {
+            let merged_version = match merged_version {
                 None => continue,
                 Some(Ok(version)) => version,
-                Some(Err(NeedsHardwareMerge)) => self.root.next_version(),
+                Some(Err(VersionMismatch)) => self.root.next_version(),
             };
             self.signal_set_version(signal, merged_version);
+
+            let signal_version = ValueVersion {
+                signal: SignalOrVariable::Signal(signal),
+                index: merged_version,
+            };
+            if let Some(Ok(merged_info)) = merged_info {
+                self.first_common_mut().implied_info.insert(signal_version, merged_info);
+            } else {
+                self.first_common_mut().implied_info.swap_remove(&signal_version);
+            }
         }
 
         // extract blocks
@@ -1174,8 +1217,6 @@ impl<'p> FlowHardware<'p> {
                 IrBlock { statements }
             })
             .collect_vec();
-
-        merge_branch_implied_types(&mut self.first_common_mut().implied_info, &branch_implied_types);
 
         // TODO merge condition domains too?
         Ok(branch_blocks)
@@ -1517,8 +1558,6 @@ pub struct ValueVersion {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct ValueVersionIndex(NonZeroUsize);
-
-struct NeedsHardwareMerge;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CapturedValue {
@@ -1864,13 +1903,34 @@ fn merge_branch_values(
     Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(result_assigned)))
 }
 
-fn merge_branch_implied_types(
-    parent: &mut IndexMap<ValueVersion, ImpliedInfo>,
-    branch_implications: &[IndexMap<ValueVersion, ImpliedInfo>],
-) {
-    // TODO do something more interesting here, this placeholder implementation is correct but a missed opportunity
-    // TODO we might need to merge this with the actual values, all in merge_branch_values
-    let _ = (parent, branch_implications);
+fn merge_implied_infos(curr: ImpliedInfo, next: &ImpliedInfo) -> Option<ImpliedInfo> {
+    // check if both are matching compile
+    if let (ImpliedInfo::Compile(curr_compile), ImpliedInfo::Compile(next_compile)) = (&curr, next) {
+        if curr_compile == next_compile {
+            return Some(ImpliedInfo::Compile(curr_compile.clone()));
+        }
+    }
+
+    // check if both have some int range
+    let info_to_range = |info: &ImpliedInfo| match info {
+        ImpliedInfo::Compile(info) => {
+            if let CompileValue::Simple(SimpleCompileValue::Int(info)) = info {
+                Some(ClosedNonEmptyMultiRange::single(info.clone()))
+            } else {
+                None
+            }
+        }
+        ImpliedInfo::IntRange(info) => Some(info.clone()),
+    };
+    if let Some(curr_range) = info_to_range(&curr)
+        && let Some(next_range) = info_to_range(next)
+    {
+        let merged_range = curr_range.union(&ClosedMultiRange::from(next_range));
+        return Some(ImpliedInfo::IntRange(merged_range));
+    }
+
+    // fail, nothing to imply
+    None
 }
 
 /// The borrow checking has trouble with nested chains of parent references,

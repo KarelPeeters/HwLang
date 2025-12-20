@@ -3,6 +3,7 @@ from pathlib import Path
 import hwl
 
 
+# TODO make this elaborate everything by default?
 def compile_custom(top: str) -> hwl.Compile:
     # TODO compile/elaborate everything by default
     # TODO include the stdlib by default in source, or at least create a factory method for it

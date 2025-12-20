@@ -244,3 +244,83 @@ def test_imply_nested():
     """
     c = compile_custom(src)
     _ = c.resolve("top.foo")
+
+
+def test_merge_implication_bool_const():
+    src = """
+    import std.types.bool;
+    import std.util.assert;
+    module foo ports(p: in async bool, q: out async bool) {
+        comb {
+            q = p;
+            if (q) {
+                q = false;
+            }
+            const { assert(!q); } 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.foo")
+
+
+def test_merge_implication_int_const():
+    src = """
+    import std.types.[bool, uint];
+    import std.util.assert;
+    module foo ports(c: in async bool, q: out async uint(4)) {
+        comb {
+            if (c) {
+                q = 5;
+            } else {
+                q = 5;
+            }
+            const { assert(q == 5); } 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.foo")
+
+
+def test_merge_implication_int_range():
+    src = """
+    import std.types.[bool, uint, int];
+    import std.util.assert;
+    module foo ports(p: in async int(5), q: out async uint(4)) {
+        wire w: int(5);
+        comb {
+            w = p;
+            if (w < 0) {
+                w = 0;
+            }
+            q = w; 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.foo")
+
+
+def test_merge_implication_int_range_abs():
+    src = """
+    import std.types.[bool, uint, int];
+    import std.util.[print, assert];
+    
+    module foo ports(p: in async int(-4..4)) {
+        wire w: int(5);
+        comb {
+            if (p >= 0) {
+                w = p;
+            } else {
+                w = -p;
+            }
+            val v = w;
+            const { print(type(v)); }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.foo")
+    assert cap.prints == ["int(0..5)\n"]

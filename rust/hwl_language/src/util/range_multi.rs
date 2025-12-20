@@ -338,6 +338,17 @@ impl<T> ClosedNonEmptyMultiRange<T> {
             end: self.inner.ranges.last().unwrap().end.as_ref().unwrap(),
         }
     }
+
+    #[must_use]
+    pub fn union(&self, other: &ClosedMultiRange<T>) -> ClosedNonEmptyMultiRange<T>
+    where
+        T: Ord + Clone,
+    {
+        // self is closed and non-empty, so union with another closed range will also always be closed and non-empty
+        ClosedNonEmptyMultiRange {
+            inner: self.inner.union(&other.inner),
+        }
+    }
 }
 
 impl<T: Ord> From<Range<T>> for MultiRange<T> {
