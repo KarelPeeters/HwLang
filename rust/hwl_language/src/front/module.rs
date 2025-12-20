@@ -1071,7 +1071,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             wires_driven: &mut wires_driven,
             ports_driven: &mut ports_driven,
         };
-        let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+        let mut flow = FlowHardwareRoot::new(
+            flow_parent,
+            block.span,
+            flow_kind,
+            &mut self.ir_wires,
+            &mut self.ir_registers,
+        );
 
         let mut stack = ExitStack::new_root();
         let end = self
@@ -1170,7 +1176,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 registers_driven: &mut registers_driven,
                 extra_registers,
             };
-            let mut flow = FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+            let mut flow = FlowHardwareRoot::new(
+                flow_parent,
+                block.span,
+                flow_kind,
+                &mut self.ir_wires,
+                &mut self.ir_registers,
+            );
 
             let mut stack = ExitStack::new_root();
             let end = self
@@ -1571,8 +1583,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection.span,
                         };
-                        let mut flow =
-                            FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+                        let mut flow = FlowHardwareRoot::new(
+                            flow_parent,
+                            value_expr.span,
+                            flow_kind,
+                            &mut self.ir_wires,
+                            &mut self.ir_registers,
+                        );
                         let connection_value =
                             self.ctx
                                 .eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value_expr)?;
@@ -2162,8 +2179,13 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             span_keyword,
                             span_init: value.span,
                         };
-                        let mut flow =
-                            FlowHardwareRoot::new(flow_parent, flow_kind, &mut self.ir_wires, &mut self.ir_registers);
+                        let mut flow = FlowHardwareRoot::new(
+                            flow_parent,
+                            value.span,
+                            flow_kind,
+                            &mut self.ir_wires,
+                            &mut self.ir_registers,
+                        );
                         let value = ctx.eval_expression(scope, &mut flow.as_flow(), &expected_ty, value)?;
                         let (ir_vars, mut ir_block) = flow.finish();
 

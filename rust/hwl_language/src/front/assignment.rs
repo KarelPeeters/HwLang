@@ -149,7 +149,7 @@ impl CompileItemContext<'_, '_> {
         // get inner type and steps
         let target_base_ty = target_base_signal
             .inner
-            .ty(self, target_base.span)?
+            .expect_ty(self, target_base.span)?
             .map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
@@ -192,11 +192,6 @@ impl CompileItemContext<'_, '_> {
         };
         let value = value.map_inner(ValueWithImplications::into_value);
 
-        // report assignment after everything has been evaluated
-        // TODO report exact range/sub-access that is being assigned
-        // TODO report assigned value type and even the full compile value, so we have more information later on
-        flow.signal_assign(target_base_signal, target_steps.is_empty());
-
         // check type
         let reason = TypeContainsReason::Assignment {
             span_target: target.span,
@@ -205,9 +200,15 @@ impl CompileItemContext<'_, '_> {
         check_type_contains_value(diags, elab, reason, &target_ty.as_type(), value.as_ref())?;
 
         // convert value to hardware
+        //   use the values type itself here, if we expand now we lose the potentially more specific type
+        let value_ty = value
+            .inner
+            .ty()
+            .as_hardware_type(elab)
+            .expect("already checked that type is subtype of hardware type");
         let value_hw = value
             .inner
-            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, target_ty)?;
+            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, value_ty)?;
 
         // suggest and check domains
         let value_domain = Spanned {
@@ -229,18 +230,16 @@ impl CompileItemContext<'_, '_> {
             value_domain,
         )?;
 
-        // get ir target
-        let target_ir = IrAssignmentTarget {
-            base: target_base_signal
-                .inner
-                .as_ir_target_base(self, target_base.span)?
-                .into(),
-            steps: target_steps_ir,
-        };
-
-        // push ir statement
-        let stmt_ir = IrStatement::Assign(target_ir, value_hw.expr);
-        flow.push_ir_statement(Spanned::new(stmt.span, stmt_ir));
+        // do the actual assignment
+        let value_compile = CompileValue::try_from(&value.inner).ok();
+        flow.signal_assign(
+            self,
+            stmt.span,
+            target_base_signal,
+            target_steps_ir,
+            value_hw,
+            value_compile,
+        )?;
 
         Ok(())
     }

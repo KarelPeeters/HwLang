@@ -1,6 +1,6 @@
 use crate::front::check::{
-    check_type_is_bool, check_type_is_bool_compile, check_type_is_string, check_type_is_string_compile,
-    TypeContainsReason,
+    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string,
+    check_type_is_string_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
@@ -81,7 +81,7 @@ impl CompileItemContext<'_, '_> {
                 // TODO apply implications for ports/wires/registers
                 NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
                 NamedValue::Wire(wire) => {
-                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, arg.span)?;
+                    let typed = self.wires[wire].expect_typed(self.refs, &self.wire_interfaces, arg.span)?;
                     typed.ty.inner.as_type()
                 }
                 NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),

@@ -7,7 +7,7 @@ use crate::front::check::{
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
+use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
@@ -219,19 +219,17 @@ impl<'a> CompileItemContext<'a, '_> {
                             flow.var_eval(diags, &mut self.large, Spanned::new(expr.span, var))?
                         }
                         NamedValue::Port(port) => {
-                            let flow = flow.check_hardware(expr.span, "port access")?;
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
                         }
                         NamedValue::Wire(wire) => {
-                            let flow = flow.check_hardware(expr.span, "wire access")?;
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
                         }
                         NamedValue::Register(reg) => {
-                            let flow = flow.check_hardware(expr.span, "register access")?;
-
-                            let reg_info = &mut self.registers[reg];
-                            if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
-                                reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
+                            if let FlowKind::Hardware(flow) = flow.kind_mut() {
+                                if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
+                                    let reg_info = &mut self.registers[reg];
+                                    reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
+                                }
                             }
 
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?

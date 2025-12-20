@@ -227,3 +227,20 @@ def test_imply_non_zero_div():
     }
     """
     _ = compile_custom(src_checked).resolve("top.foo")
+
+
+def test_imply_nested():
+    src = """
+    import std.types.uint;
+    module foo ports(p: in async uint(0..8)) {
+        comb {
+            if (p < 6) {
+                if (p >= 2) {
+                    var v: uint(2..6) = p;   
+                }
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.foo")

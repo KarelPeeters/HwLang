@@ -746,7 +746,7 @@ impl CompileItemContext<'_, '_> {
             let signal_ir = match signal {
                 Signal::Port(port) => IrSignal::Port(self.ports[port].ir),
                 Signal::Wire(wire) => {
-                    let typed = self.wires[wire].typed(self.refs, &self.wire_interfaces, signal_span)?;
+                    let typed = self.wires[wire].expect_typed(self.refs, &self.wire_interfaces, signal_span)?;
                     IrSignal::Wire(typed.ir)
                 }
                 Signal::Register(reg) => IrSignal::Register(self.registers[reg].ir),

@@ -10,5 +10,5 @@ def test_flow_read_hw_in_hw():
 
 def test_flow_read_hw_in_const():
     src = """import std.types.bool; module foo ports(p: in async bool) { const { val _ = p + 2; } }"""
-    with pytest.raises(match="port access is only allowed in a hardware context"):
+    with pytest.raises(match="signal evaluation is only allowed in a hardware context"):
         compile_custom(src).resolve("top.foo")
