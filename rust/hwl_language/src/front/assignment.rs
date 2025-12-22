@@ -119,7 +119,7 @@ impl CompileItemContext<'_, '_> {
         // TODO maybe type inference for wires based on processes is not actually a good idea,
         //   module instances should be enough
         // TODO maybe elaborate child instances first, before any blocks, since we can infer more info based on them
-        let flow = flow.check_hardware(stmt.span, "assignment to hardware signal")?;
+        let flow = flow.require_hardware(stmt.span, "assignment to hardware signal")?;
         let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base_signal)?;
 
         // suggest target type
@@ -406,8 +406,8 @@ impl CompileItemContext<'_, '_> {
                 Value::Simple(value_inner) => Value::Simple(value_inner),
                 Value::Compound(value_inner) => Value::Compound(value_inner),
                 Value::Hardware(value_inner) => {
-                    let debug_info_id = target_base_info.id.str(self.refs.fixed.source).map(str::to_owned);
-                    let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
+                    let debug_info_id = target_base_info.id.as_str(self.refs.fixed.source).map(str::to_owned);
+                    let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
                     let ir_var = store_ir_expression_in_new_variable(
                         self.refs,
                         flow,
@@ -420,7 +420,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             // set variable
-            flow.var_set(target_base.inner, stmt_span, Ok(value_stored));
+            flow.var_set(target_base.inner, stmt_span, Ok(value_stored))?;
             return Ok(());
         }
 
@@ -434,7 +434,7 @@ impl CompileItemContext<'_, '_> {
         any_hardware |= CompileValue::try_from(&right_eval.inner).is_err();
 
         let result = if any_hardware {
-            let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
+            let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
 
             // figure out the assigned value
             // TODO propagate implications?
@@ -549,7 +549,7 @@ impl CompileItemContext<'_, '_> {
             Value::from(result_value)
         };
 
-        flow.var_set(target_base.inner, stmt_span, Ok(result));
+        flow.var_set(target_base.inner, stmt_span, Ok(result))?;
         Ok(())
     }
 
@@ -596,7 +596,7 @@ impl CompileItemContext<'_, '_> {
         let target_base_ir_expr =
             target_base_eval.as_hardware_value_unchecked(refs, &mut self.large, target_base.span, target_base_ty_hw)?;
 
-        let debug_info_id = target_var_info.id.str(refs.fixed.source).map(str::to_owned);
+        let debug_info_id = target_var_info.id.as_str(refs.fixed.source).map(str::to_owned);
         let result = store_ir_expression_in_new_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
 
         Ok(HardwareValue {

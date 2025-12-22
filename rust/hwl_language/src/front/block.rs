@@ -312,9 +312,11 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<BlockEnd> {
         let &Block { span, ref statements } = block;
 
+        // Create a new scope, neccesary to ensure declarations don't leak into the parent scope.
         let mut scope = Scope::new_child(span, scope_parent);
 
-        // this is actually static dispatch on the flow type, but we can't easily express that
+        // Create a new scoped flow, not strictly necessary for correctness,
+        //   but allows dropping variables that go out of scope immediately.
         match flow_parent.kind_mut() {
             FlowKind::Compile(flow_parent) => {
                 let mut flow = flow_parent.new_child_scoped();
@@ -354,7 +356,7 @@ impl CompileItemContext<'_, '_> {
                 self.elaborate_block_statements_without_immediate_exit_check(scope, flow, stack, statements)?
             }
             MaybeCompile::Hardware(exit_cond) => {
-                let flow = flow.check_hardware(span, "hardware exit condition")?;
+                let flow = flow.require_hardware(span, "hardware exit condition")?;
 
                 let exit_cond = Spanned::new(span, exit_cond);
 
@@ -460,7 +462,6 @@ impl CompileItemContext<'_, '_> {
                         id: VariableId::Id(id),
                         mutable,
                         ty,
-                        use_ir_variable: None,
                     };
                     let var = flow.var_new(info);
 
@@ -469,12 +470,12 @@ impl CompileItemContext<'_, '_> {
                     //   and to keep the generated RTL somewhat similar to the source
                     if let Some(init) = init {
                         let init = init.inner.try_map_hardware(|init_inner| {
-                            let flow = flow.check_hardware(init.span, "hardware value")?;
+                            let flow = flow.require_hardware(init.span, "hardware value")?;
                             let debug_info_id = id.spanned_string(self.refs.fixed.source).inner;
                             store_ir_expression_in_new_variable(self.refs, flow, id.span(), debug_info_id, init_inner)
                                 .map(|h| h.map_expression(IrExpression::Variable))
                         })?;
-                        flow.var_set(var, decl.span, Ok(init));
+                        flow.var_set(var, decl.span, Ok(init))?;
                     }
 
                     Ok(ScopedEntry::Named(NamedValue::Variable(var)))
@@ -521,7 +522,7 @@ impl CompileItemContext<'_, '_> {
                 // set flag
                 let entry = stack.return_info(diags, span_return)?;
                 if let ReturnEntryKind::Hardware(entry) = &mut entry.kind {
-                    entry.return_flag.set(flow, span_return);
+                    entry.return_flag.set(flow, span_return)?;
                 }
 
                 // check type and store value
@@ -538,14 +539,14 @@ impl CompileItemContext<'_, '_> {
             &BlockStatementKind::Break { span } => {
                 let entry = stack.innermost_loop(diags, span, "break")?;
                 if let LoopEntry::Hardware(entry) = entry {
-                    entry.break_flag.set(flow, span);
+                    entry.break_flag.set(flow, span)?;
                 }
                 BlockEnd::CompileExit(EarlyExitKind::Break)
             }
             &BlockStatementKind::Continue { span } => {
                 let entry = stack.innermost_loop(diags, span, "continue")?;
                 if let LoopEntry::Hardware(entry) = entry {
-                    entry.continue_flag.set(flow, span);
+                    entry.continue_flag.set(flow, span)?;
                 }
                 BlockEnd::CompileExit(EarlyExitKind::Continue)
             }
@@ -605,7 +606,7 @@ impl CompileItemContext<'_, '_> {
             }
             // evaluate the if in hardware, generating IR
             MaybeCompile::Hardware(cond_value) => {
-                let flow = flow.check_hardware(cond_span, "hardware value")?;
+                let flow = flow.require_hardware(cond_span, "hardware value")?;
 
                 let cond_value = Spanned::new(cond_span, cond_value);
                 self.elaborate_hardware_if(flow, span_if, cond_value, |slf, branch_flow, branch_cond| {
@@ -654,7 +655,7 @@ impl CompileItemContext<'_, '_> {
             Err(NotCompile) => {
                 // hardware target value (at least partially), convert the target to full hardware
                 //   and handle the match at hardware time
-                let flow = flow.check_hardware(stmt.span, "match on hardware target")?;
+                let flow = flow.require_hardware(stmt.span, "match on hardware target")?;
 
                 let target_ty = target_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
                     diags.report_simple(
@@ -844,7 +845,7 @@ impl CompileItemContext<'_, '_> {
                             VariableId::Id(declare_id),
                             pattern_span,
                             Ok(Value::from(declare_value)),
-                        );
+                        )?;
                         scope_branch.maybe_declare(
                             diags,
                             Ok(declare_id.spanned_str(self.refs.fixed.source)),
@@ -1103,7 +1104,7 @@ impl CompileItemContext<'_, '_> {
                         VariableId::Id(MaybeIdentifier::Identifier(id)),
                         id.span(),
                         Ok(Value::Hardware(value)),
-                    );
+                    )?;
                     branch_scope.declare(
                         diags,
                         Ok(id.spanned_str(self.refs.fixed.source)),
@@ -1285,7 +1286,6 @@ impl CompileItemContext<'_, '_> {
             id: VariableId::Id(index_id),
             mutable: false,
             ty: None,
-            use_ir_variable: None,
         });
         let mut scope_index = Scope::new_child(stmt.span, scope_parent);
         scope_index.maybe_declare(
@@ -1308,7 +1308,7 @@ impl CompileItemContext<'_, '_> {
             }
 
             // set index
-            flow.var_set(index_var, span_keyword, Ok(index_value));
+            flow.var_set(index_var, span_keyword, Ok(index_value))?;
 
             // elaborate body
             slf.elaborate_block(&scope_index, flow, stack, body)
@@ -1323,7 +1323,7 @@ impl CompileItemContext<'_, '_> {
         iter: impl Iterator<Item = T>,
         mut body: impl FnMut(&mut Self, &mut F, &mut ExitStack, T) -> DiagResult<BlockEnd>,
     ) -> DiagResult<BlockEnd> {
-        let entry = LoopEntry::new(flow, span_keyword);
+        let entry = LoopEntry::new(flow, span_keyword)?;
         stack.with_loop_entry(entry, |stack| {
             let mut end_joined = BlockEnd::Normal;
 
@@ -1334,7 +1334,7 @@ impl CompileItemContext<'_, '_> {
                 if let FlowKind::Hardware(flow) = flow.kind_mut() {
                     let entry =
                         unwrap_match!(stack.innermost_loop_option().unwrap(), LoopEntry::Hardware(entry) => entry);
-                    entry.continue_flag.clear(flow, span_keyword);
+                    entry.continue_flag.clear(flow, span_keyword)?;
                 }
 
                 // elaborate body

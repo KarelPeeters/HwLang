@@ -94,7 +94,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_empty(self, None);
         let flow_root = FlowRoot::new(diags);
         let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
-        let scope_params = scope_params.to_scope(self, &mut flow, span);
+        let scope_params = scope_params.to_scope(self, &mut flow, span)?;
 
         // elaborate port types
         let mut scope_ports = Scope::new_child(span_body, &scope_params);

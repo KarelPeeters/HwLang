@@ -1,12 +1,10 @@
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+import sys
 from _pytest._py.path import LocalPath
-
-from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 # Only do these once in the root process (when using pytest-xdist)
 if "PYTEST_SKIP_RUST_BUILD" not in os.environ and "PYTEST_XDIST_WORKER" not in os.environ:
@@ -27,7 +25,7 @@ if "PYTEST_SKIP_RUST_BUILD" not in os.environ and "PYTEST_XDIST_WORKER" not in o
         raise
 
     # Enable rust backtraces by default for easier debugging
-    enable_rust_backtraces()
+    # enable_rust_backtraces()
 
     # Tell verilator to use ccache if installed
     try:

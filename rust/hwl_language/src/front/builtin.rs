@@ -9,6 +9,7 @@ use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
+use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, Value};
@@ -75,16 +76,20 @@ impl CompileItemContext<'_, '_> {
             NamedOrValue::ItemValue(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
-                    let info = flow.var_eval(diags, &mut self.large, Spanned::new(arg.span, var))?;
-                    info.into_value().ty()
+                    flow.type_of(self, Spanned::new(id.span, SignalOrVariable::Variable(var)))?
                 }
-                // TODO apply implications for ports/wires/registers
-                NamedValue::Port(port) => self.ports[port].ty.inner.as_type(),
-                NamedValue::Wire(wire) => {
-                    let typed = self.wires[wire].expect_typed(self.refs, &self.wire_interfaces, arg.span)?;
-                    typed.ty.inner.as_type()
-                }
-                NamedValue::Register(reg) => self.registers[reg].ty.inner.as_type(),
+                NamedValue::Port(port) => flow.type_of(
+                    self,
+                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Port(port))),
+                )?,
+                NamedValue::Wire(wire) => flow.type_of(
+                    self,
+                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Wire(wire))),
+                )?,
+                NamedValue::Register(reg) => flow.type_of(
+                    self,
+                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Register(reg))),
+                )?,
                 NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
                     return Err(diags.report_todo(expr_span, "typeof for interfaces"));
                 }

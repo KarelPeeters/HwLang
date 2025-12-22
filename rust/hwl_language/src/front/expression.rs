@@ -472,8 +472,12 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.refs.check_should_stop(expr.span)?;
 
                     let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
-                    let index_var =
-                        flow.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
+                    let index_var = flow.var_new_immutable_init(
+                        index.span(),
+                        VariableId::Id(index),
+                        span_keyword,
+                        Ok(index_value),
+                    )?;
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
@@ -737,7 +741,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 // evaluate value and domain
-                let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
+                let flow_hw = flow.require_hardware(expr.span, "domain cast")?;
 
                 let value = {
                     // evaluate the value with disabled domain checks
@@ -811,7 +815,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     diags.report(diag)
                 })?;
 
-                let flow = flow.check_hardware(expr.span, "register expression")?;
+                let flow = flow.require_hardware(expr.span, "register expression")?;
 
                 // convert values to hardware
                 let value =
@@ -943,7 +947,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let port = port_interface_info.ports[port_index];
 
-                let flow = flow.check_hardware(expr_span, "port access")?;
+                let flow = flow.require_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
                 return Ok(ValueInner::Value(ValueWithImplications::simple_version(port_eval)));
             }
@@ -965,7 +969,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let wire = wire_interface_info.wires[wire_index];
 
-                let flow = flow.check_hardware(expr_span, "wire access")?;
+                let flow = flow.require_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
                 return Ok(ValueInner::Value(ValueWithImplications::simple_version(wire_eval)));
             }

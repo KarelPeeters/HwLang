@@ -126,7 +126,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_empty(self, None);
         let flow_root = FlowRoot::new(self.diags);
         let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
-        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span);
+        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
 
         // elaborate ports
         // TODO we actually need a full context/flow here?
@@ -193,7 +193,7 @@ impl CompileRefs<'_, '_> {
         let flow_root = FlowRoot::restore(self.diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
 
-        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span);
+        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
         let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
 
         // elaborate the body
@@ -1283,7 +1283,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             let mut flow_body = flow_for.new_child_isolated();
 
             let index_var =
-                flow_body.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
+                flow_body.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value))?;
             scope_body.maybe_declare(
                 diags,
                 Ok(index.spanned_str(source)),

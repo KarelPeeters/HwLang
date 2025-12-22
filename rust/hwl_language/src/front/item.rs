@@ -500,14 +500,14 @@ impl CompileItemContext<'_, '_> {
                 let decl_id = kind.id();
                 let decl_span = kind.span();
 
-                let entry = self.eval_declaration_named(scope, flow, kind).map(|v| {
+                let entry = self.eval_declaration_named(scope, flow, kind).and_then(|v| {
                     let var = flow.var_new_immutable_init(
                         decl_id.span(),
                         VariableId::Id(decl_id),
                         decl_span,
                         Ok(Value::from(v)),
-                    );
-                    ScopedEntry::Named(NamedValue::Variable(var))
+                    )?;
+                    Ok(ScopedEntry::Named(NamedValue::Variable(var)))
                 });
                 scope.maybe_declare(diags, Ok(decl_id.spanned_str(self.refs.fixed.source)), entry);
             }

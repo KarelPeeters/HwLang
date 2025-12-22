@@ -7,7 +7,7 @@ from hwl_sandbox.common.util import compile_custom
 def test_signal_does_not_fit():
     src = """
     import std.types.uint;
-    module foo ports(p: in async uint(0..8)) {
+    module top ports(p: in async uint(0..8)) {
         comb {
             var v: uint(0..4) = p;
         }
@@ -16,13 +16,13 @@ def test_signal_does_not_fit():
     c = compile_custom(src)
 
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
 
 
 def test_signal_checked():
     src = """
     import std.types.uint;
-    module foo ports(p: in async uint(0..8)) {
+    module top ports(p: in async uint(0..8)) {
         comb {
             if (p < 4) {
                 var v: uint(0..4) = p;
@@ -31,13 +31,13 @@ def test_signal_checked():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
 def test_variable_does_not_fit():
     src = """
     import std.types.uint;
-    module foo ports(p: in async uint(0..8)) {
+    module top ports(p: in async uint(0..8)) {
         comb {
             var s = p;
             var v: uint(0..4) = s;
@@ -47,13 +47,13 @@ def test_variable_does_not_fit():
     c = compile_custom(src)
 
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
 
 
 def test_variable_checked():
     src = """
     import std.types.uint;
-    module foo ports(p: in async uint(0..8)) {
+    module top ports(p: in async uint(0..8)) {
         comb {
             var s = p;
             if (s < 4) {
@@ -63,7 +63,7 @@ def test_variable_checked():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
 def test_implied_type_int_const():
@@ -117,7 +117,7 @@ def check_unary_cond(ty: str, cond: str, ty_true: str, ty_false: str):
     src = f"""
     import std.types.[uint, int];
     import std.util.print;
-    module foo ports(p: in async int({ty})) {{
+    module top ports(p: in async int({ty})) {{
         comb {{
             const {{ print(type(p)); }}
             if ({cond}) {{
@@ -133,7 +133,7 @@ def check_unary_cond(ty: str, cond: str, ty_true: str, ty_false: str):
 
     c = compile_custom(src)
     with c.capture_prints() as cap:
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
     assert cap.prints == [f"int({ty})\n", f"int({ty_true})\n", f"int({ty_false})\n"]
 
 
@@ -141,7 +141,7 @@ def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_
     src = f"""
     import std.types.[uint, int];
     import std.util.print;
-    module foo ports(a: in async int({ty_a}), b: in async int({ty_b})) {{
+    module top ports(a: in async int({ty_a}), b: in async int({ty_b})) {{
         comb {{
             const {{ print(type(a)); print(type(b)); }}
             if ({cond}) {{
@@ -159,7 +159,7 @@ def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_
 
     c = compile_custom(src)
     with c.capture_prints() as cap:
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
     assert cap.prints == [
         f"int({ty_a})\n", f"int({ty_b})\n",
         f"int({ty_true_a})\n", f"int({ty_b})\n",
@@ -171,7 +171,7 @@ def test_bool_implies_itself():
     src = """
     import std.types.bool;
     import std.util.print;
-    module foo ports(p: in async bool) {
+    module top ports(p: in async bool) {
         comb {
             if (p) {
                 const { print("true"); }
@@ -193,7 +193,7 @@ def test_bool_implies_itself():
     """
     c = compile_custom(src)
     with c.capture_prints() as cap:
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
     assert cap.prints == [
         "true\n",
         "true.true\n",
@@ -205,18 +205,18 @@ def test_bool_implies_itself():
 def test_imply_non_zero_div():
     src_raw = """
     import std.types.int;
-    module foo ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
+    module top ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
         comb {
             y = 4 / x;
         }
     }
     """
     with pytest.raises(hwl.DiagnosticException, match="division by zero"):
-        _ = compile_custom(src_raw).resolve("top.foo")
+        _ = compile_custom(src_raw).resolve("top.top")
 
     src_checked = """
     import std.types.int;
-    module foo ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
+    module top ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
         comb {
             if (x != 0) {
                 y = 4 / x;
@@ -226,13 +226,13 @@ def test_imply_non_zero_div():
         }
     }
     """
-    _ = compile_custom(src_checked).resolve("top.foo")
+    _ = compile_custom(src_checked).resolve("top.top")
 
 
 def test_imply_nested():
     src = """
     import std.types.uint;
-    module foo ports(p: in async uint(0..8)) {
+    module top ports(p: in async uint(0..8)) {
         comb {
             if (p < 6) {
                 if (p >= 2) {
@@ -243,14 +243,14 @@ def test_imply_nested():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
-def test_merge_implication_bool_const():
+def test_merge_implication_signal_bool_const():
     src = """
     import std.types.bool;
     import std.util.assert;
-    module foo ports(p: in async bool, q: out async bool) {
+    module top ports(p: in async bool, q: out async bool) {
         comb {
             q = p;
             if (q) {
@@ -261,14 +261,32 @@ def test_merge_implication_bool_const():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
-def test_merge_implication_int_const():
+def test_merge_implication_var_bool_const():
+    src = """
+    import std.types.bool;
+    import std.util.assert;
+    module top ports(p: in async bool) {
+        comb {
+            var v = p;
+            if (v) {
+                v = false;
+            }
+            const { assert(!v); } 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_merge_implication_signal_int_const():
     src = """
     import std.types.[bool, uint];
     import std.util.assert;
-    module foo ports(c: in async bool, q: out async uint(4)) {
+    module top ports(c: in async bool, q: out async uint(4)) {
         comb {
             if (c) {
                 q = 5;
@@ -280,14 +298,34 @@ def test_merge_implication_int_const():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
-def test_merge_implication_int_range():
+def test_merge_implication_var_int_const():
+    src = """
+    import std.types.[bool, uint];
+    import std.util.assert;
+    module top ports(c: in async bool) {
+        comb {
+            val v;
+            if (c) {
+                v = 5;
+            } else {
+                v = 5;
+            }
+            const { assert(v == 5); } 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_merge_implication_signal_int_range():
     src = """
     import std.types.[bool, uint, int];
     import std.util.assert;
-    module foo ports(p: in async int(5), q: out async uint(4)) {
+    module top ports(p: in async int(5), q: out async uint(4)) {
         wire w: int(5);
         comb {
             w = p;
@@ -299,15 +337,33 @@ def test_merge_implication_int_range():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
-def test_merge_implication_int_range_abs():
+def test_merge_implication_var_int_range():
+    src = """
+    import std.types.[bool, uint, int];
+    import std.util.assert;
+    module top ports(p: in async int(5), q: out async uint(4)) {
+        comb {
+            var v = p;
+            if (v < 0) {
+                v = 0;
+            }
+            q = v; 
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_merge_implication_signal_int_range_abs():
     src = """
     import std.types.[bool, uint, int];
     import std.util.[print, assert];
     
-    module foo ports(p: in async int(-4..4)) {
+    module top ports(p: in async int(-4..4)) {
         wire w: int(5);
         comb {
             if (p >= 0) {
@@ -322,5 +378,28 @@ def test_merge_implication_int_range_abs():
     """
     c = compile_custom(src)
     with c.capture_prints() as cap:
-        _ = c.resolve("top.foo")
+        _ = c.resolve("top.top")
+    assert cap.prints == ["int(0..5)\n"]
+
+
+def test_merge_implication_var_int_range_abs():
+    src = """
+    import std.types.[bool, uint, int];
+    import std.util.[print, assert];
+    
+    module top ports(p: in async int(-4..4)) {
+        comb {
+            val v;
+            if (p >= 0) {
+                v = p;
+            } else {
+                v = -p;
+            }
+            const { print(type(v)); }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.top")
     assert cap.prints == ["int(0..5)\n"]

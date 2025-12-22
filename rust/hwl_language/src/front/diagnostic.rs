@@ -34,17 +34,6 @@ pub struct DiagError(());
 
 pub type DiagResult<T = ()> = Result<T, DiagError>;
 
-#[macro_export]
-macro_rules! impl_from_error_guaranteed {
-    ($ty:ident) => {
-        impl From<DiagError> for $ty {
-            fn from(e: DiagError) -> Self {
-                $ty::Error(e)
-            }
-        }
-    };
-}
-
 #[must_use]
 #[derive(Debug, Clone)]
 pub struct Diagnostics {
@@ -63,7 +52,7 @@ impl Diagnostics {
     // TODO turn this into diag.report(diags) so we can chain this
     pub fn report(&self, diag: Diagnostic) -> DiagError {
         self.diagnostics.borrow_mut().push(diag);
-        DiagError(())
+        DiagError::promise_error_has_been_reported()
     }
 
     // TODO only single string parameter, used for both title and label?
@@ -94,6 +83,14 @@ impl Diagnostics {
 
     pub fn len(&self) -> usize {
         self.diagnostics.borrow().len()
+    }
+}
+
+impl DiagError {
+    /// Create a [DiagError], promising that an error has already been reported.
+    /// This is very rarely useful outside the diagnostics module itself to statically initialize constants.
+    pub const fn promise_error_has_been_reported() -> DiagError {
+        DiagError(())
     }
 }
 
