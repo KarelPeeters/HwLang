@@ -1,3 +1,4 @@
+use crate::front::assignment::store_hardware_value_in_new_ir_variable;
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -449,7 +450,7 @@ pub trait Flow: FlowPrivate {
         }
     }
 
-    fn signal_eval(&self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
+    fn signal_eval(&mut self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
         match self.signal_get_content(signal.inner)? {
             SignalContent::Compile(value) => {
                 // compile-time evaluation can skips any hardware checking
@@ -489,6 +490,25 @@ pub trait Flow: FlowPrivate {
                         | HardwareProcessKind::InstancePortConnection { .. } => {}
                     }
                 }
+
+                // copy the value into a temporary register to avoid later writes from leaking through
+                let slf = match self.kind_mut() {
+                    FlowKind::Compile(_) => unreachable!(),
+                    FlowKind::Hardware(slf) => slf,
+                };
+
+                let debug_info_id = signal.inner.diagnostic_string(ctx).to_owned();
+                let value_var = store_hardware_value_in_new_ir_variable(
+                    ctx.refs,
+                    slf,
+                    signal.span,
+                    Some(debug_info_id),
+                    value.value,
+                )?;
+                let value = HardwareValueWithVersion {
+                    value: value_var.map_expression(IrExpression::Variable),
+                    version: value.version,
+                };
 
                 Ok(ValueWithVersion::Hardware(value))
             }
@@ -688,12 +708,12 @@ impl Flow for FlowCompile<'_> {
         var
     }
 
-    fn signal_eval(&self, _: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
+    fn signal_eval(&mut self, _: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
         // This is a compile-time flow, so normally signals can't be evaluated.
         // They might have an implied compile-time value through, so check that first.
 
         // walk up until we hit a hardware parent
-        let mut curr = self;
+        let mut curr = &*self;
         let parent_hw = loop {
             curr = match &curr.parent {
                 FlowCompileKind::Root => break None,

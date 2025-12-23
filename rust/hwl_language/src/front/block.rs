@@ -1,4 +1,4 @@
-use crate::front::assignment::store_ir_expression_in_new_variable;
+use crate::front::assignment::store_hardware_value_in_new_ir_variable;
 use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
     check_type_is_range_compile,
@@ -472,8 +472,14 @@ impl CompileItemContext<'_, '_> {
                         let init = init.inner.try_map_hardware(|init_inner| {
                             let flow = flow.require_hardware(init.span, "hardware value")?;
                             let debug_info_id = id.spanned_string(self.refs.fixed.source).inner;
-                            store_ir_expression_in_new_variable(self.refs, flow, id.span(), debug_info_id, init_inner)
-                                .map(|h| h.map_expression(IrExpression::Variable))
+                            store_hardware_value_in_new_ir_variable(
+                                self.refs,
+                                flow,
+                                id.span(),
+                                debug_info_id,
+                                init_inner,
+                            )
+                            .map(|h| h.map_expression(IrExpression::Variable))
                         })?;
                         flow.var_set(var, decl.span, Ok(init))?;
                     }

@@ -8,7 +8,7 @@ from hwl_sandbox.common.util import compile_custom
 def test_read_const_from_signal(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(clk: in clock, p: out async uint(8)) {
+    module top ports(clk: in clock, p: out async uint(8)) {
         wire w: uint(8);
         reg r: uint(8) = undef;
         comb {
@@ -24,13 +24,13 @@ def test_read_const_from_signal(tmp_dir: Path):
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
 def test_read_range_from_signal(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(p: out async uint(8), q: in async uint(4)) {
+    module top ports(p: out async uint(8), q: in async uint(4)) {
         comb {
             p = q;
             val _: uint(4) = p;
@@ -38,14 +38,14 @@ def test_read_range_from_signal(tmp_dir: Path):
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")
 
 
 # TODO test that signals are immediately read back instead of only the next cycle
 # def test_signal_readback(tmp_dir: Path):
 #     src = """
 #     import std.types.[bool, int, uint];
-#     module foo ports(clk: in clock, x: in sync(clk) uint(8), y: out sync(clk) uint(8)) {
+#     module top ports(clk: in clock, x: in sync(clk) uint(8), y: out sync(clk) uint(8)) {
 #         reg out y = undef;
 #         clocked(clk) {
 #             y = x;
@@ -54,7 +54,7 @@ def test_read_range_from_signal(tmp_dir: Path):
 #     }
 #     """
 #     c = compile_custom(src)
-#     foo: hwl.Module = c.resolve("top.foo")
+#     foo: hwl.Module = c.resolve("top.top")
 #     print(foo.as_verilog())
 #     foo_inst = foo.as_verilated(tmp_dir).instance()
 #
@@ -75,7 +75,7 @@ def test_read_range_from_signal(tmp_dir: Path):
 def test_write_after_read_var(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(x: in async uint(8), y: out async uint(16)) {
+    module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
             var v = x;
             val w = v + {
@@ -92,7 +92,7 @@ def test_write_after_read_var(tmp_dir: Path):
 def test_write_after_read_var_array(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(x: in async uint(8), y: out async uint(16)) {
+    module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
             var v: [1]uint(8) = [x];
             val w = v[0] + {
@@ -109,15 +109,15 @@ def test_write_after_read_var_array(tmp_dir: Path):
 def test_write_after_read_wire(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(x: in async uint(8), y: out async uint(16)) {
-        wire v: uint(8);
+    module top ports(x: in async uint(8), y: out async uint(16)) {
+        wire w: uint(8);
         comb {
-            v = x;
-            val w = v + {
-                v = 0;
+            w = x;
+            val v = w + {
+                w = 0;
                 1
             };
-            y = w;
+            y = v;
         }
     }
     """
@@ -127,15 +127,15 @@ def test_write_after_read_wire(tmp_dir: Path):
 def test_write_after_read_wire_array(tmp_dir: Path):
     src = """
     import std.types.uint;
-    module foo ports(x: in async uint(8), y: out async uint(16)) {
-        wire v: [1]uint(8);
+    module top ports(x: in async uint(8), y: out async uint(16)) {
+        wire w: [1]uint(8);
         comb {
-            v[0] = x;
-            val w = v[0] + {
-                v[0] = 0;
+            w[0] = x;
+            val v = w[0] + {
+                w[0] = 0;
                 1
             };
-            y = w;
+            y = v;
         }
     }
     """
@@ -144,7 +144,7 @@ def test_write_after_read_wire_array(tmp_dir: Path):
 
 def check_write_after_read(tmp_dir: Path, src: str):
     c = compile_custom(src)
-    foo: hwl.Module = c.resolve("top.foo")
+    foo: hwl.Module = c.resolve("top.top")
     print(foo.as_verilog().source)
     foo_inst = foo.as_verilated(tmp_dir).instance()
 
@@ -157,7 +157,7 @@ def test_const_assign_outside_var():
     src = """
     import std.types.bool;
     import std.util.assert;
-    module foo ports(c: in async bool) {
+    module top ports(c: in async bool) {
         comb {
             var v = c;
             const {
@@ -170,4 +170,4 @@ def test_const_assign_outside_var():
     }
     """
     c = compile_custom(src)
-    _ = c.resolve("top.foo")
+    _ = c.resolve("top.top")

@@ -42,6 +42,8 @@ pub struct LoweredVerilog {
 // TODO identifier ID: prefix _all_ signals with something: wire, reg, local, ...,
 //   so nothing can conflict with ports/module names. Not fully right yet, but maybe a good idea.
 // TODO avoid a bunch of string allocations
+// TODO for shadowing, don't write back once at the end, instead write through immediately,
+//   to hopefully get some better synthesis
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     modules: &IrModules,

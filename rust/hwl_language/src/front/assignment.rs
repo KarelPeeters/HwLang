@@ -408,7 +408,7 @@ impl CompileItemContext<'_, '_> {
                 Value::Hardware(value_inner) => {
                     let debug_info_id = target_base_info.id.as_str(self.refs.fixed.source).map(str::to_owned);
                     let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
-                    let ir_var = store_ir_expression_in_new_variable(
+                    let ir_var = store_hardware_value_in_new_ir_variable(
                         self.refs,
                         flow,
                         target_base.span,
@@ -597,7 +597,8 @@ impl CompileItemContext<'_, '_> {
             target_base_eval.as_hardware_value_unchecked(refs, &mut self.large, target_base.span, target_base_ty_hw)?;
 
         let debug_info_id = target_var_info.id.as_str(refs.fixed.source).map(str::to_owned);
-        let result = store_ir_expression_in_new_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
+        let result =
+            store_hardware_value_in_new_ir_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
 
         Ok(HardwareValue {
             ty: Spanned::new(target_base_ty_span, result.ty),
@@ -670,7 +671,7 @@ impl CompileItemContext<'_, '_> {
 }
 
 // TODO move to better place, maybe in Flow?
-pub fn store_ir_expression_in_new_variable(
+pub fn store_hardware_value_in_new_ir_variable(
     refs: CompileRefs,
     flow: &mut FlowHardware,
     span: Span,
