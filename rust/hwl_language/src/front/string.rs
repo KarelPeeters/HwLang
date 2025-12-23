@@ -18,7 +18,7 @@ use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
-use crate::util::range_multi::MultiRange;
+use crate::util::range_multi::{AnyMultiRange, MultiRange};
 use hwl_util::swrite;
 use itertools::{Itertools, enumerate, zip_eq};
 use std::borrow::Cow;
@@ -476,6 +476,8 @@ impl Type {
                     "int".to_owned()
                 } else if range == &range_uint {
                     "uint".to_owned()
+                } else if range.is_empty() {
+                    "int(/*empty*/)".to_string()
                 } else {
                     format!("int({range})")
                 }
