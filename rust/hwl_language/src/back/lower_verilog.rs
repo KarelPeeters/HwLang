@@ -1902,12 +1902,16 @@ impl<S: AsRef<str>> Display for LoweredName<S> {
     }
 }
 
-lazy_static! {
+// Updated to "IEEE Standard for SystemVerilog", IEEE 1800-2023
 // TODO also include vhdl keywords and ban both in generated output?
-/// Updated to "IEEE Standard for SystemVerilog", IEEE 1800-2023
-static ref VERILOG_KEYWORDS: IndexSet < & 'static str > = {
-include_str ! ("verilog_keywords.txt").lines().map(str::trim).filter( |line | ! line.is_empty()).collect()
-};
+lazy_static! {
+    static ref VERILOG_KEYWORDS: IndexSet<&'static str> = {
+        include_str!("verilog_keywords.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
 }
 
 fn maybe_id_as_ref(id: &Spanned<Option<String>>) -> Spanned<Option<&str>> {
