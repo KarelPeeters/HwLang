@@ -33,10 +33,14 @@ pub fn gcd(a: natural, b: natural) -> natural {
     return a;
 }
 
-pub fn clog2(n: uint) -> uint {
+pub fn clog(base: natural, n: uint) -> uint {
     for (i in 0..) {
-        if (2**i >= n) {
+        if (base**i >= n) {
             return i;
         }
     }
+}
+
+pub fn clog2(n: uint) -> uint {
+    return clog(2, n);
 }
