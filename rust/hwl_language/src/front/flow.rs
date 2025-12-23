@@ -11,8 +11,8 @@ use crate::front::value::{
     SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrSignal, IrStatement,
-    IrTargetStep, IrVariable, IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrTargetStep,
+    IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
@@ -114,6 +114,7 @@ pub struct FlowHardwareRoot<'p> {
     root: &'p FlowRoot<'p>,
     parent: &'p FlowCompile<'p>,
 
+    #[allow(dead_code)]
     span: Span,
     process_kind: HardwareProcessKind<'p>,
 
@@ -189,11 +190,6 @@ struct VariableSlot {
 struct VariableSlotOption {
     info: Option<VariableInfo>,
     content: Option<VariableContent>,
-}
-
-pub struct ShadowSignalInfo {
-    signal_ir: IrSignal,
-    var_ir: IrVariable,
 }
 
 #[derive(Debug, Copy, Clone)]
