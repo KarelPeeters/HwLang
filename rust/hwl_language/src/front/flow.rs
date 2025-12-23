@@ -11,8 +11,8 @@ use crate::front::value::{
     SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrSignal,
-    IrSignalOrVariable, IrStatement, IrTargetStep, IrVariable, IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrSignal, IrStatement,
+    IrTargetStep, IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
@@ -120,17 +120,6 @@ pub struct FlowHardwareRoot<'p> {
     ir_wires: &'p mut IrWires,
     ir_registers: &'p mut IrRegisters,
     ir_variables: IrVariables,
-
-    // TODO get rid of shadow variables again, they're better handled in the backends,
-    //   for verilog still with immediate write-through
-    /// Shadow information for each signal that is written anywhere is this flow.
-    ///
-    /// Shadow variables are local variables that act as a local copy of the signal within the process.
-    /// They are initialized at the start of the process with the current value of the signal,
-    ///    and then written to in parallel with the signal directly.
-    /// Reads of the signal within the process should then read the shadow variable instead,
-    ///    to immediately get the updates value.
-    signal_shadows: IndexMap<Signal, ShadowSignalInfo>,
 
     common: FlowHardwareCommon,
 }
@@ -466,12 +455,7 @@ pub trait Flow: FlowPrivate {
                 };
 
                 // evaluate as a value
-                let shadow = slf
-                    .root_hw()
-                    .signal_shadows
-                    .get(&signal.inner)
-                    .map(|shadow| shadow.var_ir);
-                let value = content.as_hardware_value(ctx, signal.inner, signal.span, shadow)?;
+                let value = content.as_hardware_value(ctx, signal.inner, signal.span)?;
 
                 // check that we can access the domain in the current block
                 // TODO this probably disables too many things, eg. nested blocks
@@ -1265,43 +1249,12 @@ impl<'p> FlowHardware<'p> {
         // TODO comb blocks: check that all written signals are _always_ written
         // TODO ban signal assignments in wire expressions and port connections
 
-        // get signal info
-        let (signal_ty, signal_ir) = signal.inner.expect_ty_and_ir(ctx, signal.span)?;
-        let signal_ty = signal_ty.cloned();
-        let signal_id = signal.inner.diagnostic_string(ctx).to_owned();
-
-        // get or create shadow variable
-        let root_hw = self.root_hw_mut();
-        let shadow_var_ir = root_hw
-            .signal_shadows
-            .entry(signal.inner)
-            .or_insert_with(|| {
-                let var_info = IrVariableInfo {
-                    ty: signal_ty.inner.as_ir(ctx.refs),
-                    debug_info_span: root_hw.span,
-                    debug_info_id: Some(signal_id),
-                };
-                let var_ir = root_hw.ir_variables.push(var_info);
-                ShadowSignalInfo { signal_ir, var_ir }
-            })
-            .var_ir;
-
         // expand value to target type
         let value_hardware_expanded =
             value_hardware.as_hardware_value_unchecked(ctx.refs, &mut ctx.large, assign_span, target_type)?;
 
-        // assign to both signal and the shadow variable
-        let mut push_stmt = |target: IrSignalOrVariable, steps: Vec<IrTargetStep>, value: IrExpression| {
-            let stmt = IrStatement::Assign(IrAssignmentTarget { base: target, steps }, value);
-            let stmt = Spanned::new(assign_span, stmt);
-            self.push_ir_statement(stmt);
-        };
-        let steps_is_empty = steps.is_empty();
-        push_stmt(signal_ir.into(), steps.clone(), value_hardware_expanded.expr.clone());
-        push_stmt(shadow_var_ir.into(), steps, value_hardware_expanded.expr);
-
         // set content
-        let content = if steps_is_empty {
+        let content = if steps.is_empty() {
             match value_compile {
                 Some(value_compile) => SignalContent::Compile(value_compile),
                 None => {
@@ -1324,6 +1277,18 @@ impl<'p> FlowHardware<'p> {
             })
         };
         self.signal_set_content(signal.inner, content);
+
+        // push the actual assignment
+        let signal_ir = signal.inner.expect_ir(ctx, signal.span)?;
+        let stmt = IrStatement::Assign(
+            IrAssignmentTarget {
+                base: signal_ir.into(),
+                steps,
+            },
+            value_hardware_expanded.expr,
+        );
+        let stmt = Spanned::new(assign_span, stmt);
+        self.push_ir_statement(stmt);
 
         Ok(())
     }
@@ -1516,7 +1481,6 @@ impl<'p> FlowHardwareRoot<'p> {
             ir_wires,
             ir_registers,
             ir_variables: IrVariables::new(),
-            signal_shadows: IndexMap::new(),
             common: FlowHardwareCommon {
                 variables: Default::default(),
                 signals: Default::default(),
@@ -1539,35 +1503,20 @@ impl<'p> FlowHardwareRoot<'p> {
         let FlowHardwareRoot {
             root: _,
             parent: _,
-            span,
+            span: _,
             process_kind: _,
             ir_wires: _,
             ir_registers: _,
             ir_variables,
-            signal_shadows: signal_shadow_vars,
             common,
         } = self;
         let FlowHardwareCommon {
             variables: _,
             signals: _,
-            statements: mut ir_statements,
+            statements,
         } = common;
 
-        // insert shadow copies at the start of the block
-        let mut all_statements = vec![];
-        for (_, info) in signal_shadow_vars {
-            let stmt = IrStatement::Assign(
-                IrAssignmentTarget::simple(info.var_ir.into()),
-                IrExpression::Signal(info.signal_ir),
-            );
-            all_statements.push(Spanned::new(span, stmt));
-        }
-        all_statements.append(&mut ir_statements);
-
-        // wrap results
-        let block = IrBlock {
-            statements: all_statements,
-        };
+        let block = IrBlock { statements };
         (ir_variables, block)
     }
 }
@@ -2102,7 +2051,6 @@ impl SignalContentHardware {
         ctx: &mut CompileItemContext,
         signal: Signal,
         span: Span,
-        shadow: Option<IrVariable>,
     ) -> DiagResult<HardwareValueWithVersion> {
         let &SignalContentHardware {
             version,
@@ -2110,10 +2058,7 @@ impl SignalContentHardware {
         } = self;
 
         // read from signal (or shadow variable)
-        let mut value_raw = signal.as_hardware_value(ctx, span)?;
-        if let Some(shadow) = shadow {
-            value_raw.expr = IrExpression::Variable(shadow);
-        }
+        let value_raw = signal.as_hardware_value(ctx, span)?;
 
         // constrain range if needed
         let value = match implied_int_range {
