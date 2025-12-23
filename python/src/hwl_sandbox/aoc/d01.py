@@ -67,7 +67,6 @@ def run(m: hwl.VerilatedInstance, input_data: bytes) -> bytes:
             if byte == 0:
                 return bytes(result_data)
             result_data.append(byte)
-            print(result_data)
 
 
 def main():

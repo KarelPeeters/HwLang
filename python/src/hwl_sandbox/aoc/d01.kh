@@ -49,11 +49,14 @@ module d01 ports(
     const DELTA_END = 2**16;
     reg delta_abs: uint(0..DELTA_END) = 0;
 
+    const OUTPUT_MAX_DIGITS = clog(10, COUNT_ZERO_END);
+    reg output_digit: uint(0..=OUTPUT_MAX_DIGITS) = 0;
+
     clocked(clk, async rst) {
         // input handshake
         if (data_in_ready && data_in.valid) {
             match (data_in.data) {
-                // directions
+                // handle directions
                 char_letter_upper_l => {
                     direction_right = false;
                 }
@@ -61,7 +64,7 @@ module d01 ports(
                     direction_right = true;
                 }
 
-                // digits
+                // handle digits
                 in char_digit_0..char_digit_0 + 10 => {
                     val digit: int(0..10) = data_in.data - char_digit_0;
                     val new_delta = delta_abs * 10 + digit;
@@ -100,6 +103,13 @@ module d01 ports(
                 // end of file
                 char_eof => {
                     phase = Phase_output;
+
+                    output_digit = 1;
+                    for (d in 0..=OUTPUT_MAX_DIGITS) {
+                        if (count_zero >= 10**d) {
+                            output_digit = d + 1;
+                        }
+                    }
                 }
 
                 // unknown char, report error
@@ -123,22 +133,18 @@ module d01 ports(
             }
             Phase_output => {
                 if (!data_out_valid) {
-                    // TODO flip digits
-                    data_out_valid = true;
-                    if (count_zero == 0) {
+                    if (output_digit == 0) {
                         data_out_data = 0;
+                        data_out_valid = true;
                         phase = Phase_done;
                     } else {
-                        const max_digits = clog(10, COUNT_ZERO_END) + 1;
-                        for (dm in 0..max_digits) {
-                            val d = max_digits - 1 - dm;
-                            val f = 10**d;
-                            if (count_zero >= f) {
-                                data_out_data = data_out_data / f;
-                                count_zero -= data_out_data / f * f;
-                            }
-                            break;
-                        }
+                        val f = 10**(output_digit - 1);
+                        val d = (count_zero / f) % 10;
+
+                        data_out_data = char_digit_0 + d;
+                        data_out_valid = true;
+
+                        output_digit = output_digit - 1;
                     }
                 }
             }
