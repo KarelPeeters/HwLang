@@ -570,7 +570,7 @@ pub fn check_range_slice(
         end: slice_start_end,
     } = slice_start.inner.enclosing_range();
 
-    if slice_start_start < &BigInt::ZERO || slice_start_end > &BigInt::from(array_len.inner.clone()) {
+    if !(&BigInt::ZERO <= slice_start_start && slice_start_end - 1 <= BigInt::from(array_len.inner.clone())) {
         let diag = Diagnostic::new("array slice start out of bounds")
             .add_error(
                 slice_start.span,
@@ -588,7 +588,9 @@ pub fn check_range_slice(
     // if len is not provided, knowing that the start is valid is enough
     if let Some(slice_len) = slice_len {
         let slice_end_max = slice_start_end + BigInt::from(slice_len.inner.clone());
-        if slice_end_max > BigInt::from(array_len.inner.clone()) {
+
+        #[allow(clippy::nonminimal_bool)]
+        if !(slice_end_max - 1 <= BigInt::from(array_len.inner.clone())) {
             let diag = Diagnostic::new("array slice end out of bounds")
                 .add_error(
                     slice_len.span,

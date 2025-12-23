@@ -174,6 +174,8 @@ impl<'p> LoweredNameScope<'p> {
 }
 
 // TODO replace with name mangling that forces everything to be valid
+//   then we can get rid of span
+// TODO use __ for joining, not really here but for eg. interfaces
 fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult {
     let s = id.inner;
 
@@ -357,13 +359,9 @@ fn lower_module_ports(
 
         let port_ty = VerilogType::new_from_ir(diags, *debug_span, ty)?;
 
-        let slot;
-        let (is_non_zero_width, ty_str) = match port_ty {
-            Ok(ty_str) => {
-                slot = ty_str.to_prefix().to_string();
-                (true, slot.as_str())
-            }
-            Err(ZeroWidth) => (false, "[empty]"),
+        let (is_non_zero_width, ty_prefix) = match port_ty {
+            Ok(port_ty) => (true, Either::Left(port_ty.prefix())),
+            Err(ZeroWidth) => (false, Either::Right("[empty] ")),
         };
         let dir_str = match direction {
             PortDirection::Input => "input",
@@ -375,7 +373,7 @@ fn lower_module_ports(
         }
         port_lines.push((
             is_non_zero_width,
-            format!("{dir_str} {ty_str}{lower_name}"),
+            format!("{dir_str} {ty_prefix}{lower_name}"),
             format!("{debug_info_domain} {}", debug_info_ty.inner),
         ));
 
@@ -426,7 +424,7 @@ fn lower_module_signals(
             Ok(ty) => ty,
             Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
         };
-        let ty_verilog_prefix = ty_verilog.to_prefix();
+        let ty_prefix = ty_verilog.prefix();
 
         // pick a unique name
         let debug_info_id = maybe_id_as_ref(debug_info_id);
@@ -439,7 +437,7 @@ fn lower_module_signals(
         newline.start_item(f);
         swriteln!(
             f,
-            "{I}reg {ty_verilog_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
+            "{I}reg {ty_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
         );
 
         Ok(Ok(name))
@@ -905,8 +903,8 @@ fn declare_shadow_registers(
             module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{register_name}"), false)?;
 
         newline.start_item(f);
-        let ty_verilog_refix = ty_verilog.to_prefix();
-        swriteln!(f, "{I}{I}reg {ty_verilog_refix}{shadow_name};");
+        let ty_prefix = ty_verilog.prefix();
+        swriteln!(f, "{I}{I}reg {ty_prefix}{shadow_name};");
 
         shadowing_reg_name_map.insert_first(reg, shadow_name);
     }
@@ -933,9 +931,9 @@ fn declare_temporaries(f: &mut String, offset: usize, temporaries: GrowVec<Tempo
 
 fn declare_local(f: &mut String, ty: VerilogType, name: &LoweredName) {
     // x-initialize all locals to avoid inferring latches
-    let ty_prefix = ty.to_prefix();
-    let ty_width = ty.width();
-    swriteln!(f, "{I}{I}reg {ty_prefix}{name} = {ty_width}'dx;");
+    let ty_prefix = ty.prefix();
+    let ty_size_bits = ty.size_bits();
+    swriteln!(f, "{I}{I}reg {ty_prefix}{name} = {ty_size_bits}'bx;");
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -1024,6 +1022,13 @@ impl<'n> Evaluated<'n> {
 
     pub fn as_signed(&self) -> impl Display {
         self.as_signed_maybe(true)
+    }
+
+    pub fn is_named(&self) -> bool {
+        match self {
+            Evaluated::Name(_) | Evaluated::Temporary(_) => true,
+            Evaluated::String(_) | Evaluated::Str(_) | Evaluated::SignedString(_) => false,
+        }
     }
 }
 
@@ -1129,7 +1134,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     let index_ty = IrExpression::Variable(index).ty(self.module, self.locals).unwrap_int();
 
-                    match NonZeroWidthRange::new(index_ty.as_ref()) {
+                    match NonZeroWidthRange::new(index_ty) {
                         Ok(index_ty) => {
                             let index = match self.name_map.map_var(index) {
                                 Ok(index) => index,
@@ -1141,8 +1146,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                                 }
                             };
 
-                            let start = lower_int_constant(index_ty, start);
-                            let end_inc = lower_int_constant(index_ty, &end_inc);
+                            let start = lower_int_constant(&index_ty, start);
+                            let end_inc = lower_int_constant(&index_ty, &end_inc);
                             swriteln!(
                                 self.f,
                                 "{indent}for({index} = {start}; {index} <= {end_inc}; {index} = {index} + 1) begin"
@@ -1197,6 +1202,27 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(())
     }
 
+    fn lower_expression_as_named(
+        &mut self,
+        span: Span,
+        expr: &IrExpression,
+    ) -> DiagResult<Result<Evaluated<'n>, ZeroWidth>> {
+        let eval = try_inner!(self.lower_expression(span, expr)?);
+
+        if eval.is_named() {
+            Ok(Ok(eval))
+        } else {
+            let ty = expr.ty(self.module, self.locals);
+            let ty_verilog = try_inner!(VerilogType::new_from_ir(self.diags, span, &ty)?);
+
+            let tmp = self.new_temporary(span, ty_verilog)?;
+            let indent = self.indent;
+            swriteln!(self.f, "{indent}{tmp} = {eval};");
+
+            Ok(Ok(Evaluated::Temporary(tmp)))
+        }
+    }
+
     fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Result<Evaluated<'n>, ZeroWidth>> {
         let name_map = self.name_map;
         let indent = self.indent;
@@ -1218,8 +1244,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
             IrExpression::Int(x) => {
                 let range = ClosedNonEmptyRange::single(x.clone());
-                let range = NonZeroWidthRange::new(range.as_ref()).expect("already checked for zero-width earlier");
-                lower_int_constant(range, x)
+                let range = NonZeroWidthRange::new(range).expect("already checked for zero-width earlier");
+                lower_int_constant(&range, x)
             }
 
             &IrExpression::Signal(s) => Evaluated::Name(unwrap_zero_width(name_map.map_signal(s))),
@@ -1233,8 +1259,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
                     IrExpressionLarge::Undefined(_) => {
-                        let width = result_ty_verilog.width();
-                        Evaluated::String(format!("{}'bx", width))
+                        let size_bits = result_ty_verilog.size_bits();
+                        Evaluated::String(format!("{}'bx", size_bits))
                     }
                     IrExpressionLarge::BoolNot(inner) => {
                         let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
@@ -1255,21 +1281,21 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
                     &IrExpressionLarge::IntArithmetic(op, ref result_range, ref left, ref right) => {
-                        let result_range = NonZeroWidthRange::new(result_range.as_ref())
+                        let result_range = NonZeroWidthRange::new(result_range.clone())
                             .expect("already checked for zero-width earlier");
-                        self.lower_arithmetic_expression(span, result_range, result_ty_verilog, op, left, right)?
+                        self.lower_arithmetic_expression(span, &result_range, result_ty_verilog, op, left, right)?
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // find common range that contains all operands
                         let left_range = left.ty(self.module, self.locals).unwrap_int();
                         let right_range = right.ty(self.module, self.locals).unwrap_int();
-                        let combined_range = left_range.as_ref().union(right_range.as_ref());
+                        let combined_range = left_range.union(right_range);
                         let combined_range =
                             NonZeroWidthRange::new(combined_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
 
                         // lower both operands to that range
-                        let left_raw = self.lower_expression_int_expanded(span, combined_range, left)?;
-                        let right_raw = self.lower_expression_int_expanded(span, combined_range, right)?;
+                        let left_raw = self.lower_expression_int_expanded(span, &combined_range, left)?;
+                        let right_raw = self.lower_expression_int_expanded(span, &combined_range, right)?;
 
                         let signed = combined_range.range().start.is_negative();
                         let left = left_raw.as_signed_maybe(signed);
@@ -1347,50 +1373,35 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
-                        // TODO this is probably incorrect in general, we need to store the array in a variable first
-                        // TODO we're incorrectly using array indices as bit indices here
+                        let info = self.collect_array_bits_info(&base.ty(self.module, self.locals));
 
-                        let base_len =
-                            unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
-                        assert!(base_len.is_positive(), "cannot index into empty array");
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        let index = self.lower_expression_int_expanded(span, &info.bit_index_range, index)?;
 
-                        let index_range = ClosedNonEmptyRange {
-                            start: BigInt::ZERO,
-                            end: base_len.into(),
-                        };
-                        let index_range =
-                            NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-
-                        let base = match self.lower_expression(span, base)? {
-                            Ok(base) => base,
-                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
-                        };
-                        let index = self.lower_expression_int_expanded(span, index_range, index)?;
-
-                        Evaluated::String(format!("({base}[{index}])"))
+                        if info.element_size_bits == BigUint::ONE {
+                            Evaluated::String(format!("({base}[{index}])"))
+                        } else {
+                            let element_size_bits =
+                                lower_int_constant(&info.bit_index_range, &info.element_size_bits.into());
+                            Evaluated::String(format!(
+                                "({base}[{index} * {element_size_bits} +: {element_size_bits}])"
+                            ))
+                        }
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
-                        // TODO this is probably incorrect in general, we need to store the array in a variable first
-                        // TODO we're incorrectly using array indices as bit indices here
+                        let info = self.collect_array_bits_info(&base.ty(self.module, self.locals));
 
-                        let base_len =
-                            unwrap_match!(base.ty(self.module, self.locals), IrType::Array(_, base_len) => base_len);
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        let index = self.lower_expression_int_expanded(span, &info.bit_index_range, start)?;
 
-                        let start_range = ClosedNonEmptyRange {
-                            start: BigInt::ZERO,
-                            end: BigInt::from(base_len + 1u8),
-                        };
-                        let start_range =
-                            NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-
-                        let base = match self.lower_expression(span, base)? {
-                            Ok(base) => base,
-                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
-                        };
-                        let start = self.lower_expression_int_expanded(span, start_range, start)?;
-                        let len = lower_uint_str(len);
-
-                        Evaluated::String(format!("({base}[{start}+:{len}])"))
+                        let len_bits = len * &info.element_size_bits;
+                        if info.element_size_bits == BigUint::ONE {
+                            Evaluated::String(format!("({base}[{index} +: {len_bits}])"))
+                        } else {
+                            let element_size_bits =
+                                lower_int_constant(&info.bit_index_range, &info.element_size_bits.into());
+                            Evaluated::String(format!("({base}[{index} * {element_size_bits} +: {len_bits}])"))
+                        }
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
@@ -1403,8 +1414,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
                         let target =
-                            NonZeroWidthRange::new(target.as_ref()).expect("already checked for zero-width earlier");
-                        self.lower_expression_int_expanded(span, target, value)?
+                            NonZeroWidthRange::new(target.clone()).expect("already checked for zero-width earlier");
+                        self.lower_expression_int_expanded(span, &target, value)?
                     }
                     IrExpressionLarge::ConstrainIntRange(range, value) => {
                         // already handled through the result type
@@ -1430,7 +1441,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression(
         &mut self,
         span: Span,
-        result_range: NonZeroWidthRange,
+        result_range: &NonZeroWidthRange,
         result_ty_verilog: VerilogType,
         op: IrIntArithmeticOp,
         left: &IrExpression,
@@ -1477,7 +1488,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression_simple(
         &mut self,
         span: Span,
-        result_range: NonZeroWidthRange,
+        result_range: &NonZeroWidthRange,
         result_ty_verilog: VerilogType,
         op_str: &str,
         left: &IrExpression,
@@ -1488,13 +1499,15 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let range_right = right.ty(self.module, self.locals).unwrap_int();
         let range_all = result_range
             .range()
+            .as_ref()
             .union(range_left.as_ref())
-            .union(range_right.as_ref());
+            .union(range_right.as_ref())
+            .cloned();
         let range_all = NonZeroWidthRange::new(range_all).expect("result range is non-zero, so the union is too");
 
         // evaluate operands to that range
-        let left = self.lower_expression_int_expanded(span, range_all, left)?;
-        let right = self.lower_expression_int_expanded(span, range_all, right)?;
+        let left = self.lower_expression_int_expanded(span, &range_all, left)?;
+        let right = self.lower_expression_int_expanded(span, &range_all, right)?;
 
         // store result in a temporary to force truncation
         // TODO skip if no truncation is actually necessary
@@ -1508,7 +1521,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_arithmetic_expression_div_mod(
         &mut self,
         span: Span,
-        result_range: NonZeroWidthRange,
+        result_range: &NonZeroWidthRange,
         result_ty_verilog: VerilogType,
         op: OperatorDivMod,
         a: &IrExpression,
@@ -1519,12 +1532,17 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         let range_a = a.ty(self.module, self.locals).unwrap_int();
         let range_b = b.ty(self.module, self.locals).unwrap_int();
-        let range_all = result_range.range().union(range_a.as_ref()).union(range_b.as_ref());
+        let range_all = result_range
+            .range()
+            .as_ref()
+            .union(range_a.as_ref())
+            .union(range_b.as_ref())
+            .cloned();
         let range_all = NonZeroWidthRange::new(range_all).expect("result range is non-zero, so the union is too");
 
         // evaluate operands to that range
-        let a_raw = self.lower_expression_int_expanded(span, range_all, a)?;
-        let b_raw = self.lower_expression_int_expanded(span, range_all, b)?;
+        let a_raw = self.lower_expression_int_expanded(span, &range_all, a)?;
+        let b_raw = self.lower_expression_int_expanded(span, &range_all, b)?;
 
         // cast operands to signed if necessary
         let signed = range_all.range().start.is_negative();
@@ -1546,7 +1564,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
                 swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
                 let should_adjust = MaybeBool::and(
-                    &MaybeBool::is_not_zero(&tmp_mod, ClosedRange::from(result_range.range())),
+                    &MaybeBool::is_not_zero(&tmp_mod, ClosedRange::from(result_range.range().as_ref())),
                     &signs_differ,
                 );
                 should_adjust.select(&format!("{tmp_mod} + {b}"), &tmp_mod.to_string())
@@ -1576,7 +1594,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_expression_int_expanded(
         &mut self,
         span: Span,
-        range: NonZeroWidthRange,
+        range: &NonZeroWidthRange,
         value: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
         // skip separate expansion step for integer constants
@@ -1589,7 +1607,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let value_ty = value_ty.unwrap_int();
 
         let value = match self.lower_expression(span, value)? {
-            Ok(value) => lower_expand_int_range(range.range(), value_ty.as_ref(), value),
+            Ok(value) => lower_expand_int_range(range.range().as_ref(), value_ty.as_ref(), value),
             Err(ZeroWidth) => {
                 let value = value_ty.as_ref().as_single().unwrap();
                 lower_int_constant(range, value)
@@ -1605,6 +1623,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         target: &IrAssignmentTarget,
     ) -> DiagResult<Result<Evaluated<'n>, Either<ZeroWidth, NotRead>>> {
         // TODO this is probably wrong, we might need intermediate variables for the base and after each step
+        // TODO this entire setup is cursed, we need to think about what this means carefully,
+        //   and maybe move some of this logic to the frontend instead of forcing it into the backends
         let &IrAssignmentTarget { base, ref steps } = target;
 
         let base_ty = base.as_expression().ty(self.module, self.locals);
@@ -1635,9 +1655,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         start: BigInt::ZERO,
                         end: BigInt::from(curr_len),
                     };
-                    let index_range =
-                        NonZeroWidthRange::new(index_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-                    let index = self.lower_expression_int_expanded(span, index_range, index)?;
+                    let index_range = NonZeroWidthRange::new(index_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+                    let index = self.lower_expression_int_expanded(span, &index_range, index)?;
                     swrite!(g, "[{index}]");
                 }
                 IrTargetStep::ArraySlice(start, len) => {
@@ -1645,10 +1664,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         start: BigInt::ZERO,
                         end: BigInt::from(curr_len + 1u8),
                     };
-                    let start_range =
-                        NonZeroWidthRange::new(start_range.as_ref()).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+                    let start_range = NonZeroWidthRange::new(start_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
 
-                    let start = self.lower_expression_int_expanded(span, start_range, start)?;
+                    let start = self.lower_expression_int_expanded(span, &start_range, start)?;
                     let len = lower_uint_str(len);
 
                     swrite!(g, "[{start}+:{len}]");
@@ -1667,6 +1685,32 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         Ok(Temporary(&info.name))
     }
+
+    fn collect_array_bits_info(&self, base_ty: &IrType) -> ArrayBitsInfo {
+        // TODO express the extra range info we have about the index range to verilog?
+        //   (in particular, we can first slice base with a constant subrange then index that)
+        let array_size_bits = base_ty.size_bits();
+
+        let element_ty = unwrap_match!(&base_ty, IrType::Array(element_ty, _) => element_ty);
+        let element_size_bits = element_ty.size_bits();
+
+        // create a range that covers the bit indices and the max possible element size
+        let bit_index_range = ClosedNonEmptyRange {
+            start: BigInt::ZERO,
+            end: BigInt::from(array_size_bits) + 1u8,
+        };
+        let bit_index_range = NonZeroWidthRange::new(bit_index_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
+
+        ArrayBitsInfo {
+            element_size_bits,
+            bit_index_range,
+        }
+    }
+}
+
+struct ArrayBitsInfo {
+    element_size_bits: BigUint,
+    bit_index_range: NonZeroWidthRange,
 }
 
 fn lower_expand_int_range<'n>(
@@ -1697,11 +1741,11 @@ fn lower_expand_int_range<'n>(
     }
 }
 
-fn lower_int_constant(ty: NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> {
+fn lower_int_constant(ty: &NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> {
     let ty = ty.range();
-    assert!(ty.contains(&x), "Trying to emit constant {x:?} encoded as range {ty:?}");
+    assert!(ty.contains(x), "Trying to emit constant {x:?} encoded as range {ty:?}");
 
-    let repr = IntRepresentation::for_range(ty);
+    let repr = IntRepresentation::for_range(ty.as_ref());
     let bits = repr.size_bits();
     assert_ne!(bits, 0);
 
@@ -1764,17 +1808,17 @@ fn lower_edge<'n>(
 
 /// Range that is guaranteed to contain multiple values,
 ///   which means that it will be represented with at least one bit in hardware.
-#[derive(Debug, Copy, Clone)]
-pub struct NonZeroWidthRange<'a>(ClosedNonEmptyRange<&'a BigInt>);
+#[derive(Debug, Clone)]
+pub struct NonZeroWidthRange(ClosedNonEmptyRange<BigInt>);
 
-impl<'a> NonZeroWidthRange<'a> {
-    const ZERO_ONE: NonZeroWidthRange<'static> = NonZeroWidthRange(ClosedNonEmptyRange {
-        start: &BigInt::ZERO,
-        end: &BigInt::TWO,
+impl NonZeroWidthRange {
+    const ZERO_ONE: NonZeroWidthRange = NonZeroWidthRange(ClosedNonEmptyRange {
+        start: BigInt::ZERO,
+        end: BigInt::TWO,
     });
 
-    fn new(range: ClosedNonEmptyRange<&'a BigInt>) -> Result<Self, ZeroWidth> {
-        let repr = IntRepresentation::for_range(range);
+    fn new(range: ClosedNonEmptyRange<BigInt>) -> Result<Self, ZeroWidth> {
+        let repr = IntRepresentation::for_range(range.as_ref());
         if repr.size_bits() == 0 {
             Err(ZeroWidth)
         } else {
@@ -1782,8 +1826,8 @@ impl<'a> NonZeroWidthRange<'a> {
         }
     }
 
-    fn range(&self) -> ClosedNonEmptyRange<&'a BigInt> {
-        self.0
+    fn range(&self) -> &ClosedNonEmptyRange<BigInt> {
+        &self.0
     }
 }
 
@@ -1797,26 +1841,25 @@ enum OperatorDivMod {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum VerilogType {
     /// Single bit value.
+    ///
+    /// This becomes `reg x;` in Verilog.
     Bit,
     /// Potentially multi-bit values. This can still happen to have width 1,
     /// The difference with [SingleBit] in that case is that this should still be represented as an array.
+    ///
+    /// This becomes `reg [n-1:0] x;` in Verilog.
     Array(NonZeroU32),
 }
 
 impl VerilogType {
-    pub fn width(self) -> NonZeroU32 {
-        match self {
-            VerilogType::Bit => NonZeroU32::new(1).unwrap(),
-            VerilogType::Array(w) => w,
-        }
-    }
-
-    pub fn new_array(diags: &Diagnostics, span: Span, w: BigUint) -> DiagResult<Result<VerilogType, ZeroWidth>> {
-        let w = diag_big_int_to_u32(diags, span, &w.into(), "array width too large")?;
-        match NonZeroU32::new(w) {
-            None => Ok(Err(ZeroWidth)),
-            Some(w) => Ok(Ok(VerilogType::Array(w))),
-        }
+    pub fn new_array(
+        diags: &Diagnostics,
+        span: Span,
+        size_bits: BigUint,
+    ) -> DiagResult<Result<VerilogType, ZeroWidth>> {
+        let size_bits = diag_big_int_to_u32(diags, span, &size_bits.into(), "array width too large")?;
+        let size_bits = try_inner!(NonZeroU32::new(size_bits).ok_or(ZeroWidth));
+        Ok(Ok(VerilogType::Array(size_bits)))
     }
 
     pub fn new_from_ir(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Result<VerilogType, ZeroWidth>> {
@@ -1827,13 +1870,21 @@ impl VerilogType {
     }
 
     pub fn new_from_range(diags: &Diagnostics, span: Span, range: NonZeroWidthRange) -> DiagResult<VerilogType> {
-        let repr = IntRepresentation::for_range(range.range());
+        let repr = IntRepresentation::for_range(range.range().as_ref());
         Ok(Self::new_array(diags, span, BigUint::from(repr.size_bits()))?.expect("range should be non-zero-width"))
     }
 
-    pub fn to_prefix(self) -> impl Display {
-        struct D(VerilogType);
-        impl Display for D {
+    pub fn size_bits(self) -> NonZeroU32 {
+        match self {
+            VerilogType::Bit => NonZeroU32::new(1).unwrap(),
+            VerilogType::Array(width) => width,
+        }
+    }
+
+    pub fn prefix(self) -> impl Display {
+        struct P(VerilogType);
+
+        impl Display for P {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 match self.0 {
                     VerilogType::Bit => Ok(()),
@@ -1842,7 +1893,7 @@ impl VerilogType {
             }
         }
 
-        D(self)
+        P(self)
     }
 }
 
