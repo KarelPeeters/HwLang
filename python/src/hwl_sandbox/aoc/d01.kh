@@ -1,0 +1,156 @@
+import std.types.[bool, int, uint];
+import examples.axi_stream.axi_stream;
+import std.util.[print, assert];
+import std.math.clog;
+
+type char = uint(8);
+
+const char_eof: char = 0;
+const char_newline: char = 0x0a;
+const char_space: char = 0x20;
+
+const char_digit_0: char = 0x30;
+const char_letter_upper_a: char = 0x41;
+const char_letter_upper_r: char = 0x52;
+const char_letter_upper_l: char = 0x4c;
+
+// enum Phase {
+//     Input,
+//     Output,
+//     Done,
+// }
+type Phase = uint(0..3);
+const Phase_input = 0;
+const Phase_output = 1;
+const Phase_done = 2;
+
+module d01 ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        data_in: interface axi_stream(char).input,
+        data_out: interface axi_stream(char).output,
+        error: out bool,
+    }
+) {
+    reg data_in_ready: bool = false;
+    reg data_out_valid: bool = false;
+    reg data_out_data: char = undef;
+    reg out error = false;
+
+    reg phase: Phase = Phase_input;
+
+    reg curr_pos: uint(0..100) = 50;
+    const COUNT_ZERO_END = 2**16;
+    reg count_zero: uint(0..COUNT_ZERO_END) = 0;
+
+    reg direction_right: bool = false;
+    const DELTA_END = 2**16;
+    reg delta_abs: uint(0..DELTA_END) = 0;
+
+    clocked(clk, async rst) {
+        // input handshake
+        if (data_in_ready && data_in.valid) {
+            match (data_in.data) {
+                // directions
+                char_letter_upper_l => {
+                    direction_right = false;
+                }
+                char_letter_upper_r => {
+                    direction_right = true;
+                }
+
+                // digits
+                in char_digit_0..char_digit_0 + 10 => {
+                    val digit: int(0..10) = data_in.data - char_digit_0;
+                    val new_delta = delta_abs * 10 + digit;
+                    if (new_delta >= DELTA_END) {
+                        print("error overflow delta");
+                        error = true;
+                    } else {
+                        delta_abs = new_delta;
+                    }
+                }
+
+                // end of line
+                char_newline => {
+                    val delta;
+                    if (direction_right) {
+                        delta = delta_abs;
+                    } else {
+                        delta = -delta_abs;
+                    }
+                    curr_pos = (curr_pos + delta) % 100;
+                    if (curr_pos == 0) {
+                        val new_count_zero = count_zero + 1;
+                        if (new_count_zero < COUNT_ZERO_END) {
+                            count_zero = new_count_zero;
+                        } else {
+                            print("error overflow count zero");
+                            error = true;
+                        }
+                    }
+
+                    // reset for next line
+                    delta_abs = 0;
+                    direction_right = false;
+                }
+
+                // end of file
+                char_eof => {
+                    phase = Phase_output;
+                }
+
+                // unknown char, report error
+                _ => {
+                    print("error unknown char");
+                    error = true;
+                }
+            }
+        }
+
+        // output handshake
+        if (data_out_valid && data_out.ready) {
+            data_out_valid = false;
+        }
+
+        // phase management
+        data_in_ready = false;
+        match (phase) {
+            Phase_input => {
+                data_in_ready = true;
+            }
+            Phase_output => {
+                if (!data_out_valid) {
+                    // TODO flip digits
+                    data_out_valid = true;
+                    if (count_zero == 0) {
+                        data_out_data = 0;
+                        phase = Phase_done;
+                    } else {
+                        const max_digits = clog(10, COUNT_ZERO_END) + 1;
+                        for (dm in 0..max_digits) {
+                            val d = max_digits - 1 - dm;
+                            val f = 10**d;
+                            if (count_zero >= f) {
+                                data_out_data = data_out_data / f;
+                                count_zero -= data_out_data / f * f;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Phase_done => {
+                // do nothing
+            }
+        }
+    }
+
+    comb {
+        data_in.ready = data_in_ready;
+        data_out.valid = data_out_valid;
+        data_out.data = data_out_data;
+    }
+}

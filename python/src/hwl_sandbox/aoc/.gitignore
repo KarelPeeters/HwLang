@@ -1,0 +1,5 @@
+# Ignore genrated verilog files
+/*.v
+
+# Redistributing parts of Advent of Code is not allowed, so exclude inputs.
+/*.txt

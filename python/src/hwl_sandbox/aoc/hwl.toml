@@ -1,0 +1,4 @@
+[source]
+_ = "."
+std = "../../../../design/project/std/"
+examples = "../../../../design/project/examples/"
