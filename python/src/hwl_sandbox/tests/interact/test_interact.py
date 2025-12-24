@@ -33,9 +33,8 @@ def test_interact_types():
         f(int, False)
 
 
-# TODO this is a bit of a weird test, since the example project changes a lot
 def test_compile_manifest():
-    manifest_path = Path(__file__).parent / "../../../../../design/project/hwl.toml"
+    manifest_path = Path(__file__).parent / "project/hwl.toml"
     s = hwl.Source.new_from_manifest_path(str(manifest_path))
     c = s.compile()
     assert isinstance(c.resolve("top.top"), hwl.Module)
