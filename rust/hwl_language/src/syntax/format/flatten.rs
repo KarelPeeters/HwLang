@@ -1103,14 +1103,24 @@ impl Context<'_> {
                 let leftmost = self.collect_binary_expr::<LeftmostYes>(&mut seq, op.inner.level(), expr);
                 binary_indent_seq(leftmost, seq)
             }
-            &ExpressionKind::ArrayType(ref lengths, base) => {
-                let node_lengths = fmt_comma_list(SurroundKind::Square, &lengths.inner, |&len| {
+            &ExpressionKind::ArrayType {
+                span_brackets: _,
+                ref lengths,
+                inner_ty,
+            } => {
+                let node_lengths = fmt_comma_list(SurroundKind::Square, lengths, |&len| {
                     self.fmt_array_literal_element(len)
                 });
-                HNode::Sequence(vec![node_lengths, self.fmt_expr(base)])
+                HNode::Sequence(vec![node_lengths, self.fmt_expr(inner_ty)])
             }
-            &ExpressionKind::ArrayIndex(base, ref indices) => {
-                let node_indices = fmt_comma_list(SurroundKind::Square, &indices.inner, |&index| self.fmt_expr(index));
+            &ExpressionKind::ArrayIndex {
+                span_brackets: _,
+                base,
+                ref indices,
+            } => {
+                let node_indices = fmt_comma_list(SurroundKind::Square, indices, |&index| {
+                    self.fmt_array_literal_element(index)
+                });
                 HNode::Sequence(vec![self.fmt_expr(base), node_indices])
             }
             ExpressionKind::DotIndex(_, _) => {

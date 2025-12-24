@@ -360,7 +360,7 @@ impl CompileItemContext<'_, '_> {
         if !target_base_var_info.mutable {
             let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?;
             if !is_simple_first_assignment {
-                let diag = Diagnostic::new("assignment to immutable variable that has already been initialized")
+                let diag = Diagnostic::new("cannot assign to immutable variable")
                     .add_error(target_base.span, "variable assigned to here")
                     .add_info(target_base_var_info.span_decl, "variable declared as immutable here")
                     .finish();
@@ -566,6 +566,7 @@ impl CompileItemContext<'_, '_> {
 
         // pick a type and convert the current base value to hardware
         // TODO allow just inferring types, the user can specify one if they really want to
+        //   especially infer types where the final type is obvious, eg. bool
         let target_var_info = flow.var_info(target_base)?;
         let target_base_ty = target_var_info.ty.as_ref().ok_or_else(|| {
             let diag = Diagnostic::new("variable needs type annotation")

@@ -559,46 +559,67 @@ impl<'a> CompileItemContext<'a, '_> {
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
             }
-            &ExpressionKind::ArrayIndex(base, ref indices) => {
-                self.eval_array_index_expression(scope, flow, base, indices)?
+            &ExpressionKind::ArrayIndex {
+                span_brackets,
+                base,
+                ref indices,
+            } => {
+                // eval base
+                let base = self.eval_expression(scope, flow, &Type::Any, base)?;
+
+                // TODO support nd arrays
+                // evaluate index
+                let index = indices
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional array indexing"))?;
+                let index = match index {
+                    &ArrayLiteralElement::Single(index) => index,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(index.span(), "multidimensional array indexing"));
+                    }
+                };
+
+                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let steps = ArraySteps::new(vec![Spanned::new(span_brackets, index_step)]);
+
+                // apply steps to value
+                steps.apply_to_value(self.refs, &mut self.large, base)?
             }
-            &ExpressionKind::ArrayType(ref lens, base) => {
-                let lens = lens
-                    .inner
-                    .iter()
-                    .map(|&len| {
-                        let len = match len {
-                            ArrayLiteralElement::Single(len) => len,
-                            ArrayLiteralElement::Spread(_, _) => {
-                                return Err(diags.report_todo(len.span(), "spread in array type lengths"));
-                            }
-                        };
-                        let ty_uint = Type::Int(MultiRange::from(Range {
-                            start: Some(BigInt::ZERO),
-                            end: None,
-                        }));
-                        let len = self.eval_expression_as_compile(
-                            scope,
-                            flow,
-                            &ty_uint,
-                            len,
-                            Spanned::new(expr.span, "array type length"),
-                        )?;
-                        let reason = TypeContainsReason::ArrayLen { span_len: len.span };
-                        check_type_is_uint_compile(diags, elab, reason, len)
-                    })
-                    .try_collect_all_vec();
-                let base = self.eval_expression_as_ty(scope, flow, base);
+            &ExpressionKind::ArrayType {
+                span_brackets: _,
+                ref lengths,
+                inner_ty,
+            } => {
+                // TODO add syntax for "any-length" lists, maybe `[_]inner`, that also scales nicely?
+                // TODO support nd arrays
+                // evaluate length
+                let length = lengths
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                let length = match length {
+                    &ArrayLiteralElement::Single(length) => length,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(length.span(), "multidimensional arrays"));
+                    }
+                };
 
-                let lens = lens?;
-                let base = base?;
+                let ty_uint = Type::Int(MultiRange::from(Range {
+                    start: Some(BigInt::ZERO),
+                    end: None,
+                }));
+                let length = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &ty_uint,
+                    length,
+                    Spanned::new(expr.span, "array type length"),
+                )?;
+                let reason = TypeContainsReason::ArrayLen { span_len: length.span };
+                let length = check_type_is_uint_compile(diags, elab, reason, length)?;
 
-                // apply lengths inside-out
-                let result = lens
-                    .into_iter()
-                    .rev()
-                    .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
-                Value::new_ty(result)
+                // eval inner type and construct new array type
+                let inner_ty = self.eval_expression_as_ty(scope, flow, inner_ty)?;
+                Value::new_ty(Type::Array(Arc::new(inner_ty.inner), length))
             }
             &ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
@@ -1245,32 +1266,12 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    fn eval_array_index_expression(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        base: Expression,
-        indices: &Spanned<Vec<Expression>>,
-    ) -> DiagResult<Value> {
-        let base = self.eval_expression(scope, flow, &Type::Any, base);
-        let steps = indices
-            .inner
-            .iter()
-            .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
-            .try_collect_all_vec();
-
-        let base = base?;
-        let steps = ArraySteps::new(steps?);
-
-        steps.apply_to_value(self.refs, &mut self.large, base)
-    }
-
     fn eval_expression_as_array_step(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
         index: Expression,
-    ) -> DiagResult<Spanned<ArrayStep>> {
+    ) -> DiagResult<ArrayStep> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1372,10 +1373,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
         };
 
-        Ok(Spanned {
-            span: index.span,
-            inner: step,
-        })
+        Ok(step)
     }
 
     pub fn eval_expression_as_compile(
@@ -1535,28 +1533,37 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 }
             }
-            ExpressionKind::ArrayIndex(inner_target, ref indices) => {
-                let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
-                let array_steps = indices
-                    .inner
-                    .iter()
-                    .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
-                    .try_collect_all_vec();
+            ExpressionKind::ArrayIndex {
+                span_brackets,
+                base,
+                ref indices,
+            } => {
+                // eval base
+                let base = self.eval_expression_as_assign_target(scope, flow, base)?;
 
-                let inner_target = inner_target?;
-                let array_steps = ArraySteps::new(array_steps?);
+                // eval index
+                let index = indices
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                let index = match index {
+                    &ArrayLiteralElement::Single(index) => index,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(index.span(), "multidimensional arrays"));
+                    }
+                };
 
+                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let index_step = Spanned::new(span_brackets, index_step);
+
+                // wrap result
                 let AssignmentTarget {
-                    base: inner_base,
-                    array_steps: inner_array_steps,
-                } = inner_target.inner;
-                if !inner_array_steps.is_empty() {
-                    return Err(diags.report_todo(expr.span, "combining target expressions"));
-                }
-
+                    base: base_inner,
+                    array_steps: mut inner_array_steps,
+                } = base.inner;
+                inner_array_steps.steps.push(index_step);
                 AssignmentTarget {
-                    base: inner_base,
-                    array_steps,
+                    base: base_inner,
+                    array_steps: inner_array_steps,
                 }
             }
             ExpressionKind::DotIndex(base, index) => {

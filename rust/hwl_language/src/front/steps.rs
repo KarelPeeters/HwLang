@@ -17,7 +17,7 @@ use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
-    steps: Vec<Spanned<S>>,
+    pub steps: Vec<Spanned<S>>,
 }
 
 pub type ArrayStep = MaybeCompile<ArrayStepCompile, ArrayStepHardware>;
@@ -144,7 +144,10 @@ impl ArraySteps<ArrayStep> {
                             len.as_ref().map(|len| Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        let step_ir = IrTargetStep::ArraySlice(IrExpression::Int(start.clone()), len.clone());
+                        let step_ir = IrTargetStep::ArraySlice {
+                            start: IrExpression::Int(start.clone()),
+                            len: len.clone(),
+                        };
                         (step_ir, Some(len))
                     }
                 },
@@ -161,7 +164,10 @@ impl ArraySteps<ArrayStep> {
                             Some(Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        let step_ir = IrTargetStep::ArraySlice(start.expr.clone(), len.clone());
+                        let step_ir = IrTargetStep::ArraySlice {
+                            start: start.expr.clone(),
+                            len: len.clone(),
+                        };
                         (step_ir, Some(len))
                     }
                 },

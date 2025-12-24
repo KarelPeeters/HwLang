@@ -663,8 +663,16 @@ pub enum ExpressionKind {
     BinaryOp(Spanned<BinaryOp>, Expression, Expression),
 
     // Indexing
-    ArrayType(Spanned<Vec<ArrayLiteralElement<Expression>>>, Expression),
-    ArrayIndex(Expression, Spanned<Vec<Expression>>),
+    ArrayType {
+        span_brackets: Span,
+        lengths: Vec<ArrayLiteralElement<Expression>>,
+        inner_ty: Expression,
+    },
+    ArrayIndex {
+        span_brackets: Span,
+        base: Expression,
+        indices: Vec<ArrayLiteralElement<Expression>>,
+    },
     DotIndex(Expression, DotIndexKind),
 
     // Calls

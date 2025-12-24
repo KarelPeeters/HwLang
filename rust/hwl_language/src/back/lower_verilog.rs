@@ -23,7 +23,6 @@ use itertools::{Either, enumerate};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
-use unwrap_match::unwrap_match;
 
 const I: &str = Indent::I;
 
@@ -1373,35 +1372,46 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Evaluated::String(format!("({base}[{index}])"))
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
-                        let info = self.collect_array_bits_info(&base.ty(self.module, self.locals));
+                        // TODO constant fold if index is a constant?
+                        // TODO expose the extra knowledge we have about integer ranges to verilog?
+                        let base_ty = base.ty(self.module, self.locals);
+                        let bit_range = bit_index_range(&base_ty.size_bits());
+                        let (element_ty, _) = base_ty.unwrap_array();
+                        let element_size_bits = element_ty.size_bits();
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
-                        let index = self.lower_expression_int_expanded(span, &info.bit_index_range, index)?;
+                        let index = self.lower_expression_int_expanded(span, &bit_range, index)?;
 
-                        if info.element_size_bits == BigUint::ONE {
-                            Evaluated::String(format!("({base}[{index}])"))
-                        } else {
-                            let element_size_bits =
-                                lower_int_constant(&info.bit_index_range, &info.element_size_bits.into());
-                            Evaluated::String(format!(
-                                "({base}[{index} * {element_size_bits} +: {element_size_bits}])"
-                            ))
+                        let mut g = String::new();
+                        swrite!(g, "({base}[{index}");
+                        if element_size_bits != BigUint::ONE {
+                            swrite!(g, " * {element_size_bits} +: {element_size_bits}");
                         }
+                        swrite!(g, "])");
+                        Evaluated::String(g)
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
-                        let info = self.collect_array_bits_info(&base.ty(self.module, self.locals));
+                        // TODO constant fold if index is a constant?
+                        // TODO expose the extra knowledge we have about integer ranges to verilog?
+                        let base_ty = base.ty(self.module, self.locals);
+                        let bit_range = bit_index_range(&base_ty.size_bits());
+                        let (element_ty, _) = base_ty.unwrap_array();
+                        let element_size_bits = element_ty.size_bits();
+                        let len_bits = len * &element_size_bits;
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
-                        let index = self.lower_expression_int_expanded(span, &info.bit_index_range, start)?;
+                        let index = self.lower_expression_int_expanded(span, &bit_range, start)?;
 
-                        let len_bits = len * &info.element_size_bits;
-                        if info.element_size_bits == BigUint::ONE {
-                            Evaluated::String(format!("({base}[{index} +: {len_bits}])"))
-                        } else {
-                            let element_size_bits =
-                                lower_int_constant(&info.bit_index_range, &info.element_size_bits.into());
-                            Evaluated::String(format!("({base}[{index} * {element_size_bits} +: {len_bits}])"))
+                        let mut g = String::new();
+                        swrite!(g, "({base}[{index}");
+                        if element_size_bits != BigUint::ONE {
+                            swrite!(g, "* {element_size_bits}")
+                        };
+                        if len_bits != BigUint::ONE {
+                            swrite!(g, " +: {len_bits}");
                         }
+                        swrite!(g, "])");
+                        Evaluated::String(g)
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
@@ -1622,57 +1632,70 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         span: Span,
         target: &IrAssignmentTarget,
     ) -> DiagResult<Result<Evaluated<'n>, Either<ZeroWidth, NotRead>>> {
-        // TODO this is probably wrong, we might need intermediate variables for the base and after each step
-        // TODO this entire setup is cursed, we need to think about what this means carefully,
-        //   and maybe move some of this logic to the frontend instead of forcing it into the backends
+        // TODO constant fold if some indices are constant?
+        // TODO expose the extra knowledge we have about integer ranges to verilog?
+
         let &IrAssignmentTarget { base, ref steps } = target;
 
-        let base_ty = base.as_expression().ty(self.module, self.locals);
-        let base = try_inner!(self.name_map.map_signal_or_var(base));
-
-        // early exit to avoid string allocation
+        // early exit for simple cases to preserve that this is just a name
+        let base_name = try_inner!(self.name_map.map_signal_or_var(base));
         if steps.is_empty() {
-            return Ok(Ok(Evaluated::Name(base)));
+            return Ok(Ok(Evaluated::Name(base_name)));
         }
 
+        // get base type info
+        let base_ty = base.as_expression().ty(self.module, self.locals);
+        let bit_range = bit_index_range(&base_ty.size_bits());
+
+        // start building index expression
         let mut g = String::new();
-        swrite!(g, "{base}");
+        swrite!(g, "{base_name}[");
 
-        // TODO both of these are wrong, we're not taking element type sizes into account
-        // TODO this entire thing should just be flattened to a single slice
-        // TODO handle non-consecutive slicing, probably similar to how the C++ backend does it
-        let mut next_ty = base_ty;
-        for step in steps {
-            let (curr_inner, curr_len) =
-                unwrap_match!(next_ty, IrType::Array(curr_inner, curr_len) => (curr_inner, curr_len));
-            next_ty = *curr_inner;
-
-            match step {
-                IrTargetStep::ArrayIndex(index) => {
-                    assert!(curr_len.is_positive(), "cannot index into empty array");
-
-                    let index_range = ClosedNonEmptyRange {
-                        start: BigInt::ZERO,
-                        end: BigInt::from(curr_len),
-                    };
-                    let index_range = NonZeroWidthRange::new(index_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-                    let index = self.lower_expression_int_expanded(span, &index_range, index)?;
-                    swrite!(g, "[{index}]");
-                }
-                IrTargetStep::ArraySlice(start, len) => {
-                    let start_range = ClosedNonEmptyRange {
-                        start: BigInt::ZERO,
-                        end: BigInt::from(curr_len + 1u8),
-                    };
-                    let start_range = NonZeroWidthRange::new(start_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-
-                    let start = self.lower_expression_int_expanded(span, &start_range, start)?;
-                    let len = lower_uint_str(len);
-
-                    swrite!(g, "[{start}+:{len}]");
-                }
+        let mut is_first_offset = true;
+        let mut add_offset = |index: Evaluated, size_bits: &BigUint| {
+            if !is_first_offset {
+                swrite!(g, " + ");
             }
+            is_first_offset = false;
+
+            swrite!(g, "{}", index);
+            if size_bits != &BigUint::ONE {
+                swrite!(g, " * {}", size_bits);
+            }
+        };
+
+        // handle indexing operations
+        let mut curr_ty = base_ty;
+        for step in steps {
+            curr_ty = match step {
+                IrTargetStep::ArrayIndex(index) => {
+                    let (element_ty, _) = curr_ty.unwrap_array();
+                    let element_size_bits = element_ty.size_bits();
+
+                    let index = self.lower_expression_int_expanded(span, &bit_range, index)?;
+                    add_offset(index, &element_size_bits);
+
+                    element_ty
+                }
+                IrTargetStep::ArraySlice { start, len: length } => {
+                    // TODO expose the extra knowledge this length gives us about the target range to verilog?
+                    let (element_ty, _) = curr_ty.unwrap_array();
+                    let element_size_bits = element_ty.size_bits();
+
+                    let start = self.lower_expression_int_expanded(span, &bit_range, start)?;
+                    add_offset(start, &element_size_bits);
+
+                    IrType::Array(Box::new(element_ty), length.clone())
+                }
+            };
         }
+
+        // correctly slice the final bit length
+        let result_len_bits = curr_ty.size_bits();
+        if result_len_bits != BigUint::ONE {
+            swrite!(g, " +: {result_len_bits}");
+        }
+        swrite!(g, "]");
 
         Ok(Ok(Evaluated::String(g)))
     }
@@ -1685,32 +1708,15 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         Ok(Temporary(&info.name))
     }
-
-    fn collect_array_bits_info(&self, base_ty: &IrType) -> ArrayBitsInfo {
-        // TODO express the extra range info we have about the index range to verilog?
-        //   (in particular, we can first slice base with a constant subrange then index that)
-        let array_size_bits = base_ty.size_bits();
-
-        let element_ty = unwrap_match!(&base_ty, IrType::Array(element_ty, _) => element_ty);
-        let element_size_bits = element_ty.size_bits();
-
-        // create a range that covers the bit indices and the max possible element size
-        let bit_index_range = ClosedNonEmptyRange {
-            start: BigInt::ZERO,
-            end: BigInt::from(array_size_bits) + 1u8,
-        };
-        let bit_index_range = NonZeroWidthRange::new(bit_index_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
-
-        ArrayBitsInfo {
-            element_size_bits,
-            bit_index_range,
-        }
-    }
 }
 
-struct ArrayBitsInfo {
-    element_size_bits: BigUint,
-    bit_index_range: NonZeroWidthRange,
+/// Create a range that can be used for bit indexing, slicing and related math for the given size.
+fn bit_index_range(size_bits: &BigUint) -> NonZeroWidthRange {
+    let bit_index_range = ClosedNonEmptyRange {
+        start: BigInt::ZERO,
+        end: BigInt::from(size_bits + 1u8),
+    };
+    NonZeroWidthRange::new(bit_index_range).unwrap()
 }
 
 fn lower_expand_int_range<'n>(
@@ -1766,16 +1772,6 @@ fn lower_int_constant(ty: &NonZeroWidthRange, x: &BigInt) -> Evaluated<'static> 
             Evaluated::SignedString(s)
         }
     }
-}
-
-fn lower_uint_str(x: &BigUint) -> String {
-    // TODO zero-width literals are probably not allowed in verilog
-    // TODO double-check integer bit-width promotion rules
-    // TODO avoid clone
-    // TODO remove this redundant function and always use lower_int_constant
-    let range = ClosedNonEmptyRange::single(BigInt::from(x.clone()));
-    let repr = IntRepresentation::for_range(range.as_ref());
-    format!("{}'d{}", repr.size_bits(), x)
 }
 
 #[derive(Debug)]

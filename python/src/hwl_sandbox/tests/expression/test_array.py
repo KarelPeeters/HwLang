@@ -23,7 +23,7 @@ def test_array_literal_bool_const(tmp_dir: Path):
 
 def test_array_literal_bool_const_2d(tmp_dir: Path):
     v = [[False, False, True], [True, False, False]]
-    e = compare_expression([], "[2,3]bool", str(v).lower(), tmp_dir)
+    e = compare_expression([], "[2][3]bool", str(v).lower(), tmp_dir)
     e.eval_assert([], v)
 
 
@@ -44,7 +44,7 @@ def test_array_index_bool_hw(tmp_dir: Path):
 
 
 def test_array_index_bool_hw_2d(tmp_dir: Path):
-    e = compare_expression(["[2,3]bool", "uint(0..2)", "uint(0..3)"], "bool", f"a0[a1][a2]", tmp_dir)
+    e = compare_expression(["[2][3]bool", "uint(0..2)", "uint(0..3)"], "bool", f"a0[a1][a2]", tmp_dir)
 
     vs = [
         [[False] * 3] * 2,
@@ -150,9 +150,41 @@ def test_array_assign_int(tmp_dir: Path):
     e.eval_assert([[2, 3, 4], 1, 5], [2, 5, 4])
     e.eval_assert([[2, 3, 4], 2, 5], [2, 3, 5])
 
+
+def test_array_assign_slice(tmp_dir: Path):
+    body = """
+    var v: [4]uint(8) = a0;
+    v[a1 +.. 2] = a2;
+    return v;
+    """
+    e = compare_compile(["[4]uint(8)", "uint(0..3)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
+
+    v = [2, 3, 4, 5]
+    s = [6, 7]
+    for i in range(2 + 1):
+        c = list(v)
+        c[i:i + 2] = s
+        e.eval_assert([v, i, s], c)
+
+
+def test_array_assign_slice_twice(tmp_dir: Path):
+    body = """
+    var v: [4]uint(8) = a0;
+    v[1..][a1 +.. 2] = a2;
+    return v;
+    """
+    e = compare_compile(["[4]uint(8)", "uint(0..2)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
+
+    v = [2, 3, 4, 5]
+    s = [6, 7]
+    for i in range(1 + 1):
+        c = list(v)
+        c[1 + i:1 + i + 2] = s
+        e.eval_assert([v, i, s], c)
+
 # TODO test array assignments
-# TODO test array slice copy from one array to another, with different strides
+# TODO test array slice copy from one array to another
 # TODO test array concat, including spread operator
 # TODO test array repeat
-# TODO test Nd mixed slice/index assignments on both sides
+# TODO test signal array slicing and assigning
 # TODO test and fix tuples
