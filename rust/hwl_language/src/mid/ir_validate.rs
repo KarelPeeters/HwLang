@@ -13,8 +13,6 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::ClosedNonEmptyRange;
 use indexmap::IndexSet;
 use itertools::zip_eq;
-use std::borrow::Cow;
-use unwrap_match::unwrap_match;
 
 // TODO expand all of this
 impl IrDatabase {
@@ -174,7 +172,7 @@ impl IrBlock {
                     expr.validate(diags, module, locals, stmt.span)?;
                     let expr_ty = expr.ty(module, locals);
 
-                    check_type_match(diags, stmt.span, target_ty.as_ref(), &expr_ty)?;
+                    check_type_match(diags, stmt.span, &target_ty, &expr_ty)?;
                 }
                 IrStatement::Block(block) => {
                     block.validate(diags, module, locals)?;
@@ -230,33 +228,25 @@ impl IrBlock {
     }
 }
 
-fn assignment_target_ty<'a>(
-    module: &'a IrModuleInfo,
-    locals: &'a IrVariables,
-    target: &IrAssignmentTarget,
-) -> Cow<'a, IrType> {
+fn assignment_target_ty<'a>(module: &'a IrModuleInfo, locals: &'a IrVariables, target: &IrAssignmentTarget) -> IrType {
     let IrAssignmentTarget { base, steps } = target;
 
-    let base_ty = Cow::Owned(base.as_expression().ty(module, locals));
-
-    let mut curr_ty = base_ty;
-    let mut slice_lens = vec![];
+    let mut curr_ty = base.as_expression().ty(module, locals);
 
     for step in steps {
-        curr_ty = Cow::Owned(unwrap_match!(&*curr_ty, IrType::Array(inner, _) => &**inner).clone());
-        match step {
+        curr_ty = match step {
             IrTargetStep::ArrayIndex(_index) => {
-                // no slice len
+                let (inner_ty, _len) = curr_ty.unwrap_array();
+                inner_ty
             }
-            IrTargetStep::ArraySlice(_start, len) => {
-                slice_lens.push(len.clone());
+            IrTargetStep::ArraySlice { start: _, len: length } => {
+                let (inner_ty, _) = curr_ty.unwrap_array();
+                IrType::Array(Box::new(inner_ty), length.clone())
             }
         };
     }
 
-    slice_lens.into_iter().rev().fold(curr_ty, |acc, len| {
-        Cow::Owned(IrType::Array(Box::new(acc.into_owned()), len))
-    })
+    curr_ty
 }
 
 impl IrExpression {

@@ -708,13 +708,17 @@ ExprLevelPower: ExpressionKind = {
 ExprLevelArray = ExprLevelArrayImpl<"true", "true", "true">;
 
 ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: ExpressionKind = {
+    // TODO we need to use ArrayLiteralElement here to avoid parsing ambiguities, which is a bit strange
+    //   eventually we want to support those anyway, so it's not that bad
     // array type
-    "[" <args:Spanned<Separated<ArrayLiteralElement,",">>> "]" <target:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
+    <start_brackets:@L> "[" <lengths:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
+    <inner_ty:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
         if allow_array_type == "true"
-        => ExpressionKind::ArrayType(args, target),
+        => ExpressionKind::ArrayType { span_brackets: loc.span(start_brackets, end_brackets), lengths, inner_ty },
     // array index
-    <target:SpannedPushArena<ExprLevelArrayImpl<allow_block, "false", "false">>> "[" <args:Spanned<Separated<Expr,",">>> "]"
-        => ExpressionKind::ArrayIndex(target, args),
+    <base:SpannedPushArena<ExprLevelArrayImpl<allow_block, "false", "false">>>
+    <start_brackets:@L> "[" <indices:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
+        => ExpressionKind::ArrayIndex { span_brackets: loc.span(start_brackets, end_brackets), base, indices },
 
     // array literal
     "[" <Separated<ArrayLiteralElement,",">> "]"

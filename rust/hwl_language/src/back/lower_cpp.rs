@@ -5,8 +5,8 @@ use crate::mid::ir::{
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
-    IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort, ir_modules_topological_sort,
+    IrStringSubstitution, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
+    ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -723,31 +723,8 @@ impl CodegenBlockContext<'_> {
         for stmt in statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
-                    let Target {
-                        loops: target_loops,
-                        inner: target_inner,
-                    } = self.eval_assignment_target(indent, stmt.span, target, stage_read)?;
                     let value_eval = self.eval(indent, stmt.span, expr, stage_read)?;
-
-                    for (i, (tmp_i, start, len)) in enumerate(&target_loops) {
-                        let indent_i = indent.nest_n(i);
-                        swriteln!(
-                            self.f,
-                            "{indent_i}for (std::size_t {tmp_i} = {start}; {tmp_i} < {start} + {len}; {tmp_i}++) {{"
-                        );
-                    }
-
-                    let indent_n = indent.nest_n(target_loops.len());
-                    swrite!(self.f, "{indent_n}{target_inner} = {value_eval}");
-                    for (tmp_i, _, _) in target_loops.iter().rev() {
-                        swrite!(self.f, "[{tmp_i}]");
-                    }
-                    swriteln!(self.f, ";");
-
-                    for i in 0..target_loops.len() {
-                        let indent_i = indent.nest_n(i);
-                        swriteln!(self.f, "{indent_i}}}");
-                    }
+                    self.generate_assignment(indent, stmt.span, target, stage_read, &value_eval)?;
                 }
                 IrStatement::Block(inner) => {
                     swrite!(self.f, "{indent}");
@@ -827,54 +804,39 @@ impl CodegenBlockContext<'_> {
         Ok(())
     }
 
-    fn eval_assignment_target(
+    fn generate_assignment(
         &mut self,
         indent: Indent,
         span: Span,
         target: &IrAssignmentTarget,
         stage_read: Stage,
-    ) -> DiagResult<Target> {
-        let next = Stage::Next;
-        let IrAssignmentTarget { base, steps } = target;
+        value: &Evaluated,
+    ) -> DiagResult {
+        let &IrAssignmentTarget { base, ref steps } = target;
 
-        let base_str = match *base {
+        // output base identifier
+        let next = Stage::Next;
+        let mut target_str = String::new();
+        match base {
             IrSignalOrVariable::Signal(IrSignal::Port(port)) => {
                 let port_str = port_str(port, &self.module_info.ports[port]);
-                format!("*{next}_ports.{port_str}")
+                swrite!(target_str, "*{next}_ports.{port_str}");
             }
             IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
                 let reg_str = reg_str(reg, &self.module_info.registers[reg]);
-                format!("{next}_signals.{reg_str}")
+                swrite!(target_str, "{next}_signals.{reg_str}");
             }
             IrSignalOrVariable::Signal(IrSignal::Wire(wire)) => {
                 let wire_str = wire_str(wire, &self.module_info.wires[wire]);
-                format!("{next}_signals.{wire_str}")
+                swrite!(target_str, "{next}_signals.{wire_str}");
             }
-            IrSignalOrVariable::Variable(var) => var_str(var, &self.locals[var]),
+            IrSignalOrVariable::Variable(var) => {
+                let var_str = var_str(var, &self.locals[var]);
+                swrite!(target_str, "{}", var_str);
+            }
         };
 
-        let mut curr_str = base_str;
-        let mut loops = vec![];
-
-        for step in steps {
-            match step {
-                IrTargetStep::ArrayIndex(index) => {
-                    let index = self.eval(indent, span, index, stage_read)?;
-                    swrite!(&mut curr_str, "[{index}]")
-                }
-
-                IrTargetStep::ArraySlice(start, len) => {
-                    let start = self.eval(indent, span, start, stage_read)?;
-
-                    let tmp_index = self.new_temporary();
-                    loops.push((tmp_index, start, len.clone()));
-
-                    swrite!(&mut curr_str, "[{tmp_index}]");
-                }
-            }
-        }
-
-        Ok(Target { loops, inner: curr_str })
+        todo!();
     }
 
     fn new_temporary(&mut self) -> Temporary {
@@ -882,11 +844,6 @@ impl CodegenBlockContext<'_> {
         self.next_temporary_index += 1;
         Temporary(index)
     }
-}
-
-struct Target {
-    loops: Vec<(Temporary, Evaluated, BigUint)>,
-    inner: String,
 }
 
 fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<String> {
