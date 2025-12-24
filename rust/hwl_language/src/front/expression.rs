@@ -2768,13 +2768,13 @@ fn array_literal_combine_values(
         for elem in values {
             match elem {
                 ArrayLiteralElement::Single(elem_inner) => {
-                    let elem_inner = unwrap_match!(elem_inner.inner, Value::Simple(v) => v);
-                    result.push(CompileValue::Simple(elem_inner));
+                    let elem_inner = CompileValue::try_from(&elem_inner.inner).unwrap();
+                    result.push(elem_inner);
                 }
                 ArrayLiteralElement::Spread(span_spread, elem_inner) => {
-                    let elem_inner = unwrap_match!(elem_inner.inner, Value::Simple(v) => v);
+                    let elem_inner = CompileValue::try_from(&elem_inner.inner).unwrap();
                     let elem_inner_array = match elem_inner {
-                        SimpleCompileValue::Array(elem_inner) => elem_inner,
+                        CompileValue::Simple(SimpleCompileValue::Array(elem_inner)) => elem_inner,
                         _ => {
                             return Err(diags.report_internal_error(span_spread, "expected array value"));
                         }

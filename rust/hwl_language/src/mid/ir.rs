@@ -437,6 +437,10 @@ impl IrType {
     pub fn unwrap_array(self) -> (IrType, BigUint) {
         unwrap_match!(self, IrType::Array(inner, len) => (*inner, len))
     }
+
+    pub fn unwrap_tuple(self) -> Vec<IrType> {
+        unwrap_match!(self, IrType::Tuple(elements) => elements)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
