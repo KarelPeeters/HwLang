@@ -41,7 +41,6 @@ def test_match_int(tmp_dir: Path):
     c.eval_assert([6], -6)
 
 
-@pytest.mark.skip("enums don't yet work in verilog")
 def test_match_enum(tmp_dir: Path):
     # TODO simplify this once enums are constructible in python
     prefix = """

@@ -1362,14 +1362,20 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         swrite!(g, "}}");
                         Evaluated::String(g)
                     }
+                    &IrExpressionLarge::TupleIndex { ref base, index } => {
+                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
+                        let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
+                        let size_bits = ty[index].size_bits();
 
-                    IrExpressionLarge::TupleIndex { base, index } => {
-                        // TODO this is completely wrong
-                        let base = match self.lower_expression(span, base)? {
-                            Ok(base) => base,
-                            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
-                        };
-                        Evaluated::String(format!("({base}[{index}])"))
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+
+                        let mut g = String::new();
+                        swrite!(g, "({base}[{start_bits}");
+                        if size_bits != BigUint::ONE {
+                            swrite!(g, " +: {size_bits}");
+                        }
+                        swrite!(g, "])");
+                        Evaluated::String(g)
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
