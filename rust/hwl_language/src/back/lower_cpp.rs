@@ -5,8 +5,8 @@ use crate::mid::ir::{
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
-    IrStringSubstitution, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, IrWireOrPort,
-    ir_modules_topological_sort,
+    IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrWireOrPort, ir_modules_topological_sort,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -814,29 +814,76 @@ impl CodegenBlockContext<'_> {
     ) -> DiagResult {
         let &IrAssignmentTarget { base, ref steps } = target;
 
-        // output base identifier
+        // evaluate base string
         let next = Stage::Next;
         let mut target_str = String::new();
-        match base {
+        let target_is_ptr = match base {
             IrSignalOrVariable::Signal(IrSignal::Port(port)) => {
                 let port_str = port_str(port, &self.module_info.ports[port]);
-                swrite!(target_str, "*{next}_ports.{port_str}");
+                swrite!(target_str, "{next}_ports.{port_str}");
+                true
             }
             IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
                 let reg_str = reg_str(reg, &self.module_info.registers[reg]);
                 swrite!(target_str, "{next}_signals.{reg_str}");
+                false
             }
             IrSignalOrVariable::Signal(IrSignal::Wire(wire)) => {
                 let wire_str = wire_str(wire, &self.module_info.wires[wire]);
                 swrite!(target_str, "{next}_signals.{wire_str}");
+                false
             }
             IrSignalOrVariable::Variable(var) => {
                 let var_str = var_str(var, &self.locals[var]);
                 swrite!(target_str, "{}", var_str);
+                false
             }
         };
 
-        todo!();
+        // evaluate steps
+        let mut last_slice: Option<(Evaluated, &BigUint)> = None;
+        for step in steps {
+            last_slice = match step {
+                IrTargetStep::ArrayIndex(index) => {
+                    let index = self.eval(indent, span, index, stage_read)?;
+
+                    swrite!(target_str, "[");
+                    if let Some((last_slice_start, _)) = &last_slice {
+                        swrite!(target_str, "{last_slice_start} + ");
+                    }
+                    swrite!(target_str, "{index}]");
+
+                    None
+                }
+                IrTargetStep::ArraySlice { start, len } => {
+                    let start = self.eval(indent, span, start, stage_read)?;
+
+                    if let Some((last_slice_start, _)) = &last_slice {
+                        let total_start = format!("{last_slice_start} + {start}");
+                        Some((Evaluated::Inline(total_start), len))
+                    } else {
+                        Some((start, len))
+                    }
+                }
+            };
+        }
+
+        // build assignment
+        match last_slice {
+            None => {
+                let target_prefix = if target_is_ptr { "*" } else { "" };
+                swriteln!(self.f, "{indent}{target_prefix}{target_str} = {value};");
+            }
+            Some((slice_start, slice_len)) => {
+                let target_dot = if target_is_ptr { "->" } else { "." };
+                swriteln!(
+                    self.f,
+                    "{indent}std::copy_n({value}.begin(), {slice_len}, {target_str}{target_dot}begin() + {slice_start});"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     fn new_temporary(&mut self) -> Temporary {
