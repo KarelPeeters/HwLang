@@ -176,7 +176,7 @@ def test_array_assign_slice(tmp_dir: Path):
 def test_array_assign_slice_twice(tmp_dir: Path):
     body = """
     var v: [4]uint(8) = a0;
-    v[1..][a1 +.. 2] = a2;
+    v[1..][a1+..2] = a2;
     return v;
     """
     e = compare_compile(["[4]uint(8)", "uint(0..2)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
