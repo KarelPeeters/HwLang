@@ -79,7 +79,7 @@ impl ArraySteps<ArrayStep> {
         let elab = &refs.shared.elaboration_arenas;
 
         let (result_ty, steps) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type), false)?;
-        let steps = steps.unwrap();
+        let steps = steps.expect("any is not a hardware type, so we cannot have ancountered it");
 
         let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
             diags.report_internal_error(
@@ -104,6 +104,14 @@ impl ArraySteps<ArrayStep> {
         }
     }
 
+    /// Return the result type after applying the steps to the given type.
+    /// This can be used to get the type of step expressions but also the target type for an assignment with steps.
+    ///
+    /// This function also checks index and slice ranges for validity,
+    /// reporting proper diagnostics if they are out of bounds.
+    ///
+    /// If `pass_any` is true, applying any step to `Type::Any` will return `Type::Any` and `EncounteredAny`. This is
+    /// useful to get the inferred type for assignments, once we encounter Any the result type is also Any.
     fn apply_to_type_impl(
         &self,
         refs: CompileRefs,
@@ -111,14 +119,12 @@ impl ArraySteps<ArrayStep> {
         pass_any: bool,
     ) -> DiagResult<(Type, Result<Vec<IrTargetStep>, EncounteredAny>)> {
         let diags = refs.diags;
-
         let ArraySteps { steps } = self;
 
-        // forward
         let mut steps_ir = vec![];
-        let mut slice_lens = vec![];
         let mut curr_ty = ty;
         for step in steps {
+            // for now we only have arrays steps, so we can always unwrap an array type
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
                 Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
@@ -173,20 +179,16 @@ impl ArraySteps<ArrayStep> {
                 },
             };
 
-            curr_ty = Spanned::new(curr_ty.span.join(step.span), ty_array_inner.clone());
             steps_ir.push(step_ir);
-            if let Some(slice_len) = slice_len {
-                slice_lens.push(slice_len);
-            }
+
+            let next_ty = match slice_len {
+                None => ty_array_inner.clone(),
+                Some(slice_len) => Type::Array(Arc::new(ty_array_inner.clone()), slice_len),
+            };
+            curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
         }
 
-        // backward
-        let result_ty = slice_lens
-            .into_iter()
-            .rev()
-            .fold(curr_ty.inner, |acc, len| Type::Array(Arc::new(acc), len));
-
-        Ok((result_ty, Ok(steps_ir)))
+        Ok((curr_ty.inner, Ok(steps_ir)))
     }
 
     pub fn apply_to_value(
