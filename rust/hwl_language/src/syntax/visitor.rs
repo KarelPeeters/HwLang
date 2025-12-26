@@ -1227,16 +1227,24 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, left)?;
                 self.visit_expression(scope, right)?;
             }
-            &ExpressionKind::ArrayType(ref lens, inner) => {
-                for &len in &lens.inner {
+            &ExpressionKind::ArrayType {
+                span_brackets: _,
+                ref lengths,
+                inner_ty,
+            } => {
+                for &len in lengths {
                     self.visit_array_literal_element(scope, len)?;
                 }
-                self.visit_expression(scope, inner)?;
+                self.visit_expression(scope, inner_ty)?;
             }
-            &ExpressionKind::ArrayIndex(base, ref indices) => {
+            &ExpressionKind::ArrayIndex {
+                span_brackets: _,
+                base,
+                ref indices,
+            } => {
                 self.visit_expression(scope, base)?;
-                for &index in &indices.inner {
-                    self.visit_expression(scope, index)?;
+                for &index in indices {
+                    self.visit_array_literal_element(scope, index)?;
                 }
             }
             &ExpressionKind::DotIndex(base, _) => {

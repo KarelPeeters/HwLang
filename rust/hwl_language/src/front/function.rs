@@ -1,6 +1,6 @@
 use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::block::{BlockEnd, EarlyExitKind};
-use crate::front::check::{check_type_contains_value, check_type_is_bool_array, TypeContainsReason};
+use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
@@ -26,11 +26,11 @@ use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
 use annotate_snippets::Level;
-use indexmap::map::Entry;
 use indexmap::IndexMap;
-use itertools::{enumerate, Either, Itertools};
-use std::collections::hash_map::Entry as HashMapEntry;
+use indexmap::map::Entry;
+use itertools::{Either, Itertools, enumerate};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -517,7 +517,7 @@ impl CompileItemContext<'_, '_> {
 
         // recreate captured scope
         let span_scope = params.span.join(body.span);
-        let scope_captured = scope_captured.to_scope(self.refs, flow, span_scope);
+        let scope_captured = scope_captured.to_scope(self.refs, flow, span_scope)?;
 
         // map params into scope
         let mut scope = Scope::new_child(span_scope, &scope_captured);
@@ -538,8 +538,13 @@ impl CompileItemContext<'_, '_> {
             let default = default
                 .as_ref()
                 .map(|&default| {
-                    let value =
-                        ctx.eval_expression_as_compile(scope, flow, &ty.inner, default, Spanned::new(param.span, "parameter default value"))?;
+                    let value = ctx.eval_expression_as_compile(
+                        scope,
+                        flow,
+                        &ty.inner,
+                        default,
+                        Spanned::new(param.span, "parameter default value"),
+                    )?;
                     Ok(value.map_inner(Value::from))
                 })
                 .transpose()?;
@@ -557,7 +562,7 @@ impl CompileItemContext<'_, '_> {
                 VariableId::Id(MaybeIdentifier::Identifier(param.id)),
                 param.id.span,
                 value.map(|v| v.inner),
-            );
+            )?;
             let entry = DeclaredValueSingle::Value {
                 span: param.id.span,
                 value: ScopedEntry::Named(NamedValue::Variable(param_var)),
@@ -582,7 +587,7 @@ impl CompileItemContext<'_, '_> {
                     let return_entry_kind = match flow.kind_mut() {
                         FlowKind::Compile(_) => ReturnEntryKind::Compile,
                         FlowKind::Hardware(flow) => {
-                            let return_flag = ExitFlag::new(flow, decl_span, EarlyExitKind::Return);
+                            let return_flag = ExitFlag::new(flow, decl_span, EarlyExitKind::Return)?;
                             ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
                         }
                     };
@@ -594,14 +599,13 @@ impl CompileItemContext<'_, '_> {
                             id: VariableId::Custom("return_value"),
                             mutable: false,
                             ty: None,
-                            use_ir_variable: None,
                         };
                         let return_var = flow.var_new(return_var_info);
 
                         // As far as the flow is concerned,
                         //   it might look like not all branches are guaranteed to initialize the return value.
                         // To avoid wrong error messages and skipped merging, we always start with an initial value.
-                        flow.var_set_undefined(return_var, decl_span);
+                        flow.var_set_undefined(return_var, decl_span)?;
 
                         Some(return_var)
                     } else {
@@ -789,7 +793,7 @@ pub fn check_function_return_type_and_set_value(
             let result_ty = check_type_contains_value(diags, elab, reason, ty.inner, value.as_ref());
 
             if let Some(return_var) = entry.return_var {
-                flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner));
+                flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner))?;
             }
 
             result_ty?;
@@ -942,7 +946,12 @@ impl CapturedScope {
         }
     }
 
-    pub fn to_scope<'s>(&self, refs: CompileRefs<'_, 's>, flow: &mut impl Flow, scope_span: Span) -> Scope<'s> {
+    pub fn to_scope<'s>(
+        &self,
+        refs: CompileRefs<'_, 's>,
+        flow: &mut impl Flow,
+        scope_span: Span,
+    ) -> DiagResult<Scope<'s>> {
         let CapturedScope {
             root_file,
             captured_values,
@@ -975,7 +984,7 @@ impl CapturedScope {
                                 VariableId::Id(id_recreated),
                                 span,
                                 Ok(Value::from(value.clone())),
-                            );
+                            )?;
                             DeclaredValueSingle::Value {
                                 span,
                                 value: ScopedEntry::Named(NamedValue::Variable(var)),
@@ -989,7 +998,7 @@ impl CapturedScope {
             scope.declare_already_checked(id.clone(), declared);
         }
 
-        scope
+        Ok(scope)
     }
 }
 

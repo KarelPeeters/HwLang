@@ -5,7 +5,7 @@ use crate::front::flow::{Flow, FlowKind, ValueVersion, Variable, VariableId, Var
 use crate::front::implication::{HardwareValueWithImplications, HardwareValueWithVersion};
 use crate::front::types::{HardwareType, Type, TypeBool};
 use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
-use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
+use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena};
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
 
@@ -58,23 +58,23 @@ pub struct ExitFlag {
 
 impl LoopEntry {
     // TODO use Variable instead of IrVariable to get const prop, implications and joining for free
-    pub fn new(flow: &mut impl Flow, span_keyword: Span) -> LoopEntry {
+    pub fn new(flow: &mut impl Flow, span_keyword: Span) -> DiagResult<LoopEntry> {
         match flow.kind_mut() {
-            FlowKind::Compile(_) => LoopEntry::Compile,
+            FlowKind::Compile(_) => Ok(LoopEntry::Compile),
             FlowKind::Hardware(flow) => {
                 let entry = LoopEntryHardware {
-                    break_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Break),
-                    continue_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Continue),
+                    break_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Break)?,
+                    continue_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Continue)?,
                 };
 
-                LoopEntry::Hardware(entry)
+                Ok(LoopEntry::Hardware(entry))
             }
         }
     }
 }
 
 impl ExitFlag {
-    pub fn new(flow: &mut impl Flow, span: Span, kind: EarlyExitKind) -> ExitFlag {
+    pub fn new(flow: &mut impl Flow, span: Span, kind: EarlyExitKind) -> DiagResult<ExitFlag> {
         // crate variable
         let name = match kind {
             EarlyExitKind::Return => "flag_function_return",
@@ -82,39 +82,26 @@ impl ExitFlag {
             EarlyExitKind::Continue => "flag_loop_continue",
         };
 
-        let use_ir_variable = match flow.kind_mut() {
-            FlowKind::Compile(_) => None,
-            FlowKind::Hardware(flow) => {
-                let info = IrVariableInfo {
-                    ty: IrType::Bool,
-                    debug_info_span: span,
-                    debug_info_id: Some(name.to_owned()),
-                };
-                Some(flow.new_ir_variable(info))
-            }
-        };
-
         let info = VariableInfo {
             span_decl: span,
             id: VariableId::Custom(name),
             mutable: true,
             ty: Some(Spanned::new(span, Type::Bool)),
-            use_ir_variable,
         };
         let var = flow.var_new(info);
 
         // initialize to false
-        flow.var_set(var, span, Ok(Value::new_bool(false)));
+        flow.var_set(var, span, Ok(Value::new_bool(false)))?;
 
-        Self { var }
+        Ok(Self { var })
     }
 
-    pub fn clear(&mut self, flow: &mut impl Flow, span: Span) {
-        flow.var_set(self.var, span, Ok(Value::new_bool(false)));
+    pub fn clear(&mut self, flow: &mut impl Flow, span: Span) -> DiagResult {
+        flow.var_set(self.var, span, Ok(Value::new_bool(false)))
     }
 
-    pub fn set(&mut self, flow: &mut impl Flow, span: Span) {
-        flow.var_set(self.var, span, Ok(Value::new_bool(true)));
+    pub fn set(&mut self, flow: &mut impl Flow, span: Span) -> DiagResult {
+        flow.var_set(self.var, span, Ok(Value::new_bool(true)))
     }
 
     pub fn get(

@@ -19,7 +19,6 @@ def test_int():
     src = """
     import std.types.int;
     fn f(x: int(0..8)) {}    
-    fn g(x: int(0..8, 20..30)) {}
     """
     f: hwl.Function = compile_custom(src).resolve("top.f")
 
@@ -56,6 +55,17 @@ def test_int_multi():
 
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         f_empty(0)
+
+
+def test_int_empty():
+    src = """
+    import std.types.int;
+    fn f(x: int(0..0)) {}
+    """
+    f: hwl.Function = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f(0)
+
 
 
 # TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure

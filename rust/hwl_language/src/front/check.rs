@@ -236,6 +236,7 @@ pub fn check_type_contains_type(
     if target_ty.contains_type(value_ty.inner) {
         Ok(())
     } else {
+        // TODO simpler error message for very simply values, eg. ints, bools, short tuples/arrays
         let mut diag = Diagnostic::new("type mismatch");
         diag = reason.add_diag_info(elab, diag, target_ty);
         let diag = diag

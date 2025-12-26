@@ -59,7 +59,7 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
 ) {
     const num_states = 2**length;
     const prob_bits = clog2(length) + analog_bits + 2;
-    const codebook: [num_states, 2]bool = [
+    const codebook: [num_states][2]bool = [
         {
             val code = uint(length).to_bits(i);
             var output = [false, false];
@@ -74,8 +74,8 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
 
     type t_half_probs = [num_states / 2]uint(prob_bits);
     type t_probs = [num_states]uint(prob_bits);
-    type t_half_paths = [num_states / 2, depth]bool;
-    type t_paths = [num_states, depth]bool;
+    type t_half_paths = [num_states / 2][depth]bool;
+    type t_paths = [num_states][depth]bool;
 
     const half_paths_reset = [[false] * depth] * (num_states / 2);
 
@@ -88,7 +88,7 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
         if (input_valid) {
             // calculate output
             var out_probs_max: t_half_probs = half_probs;
-            var outputs_max: [num_states / 2]bool = [half_paths[i, 0] for i in 0..num_states / 2];
+            var outputs_max: [num_states / 2]bool = [half_paths[i][0] for i in 0..num_states / 2];
             for (j_rev in 0..(length - 1)) {
                 val j = length - 2 - j_rev;
                 for (i in 0..2**j) {
@@ -122,8 +122,8 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
             // update probabilities and paths
             val half_probs_0: t_half_probs = [probs_new[2 * i + 0] for i in 0..num_states / 2];
             val half_probs_1: t_half_probs = [probs_new[2 * i + 1] for i in 0..num_states / 2];
-            val half_paths_0: t_half_paths = [[*paths_new[2 * i + 0, 1..], false] for i in 0..num_states / 2];
-            val half_paths_1: t_half_paths = [[*paths_new[2 * i + 1, 1..], true] for i in 0..num_states / 2];
+            val half_paths_0: t_half_paths = [[*paths_new[2 * i + 0][1..], false] for i in 0..num_states / 2];
+            val half_paths_1: t_half_paths = [[*paths_new[2 * i + 1][1..], true] for i in 0..num_states / 2];
 
             // select best probabilities and paths
             for (i in 0..num_states / 2) {

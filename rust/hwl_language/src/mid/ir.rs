@@ -261,27 +261,21 @@ pub struct IrAssignmentTarget {
 
 impl IrAssignmentTarget {
     pub fn simple(base: IrSignalOrVariable) -> Self {
-        IrAssignmentTarget {
-            base,
-            steps: Vec::new(),
-        }
+        IrAssignmentTarget { base, steps: vec![] }
     }
 }
 
-// TODO re-use from frontend?
 #[derive(Debug, Clone)]
 pub enum IrTargetStep {
     ArrayIndex(IrExpression),
-    ArraySlice(IrExpression, BigUint),
+    ArraySlice { start: IrExpression, len: BigUint },
 }
 
-// TODO find better name than "large"
 new_index_type!(pub IrExpressionLargeIndex);
 pub type IrLargeArena = Arena<IrExpressionLargeIndex, IrExpressionLarge>;
 
 // TODO consider not nesting these, but forcing a pass through a local variable for compound expressions
 //   that should simplify the backends, at the cost of more verbose backend codegen
-// TODO _dropping_ IrExpressions is taking a long time, they should really be stored in an arena per module instead
 #[derive(Debug, Clone)]
 pub enum IrExpression {
     Bool(bool),
@@ -439,6 +433,14 @@ impl IrType {
     pub fn unwrap_int(self) -> ClosedNonEmptyRange<BigInt> {
         unwrap_match!(self, IrType::Int(range) => range)
     }
+
+    pub fn unwrap_array(self) -> (IrType, BigUint) {
+        unwrap_match!(self, IrType::Array(inner, len) => (*inner, len))
+    }
+
+    pub fn unwrap_tuple(self) -> Vec<IrType> {
+        unwrap_match!(self, IrType::Tuple(elements) => elements)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -516,15 +518,10 @@ impl IrAssignmentTarget {
         let &IrAssignmentTarget { base, ref steps } = self;
 
         f(base, ValueAccess::Write);
-
         for step in steps {
             match step {
-                IrTargetStep::ArrayIndex(index) => {
-                    index.visit_values_accessed(large, f);
-                }
-                IrTargetStep::ArraySlice(start, _len) => {
-                    start.visit_values_accessed(large, f);
-                }
+                IrTargetStep::ArrayIndex(index) => index.visit_values_accessed(large, f),
+                IrTargetStep::ArraySlice { start, len: _ } => start.visit_values_accessed(large, f),
             }
         }
     }
@@ -711,12 +708,8 @@ impl IrExpression {
 
     pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         match *self {
-            IrExpression::Signal(signal) => {
-                f(IrSignalOrVariable::Signal(signal), ValueAccess::Read);
-            }
-            IrExpression::Variable(var) => {
-                f(IrSignalOrVariable::Variable(var), ValueAccess::Read);
-            }
+            IrExpression::Signal(signal) => f(IrSignalOrVariable::Signal(signal), ValueAccess::Read),
+            IrExpression::Variable(var) => f(IrSignalOrVariable::Variable(var), ValueAccess::Read),
             _ => {}
         }
 

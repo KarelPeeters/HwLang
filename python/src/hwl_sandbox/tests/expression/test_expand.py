@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from hwl_sandbox.common.compare import compare_compile
 
 
@@ -17,15 +15,13 @@ def test_expand_neg(tmp_dir: Path):
         e.eval_assert([v], v)
 
 
-def test_array(tmp_dir: Path):
+def test_expand_array_bool(tmp_dir: Path):
     e = compare_compile([], "[4]bool", "return [true, false, true, false];", tmp_dir)
     e.eval_assert([], [True, False, True, False])
 
 
-@pytest.mark.skip("array indexing does not work yet")
-def test_expand_array(tmp_dir: Path):
-    # TODO test longer arrays once those work in verilog
-    e = compare_compile(["[1]int(4)"], "[1]int(8)", "return a0;", tmp_dir)
-    e.eval_assert([[0]], [0])
-    e.eval_assert([[1]], [1])
-    e.eval_assert([[-1]], [1])
+def test_expand_array_int(tmp_dir: Path):
+    e = compare_compile(["[2]int(4)"], "[2]int(8)", "return a0;", tmp_dir)
+    e.eval_assert([[0, 0]], [0, 0])
+    e.eval_assert([[1, 2]], [1, 2])
+    e.eval_assert([[-1, -2]], [-1, -2])

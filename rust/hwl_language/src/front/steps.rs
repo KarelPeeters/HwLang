@@ -11,13 +11,13 @@ use crate::syntax::pos::Spanned;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
-use itertools::Itertools;
+use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
-    steps: Vec<Spanned<S>>,
+    pub steps: Vec<Spanned<S>>,
 }
 
 pub type ArrayStep = MaybeCompile<ArrayStepCompile, ArrayStepHardware>;
@@ -79,7 +79,7 @@ impl ArraySteps<ArrayStep> {
         let elab = &refs.shared.elaboration_arenas;
 
         let (result_ty, steps) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type), false)?;
-        let steps = steps.unwrap();
+        let steps = steps.expect("any is not a hardware type, so we cannot have encountered it");
 
         let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
             diags.report_internal_error(
@@ -104,6 +104,14 @@ impl ArraySteps<ArrayStep> {
         }
     }
 
+    /// Return the result type after applying the steps to the given type.
+    /// This can be used to get the type of step expressions but also the target type for an assignment with steps.
+    ///
+    /// This function also checks index and slice ranges for validity,
+    /// reporting proper diagnostics if they are out of bounds.
+    ///
+    /// If `pass_any` is true, applying any step to `Type::Any` will return `Type::Any` and `EncounteredAny`. This is
+    /// useful to get the inferred type for assignments, once we encounter Any the result type is also Any.
     fn apply_to_type_impl(
         &self,
         refs: CompileRefs,
@@ -111,14 +119,12 @@ impl ArraySteps<ArrayStep> {
         pass_any: bool,
     ) -> DiagResult<(Type, Result<Vec<IrTargetStep>, EncounteredAny>)> {
         let diags = refs.diags;
-
         let ArraySteps { steps } = self;
 
-        // forward
         let mut steps_ir = vec![];
-        let mut slice_lens = vec![];
         let mut curr_ty = ty;
         for step in steps {
+            // for now we only have arrays steps, so we can always unwrap an array type
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
                 Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
@@ -144,7 +150,10 @@ impl ArraySteps<ArrayStep> {
                             len.as_ref().map(|len| Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        let step_ir = IrTargetStep::ArraySlice(IrExpression::Int(start.clone()), len.clone());
+                        let step_ir = IrTargetStep::ArraySlice {
+                            start: IrExpression::Int(start.clone()),
+                            len: len.clone(),
+                        };
                         (step_ir, Some(len))
                     }
                 },
@@ -161,26 +170,25 @@ impl ArraySteps<ArrayStep> {
                             Some(Spanned::new(step.span, len)),
                             ty_array_len,
                         )?;
-                        let step_ir = IrTargetStep::ArraySlice(start.expr.clone(), len.clone());
+                        let step_ir = IrTargetStep::ArraySlice {
+                            start: start.expr.clone(),
+                            len: len.clone(),
+                        };
                         (step_ir, Some(len))
                     }
                 },
             };
 
-            curr_ty = Spanned::new(curr_ty.span.join(step.span), ty_array_inner.clone());
             steps_ir.push(step_ir);
-            if let Some(slice_len) = slice_len {
-                slice_lens.push(slice_len);
-            }
+
+            let next_ty = match slice_len {
+                None => ty_array_inner.clone(),
+                Some(slice_len) => Type::Array(Arc::new(ty_array_inner.clone()), slice_len),
+            };
+            curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
         }
 
-        // backward
-        let result_ty = slice_lens
-            .into_iter()
-            .rev()
-            .fold(curr_ty.inner, |acc, len| Type::Array(Arc::new(acc), len));
-
-        Ok((result_ty, Ok(steps_ir)))
+        Ok((curr_ty.inner, Ok(steps_ir)))
     }
 
     pub fn apply_to_value(
@@ -200,7 +208,7 @@ impl ArraySteps<ArrayStep> {
             let next_inner: Value = match (&step.inner, curr.inner) {
                 (ArrayStep::Compile(step_inner), Value::Simple(curr_inner)) => match curr_inner {
                     SimpleCompileValue::Array(curr_inner) => {
-                        // index into array
+                        // index/slice into array
                         let value_len = Spanned::new(curr.span, curr_inner.len());
                         match step_inner {
                             ArrayStepCompile::ArrayIndex(index) => {
@@ -355,121 +363,20 @@ impl ArraySteps<ArrayStep> {
 
         Ok(curr.inner)
     }
-
-    pub fn apply_to_hardware_value(
-        &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
-        value: Spanned<HardwareValue>,
-    ) -> DiagResult<HardwareValue> {
-        let value_span = value.span;
-        self.apply_to_value(refs, large, value.map_inner(Value::Hardware))
-            .and_then(|value| match value {
-                Value::Hardware(value) => Ok(value),
-                Value::Simple(_) | Value::Compound(_) => Err(refs.diags.report_internal_error(
-                    value_span,
-                    "applying hardware steps to hardware value should result in hardware value again, got non-hardware",
-                )),
-            })
-    }
 }
 
 impl ArraySteps<&ArrayStepCompile> {
+    /// Evaluate the operation `target[steps] = value`, where all operands are compile-time constants.
+    /// This does not mutate `target` in-place, it returns the new value after assignment.
     pub fn set_compile_value(
         &self,
         refs: CompileRefs,
-        old: Spanned<CompileValue>,
-        op_span: Span,
-        new: Spanned<CompileValue>,
+        target: Spanned<CompileValue>,
+        assign_op_span: Span,
+        value: Spanned<CompileValue>,
     ) -> DiagResult<CompileValue> {
-        fn set_compile_value_impl(
-            refs: CompileRefs,
-            old_curr: Spanned<CompileValue>,
-            steps: &[Spanned<&ArrayStepCompile>],
-            op_span: Span,
-            new_curr: Spanned<CompileValue>,
-        ) -> DiagResult<CompileValue> {
-            let diags = refs.diags;
-            let elab = &refs.shared.elaboration_arenas;
-
-            let (step, rest) = match steps.split_first() {
-                None => return Ok(new_curr.inner),
-                Some(pair) => pair,
-            };
-
-            let mut old_curr_inner = match old_curr.inner {
-                CompileValue::Simple(SimpleCompileValue::Array(curr)) => Arc::unwrap_or_clone(curr),
-                _ => {
-                    let diag = Diagnostic::new("expected array value for array access")
-                        .add_info(
-                            old_curr.span,
-                            format!(
-                                "non-array value with type `{}` here",
-                                old_curr.inner.ty().value_string(elab)
-                            ),
-                        )
-                        .add_error(step.span, "this array access needs an array")
-                        .finish();
-                    return Err(diags.report(diag));
-                }
-            };
-            let array_len = Spanned::new(old_curr.span, old_curr_inner.len());
-
-            match &step.inner {
-                ArrayStepCompile::ArrayIndex(index) => {
-                    let index = check_range_index_compile(diags, Spanned::new(step.span, index), array_len)?;
-                    let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[index].clone());
-                    old_curr_inner[index] = set_compile_value_impl(refs, old_next, rest, op_span, new_curr)?;
-                    Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
-                        old_curr_inner,
-                    ))))
-                }
-                ArrayStepCompile::ArraySlice { start, length: len } => {
-                    let new_curr_inner = match new_curr.inner {
-                        CompileValue::Simple(SimpleCompileValue::Array(new_curr_inner)) => new_curr_inner,
-                        _ => {
-                            let new_curr_ty = new_curr.as_ref().map_inner(Value::ty);
-                            return Err(diags.report(diag_expected_array(refs, new_curr_ty.as_ref(), step.span)));
-                        }
-                    };
-
-                    let SliceInfo { start, len: slice_len } = check_range_slice_compile(
-                        diags,
-                        Spanned::new(step.span, start),
-                        len.as_ref().map(|len| Spanned::new(step.span, len)),
-                        array_len,
-                    )?;
-
-                    if slice_len != new_curr_inner.len() {
-                        let diag = Diagnostic::new("slice assignment length mismatch")
-                            .add_error(op_span, "length mismatch on this assignment")
-                            .add_info(
-                                old_curr.span.join(step.span),
-                                format!("target slice has length {slice_len}"),
-                            )
-                            .add_info(
-                                new_curr.span,
-                                format!("source array has length {}", new_curr_inner.len()),
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
-                    }
-
-                    for i in 0..slice_len {
-                        let old_next = Spanned::new(old_curr.span.join(step.span), old_curr_inner[start + i].clone());
-                        let new_next = Spanned::new(new_curr.span.join(step.span), new_curr_inner[i].clone());
-                        old_curr_inner[start + i] = set_compile_value_impl(refs, old_next, rest, op_span, new_next)?;
-                    }
-
-                    Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(
-                        old_curr_inner,
-                    ))))
-                }
-            }
-        }
-
-        let ArraySteps { steps } = self;
-        set_compile_value_impl(refs, old, steps, op_span, new)
+        let target = target.map_inner(SetCompileTarget::Scalar);
+        set_compile_value_impl(refs, target, &self.steps, assign_op_span, value)
     }
 
     pub fn get_compile_value(
@@ -495,6 +402,154 @@ impl ArraySteps<&ArrayStepCompile> {
         CompileValue::try_from(&result).map_err(|_: NotCompile| {
             diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")
         })
+    }
+}
+
+enum SetCompileTarget {
+    Scalar(CompileValue),
+    Slice {
+        array: Vec<CompileValue>,
+        start: usize,
+        len: usize,
+    },
+}
+
+fn set_compile_value_impl(
+    refs: CompileRefs,
+    target: Spanned<SetCompileTarget>,
+    steps: &[Spanned<&ArrayStepCompile>],
+    assign_op_span: Span,
+    value: Spanned<CompileValue>,
+) -> DiagResult<CompileValue> {
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
+    // if done, actually assign the value and return
+    let (step, rest) = match steps.split_first() {
+        None => {
+            let result = match target.inner {
+                SetCompileTarget::Scalar(target) => {
+                    // scalar assignment target, just replace the entire value
+                    let _ = target;
+                    value.inner
+                }
+                SetCompileTarget::Slice {
+                    array: mut target_array,
+                    start: target_start,
+                    len: target_len,
+                } => {
+                    // slice assignment target, assign all elements in the selected subrange
+                    match value.inner {
+                        CompileValue::Simple(SimpleCompileValue::Array(value_inner)) => {
+                            if value_inner.len() != target_len {
+                                let diag = Diagnostic::new("slice assignment length mismatch")
+                                    .add_error(assign_op_span, "length mismatch on this assignment")
+                                    .add_info(target.span, format!("target slice has length {target_len}"))
+                                    .add_info(value.span, format!("source array has length {}", value_inner.len()))
+                                    .finish();
+                                return Err(diags.report(diag));
+                            }
+                            let target_slice = &mut target_array[target_start..target_start + target_len];
+
+                            match Arc::try_unwrap(value_inner) {
+                                Ok(value_inner) => {
+                                    for (t, v) in zip_eq(target_slice, value_inner) {
+                                        *t = v;
+                                    }
+                                }
+                                Err(value_inner) => {
+                                    for (t, v) in zip_eq(target_slice, value_inner.as_ref()) {
+                                        *t = v.clone();
+                                    }
+                                }
+                            }
+
+                            CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array)))
+                        }
+                        _ => {
+                            let diag = Diagnostic::new("expected array value for slice assignment")
+                                .add_error(assign_op_span, "value assigned to slice here")
+                                .add_info(
+                                    value.span,
+                                    format!(
+                                        "non-array value with type `{}` here",
+                                        value.inner.ty().value_string(elab)
+                                    ),
+                                )
+                                .add_info(target.span, "target is a slice assignment")
+                                .finish();
+                            return Err(diags.report(diag));
+                        }
+                    }
+                }
+            };
+            return Ok(result);
+        }
+        Some(pair) => pair,
+    };
+
+    // check that the current target is an array
+    // (for now all steps are array steps, so we can unwrap here)
+    let (mut target_array, target_start, target_len) = match target.inner {
+        SetCompileTarget::Scalar(target_inner) => match target_inner {
+            CompileValue::Simple(SimpleCompileValue::Array(target_inner)) => {
+                let len = target_inner.len();
+                (Arc::unwrap_or_clone(target_inner), 0, len)
+            }
+            _ => {
+                let diag = Diagnostic::new("expected array value for array access")
+                    .add_info(
+                        target.span,
+                        format!(
+                            "non-array value with type `{}` here",
+                            target_inner.ty().value_string(elab)
+                        ),
+                    )
+                    .add_error(step.span, "this array access needs an array")
+                    .finish();
+                return Err(diags.report(diag));
+            }
+        },
+        SetCompileTarget::Slice { array, start, len } => (array, start, len),
+    };
+    let target_len = Spanned::new(target.span, target_len);
+
+    let new_span = target.span.join(step.span);
+
+    match &step.inner {
+        ArrayStepCompile::ArrayIndex(index) => {
+            let index = check_range_index_compile(diags, Spanned::new(step.span, index), target_len)?;
+
+            let new_target = SetCompileTarget::Scalar(target_array[target_start + index].clone());
+            let new_target = Spanned::new(new_span, new_target);
+            target_array[index] = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
+
+            Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array))))
+        }
+        ArrayStepCompile::ArraySlice {
+            start: slice_start,
+            length: slice_len,
+        } => {
+            let SliceInfo {
+                start: slice_start,
+                len: slice_len,
+            } = check_range_slice_compile(
+                diags,
+                Spanned::new(step.span, slice_start),
+                slice_len.as_ref().map(|len| Spanned::new(step.span, len)),
+                target_len,
+            )?;
+
+            let new_target = SetCompileTarget::Slice {
+                array: target_array,
+                start: target_start + slice_start,
+                len: slice_len,
+            };
+            let new_target = Spanned::new(new_span, new_target);
+
+            let new_value = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
+            Ok(new_value)
+        }
     }
 }
 
@@ -570,7 +625,7 @@ pub fn check_range_slice(
         end: slice_start_end,
     } = slice_start.inner.enclosing_range();
 
-    if slice_start_start < &BigInt::ZERO || slice_start_end > &BigInt::from(array_len.inner.clone()) {
+    if !(&BigInt::ZERO <= slice_start_start && slice_start_end - 1 <= BigInt::from(array_len.inner.clone())) {
         let diag = Diagnostic::new("array slice start out of bounds")
             .add_error(
                 slice_start.span,
@@ -588,7 +643,9 @@ pub fn check_range_slice(
     // if len is not provided, knowing that the start is valid is enough
     if let Some(slice_len) = slice_len {
         let slice_end_max = slice_start_end + BigInt::from(slice_len.inner.clone());
-        if slice_end_max > BigInt::from(array_len.inner.clone()) {
+
+        #[allow(clippy::nonminimal_bool)]
+        if !(slice_end_max - 1 <= BigInt::from(array_len.inner.clone())) {
             let diag = Diagnostic::new("array slice end out of bounds")
                 .add_error(
                     slice_len.span,

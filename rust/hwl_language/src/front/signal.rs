@@ -217,7 +217,7 @@ impl WireInfo {
         }
     }
 
-    pub fn typed<'s>(
+    pub fn expect_typed<'s>(
         &'s mut self,
         refs: CompileRefs<'_, 's>,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
@@ -274,7 +274,7 @@ impl WireInfo {
         use_span: Span,
     ) -> DiagResult<HardwareValue> {
         let domain = self.domain(refs.diags, wire_interfaces, use_span)?.inner;
-        let typed = self.typed(refs, wire_interfaces, use_span)?;
+        let typed = self.expect_typed(refs, wire_interfaces, use_span)?;
 
         Ok(HardwareValue {
             ty: typed.ty.inner.clone(),
@@ -392,21 +392,12 @@ impl Polarized<Signal> {
 }
 
 impl Signal {
+    // TODO rename
     pub fn diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
         match self {
             Signal::Port(port) => &s.ports[port].name,
             Signal::Wire(wire) => s.wires[wire].diagnostic_str(),
             Signal::Register(reg) => s.registers[reg].id.diagnostic_str(),
-        }
-    }
-
-    pub fn ty<'s>(self, ctx: &'s mut CompileItemContext, use_span: Span) -> DiagResult<Spanned<&'s HardwareType>> {
-        match self {
-            Signal::Port(port) => Ok(ctx.ports[port].ty.as_ref()),
-            Signal::Wire(wire) => ctx.wires[wire]
-                .typed(ctx.refs, &ctx.wire_interfaces, use_span)
-                .map(|typed| typed.ty),
-            Signal::Register(reg) => Ok(ctx.registers[reg].ty.as_ref()),
         }
     }
 
@@ -433,6 +424,22 @@ impl Signal {
         }
     }
 
+    pub fn suggest_ty<'s>(
+        self,
+        ctx: &'s mut CompileItemContext,
+        ir_wires: &mut IrWires,
+        suggest: Spanned<&HardwareType>,
+    ) -> DiagResult<Spanned<&'s HardwareType>> {
+        match self {
+            Signal::Port(_) => self.expect_ty(ctx, suggest.span),
+            // TODO allow suggesting type for registers too?
+            Signal::Register(_) => self.expect_ty(ctx, suggest.span),
+            Signal::Wire(wire) => ctx.wires[wire]
+                .suggest_ty(ctx.refs, &ctx.wire_interfaces, ir_wires, suggest)
+                .map(|typed| typed.ty),
+        }
+    }
+
     pub fn domain(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<Spanned<ValueDomain>> {
         let diags = ctx.refs.diags;
         match self {
@@ -444,31 +451,38 @@ impl Signal {
         }
     }
 
-    pub fn suggest_ty<'s>(
+    // TODO rework this, there are a bunch of overlapping functions here
+    pub fn expect_ty_and_ir<'s>(
         self,
         ctx: &'s mut CompileItemContext,
-        ir_wires: &mut IrWires,
-        suggest: Spanned<&HardwareType>,
-    ) -> DiagResult<Spanned<&'s HardwareType>> {
+        use_span: Span,
+    ) -> DiagResult<(Spanned<&'s HardwareType>, IrSignal)> {
         match self {
-            Signal::Port(_) => self.ty(ctx, suggest.span),
-            // TODO allow suggesting type for registers too?
-            Signal::Register(_) => self.ty(ctx, suggest.span),
-            Signal::Wire(wire) => ctx.wires[wire]
-                .suggest_ty(ctx.refs, &ctx.wire_interfaces, ir_wires, suggest)
-                .map(|typed| typed.ty),
+            Signal::Port(port) => {
+                let info = &ctx.ports[port];
+                Ok((info.ty.as_ref(), IrSignal::Port(info.ir)))
+            }
+            Signal::Wire(wire) => {
+                let info = &ctx.wires[wire].expect_typed(ctx.refs, &ctx.wire_interfaces, use_span)?;
+                Ok((info.ty, IrSignal::Wire(info.ir)))
+            }
+            Signal::Register(reg) => {
+                let info = &ctx.registers[reg];
+                Ok((info.ty.as_ref(), IrSignal::Register(info.ir)))
+            }
         }
     }
 
-    pub fn as_ir_target_base(self, ctx: &mut CompileItemContext, use_span: Span) -> DiagResult<IrSignal> {
-        match self {
-            Signal::Port(port) => Ok(ctx.ports[port].ir.into()),
-            Signal::Wire(wire) => Ok(ctx.wires[wire]
-                .typed(ctx.refs, &ctx.wire_interfaces, use_span)?
-                .ir
-                .into()),
-            Signal::Register(reg) => Ok(IrSignal::Register(ctx.registers[reg].ir)),
-        }
+    pub fn expect_ty<'s>(
+        self,
+        ctx: &'s mut CompileItemContext,
+        use_span: Span,
+    ) -> DiagResult<Spanned<&'s HardwareType>> {
+        self.expect_ty_and_ir(ctx, use_span).map(|(ty, _)| ty)
+    }
+
+    pub fn expect_ir(self, ctx: &mut CompileItemContext, use_span: Span) -> DiagResult<IrSignal> {
+        self.expect_ty_and_ir(ctx, use_span).map(|(_, ir)| ir)
     }
 
     pub fn as_hardware_value(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<HardwareValue> {

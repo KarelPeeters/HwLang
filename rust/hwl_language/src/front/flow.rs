@@ -1,3 +1,4 @@
+use crate::front::assignment::store_hardware_value_in_new_ir_variable;
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -10,8 +11,8 @@ use crate::front::value::{
     SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
-    IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrTargetStep,
+    IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
@@ -23,69 +24,270 @@ use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::iter::IterExt;
 use crate::util::range::RangeEmpty;
-use crate::util::range_multi::{ClosedMultiRange, ClosedNonEmptyMultiRange};
-use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO};
+use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, ClosedNonEmptyMultiRange};
+use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO, ResultExt};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, Itertools, zip_eq};
+use itertools::{Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use unwrap_match::unwrap_match;
-// TODO find all points where scopes are nested, and also create flow children to save memory
-// TODO store constants into scopes instead of in flow, so we can stop using flow top-level entirely
 
-// TODO check domain for reads and writes to all signals
-//   eg. currently we can still read async signals in clocked blocks
+pub enum FlowKind<C, H> {
+    Compile(C),
+    Hardware(H),
+}
 
-// TODO signals should behave more like variables, where the compiler remembers which things it has assigned,
-//   eg. if smaller range then it knows that for future reads, if constant they behave like constants
+#[derive(Debug)]
+pub struct FlowRoot<'d> {
+    diags: &'d Diagnostics,
+    check: RandomCheck,
 
-// TODO cleanup
-// TODO order struct, impls, and impl functions
-// TODO instead of looping everywhere, can we just recurse?
-//   try both and benchmark, create some deeply stacked flow chains
+    next_var_index: Cell<NonZeroUsize>,
+    next_version: Cell<NonZeroUsize>,
+}
+
+#[derive(Debug)]
+pub struct FlowRootContent {
+    check: RandomCheck,
+
+    next_var_index: Cell<NonZeroUsize>,
+    next_version: Cell<NonZeroUsize>,
+}
+
+pub struct FlowCompile<'p> {
+    root: &'p FlowRoot<'p>,
+
+    compile_span: Span,
+    compile_reason: &'static str,
+
+    parent: FlowCompileKind<'p>,
+    variables: IndexMap<VariableIndex, VariableSlot>,
+}
+
+pub enum FlowCompileKind<'p> {
+    /// Top level flow, created for each elaborated item.
+    Root,
+    /// A scoped block within another compile parent.
+    /// Cannot modify parent variables.
+    IsolatedCompile(&'p FlowCompile<'p>),
+    /// A scoped block within another compile parent.
+    /// Can modify parent variables,
+    ///   but also declare new variables locally which are then dropped at the end of the scope.
+    ScopedCompile(&'p mut FlowCompile<'p>),
+    /// A compile flow within a hardware parent.
+    ///   Can still modify parent variables (by setting them to constant variables),
+    ///   and also declare new variables locally which are then dropped at the end of the scope.
+    ScopedHardware(&'p mut FlowHardware<'p>),
+}
+
+#[derive(Debug)]
+pub struct FlowCompileContent {
+    check: RandomCheck,
+
+    compile_span: Span,
+    compile_reason: &'static str,
+
+    variables: IndexMap<VariableIndex, VariableSlot>,
+}
+
+pub struct FlowHardware<'p> {
+    root: &'p FlowRoot<'p>,
+    enable_domain_checks: bool,
+    kind: FlowHardwareKind<'p>,
+}
+
+enum FlowHardwareKind<'p> {
+    /// Top level hardware flow, created for each process.
+    /// Cannot modify parent variables.
+    Root(&'p mut FlowHardwareRoot<'p>),
+    /// A conditional branch within a hardware flow.
+    /// Wires to signals and variables should not propagate to the parent immediately,
+    ///   they will be merged when all branches have ended.
+    Branch(&'p mut FlowHardwareBranch<'p>),
+    /// A scoped block within a hardware parent.
+    /// Can modify parent variables,
+    ///   and also declare new variables locally which are then dropped at the end of the scope
+    Scoped(FlowHardwareScoped<'p>),
+}
+
+pub struct FlowHardwareRoot<'p> {
+    root: &'p FlowRoot<'p>,
+    parent: &'p FlowCompile<'p>,
+
+    #[allow(dead_code)]
+    span: Span,
+    process_kind: HardwareProcessKind<'p>,
+
+    ir_wires: &'p mut IrWires,
+    ir_registers: &'p mut IrRegisters,
+    ir_variables: IrVariables,
+
+    common: FlowHardwareCommon,
+}
+
+// TODO rename to BlockKind? at least make sure everything is consistent
+pub enum HardwareProcessKind<'e> {
+    CombinatorialBlockBody {
+        span_keyword: Span,
+        wires_driven: &'e mut IndexMap<Wire, Span>,
+        ports_driven: &'e mut IndexMap<Port, Span>,
+    },
+    ClockedBlockBody {
+        span_keyword: Span,
+        domain: Spanned<SyncDomain<DomainSignal>>,
+        registers_driven: &'e mut IndexMap<Register, Span>,
+        extra_registers: ExtraRegisters<'e>,
+    },
+    WireExpression {
+        span_keyword: Span,
+        span_init: Span,
+    },
+    InstancePortConnection {
+        span_connection: Span,
+    },
+}
+
+pub enum ExtraRegisters<'e> {
+    NoReset,
+    WithReset(&'e mut Vec<ExtraRegisterInit>),
+}
+
+pub struct FlowHardwareBranch<'p> {
+    root: &'p FlowRoot<'p>,
+    parent: &'p mut FlowHardware<'p>,
+
+    cond_domain: Spanned<ValueDomain>,
+    common: FlowHardwareCommon,
+}
+
+pub struct FlowHardwareBranchContent {
+    check: RandomCheck,
+    // TODO think about how this should be propagated, eg. if two branches break and the third one doesn't,
+    //   the value of all merged values and even implications might depend on the condition domain
+    cond_domain: Spanned<ValueDomain>,
+    common: FlowHardwareCommon,
+}
+
+struct FlowHardwareScoped<'p> {
+    parent: &'p mut FlowHardware<'p>,
+    variables: IndexMap<VariableIndex, VariableSlot>,
+}
+
+struct FlowHardwareCommon {
+    // TODO document why single map
+    variables: IndexMap<VariableIndex, VariableSlotOption>,
+    signals: IndexMap<Signal, SignalContent>,
+    statements: Vec<Spanned<IrStatement>>,
+}
+
+#[derive(Debug)]
+struct VariableSlot {
+    info: VariableInfo,
+    content: VariableContent,
+}
+
+#[derive(Default)]
+struct VariableSlotOption {
+    info: Option<VariableInfo>,
+    content: Option<VariableContent>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ImplicationContradiction;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct Variable {
+    check: RandomCheck,
+    index: VariableIndex,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct VariableIndex(NonZeroUsize);
+
+#[derive(Debug)]
+pub struct VariableInfo {
+    pub span_decl: Span,
+    pub id: VariableId,
+    pub mutable: bool,
+    pub ty: Option<Spanned<Type>>,
+}
+
+#[derive(Debug)]
+pub enum VariableId {
+    Id(MaybeIdentifier),
+    Custom(&'static str),
+}
+
+#[derive(Debug, Clone)]
+enum VariableContent {
+    Assigned(Spanned<VariableValue>),
+    NotFullyAssigned(VariableNotFullyAssigned),
+    Error(DiagError),
+}
+
+#[derive(Debug, Copy, Clone)]
+enum VariableNotFullyAssigned {
+    NotYetAssigned,
+    PartiallyAssigned,
+
+    /// Undefined means no value has been assigned yet, but merging should act like there was an assigned value.
+    /// This is useful when there is some external mechanism to enforce that by the time the variable is read it will
+    /// actually have a value, but Flow does not understand that.
+    /// This is used for function return values.
+    Undefined,
+}
+
+type VariableValue = Value<SimpleCompileValue, MixedCompoundValue, VariableValueHardware>;
+
+#[derive(Debug, Clone)]
+struct VariableValueHardware {
+    // TODO this should probably just be an IrVariable? will we ever store anything else?
+    value_raw: HardwareValue,
+    version: VersionIndex,
+    implied_int_range: Option<ClosedNonEmptyMultiRange<BigInt>>,
+}
+
+enum SignalContent {
+    Compile(CompileValue),
+    Hardware(SignalContentHardware),
+}
+
+#[derive(Debug, Clone)]
+struct SignalContentHardware {
+    version: VersionIndex,
+    implied_int_range: Option<ClosedNonEmptyMultiRange<BigInt>>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct ValueVersion {
+    signal: SignalOrVariable,
+    index: VersionIndex,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct VersionIndex(NonZeroUsize);
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum CapturedValue {
+    Item(AstRefItem),
+    Value(CompileValue),
+    FailedCapture(FailedCaptureReason),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum FailedCaptureReason {
+    NotCompile,
+    NotFullyInitialized,
+}
 
 trait FlowPrivate: Sized {
     fn root(&self) -> &FlowRoot<'_>;
 
-    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType>;
+    fn var_info_option(&self, var: VariableIndex) -> Option<&VariableInfo>;
+    fn var_set_content(&mut self, var: Variable, assignment_span: Span, content: VariableContent) -> DiagResult;
+    fn var_get_content(&self, var: Spanned<Variable>) -> DiagResult<&VariableContent>;
 
-    fn apply_impled_type(
-        &self,
-        large: &mut IrLargeArena,
-        value_with_version: HardwareValueWithVersion,
-    ) -> ValueWithVersion {
-        let HardwareValueWithVersion { value, version } = value_with_version;
-
-        match self.implied_type(version) {
-            None => Value::Hardware(HardwareValueWithVersion { value, version }),
-            Some(implied_ty) => match implied_ty {
-                &ImpliedType::Bool(value) => Value::Simple(SimpleCompileValue::Bool(value)),
-                ImpliedType::Int(implied_ty) => {
-                    let HardwareValue { ty, domain, expr } = value;
-                    assert!(matches!(ty, HardwareType::Int(_)));
-
-                    let expr_constrained = large.push_expr(IrExpressionLarge::ConstrainIntRange(
-                        implied_ty.enclosing_range().cloned(),
-                        expr,
-                    ));
-                    Value::Hardware(HardwareValueWithVersion {
-                        value: HardwareValue {
-                            ty: HardwareType::Int(implied_ty.clone()),
-                            domain,
-                            expr: expr_constrained,
-                        },
-                        version,
-                    })
-                }
-            },
-        }
-    }
-
-    fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue);
-
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>>;
-
-    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo>;
+    fn signal_get_content(&self, signal: Signal) -> DiagResult<&SignalContent>;
 }
 
 #[allow(private_bounds)]
@@ -93,43 +295,41 @@ pub trait Flow: FlowPrivate {
     #[allow(clippy::needless_lifetimes)]
     fn new_child_compile<'s>(&'s mut self, span: Span, reason: &'static str) -> FlowCompile<'s>;
 
-    // TODO find a better name
-    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>>;
+    fn require_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>>;
 
+    fn kind(&self) -> FlowKind<&FlowCompile<'_>, &FlowHardware<'_>>;
     fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>>;
 
     fn var_new(&mut self, info: VariableInfo) -> Variable;
 
-    // TODO maybe we should only allow setting IR variables, so they're more clearly owned by flow and we're free to reuse them during merging
-    fn var_set(&mut self, var: Variable, assignment_span: Span, value: DiagResult<Value>) {
-        let assigned = match value {
-            Ok(value) => {
-                let value = value.map_hardware(|value| {
-                    let version = self.root().next_version();
-                    HardwareValueWithVersion { value, version }
-                });
-                MaybeAssignedValue::Assigned(MaybeUndefined::Defined(AssignedValue {
-                    last_assignment_span: assignment_span,
-                    value,
-                }))
-            }
-            Err(e) => MaybeAssignedValue::Error(e),
-        };
-        self.var_set_maybe(var, assignment_span, assigned);
-    }
-
-    fn var_set_undefined(&mut self, var: Variable, assignment_span: Span) {
-        let assigned = MaybeAssignedValue::Assigned(MaybeUndefined::Undefined);
-        self.var_set_maybe(var, assignment_span, assigned);
-    }
-
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
         assert_eq!(var.inner.check, self.root().check);
-        self.try_var_info(var.inner.index).ok_or_else(|| {
+        self.var_info_option(var.inner.index).ok_or_else(|| {
             self.root()
                 .diags
                 .report_internal_error(var.span, "failed to find variable")
         })
+    }
+
+    fn var_set(&mut self, var: Variable, assignment_span: Span, value: DiagResult<Value>) -> DiagResult {
+        // TODO for hardware values, forcibly create a new IrVariable?
+        let assigned = match value {
+            Ok(value) => {
+                let value = value.map_hardware(|value| VariableValueHardware {
+                    value_raw: value,
+                    version: self.root().next_version(),
+                    implied_int_range: None,
+                });
+                VariableContent::Assigned(Spanned::new(assignment_span, value))
+            }
+            Err(e) => VariableContent::Error(e),
+        };
+        self.var_set_content(var, assignment_span, assigned)
+    }
+
+    fn var_set_undefined(&mut self, var: Variable, span: Span) -> DiagResult {
+        let content = VariableContent::NotFullyAssigned(VariableNotFullyAssigned::Undefined);
+        self.var_set_content(var, span, content)
     }
 
     fn var_eval(
@@ -138,42 +338,57 @@ pub trait Flow: FlowPrivate {
         large: &mut IrLargeArena,
         var: Spanned<Variable>,
     ) -> DiagResult<ValueWithVersion> {
-        match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => match value {
-                MaybeUndefined::Undefined => {
-                    // should not be possible,
-                    //   undefined here means the caller is responsible for ensuring this is never observable
-                    Err(diags.report_internal_error(var.span, "variable is undefined"))
-                }
-                MaybeUndefined::Defined(assigned) => match &assigned.value {
-                    Value::Simple(v) => Ok(Value::Simple(v.clone())),
-                    Value::Compound(v) => Ok(Value::Compound(v.clone())),
-                    Value::Hardware(v) => {
-                        let v = v.clone().map_version(|index| ValueVersion {
-                            signal: SignalOrVariable::Variable(var.inner),
-                            index,
-                        });
-                        Ok(self.apply_impled_type(large, v))
-                    }
-                },
+        let result = match self.var_get_content(var)? {
+            VariableContent::Assigned(value) => match &value.inner {
+                Value::Simple(v) => Value::Simple(v.clone()),
+                Value::Compound(v) => Value::Compound(v.clone()),
+                Value::Hardware(v) => Value::Hardware(v.as_hardware_value(large, var.inner)),
             },
-            MaybeAssignedValue::NotYetAssigned => {
+            VariableContent::NotFullyAssigned(kind) => {
                 let var_info = self.var_info(var)?;
-                let diag = Diagnostic::new("variable has not yet been assigned a value")
-                    .add_error(var.span, "variable used here")
-                    .add_info(var_info.span_decl, "variable declared here")
-                    .finish();
-                Err(diags.report(diag))
+                return Err(kind.report_diag(diags, var.span, var_info));
             }
-            MaybeAssignedValue::PartiallyAssigned => {
-                let var_info = self.var_info(var)?;
-                let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
-                    .add_error(var.span, "variable used here")
-                    .add_info(var_info.span_decl, "variable declared here")
-                    .finish();
-                Err(diags.report(diag))
+            &VariableContent::Error(e) => return Err(e),
+        };
+
+        // check that we're not returning a hardware value in a compile context
+        match self.kind() {
+            FlowKind::Hardware(_) => {}
+            FlowKind::Compile(slf) => {
+                if CompileValue::try_from(&result).is_err() {
+                    return Err(slf.err_not_hardware(var.span, "accessing a hardware variable"));
+                }
             }
-            MaybeAssignedValue::Error(e) => Err(e),
+        }
+
+        Ok(result)
+    }
+
+    /// Get the type of the given value without actually evaluating it.
+    /// This does not require that the value can be evaluated in the current flow,
+    ///   for example asking the type of a hardware value in a compile-time flow is allowed.
+    /// This takes into account any active implications.
+    fn type_of(&self, ctx: &mut CompileItemContext, value: Spanned<SignalOrVariable>) -> DiagResult<Type> {
+        match value.inner {
+            SignalOrVariable::Signal(signal) => match self.signal_get_content(signal)? {
+                SignalContent::Compile(value) => Ok(value.ty()),
+                SignalContent::Hardware(signal_hw) => signal_hw
+                    .ty_hw(ctx, signal, value.span)
+                    .as_ref_ok()
+                    .map(HardwareType::as_type),
+            },
+            SignalOrVariable::Variable(var) => {
+                let content = self.var_get_content(Spanned::new(value.span, var))?;
+
+                match content {
+                    VariableContent::Assigned(value) => Ok(value.inner.ty()),
+                    VariableContent::NotFullyAssigned(kind) => {
+                        let var_info = self.var_info(Spanned::new(value.span, var))?;
+                        Err(kind.report_diag(ctx.refs.diags, value.span, var_info))
+                    }
+                    &VariableContent::Error(e) => Err(e),
+                }
+            }
         }
     }
 
@@ -183,64 +398,107 @@ pub trait Flow: FlowPrivate {
         id: VariableId,
         assign_span: Span,
         value: DiagResult<Value>,
-    ) -> Variable {
+    ) -> DiagResult<Variable> {
         let info = VariableInfo {
             span_decl,
             id,
             mutable: false,
             ty: None,
-            use_ir_variable: None,
         };
         let var = self.var_new(info);
-        self.var_set(var, assign_span, value);
-        var
+        self.var_set(var, assign_span, value)?;
+        Ok(var)
     }
 
-    // TODO allow capturing hardware values, at least within process?
-    //   now that we have composite values that should be doable,
-    //   we can then discard the hardware values on conversion to compile time
     fn var_capture(&self, var: Spanned<Variable>) -> DiagResult<CapturedValue> {
-        match self.var_get_maybe(var)? {
-            MaybeAssignedValue::Assigned(value) => match value {
-                MaybeUndefined::Undefined => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized)),
-                MaybeUndefined::Defined(assigned) => match CompileValue::try_from(assigned.value) {
-                    Ok(v) => Ok(CapturedValue::Value(v)),
-                    Err(NotCompile) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
-                },
+        match self.var_get_content(var)? {
+            VariableContent::Assigned(value) => match CompileValue::try_from(&value.inner) {
+                Ok(v) => Ok(CapturedValue::Value(v)),
+                Err(NotCompile) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
             },
-            MaybeAssignedValue::NotYetAssigned => {
+            VariableContent::NotFullyAssigned(_) => {
                 Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))
             }
-            MaybeAssignedValue::PartiallyAssigned => {
-                Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))
-            }
-            MaybeAssignedValue::Error(e) => Err(e),
+            &VariableContent::Error(e) => Err(e),
         }
     }
 
     fn var_is_not_yet_assigned(&self, var: Spanned<Variable>) -> DiagResult<bool> {
-        match self.var_get_maybe(var)? {
-            MaybeAssignedValue::NotYetAssigned => Ok(true),
-            MaybeAssignedValue::Assigned(_) | MaybeAssignedValue::PartiallyAssigned => Ok(false),
-            MaybeAssignedValue::Error(e) => Err(e),
+        match self.var_get_content(var)? {
+            VariableContent::NotFullyAssigned(kind) => match kind {
+                VariableNotFullyAssigned::NotYetAssigned => Ok(true),
+                VariableNotFullyAssigned::PartiallyAssigned => Ok(false),
+                VariableNotFullyAssigned::Undefined => Ok(true),
+            },
+            VariableContent::Assigned(_) => Ok(false),
+            &VariableContent::Error(e) => Err(e),
+        }
+    }
+
+    fn signal_eval(&mut self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
+        match self.signal_get_content(signal.inner)? {
+            SignalContent::Compile(value) => {
+                // compile-time evaluation can skips any hardware checking
+                Ok(Value::from(value.clone()))
+            }
+            SignalContent::Hardware(content) => {
+                // check that we're in a hardware flow
+                let slf = match self.kind() {
+                    FlowKind::Hardware(slf) => slf,
+                    FlowKind::Compile(slf) => {
+                        return Err(slf.err_not_hardware(signal.span, "signal evaluation"));
+                    }
+                };
+
+                // evaluate as a value
+                let value = content.as_hardware_value(ctx, signal.inner, signal.span)?;
+
+                // check that we can access the domain in the current block
+                // TODO this probably disables too many things, eg. nested blocks
+                if slf.enable_domain_checks {
+                    match &slf.root_hw().process_kind {
+                        &HardwareProcessKind::ClockedBlockBody { domain, .. } => {
+                            ctx.check_valid_domain_crossing(
+                                signal.span,
+                                domain.map_inner(ValueDomain::Sync),
+                                Spanned::new(signal.span, value.value.domain),
+                                "signal read in clocked block",
+                            )?;
+                        }
+                        HardwareProcessKind::CombinatorialBlockBody { .. }
+                        | HardwareProcessKind::WireExpression { .. }
+                        | HardwareProcessKind::InstancePortConnection { .. } => {}
+                    }
+                }
+
+                // copy the value into a temporary register to avoid later writes from leaking through
+                let slf = match self.kind_mut() {
+                    FlowKind::Compile(_) => unreachable!(),
+                    FlowKind::Hardware(slf) => slf,
+                };
+
+                let debug_info_id = signal.inner.diagnostic_string(ctx).to_owned();
+                let value_var = store_hardware_value_in_new_ir_variable(
+                    ctx.refs,
+                    slf,
+                    signal.span,
+                    Some(debug_info_id),
+                    value.value,
+                )?;
+                let value = HardwareValueWithVersion {
+                    value: value_var.map_expression(IrExpression::Variable),
+                    version: value.version,
+                };
+
+                Ok(ValueWithVersion::Hardware(value))
+            }
         }
     }
 }
 
-#[derive(Debug)]
-pub struct FlowRoot<'d> {
-    diags: &'d Diagnostics,
-    check: RandomCheck,
-    next_var_index: Cell<NonZeroUsize>,
-    next_version: Cell<NonZeroUsize>,
-}
-
-#[derive(Debug)]
-pub struct FlowRootContent {
-    check: RandomCheck,
-    next_var_index: Cell<NonZeroUsize>,
-    next_version: Cell<NonZeroUsize>,
-}
+/// We start assigning new versions at at 2,
+///   so we can always safely use 1 as the first version for values that have not yet been assigned.
+const VERSION_INITIAL: VersionIndex = VersionIndex(NON_ZERO_USIZE_ONE);
 
 impl FlowRoot<'_> {
     pub fn new(diags: &Diagnostics) -> FlowRoot<'_> {
@@ -248,8 +506,6 @@ impl FlowRoot<'_> {
             diags,
             check: RandomCheck::new(),
             next_var_index: Cell::new(NON_ZERO_USIZE_ONE),
-            // start versions at 2,
-            //   so we can always safely use 1 as the first version for values that have not yet been assigned
             next_version: Cell::new(NON_ZERO_USIZE_TWO),
         }
     }
@@ -285,39 +541,11 @@ impl FlowRoot<'_> {
         }
     }
 
-    fn next_version(&self) -> ValueVersionIndex {
+    fn next_version(&self) -> VersionIndex {
         let version = self.next_version.get();
         self.next_version.set(version.checked_add(1).expect("overflow"));
-        ValueVersionIndex(version)
+        VersionIndex(version)
     }
-}
-
-pub enum FlowKind<C, H> {
-    Compile(C),
-    Hardware(H),
-}
-
-pub struct FlowCompile<'p> {
-    root: &'p FlowRoot<'p>,
-    compile_span: Span,
-    compile_reason: &'static str,
-
-    kind: FlowCompileKind<'p>,
-
-    variable_slots: IndexMap<VariableIndex, VariableSlot>,
-}
-
-#[derive(Debug)]
-struct VariableSlot {
-    info: VariableInfo,
-    value: VariableValue,
-}
-
-pub enum FlowCompileKind<'p> {
-    Root,
-    IsolatedCompile(&'p FlowCompile<'p>),
-    ScopedCompile(&'p mut FlowCompile<'p>),
-    ScopedHardware(&'p mut FlowHardware<'p>),
 }
 
 impl FlowPrivate for FlowCompile<'_> {
@@ -325,99 +553,99 @@ impl FlowPrivate for FlowCompile<'_> {
         self.root
     }
 
-    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType> {
+    fn var_info_option(&self, var: VariableIndex) -> Option<&VariableInfo> {
         let mut curr = self;
         loop {
-            curr = match &curr.kind {
+            if let Some(slot) = curr.variables.get(&var) {
+                return Some(&slot.info);
+            }
+            curr = match &curr.parent {
                 FlowCompileKind::Root => return None,
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
-                FlowCompileKind::ScopedHardware(parent) => {
-                    return parent.implied_type(value);
-                }
+                FlowCompileKind::ScopedHardware(parent) => return parent.var_info_option(var),
             }
         }
     }
 
-    fn var_set_maybe(&mut self, var: Variable, assignment_span: Span, value: VariableValue) {
+    fn var_set_content(&mut self, var: Variable, assignment_span: Span, content: VariableContent) -> DiagResult {
         // checks
         assert_eq!(self.root.check, var.check);
         let diags = self.root.diags;
 
-        // TODO this conversion might be expensive, maybe only do this when assertions are enabled
         // TODO maybe only store unwrapped compile values in compile flows?
-        let value = if let MaybeAssignedValue::Assigned(assigned) = &value
-            && let MaybeUndefined::Defined(assigned) = &assigned
-            && CompileValue::try_from(&assigned.value).is_err()
+        let value = if let VariableContent::Assigned(assigned) = &content
+            && CompileValue::try_from(&assigned.inner).is_err()
         {
-            let e = diags.report_internal_error(assignment_span, "cannot assign hardware value in compile context");
-            MaybeAssignedValue::Error(e)
+            let e = diags.report_internal_error(
+                assignment_span,
+                "cannot assign hardware value to variable in compile context",
+            );
+            VariableContent::Error(e)
         } else {
-            value
+            content
         };
 
         // find which slot to store the value in
         let mut curr = self;
         let slot = loop {
-            if let Some(slot) = curr.variable_slots.get_mut(&var.index) {
+            if let Some(slot) = curr.variables.get_mut(&var.index) {
                 break slot;
             }
-            curr = match &mut curr.kind {
+            curr = match &mut curr.parent {
                 FlowCompileKind::Root => {
-                    let _ = diags.report_internal_error(assignment_span, "hit root before finding variable slot");
-                    return;
+                    let e = diags.report_internal_error(assignment_span, "hit root before finding variable slot");
+                    return Err(e);
                 }
                 FlowCompileKind::IsolatedCompile(_) => {
-                    // TODO should this actually be an internal error?
-                    let _ = diags
+                    let e = diags
                         .report_internal_error(assignment_span, "hit isolated parent before finding variable slot");
-                    return;
+                    return Err(e);
                 }
                 FlowCompileKind::ScopedCompile(parent) => parent,
                 FlowCompileKind::ScopedHardware(parent) => {
-                    parent.var_set_maybe(var, assignment_span, value);
-                    return;
+                    return parent.var_set_content(var, assignment_span, value);
                 }
             }
         };
 
-        slot.value = value;
+        slot.content = value;
+        Ok(())
     }
 
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>> {
-        // TODO block evaluation of hardware values in compile context?
+    fn var_get_content(&self, var: Spanned<Variable>) -> DiagResult<&VariableContent> {
         assert_eq!(self.root.check, var.inner.check);
         let diags = self.root.diags;
 
         let mut curr = self;
         loop {
-            if let Some(entry) = curr.variable_slots.get(&var.inner.index) {
-                return Ok(entry.value.as_ref());
+            if let Some(entry) = curr.variables.get(&var.inner.index) {
+                return Ok(&entry.content);
             }
-            curr = match &curr.kind {
+            curr = match &curr.parent {
                 FlowCompileKind::Root => {
-                    return Err(diags.report_internal_error(var.span, "hit root before finding variable slot"));
+                    let e = diags.report_internal_error(var.span, "hit root before finding variable slot");
+                    return Ok(VariableContent::err_ref(e));
                 }
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
                 FlowCompileKind::ScopedHardware(parent) => {
-                    return parent.var_get_maybe(var);
+                    return parent.var_get_content(var);
                 }
             }
         }
     }
 
-    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
+    fn signal_get_content(&self, signal: Signal) -> DiagResult<&SignalContent> {
         let mut curr = self;
         loop {
-            if let Some(slot) = curr.variable_slots.get(&var) {
-                return Some(&slot.info);
-            }
-            curr = match &curr.kind {
-                FlowCompileKind::Root => return None,
+            curr = match &curr.parent {
+                FlowCompileKind::Root => return Ok(&SignalContent::INITIAL),
                 FlowCompileKind::IsolatedCompile(parent) => parent,
                 FlowCompileKind::ScopedCompile(parent) => parent,
-                FlowCompileKind::ScopedHardware(parent) => return parent.try_var_info(var),
+                FlowCompileKind::ScopedHardware(parent) => {
+                    return parent.signal_get_content(signal);
+                }
             }
         }
     }
@@ -431,20 +659,17 @@ impl Flow for FlowCompile<'_> {
             root,
             compile_span: span,
             compile_reason: reason,
-            kind: FlowCompileKind::ScopedCompile(slf),
-            variable_slots: IndexMap::new(),
+            parent: FlowCompileKind::ScopedCompile(slf),
+            variables: IndexMap::new(),
         }
     }
 
-    fn check_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>> {
-        let diag = Diagnostic::new(format!("{reason} is only allowed in a hardware context"))
-            .add_error(span, format!("{reason} here"))
-            .add_info(
-                self.compile_span,
-                format!("context is compile-time because of this {}", self.compile_reason),
-            )
-            .finish();
-        Err(self.root.diags.report(diag))
+    fn require_hardware(&mut self, span: Span, reason: &str) -> DiagResult<&mut FlowHardware<'_>> {
+        Err(self.err_not_hardware(span, reason))
+    }
+
+    fn kind(&self) -> FlowKind<&FlowCompile<'_>, &FlowHardware<'_>> {
+        FlowKind::Compile(unsafe { lifetime_cast::compile_ref(self) })
     }
 
     fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>> {
@@ -456,11 +681,64 @@ impl Flow for FlowCompile<'_> {
 
         let slot = VariableSlot {
             info,
-            value: MaybeAssignedValue::NotYetAssigned,
+            content: VariableContent::NotFullyAssigned(VariableNotFullyAssigned::NotYetAssigned),
         };
-        self.variable_slots.insert_first(var.index, slot);
+        self.variables.insert_first(var.index, slot);
 
         var
+    }
+
+    fn signal_eval(&mut self, _: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
+        // This is a compile-time flow, so normally signals can't be evaluated.
+        // They might have an implied compile-time value through, so check that first.
+
+        // walk up until we hit a hardware parent
+        let mut curr = &*self;
+        let parent_hw = loop {
+            curr = match &curr.parent {
+                FlowCompileKind::Root => break None,
+                FlowCompileKind::IsolatedCompile(parent) => parent,
+                FlowCompileKind::ScopedCompile(parent) => parent,
+                FlowCompileKind::ScopedHardware(parent) => break Some(parent),
+            }
+        };
+
+        // walk up through the chain of hardware parents
+        let mut curr = parent_hw;
+        loop {
+            curr = match curr {
+                None => break,
+                Some(curr) => {
+                    let (common, parent) = match &curr.kind {
+                        FlowHardwareKind::Root(curr) => (Some(&curr.common), None),
+                        FlowHardwareKind::Branch(curr) => (Some(&curr.common), Some(&curr.parent)),
+                        FlowHardwareKind::Scoped(curr) => (None, Some(&curr.parent)),
+                    };
+
+                    // check if this hardware flow has some information about the signal
+                    if let Some(common) = common {
+                        if let Some(signal_content) = common.signals.get(&signal.inner) {
+                            match signal_content {
+                                SignalContent::Compile(value) => {
+                                    // we've found a compile-time value, we can return that
+                                    return Ok(Value::from(value.clone()));
+                                }
+                                SignalContent::Hardware(_) => {
+                                    // we've found proof that the signal is hardware, so we need to stop
+                                    // (this is important to allow children to override the parent)
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    parent
+                }
+            };
+        }
+
+        // otherwise
+        Err(self.err_not_hardware(signal.span, "signal evaluation"))
     }
 }
 
@@ -470,8 +748,8 @@ impl<'p> FlowCompile<'p> {
             root,
             compile_span: span,
             compile_reason: reason,
-            kind: FlowCompileKind::Root,
-            variable_slots: IndexMap::new(),
+            parent: FlowCompileKind::Root,
+            variables: IndexMap::new(),
         }
     }
 
@@ -482,8 +760,8 @@ impl<'p> FlowCompile<'p> {
             root: self.root,
             compile_span: self.compile_span,
             compile_reason: self.compile_reason,
-            kind: FlowCompileKind::IsolatedCompile(slf),
-            variable_slots: IndexMap::default(),
+            parent: FlowCompileKind::IsolatedCompile(slf),
+            variables: IndexMap::default(),
         }
     }
 
@@ -496,8 +774,8 @@ impl<'p> FlowCompile<'p> {
             root,
             compile_span,
             compile_reason,
-            kind: FlowCompileKind::ScopedCompile(slf),
-            variable_slots: IndexMap::default(),
+            parent: FlowCompileKind::ScopedCompile(slf),
+            variables: IndexMap::default(),
         }
     }
 
@@ -506,14 +784,14 @@ impl<'p> FlowCompile<'p> {
             root,
             compile_span,
             compile_reason,
-            kind: _,
-            variable_slots,
+            parent: _,
+            variables: variable_slots,
         } = self;
         FlowCompileContent {
             check: root.check,
             compile_span,
             compile_reason,
-            variable_slots,
+            variables: variable_slots,
         }
     }
 
@@ -522,7 +800,7 @@ impl<'p> FlowCompile<'p> {
             check,
             compile_span,
             compile_reason,
-            variable_slots,
+            variables: variable_slots,
         } = content;
         assert_eq!(check, root.check);
 
@@ -530,8 +808,8 @@ impl<'p> FlowCompile<'p> {
             root,
             compile_span,
             compile_reason,
-            kind: FlowCompileKind::Root,
-            variable_slots,
+            parent: FlowCompileKind::Root,
+            variables: variable_slots,
         }
     }
 
@@ -540,7 +818,7 @@ impl<'p> FlowCompile<'p> {
             check,
             compile_span,
             compile_reason,
-            variable_slots,
+            variables: variable_slots,
         } = content;
         assert_eq!(parent.root.check, check);
 
@@ -549,275 +827,22 @@ impl<'p> FlowCompile<'p> {
             root: parent.root,
             compile_span,
             compile_reason,
-            kind: FlowCompileKind::IsolatedCompile(parent),
-            variable_slots,
-        }
-    }
-}
-
-pub struct FlowHardwareRoot<'p> {
-    root: &'p FlowRoot<'p>,
-    parent: &'p FlowCompile<'p>,
-    process_kind: HardwareProcessKind<'p>,
-
-    ir_wires: &'p mut IrWires,
-    ir_registers: &'p mut IrRegisters,
-    ir_variables: IrVariables,
-
-    common: FlowHardwareCommon,
-}
-
-pub struct FlowHardwareBranch<'p> {
-    root: &'p FlowRoot<'p>,
-    parent: &'p mut FlowHardware<'p>,
-
-    cond_domain: Spanned<ValueDomain>,
-    common: FlowHardwareCommon,
-}
-
-struct FlowHardwareCommon {
-    variables: FlowHardwareVariables,
-    signal_versions: IndexMap<Signal, ValueVersionIndex>,
-    statements: Vec<Spanned<IrStatement>>,
-    implied_types: IndexMap<ValueVersion, ImpliedType>,
-}
-
-#[derive(Debug)]
-enum ImpliedType {
-    Bool(bool),
-    Int(ClosedNonEmptyMultiRange<BigInt>),
-}
-
-struct FlowHardwareVariables {
-    // We store both the info and the value as a single combined entry, to avoid duplicate map lookups and insertions.
-    combined: IndexMap<VariableIndex, VariableInfoAndValue>,
-}
-
-#[derive(Default)]
-struct VariableInfoAndValue {
-    info: Option<VariableInfo>,
-    value: Option<VariableValue>,
-}
-
-// TODO track signals very similarly to variables, certainly once written to at least once
-//   (then we can also stop shadowing signals in the verilog backend, and handle it in the frontend)
-pub struct FlowHardware<'p> {
-    root: &'p FlowRoot<'p>,
-    enable_domain_checks: bool,
-    kind: FlowHardwareKind<'p>,
-}
-
-enum FlowHardwareKind<'p> {
-    Root(&'p mut FlowHardwareRoot<'p>),
-    Branch(&'p mut FlowHardwareBranch<'p>),
-    Scoped(FlowHardwareScoped<'p>),
-}
-
-struct FlowHardwareScoped<'p> {
-    parent: &'p mut FlowHardware<'p>,
-    variables: FlowHardwareVariables,
-}
-
-impl FlowHardwareCommon {
-    fn new(implied_types: IndexMap<ValueVersion, ImpliedType>) -> FlowHardwareCommon {
-        FlowHardwareCommon {
-            variables: FlowHardwareVariables {
-                combined: IndexMap::new(),
-            },
-            signal_versions: IndexMap::new(),
-            statements: vec![],
-            implied_types,
-        }
-    }
-}
-
-impl FlowPrivate for FlowHardware<'_> {
-    fn root(&self) -> &FlowRoot<'_> {
-        self.root
-    }
-
-    fn implied_type(&self, value: ValueVersion) -> Option<&ImpliedType> {
-        let mut curr = self;
-        loop {
-            curr = match &curr.kind {
-                FlowHardwareKind::Root(root) => {
-                    return root.common.implied_types.get(&value);
-                }
-                FlowHardwareKind::Branch(branch) => {
-                    if let Some(ty) = branch.common.implied_types.get(&value) {
-                        return Some(ty);
-                    }
-                    branch.parent
-                }
-                FlowHardwareKind::Scoped(scoped) => scoped.parent,
-            }
+            parent: FlowCompileKind::IsolatedCompile(parent),
+            variables: variable_slots,
         }
     }
 
-    fn var_set_maybe(&mut self, var: Variable, _: Span, value: VariableValue) {
-        assert_eq!(self.root.check, var.check);
-        // TODO don't allow setting variables declared outside of the root hardware flow
-        //   (nvm for now, this will all become simpler once constants are no longer in the flow)
-
-        let mut curr = self;
-        let variables = loop {
-            curr = match &mut curr.kind {
-                FlowHardwareKind::Root(root) => break &mut root.common.variables,
-                FlowHardwareKind::Branch(branch) => break &mut branch.common.variables,
-                FlowHardwareKind::Scoped(scoped) => {
-                    // if the value was declared in this scope we can keep it here,
-                    //   otherwise fallthrough to the parent
-                    if scoped.variables.combined.contains_key(&var.index) {
-                        break &mut scoped.variables;
-                    }
-                    scoped.parent
-                }
-            }
-        };
-
-        variables.combined.entry(var.index).or_default().value = Some(value);
-    }
-
-    fn var_get_maybe(&self, var: Spanned<Variable>) -> DiagResult<VariableValueRef<'_>> {
-        assert_eq!(self.root.check, var.inner.check);
-
-        let mut curr = self;
-        loop {
-            let (variables, next) = match &curr.kind {
-                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
-                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
-                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
-            };
-            if let Some(combined) = variables.combined.get(&var.inner.index)
-                && let Some(value) = &combined.value
-            {
-                return Ok(value.as_ref());
-            }
-            curr = match next {
-                Either::Left(root) => return root.parent.var_get_maybe(var),
-                Either::Right(next) => next,
-            };
-        }
-    }
-
-    fn try_var_info(&self, var: VariableIndex) -> Option<&VariableInfo> {
-        // TODO fix code duplication
-        let mut curr = self;
-        loop {
-            let (variables, next) = match &curr.kind {
-                FlowHardwareKind::Root(root) => (&root.common.variables, Either::Left(root)),
-                FlowHardwareKind::Branch(branch) => (&branch.common.variables, Either::Right(&branch.parent)),
-                FlowHardwareKind::Scoped(scoped) => (&scoped.variables, Either::Right(&scoped.parent)),
-            };
-            if let Some(info) = variables.combined.get(&var)
-                && let Some(info) = &info.info
-            {
-                return Some(info);
-            }
-            curr = match next {
-                Either::Left(root) => return root.parent.try_var_info(var),
-                Either::Right(next) => next,
-            };
-        }
+    fn err_not_hardware(&self, span: Span, reason: &str) -> DiagError {
+        let diag = Diagnostic::new(format!("{reason} is only allowed in a hardware context"))
+            .add_error(span, format!("{reason} here"))
+            .add_info(
+                self.compile_span,
+                format!("context is compile-time because of this {}", self.compile_reason),
+            )
+            .finish();
+        self.root.diags.report(diag)
     }
 }
-
-impl Flow for FlowHardware<'_> {
-    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile<'_> {
-        let root = self.root;
-        let slf = unsafe { lifetime_cast::hardware_mut(self) };
-        FlowCompile {
-            root,
-            compile_span: span,
-            compile_reason: reason,
-            kind: FlowCompileKind::ScopedHardware(slf),
-            variable_slots: IndexMap::new(),
-        }
-    }
-
-    fn check_hardware(&mut self, _: Span, _: &str) -> DiagResult<&mut FlowHardware<'_>> {
-        let slf = unsafe { lifetime_cast::hardware_mut(self) };
-        Ok(slf)
-    }
-
-    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>> {
-        FlowKind::Hardware(unsafe { lifetime_cast::hardware_mut(self) })
-    }
-
-    fn var_new(&mut self, info: VariableInfo) -> Variable {
-        let variables = match &mut self.kind {
-            FlowHardwareKind::Root(root) => &mut root.common.variables,
-            FlowHardwareKind::Branch(branch) => &mut branch.common.variables,
-            FlowHardwareKind::Scoped(scoped) => &mut scoped.variables,
-        };
-
-        let var = self.root.next_variable();
-
-        let combined = VariableInfoAndValue {
-            info: Some(info),
-            value: Some(MaybeAssignedValue::NotYetAssigned),
-        };
-        variables.combined.insert_first(var.index, combined);
-
-        var
-    }
-}
-
-impl<'p> FlowHardwareRoot<'p> {
-    pub fn new(
-        parent: &'p FlowCompile,
-        kind: HardwareProcessKind<'p>,
-        ir_wires: &'p mut IrWires,
-        ir_registers: &'p mut IrRegisters,
-    ) -> FlowHardwareRoot<'p> {
-        let parent = unsafe { lifetime_cast::compile_ref(parent) };
-        FlowHardwareRoot {
-            root: parent.root,
-            parent,
-            process_kind: kind,
-            ir_wires,
-            ir_registers,
-            ir_variables: IrVariables::new(),
-            common: FlowHardwareCommon::new(IndexMap::new()),
-        }
-    }
-
-    pub fn as_flow(&mut self) -> FlowHardware<'_> {
-        let slf = unsafe { lifetime_cast::hardware_root_mut(self) };
-        FlowHardware {
-            root: slf.root,
-            enable_domain_checks: true,
-            kind: FlowHardwareKind::Root(slf),
-        }
-    }
-
-    pub fn finish(self) -> (IrVariables, IrBlock) {
-        // TODO for combinatorial blocks, check that signals are _fully_ driven
-        let FlowHardwareRoot {
-            root: _,
-            parent: _,
-            process_kind: _,
-            ir_wires: _,
-            ir_registers: _,
-            ir_variables,
-            common,
-        } = self;
-        let FlowHardwareCommon {
-            variables: _,
-            signal_versions: _,
-            statements: ir_statements,
-            implied_types: _,
-        } = common;
-
-        let block = IrBlock {
-            statements: ir_statements,
-        };
-        (ir_variables, block)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct ImplicationContradiction;
 
 impl<'p> FlowHardware<'p> {
     fn root_hw<'s>(&'s self) -> &'s FlowHardwareRoot<'p> {
@@ -849,7 +874,157 @@ impl<'p> FlowHardware<'p> {
         cond_domain: Spanned<ValueDomain>,
         cond_implications: Vec<Implication>,
     ) -> DiagResult<Result<FlowHardwareBranch<'_>, ImplicationContradiction>> {
-        let implied_types = try_inner!(self.implications_to_implied_types(ctx, span, cond_implications)?);
+        let mut signals: IndexMap<Signal, SignalContent> = IndexMap::new();
+        let mut variables: IndexMap<VariableIndex, VariableSlotOption> = IndexMap::new();
+
+        // TODO split out into function(s)
+        for implication in cond_implications {
+            let Implication { version, kind } = implication;
+            let ValueVersion { signal, index } = version;
+
+            match signal {
+                SignalOrVariable::Signal(signal) => {
+                    let prev_content = match signals.get(&signal) {
+                        Some(c) => c,
+                        None => self.signal_get_content(signal)?,
+                    };
+                    // only apply implications to the latest version
+                    match prev_content {
+                        SignalContent::Compile(_) => {}
+                        SignalContent::Hardware(prev_content) => {
+                            if prev_content.version != index {
+                                continue;
+                            }
+                        }
+                    }
+
+                    match kind {
+                        ImplicationKind::BoolEq(impl_value) => {
+                            if let &SignalContent::Compile(CompileValue::Simple(SimpleCompileValue::Bool(prev_value))) =
+                                prev_content
+                            {
+                                // already compile, just check
+                                if prev_value != impl_value {
+                                    return Ok(Err(ImplicationContradiction));
+                                }
+                            } else {
+                                // not yet compile, remember value
+                                signals.insert(signal, SignalContent::Compile(CompileValue::new_bool(impl_value)));
+                            }
+                        }
+                        ImplicationKind::IntIn(impl_range) => {
+                            match prev_content {
+                                SignalContent::Compile(prev_value) => {
+                                    // already compile, just check
+                                    let prev_value = unwrap_match!(prev_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
+                                    if !impl_range.contains(prev_value) {
+                                        return Ok(Err(ImplicationContradiction));
+                                    }
+                                }
+                                SignalContent::Hardware(prev_value) => {
+                                    // not yet compile, intersect ranges
+                                    let prev_ty = prev_value.ty_hw(ctx, signal, span)?;
+                                    let prev_range = unwrap_match!(prev_ty, HardwareType::Int(range) => range);
+
+                                    let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
+                                    let new_range = try_inner!(
+                                        ClosedNonEmptyMultiRange::try_from(new_range)
+                                            .map_err(|_: RangeEmpty| ImplicationContradiction)
+                                    );
+
+                                    let new_content = SignalContent::Hardware(SignalContentHardware {
+                                        version: prev_value.version,
+                                        implied_int_range: Some(new_range),
+                                    });
+                                    signals.insert(signal, new_content);
+                                }
+                            }
+                        }
+                    }
+                }
+                SignalOrVariable::Variable(var) => {
+                    let prev_content = match variables.get(&var.index).and_then(|slot| slot.content.as_ref()) {
+                        Some(c) => c,
+                        None => self.var_get_content(Spanned::new(span, var))?,
+                    };
+
+                    // we don't need to track implications for error cases
+                    let prev_value = match prev_content {
+                        VariableContent::Assigned(prev_value) => prev_value,
+                        VariableContent::NotFullyAssigned(_) | VariableContent::Error(_) => continue,
+                    };
+
+                    // only apply implications to the latest version
+                    match &prev_value.inner {
+                        VariableValue::Simple(_) => {}
+                        VariableValue::Compound(_) => {}
+                        VariableValue::Hardware(prev_value) => {
+                            if prev_value.version != index {
+                                continue;
+                            }
+                        }
+                    }
+
+                    match kind {
+                        ImplicationKind::BoolEq(impl_value) => {
+                            if let Value::Simple(SimpleCompileValue::Bool(prev_value)) = prev_value.inner {
+                                // already compile, just check
+                                if prev_value != impl_value {
+                                    return Ok(Err(ImplicationContradiction));
+                                }
+                            } else {
+                                // not yet compile, remember value
+                                let new_content = VariableContent::Assigned(Spanned::new(
+                                    prev_value.span,
+                                    Value::Simple(SimpleCompileValue::Bool(impl_value)),
+                                ));
+                                let new_slot = VariableSlotOption {
+                                    info: None,
+                                    content: Some(new_content),
+                                };
+                                variables.insert(var.index, new_slot);
+                            }
+                        }
+                        ImplicationKind::IntIn(impl_range) => {
+                            match &prev_value.inner {
+                                VariableValue::Simple(SimpleCompileValue::Int(prev_value)) => {
+                                    // already compile, just check
+                                    if !impl_range.contains(prev_value) {
+                                        return Ok(Err(ImplicationContradiction));
+                                    }
+                                }
+                                VariableValue::Hardware(prev_value_hw) => {
+                                    let prev_range =
+                                        unwrap_match!(prev_value_hw.ty_hw(), HardwareType::Int(range) => range);
+
+                                    let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
+                                    let new_range = try_inner!(
+                                        ClosedNonEmptyMultiRange::try_from(new_range)
+                                            .map_err(|_: RangeEmpty| ImplicationContradiction)
+                                    );
+
+                                    let new_value = VariableValueHardware {
+                                        value_raw: prev_value_hw.value_raw.clone(),
+                                        version: prev_value_hw.version,
+                                        implied_int_range: Some(new_range),
+                                    };
+                                    let new_content = VariableContent::Assigned(Spanned::new(
+                                        prev_value.span,
+                                        VariableValue::Hardware(new_value),
+                                    ));
+                                    let new_slot = VariableSlotOption {
+                                        info: None,
+                                        content: Some(new_content),
+                                    };
+                                    variables.insert(var.index, new_slot);
+                                }
+                                _ => unreachable!("trying to imply int range for non-int var"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let root = self.root;
         let slf = unsafe { lifetime_cast::hardware_mut(self) };
@@ -857,84 +1032,12 @@ impl<'p> FlowHardware<'p> {
             root,
             parent: slf,
             cond_domain,
-            common: FlowHardwareCommon::new(implied_types),
+            common: FlowHardwareCommon {
+                variables,
+                signals,
+                statements: vec![],
+            },
         }))
-    }
-
-    fn implications_to_implied_types(
-        &self,
-        ctx: &mut CompileItemContext,
-        span: Span,
-        implications: Vec<Implication>,
-    ) -> DiagResult<Result<IndexMap<ValueVersion, ImpliedType>, ImplicationContradiction>> {
-        let mut implied_types = IndexMap::new();
-
-        for implication in implications {
-            let Implication { version, kind } = implication;
-
-            let curr_implied = implied_types.get(&version).or_else(|| self.implied_type(version));
-
-            let curr_ty: Either<Option<bool>, &ClosedNonEmptyMultiRange<BigInt>> = match curr_implied {
-                // already has an implied type, use that
-                Some(curr_ty) => match curr_ty {
-                    &ImpliedType::Bool(value) => Either::Left(Some(value)),
-                    ImpliedType::Int(range) => Either::Right(range),
-                },
-                // no implied type yet, get the base type
-                None => {
-                    let base_ty = match version.signal {
-                        SignalOrVariable::Signal(signal) => {
-                            // According to the signature this can fail due to the type not yet being inferred,
-                            //  but here that isn't actually be possible: the signal is present in an implication,
-                            //  so it has been evaluated already.
-                            signal.ty(ctx, span)?.inner
-                        }
-                        SignalOrVariable::Variable(var) => {
-                            // We only care about variables that are assigned, defined and store a hardware value.
-                            let var_value = self.var_get_maybe(Spanned::new(span, var))?;
-                            if let VariableValueRef::Assigned(var_info) = var_value
-                                && let MaybeUndefined::Defined(var_info) = var_info
-                                && let Value::Hardware(var_value) = var_info.value
-                            {
-                                &var_value.value.ty
-                            } else {
-                                continue;
-                            }
-                        }
-                    };
-                    match base_ty {
-                        &HardwareType::Bool => Either::Left(None),
-                        HardwareType::Int(range) => Either::Right(range),
-                        _ => continue,
-                    }
-                }
-            };
-
-            match (kind, curr_ty) {
-                (ImplicationKind::BoolEq(implied_value), Either::Left(curr_value)) => {
-                    if curr_value.is_none_or(|curr_value| curr_value == implied_value) {
-                        implied_types.insert(version, ImpliedType::Bool(implied_value));
-                    } else {
-                        return Ok(Err(ImplicationContradiction));
-                    }
-                }
-                (ImplicationKind::IntIn(implied_range), Either::Right(curr_range)) => {
-                    let new_range = ClosedMultiRange::from(curr_range.clone()).intersect(&implied_range);
-
-                    match ClosedNonEmptyMultiRange::try_from(new_range) {
-                        Ok(new_range) => {
-                            implied_types.insert(version, ImpliedType::Int(new_range));
-                        }
-                        Err(RangeEmpty) => {
-                            return Ok(Err(ImplicationContradiction));
-                        }
-                    }
-                }
-                _ => return Err(self.root.diags.report_internal_error(span, "implication type mismatch")),
-            }
-        }
-
-        Ok(Ok(implied_types))
     }
 
     pub fn new_child_scoped(&mut self) -> FlowHardware<'_> {
@@ -945,9 +1048,7 @@ impl<'p> FlowHardware<'p> {
             enable_domain_checks: true,
             kind: FlowHardwareKind::Scoped(FlowHardwareScoped {
                 parent: slf,
-                variables: FlowHardwareVariables {
-                    combined: IndexMap::new(),
-                },
+                variables: IndexMap::new(),
             }),
         }
     }
@@ -984,8 +1085,8 @@ impl<'p> FlowHardware<'p> {
         span_merge: Span,
         mut branches: Vec<FlowHardwareBranchContent>,
     ) -> DiagResult<Vec<IrBlock>> {
-        // TODO merge implications too
         // TODO do something else if children are empty, eg. push an instruction for `assert(false)`
+        //    or maybe even compile-time error?
 
         // collect the interesting vars and signals
         // things we can skip:
@@ -995,12 +1096,12 @@ impl<'p> FlowHardware<'p> {
         let mut merged_signals = IndexSet::new();
         for branch in &branches {
             assert_eq!(self.root.check, branch.check);
-            for &var in branch.common.variables.combined.keys() {
-                if self.try_var_info(var).is_some() {
+            for &var in branch.common.variables.keys() {
+                if self.var_info_option(var).is_some() {
                     merged_vars.insert(var);
                 }
             }
-            for &signal in branch.common.signal_versions.keys() {
+            for &signal in branch.common.signals.keys() {
                 merged_signals.insert(signal);
             }
         }
@@ -1011,51 +1112,20 @@ impl<'p> FlowHardware<'p> {
                 check: self.root.check,
                 index: var,
             };
-            let var_info = self.var_info(Spanned::new(span_merge, var))?;
-            let var_span_decl = var_info.span_decl;
 
-            let value_merged = merge_branch_values(refs, large, self, span_merge, var, &mut branches)
-                .unwrap_or_else(VariableValue::Error);
+            let value_merged = merge_branch_variable(refs, large, self, span_merge, var, &mut branches)
+                .unwrap_or_else(VariableContent::Error);
 
-            self.var_set_maybe(var, var_span_decl, value_merged);
+            self.var_set_content(var, span_merge, value_merged)?;
         }
 
         // merge signals
         for signal in merged_signals {
-            let version_parent = self.signal_get_version(signal);
-
-            let mut merged: Option<Result<ValueVersionIndex, NeedsHardwareMerge>> = None;
-            for branch in &branches {
-                let version_child = branch
-                    .common
-                    .signal_versions
-                    .get(&signal)
-                    .copied()
-                    .unwrap_or(version_parent);
-
-                merged = match merged {
-                    None => Some(Ok(version_child)),
-                    Some(Ok(curr_version)) => {
-                        if curr_version == version_child {
-                            Some(Ok(curr_version))
-                        } else {
-                            Some(Err(NeedsHardwareMerge))
-                        }
-                    }
-                    Some(Err(NeedsHardwareMerge)) => Some(Err(NeedsHardwareMerge)),
-                }
-            }
-
-            let merged_version = match merged {
-                None => continue,
-                Some(Ok(version)) => version,
-                Some(Err(NeedsHardwareMerge)) => self.root.next_version(),
-            };
-            self.signal_set_version(signal, merged_version);
+            let signal_merged = merge_branch_signal(self, signal, &mut branches)?;
+            self.signal_set_content(signal, signal_merged);
         }
 
         // extract blocks
-        let mut branch_implied_types = vec![];
         let branch_blocks = branches
             .into_iter()
             .map(|branch| {
@@ -1066,27 +1136,21 @@ impl<'p> FlowHardware<'p> {
                 } = branch;
                 let FlowHardwareCommon {
                     variables: _,
-                    signal_versions: _,
+                    signals: _,
                     statements,
-                    implied_types,
                 } = common;
-                branch_implied_types.push(implied_types);
                 IrBlock { statements }
             })
             .collect_vec();
-
-        merge_branch_implied_types(&mut self.first_common_mut().implied_types, &branch_implied_types);
 
         // TODO merge condition domains too?
         Ok(branch_blocks)
     }
 
-    // TODO can we remove this again?
     pub fn get_ir_wires(&mut self) -> &mut IrWires {
         self.root_hw_mut().ir_wires
     }
 
-    // TODO extract more of these?
     fn first_common_mut(&mut self) -> &mut FlowHardwareCommon {
         let mut curr = self;
         loop {
@@ -1163,87 +1227,294 @@ impl<'p> FlowHardware<'p> {
         })
     }
 
-    fn signal_get_version(&self, signal: Signal) -> ValueVersionIndex {
+    fn signal_set_content(&mut self, signal: Signal, content: SignalContent) {
+        self.first_common_mut().signals.insert(signal, content);
+    }
+
+    pub fn signal_assign(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        assign_span: Span,
+        signal: Spanned<Signal>,
+        steps: Vec<IrTargetStep>,
+        target_type: HardwareType,
+        value_hardware: HardwareValue,
+        value_compile: Option<CompileValue>,
+    ) -> DiagResult {
+        // TODO track partial drivers to avoid clashes and to generate extra concat blocks
+        // TODO comb blocks: check that all written signals are _always_ written
+        // TODO ban signal assignments in wire expressions and port connections
+
+        // expand value to target type
+        let value_hardware_expanded =
+            value_hardware.as_hardware_value_unchecked(ctx.refs, &mut ctx.large, assign_span, target_type)?;
+
+        // set content
+        let content = if steps.is_empty() {
+            match value_compile {
+                Some(value_compile) => SignalContent::Compile(value_compile),
+                None => {
+                    let version = self.root.next_version();
+                    let implied_int_range = match value_hardware.ty {
+                        HardwareType::Int(range) => Some(range),
+                        _ => None,
+                    };
+                    SignalContent::Hardware(SignalContentHardware {
+                        version,
+                        implied_int_range,
+                    })
+                }
+            }
+        } else {
+            let version = self.root.next_version();
+            SignalContent::Hardware(SignalContentHardware {
+                version,
+                implied_int_range: None,
+            })
+        };
+        self.signal_set_content(signal.inner, content);
+
+        // push the actual assignment
+        let signal_ir = signal.inner.expect_ir(ctx, signal.span)?;
+        let stmt = IrStatement::Assign(
+            IrAssignmentTarget {
+                base: signal_ir.into(),
+                steps,
+            },
+            value_hardware_expanded.expr,
+        );
+        let stmt = Spanned::new(assign_span, stmt);
+        self.push_ir_statement(stmt);
+
+        Ok(())
+    }
+}
+
+impl FlowPrivate for FlowHardware<'_> {
+    fn root(&self) -> &FlowRoot<'_> {
+        self.root
+    }
+
+    fn var_info_option(&self, var: VariableIndex) -> Option<&VariableInfo> {
         let mut curr = self;
         loop {
             curr = match &curr.kind {
                 FlowHardwareKind::Root(root) => {
-                    if let Some(&version) = root.common.signal_versions.get(&signal) {
-                        break version;
+                    if let Some(slot) = root.common.variables.get(&var) {
+                        if let Some(info) = &slot.info {
+                            return Some(info);
+                        }
                     }
-
-                    // we've reached the root without finding a version for this signal,
-                    //   this means it has not yet been written and we can safely assign it the first possible version
-                    break ValueVersionIndex(NON_ZERO_USIZE_ONE);
+                    return root.parent.var_info_option(var);
                 }
                 FlowHardwareKind::Branch(branch) => {
-                    if let Some(&version) = branch.common.signal_versions.get(&signal) {
-                        break version;
+                    if let Some(slot) = branch.common.variables.get(&var) {
+                        if let Some(info) = &slot.info {
+                            return Some(info);
+                        }
+                    }
+                    branch.parent
+                }
+                FlowHardwareKind::Scoped(scoped) => {
+                    if let Some(slot) = scoped.variables.get(&var) {
+                        return Some(&slot.info);
+                    }
+                    scoped.parent
+                }
+            };
+        }
+    }
+
+    fn var_set_content(&mut self, var: Variable, _: Span, content: VariableContent) -> DiagResult {
+        assert_eq!(self.root.check, var.check);
+
+        // find the right flow to declare this variable in
+        let mut curr = self;
+        let variables = loop {
+            curr = match &mut curr.kind {
+                FlowHardwareKind::Root(root) => break &mut root.common.variables,
+                FlowHardwareKind::Branch(branch) => break &mut branch.common.variables,
+                FlowHardwareKind::Scoped(scoped) => {
+                    // if the value was declared in this scope we can store it here,
+                    //   otherwise fallthrough to the parent
+                    if let Some(entry) = scoped.variables.get_mut(&var.index) {
+                        entry.content = content;
+                        return Ok(());
+                    }
+
+                    scoped.parent
+                }
+            }
+        };
+
+        variables.entry(var.index).or_default().content = Some(content);
+        Ok(())
+    }
+
+    fn var_get_content(&self, var: Spanned<Variable>) -> DiagResult<&VariableContent> {
+        assert_eq!(self.root.check, var.inner.check);
+
+        let mut curr = self;
+        loop {
+            curr = match &curr.kind {
+                FlowHardwareKind::Root(root) => {
+                    if let Some(slot) = root.common.variables.get(&var.inner.index) {
+                        if let Some(content) = &slot.content {
+                            return Ok(content);
+                        }
+                    }
+                    return root.parent.var_get_content(var);
+                }
+                FlowHardwareKind::Branch(branch) => {
+                    if let Some(slot) = branch.common.variables.get(&var.inner.index) {
+                        if let Some(content) = &slot.content {
+                            return Ok(content);
+                        }
+                    }
+                    branch.parent
+                }
+                FlowHardwareKind::Scoped(scoped) => {
+                    if let Some(slot) = scoped.variables.get(&var.inner.index) {
+                        return Ok(&slot.content);
+                    }
+                    scoped.parent
+                }
+            };
+        }
+    }
+
+    fn signal_get_content(&self, signal: Signal) -> DiagResult<&SignalContent> {
+        let mut curr = self;
+        loop {
+            curr = match &curr.kind {
+                FlowHardwareKind::Root(root) => {
+                    if let Some(content) = root.common.signals.get(&signal) {
+                        break Ok(content);
+                    }
+                    break Ok(&SignalContent::INITIAL);
+                }
+                FlowHardwareKind::Branch(branch) => {
+                    if let Some(content) = branch.common.signals.get(&signal) {
+                        break Ok(content);
                     }
                     branch.parent
                 }
                 FlowHardwareKind::Scoped(scoped) => scoped.parent,
-            }
+            };
         }
-    }
-
-    pub fn signal_eval(&self, ctx: &mut CompileItemContext, signal: Spanned<Signal>) -> DiagResult<ValueWithVersion> {
-        let value_raw = signal.inner.as_hardware_value(ctx, signal.span)?;
-
-        // For clocked blocks, check read domain validness.
-        // This is technically not needed for correctness (assignments also check domain validness),
-        //   but it makes error messages a bit clearer.
-        if self.enable_domain_checks {
-            match &self.root_hw().process_kind {
-                &HardwareProcessKind::ClockedBlockBody { domain, .. } => {
-                    ctx.check_valid_domain_crossing(
-                        signal.span,
-                        domain.map_inner(ValueDomain::Sync),
-                        Spanned::new(signal.span, value_raw.domain),
-                        "signal read in clocked block",
-                    )?;
-                }
-                HardwareProcessKind::CombinatorialBlockBody { .. }
-                | HardwareProcessKind::WireExpression { .. }
-                | HardwareProcessKind::InstancePortConnection { .. } => {}
-            }
-        }
-
-        // wrap and apply implications
-        let version = ValueVersion {
-            signal: SignalOrVariable::Signal(signal.inner),
-            index: self.signal_get_version(signal.inner),
-        };
-        let value = HardwareValueWithVersion {
-            value: value_raw,
-            version,
-        };
-        Ok(self.apply_impled_type(&mut ctx.large, value))
-    }
-
-    fn signal_set_version(&mut self, signal: Signal, version: ValueVersionIndex) {
-        self.first_common_mut().signal_versions.insert(signal, version);
-    }
-
-    pub fn signal_assign(&mut self, signal: Spanned<Signal>, full: bool) {
-        // TODO use this to check for accidental latches
-        // TODO record full/partial write for combinatorial block driver checking
-        // TODO for combinatorial block codegen, can we rely on the verilog tools to be smart enough
-        //   or should we initialize fully driven signals anyway?
-        let _ = full;
-
-        // bump version
-        let version = self.root.next_version();
-        self.signal_set_version(signal.inner, version);
     }
 }
 
-pub struct FlowHardwareBranchContent {
-    check: RandomCheck,
-    // TODO think about how this should be propagated, eg. if two branches break and the third one doesn't,
-    //   the value of all merged values and even implications might depend on the condition domain
-    cond_domain: Spanned<ValueDomain>,
-    common: FlowHardwareCommon,
+impl Flow for FlowHardware<'_> {
+    fn new_child_compile(&mut self, span: Span, reason: &'static str) -> FlowCompile<'_> {
+        let root = self.root;
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
+        FlowCompile {
+            root,
+            compile_span: span,
+            compile_reason: reason,
+            parent: FlowCompileKind::ScopedHardware(slf),
+            variables: IndexMap::new(),
+        }
+    }
+
+    fn require_hardware(&mut self, _: Span, _: &str) -> DiagResult<&mut FlowHardware<'_>> {
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
+        Ok(slf)
+    }
+
+    fn kind(&self) -> FlowKind<&FlowCompile<'_>, &FlowHardware<'_>> {
+        FlowKind::Hardware(unsafe { lifetime_cast::hardware_ref(self) })
+    }
+
+    fn kind_mut(&mut self) -> FlowKind<&mut FlowCompile<'_>, &mut FlowHardware<'_>> {
+        FlowKind::Hardware(unsafe { lifetime_cast::hardware_mut(self) })
+    }
+
+    fn var_new(&mut self, info: VariableInfo) -> Variable {
+        let var = self.root.next_variable();
+        let content = VariableContent::NotFullyAssigned(VariableNotFullyAssigned::NotYetAssigned);
+
+        match &mut self.kind {
+            FlowHardwareKind::Root(root) => {
+                let slot = VariableSlotOption {
+                    info: Some(info),
+                    content: Some(content),
+                };
+                root.common.variables.insert(var.index, slot);
+            }
+            FlowHardwareKind::Branch(branch) => {
+                let slot = VariableSlotOption {
+                    info: Some(info),
+                    content: Some(content),
+                };
+                branch.common.variables.insert(var.index, slot);
+            }
+            FlowHardwareKind::Scoped(scoped) => {
+                let slot = VariableSlot { info, content };
+                scoped.variables.insert(var.index, slot);
+            }
+        }
+
+        var
+    }
+}
+
+impl<'p> FlowHardwareRoot<'p> {
+    pub fn new(
+        parent: &'p FlowCompile,
+        span: Span,
+        kind: HardwareProcessKind<'p>,
+        ir_wires: &'p mut IrWires,
+        ir_registers: &'p mut IrRegisters,
+    ) -> FlowHardwareRoot<'p> {
+        let parent = unsafe { lifetime_cast::compile_ref(parent) };
+        FlowHardwareRoot {
+            root: parent.root,
+            parent,
+            span,
+            process_kind: kind,
+            ir_wires,
+            ir_registers,
+            ir_variables: IrVariables::new(),
+            common: FlowHardwareCommon {
+                variables: Default::default(),
+                signals: Default::default(),
+                statements: vec![],
+            },
+        }
+    }
+
+    pub fn as_flow(&mut self) -> FlowHardware<'_> {
+        let slf = unsafe { lifetime_cast::hardware_root_mut(self) };
+        FlowHardware {
+            root: slf.root,
+            enable_domain_checks: true,
+            kind: FlowHardwareKind::Root(slf),
+        }
+    }
+
+    pub fn finish(self) -> (IrVariables, IrBlock) {
+        // TODO for combinatorial blocks, check that signals are _fully_ driven
+        let FlowHardwareRoot {
+            root: _,
+            parent: _,
+            span: _,
+            process_kind: _,
+            ir_wires: _,
+            ir_registers: _,
+            ir_variables,
+            common,
+        } = self;
+        let FlowHardwareCommon {
+            variables: _,
+            signals: _,
+            statements,
+        } = common;
+
+        let block = IrBlock { statements };
+        (ir_variables, block)
+    }
 }
 
 impl FlowHardwareBranch<'_> {
@@ -1273,240 +1544,94 @@ impl FlowHardwareBranch<'_> {
 }
 
 #[derive(Debug)]
-pub struct FlowCompileContent {
-    check: RandomCheck,
-    compile_span: Span,
-    compile_reason: &'static str,
-
-    variable_slots: IndexMap<VariableIndex, VariableSlot>,
+enum MergedVariable {
+    /// Not all branches have assigned something to the variable./
+    NotFullyAssigned,
+    /// All branches have assigned the same value to the variable.
+    /// This applies even if the spans and implied ranges are different,
+    ///   in which case this will store the already merged result.
+    AllMatch(Spanned<VariableValue>),
+    /// Different branches have assigned different values to the variable, so a hardware merge is needed.
+    NeedsHardwareMerge,
 }
 
-// TODO rename to BlockKind? at least make sure everything is consistent
-pub enum HardwareProcessKind<'e> {
-    CombinatorialBlockBody {
-        span_keyword: Span,
-        wires_driven: &'e mut IndexMap<Wire, Span>,
-        ports_driven: &'e mut IndexMap<Port, Span>,
-    },
-    ClockedBlockBody {
-        span_keyword: Span,
-        domain: Spanned<SyncDomain<DomainSignal>>,
-        registers_driven: &'e mut IndexMap<Register, Span>,
-        extra_registers: ExtraRegisters<'e>,
-    },
-    WireExpression {
-        span_keyword: Span,
-        span_init: Span,
-    },
-    InstancePortConnection {
-        span_connection: Span,
-    },
-}
-
-pub enum ExtraRegisters<'e> {
-    NoReset,
-    WithReset(&'e mut Vec<ExtraRegisterInit>),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Variable {
-    check: RandomCheck,
-    index: VariableIndex,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct VariableIndex(NonZeroUsize);
-
-#[derive(Debug)]
-pub struct VariableInfo {
-    pub span_decl: Span,
-    pub id: VariableId,
-    pub mutable: bool,
-    pub ty: Option<Spanned<Type>>,
-    pub use_ir_variable: Option<IrVariable>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum VariableId {
-    Id(MaybeIdentifier),
-    Custom(&'static str),
-}
-
-impl VariableId {
-    pub fn str(self, source: &SourceDatabase) -> Option<&str> {
-        match self {
-            VariableId::Id(MaybeIdentifier::Identifier(id)) => Some(id.str(source)),
-            VariableId::Id(MaybeIdentifier::Dummy { span: _ }) => None,
-            VariableId::Custom(s) => Some(s),
-        }
-    }
-}
-
-type FlowValue = Value<SimpleCompileValue, MixedCompoundValue, HardwareValueWithVersion<ValueVersionIndex>>;
-type VariableValue = MaybeAssignedValue<FlowValue>;
-type VariableValueRef<'a> = MaybeAssignedValue<&'a FlowValue>;
-
-#[derive(Debug, Copy, Clone)]
-pub enum MaybeAssignedValue<V> {
-    /// The undefined case acts as if the variable has been assigned a value, without that actually being true.
-    /// This should only be used if the caller can somehow guarantee that
-    /// the variable will _actually_ be assigned before any use, but [Flow] does not realize this by itself.
-    Assigned(MaybeUndefined<AssignedValue<V>>),
-    NotYetAssigned,
-    PartiallyAssigned,
-    Error(DiagError),
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct AssignedValue<V> {
-    pub last_assignment_span: Span,
-    pub value: V,
-}
-
-impl<V> MaybeAssignedValue<V> {
-    pub fn as_ref(&self) -> MaybeAssignedValue<&V> {
-        match self {
-            MaybeAssignedValue::Assigned(v) => {
-                MaybeAssignedValue::Assigned(v.as_ref().map_defined(|v| AssignedValue {
-                    last_assignment_span: v.last_assignment_span,
-                    value: &v.value,
-                }))
-            }
-            MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
-            MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
-            &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
-        }
-    }
-}
-
-impl<V: Clone> MaybeAssignedValue<&V> {
-    pub fn cloned(&self) -> MaybeAssignedValue<V> {
-        match self {
-            MaybeAssignedValue::Assigned(v) => MaybeAssignedValue::Assigned(v.map_defined(|v| AssignedValue {
-                last_assignment_span: v.last_assignment_span,
-                value: v.value.clone(),
-            })),
-            MaybeAssignedValue::NotYetAssigned => MaybeAssignedValue::NotYetAssigned,
-            MaybeAssignedValue::PartiallyAssigned => MaybeAssignedValue::PartiallyAssigned,
-            &MaybeAssignedValue::Error(e) => MaybeAssignedValue::Error(e),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ValueVersion {
-    // TODO we could also _only_ use an index and ensure they're unique per signal, but that's sketchy to guarantee
-    signal: SignalOrVariable,
-    index: ValueVersionIndex,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct ValueVersionIndex(NonZeroUsize);
-
-struct NeedsHardwareMerge;
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum CapturedValue {
-    Item(AstRefItem),
-    Value(CompileValue),
-    FailedCapture(FailedCaptureReason),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum FailedCaptureReason {
-    NotCompile,
-    NotFullyInitialized,
-}
-
-// TODO re-use IR variables where possible to reduce noise in the generated RTL
-//   conditions where this is possible:
-//   * the previous value is already in a IR variable for the corresponding high-level variable
-//   * the IRVariable is not itself still used elsewhere
-//       Can we somehow guarantee that? not really, if we hand out ir variables during variable eval,
-//       callers might hold on to them for a while.
-//       Maybe we should just make the convention that variables are not valid access calls to flow.join.
-//   Once we add this we can remove the hardcoded special case for exit flags,
-//       and maybe even remove the "unused variable" optimization from lower_verilog
-fn merge_branch_values(
+fn merge_branch_variable(
     refs: CompileRefs,
     large: &mut IrLargeArena,
     parent_flow: &mut FlowHardware,
     span_merge: Span,
     var: Variable,
     branches: &mut [FlowHardwareBranchContent],
-) -> DiagResult<VariableValue> {
+) -> DiagResult<VariableContent> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
     let var_spanned = Spanned::new(span_merge, var);
     let var_info = parent_flow.var_info(var_spanned)?;
-    let parent_value = parent_flow.var_get_maybe(var_spanned)?;
+    let parent_content = parent_flow.var_get_content(var_spanned)?;
 
     // visit all branch values to check if we need to do a hardware merge
-    #[derive(Debug)]
-    enum Merged<'a> {
-        AllMatch(AssignedValue<&'a FlowValue>),
-        NotFullyAssigned,
-        NeedsHardwareMerge,
-    }
-    let mut merged: Option<Merged> = None;
-
+    let mut merged: Option<MergedVariable> = None;
     let mut used_parent_value = false;
 
     for branch in &mut *branches {
-        // TODO apply implications here too
-        let branch_value = match branch.common.variables.combined.get(&var.index) {
-            Some(branch_combined) => {
-                assert!(branch_combined.info.is_none());
-                branch_combined.value.as_ref().unwrap().as_ref()
+        let branch_content = match branch.common.variables.get(&var.index) {
+            Some(branch_slot) => {
+                // we can assert/unwrap here:
+                // * we know merged variables must exist in the parent, so they cannot be declared in branches
+                // * slots cannot be fully empty, so if there's no info there must be content
+                assert!(branch_slot.info.is_none());
+                branch_slot.content.as_ref().unwrap()
             }
             None => {
                 used_parent_value = true;
-                parent_value
+                parent_content
             }
         };
 
-        // first (non-undefined) branch, just set it
+        // first (maybe non-undefined) branch, just set it
         let Some(merged_value) = merged else {
-            merged = match branch_value {
-                MaybeAssignedValue::Assigned(value) => match value {
-                    MaybeUndefined::Undefined => None,
-                    MaybeUndefined::Defined(value) => Some(Merged::AllMatch(value)),
+            merged = match branch_content {
+                VariableContent::Assigned(value) => Some(MergedVariable::AllMatch(value.clone())),
+                VariableContent::NotFullyAssigned(kind) => match kind {
+                    VariableNotFullyAssigned::NotYetAssigned | VariableNotFullyAssigned::PartiallyAssigned => {
+                        Some(MergedVariable::NotFullyAssigned)
+                    }
+                    VariableNotFullyAssigned::Undefined => None,
                 },
-                MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned => {
-                    Some(Merged::NotFullyAssigned)
-                }
-                MaybeAssignedValue::Error(e) => return Err(e),
+                &VariableContent::Error(e) => return Err(e),
             };
             continue;
         };
 
         // join multiple values
-        let merged_new = match (merged_value, branch_value) {
-            (Merged::NotFullyAssigned, _)
-            | (_, MaybeAssignedValue::NotYetAssigned | MaybeAssignedValue::PartiallyAssigned) => {
+        let merged_new = match (merged_value, branch_content) {
+            (MergedVariable::NotFullyAssigned, _)
+            | (
+                _,
+                VariableContent::NotFullyAssigned(VariableNotFullyAssigned::NotYetAssigned)
+                | VariableContent::NotFullyAssigned(VariableNotFullyAssigned::PartiallyAssigned),
+            ) => {
                 // if anything is not fully assigned, the result is not fully assigned
-                Merged::NotFullyAssigned
+                MergedVariable::NotFullyAssigned
             }
-            (_, MaybeAssignedValue::Error(e)) => {
+            (_, &VariableContent::Error(e)) => {
                 // short-circuit on error
                 return Err(e);
             }
-            (Merged::NeedsHardwareMerge, MaybeAssignedValue::Assigned(_)) => {
+            (merged_value, VariableContent::NotFullyAssigned(VariableNotFullyAssigned::Undefined)) => {
+                // undefined branches do not affect the merge result
+                merged_value
+            }
+            (MergedVariable::NeedsHardwareMerge, VariableContent::Assigned(_)) => {
                 // if we need a hardware merge and we get more normal values, we will still need a hardware merge
-                Merged::NeedsHardwareMerge
+                MergedVariable::NeedsHardwareMerge
             }
-            (Merged::AllMatch(merged), MaybeAssignedValue::Assigned(MaybeUndefined::Undefined)) => {
-                // undefined does not care about the result value, so keep whatever we have so far
-                Merged::AllMatch(merged)
-            }
-            (Merged::AllMatch(merged), MaybeAssignedValue::Assigned(MaybeUndefined::Defined(branch))) => {
+            (MergedVariable::AllMatch(merged), VariableContent::Assigned(branch)) => {
                 // actual merge check between two assigned values
-                let value_matches = match (merged.value, branch.value) {
-                    (FlowValue::Simple(merged), FlowValue::Simple(branch)) => merged == branch,
-                    (FlowValue::Hardware(merged), FlowValue::Hardware(branch)) => merged.version == branch.version,
-
-                    (FlowValue::Compound(merged), FlowValue::Compound(branch)) => {
+                let value_matches = match (&merged.inner, &branch.inner) {
+                    (VariableValue::Simple(merged), VariableValue::Simple(branch)) => merged == branch,
+                    (VariableValue::Compound(merged), VariableValue::Compound(branch)) => {
                         if let Ok(merged) = CompileCompoundValue::try_from(merged)
                             && let Ok(branch) = CompileCompoundValue::try_from(branch)
                         {
@@ -1515,24 +1640,24 @@ fn merge_branch_values(
                             false
                         }
                     }
+                    // TODO should we count a match here if the versions are equal? can that ever even happen?
+                    (VariableValue::Hardware(_), VariableValue::Hardware(_)) => false,
 
-                    (FlowValue::Simple(_), FlowValue::Hardware(_) | FlowValue::Compound(_)) => false,
-                    (FlowValue::Hardware(_), FlowValue::Simple(_) | FlowValue::Compound(_)) => false,
-                    (FlowValue::Compound(_), FlowValue::Simple(_) | FlowValue::Hardware(_)) => false,
+                    (VariableValue::Simple(_), VariableValue::Hardware(_) | VariableValue::Compound(_)) => false,
+                    (VariableValue::Hardware(_), VariableValue::Simple(_) | VariableValue::Compound(_)) => false,
+                    (VariableValue::Compound(_), VariableValue::Simple(_) | VariableValue::Hardware(_)) => false,
                 };
 
                 if value_matches {
-                    let span_new = if merged.last_assignment_span == branch.last_assignment_span {
-                        merged.last_assignment_span
+                    let span_new = if merged.span == branch.span {
+                        // TODO is this case actually possible?
+                        merged.span
                     } else {
                         span_merge
                     };
-                    Merged::AllMatch(AssignedValue {
-                        last_assignment_span: span_new,
-                        value: merged.value,
-                    })
+                    MergedVariable::AllMatch(Spanned::new(span_new, merged.inner))
                 } else {
-                    Merged::NeedsHardwareMerge
+                    MergedVariable::NeedsHardwareMerge
                 }
             }
         };
@@ -1544,29 +1669,40 @@ fn merge_branch_values(
         None => {
             // There were no (non-undefined) branches, this implies that control flow diverges or that all branches
             //   have an undefined value.
-            return Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Undefined));
+            return Ok(VariableContent::NotFullyAssigned(VariableNotFullyAssigned::Undefined));
         }
-        Some(Merged::AllMatch(value)) => {
+        Some(MergedVariable::AllMatch(value)) => {
             // all branches agree on the assigned value, we don't need to do a hardware merge
-            let assigned = AssignedValue {
-                last_assignment_span: value.last_assignment_span,
-                value: value.value.clone(),
-            };
-            return Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(assigned)));
+            return Ok(VariableContent::Assigned(value));
         }
-        Some(Merged::NotFullyAssigned) => {
+        Some(MergedVariable::NotFullyAssigned) => {
             // fully un-assigned would have exited earlier, so the result is partially assigned
-            return Ok(MaybeAssignedValue::PartiallyAssigned);
+            return Ok(VariableContent::NotFullyAssigned(
+                VariableNotFullyAssigned::PartiallyAssigned,
+            ));
         }
-        Some(Merged::NeedsHardwareMerge) => {
+        Some(MergedVariable::NeedsHardwareMerge) => {
             // fall through into hardware merge
         }
     }
 
     // at this point we know that there are no un-assigned branches, and that not all branches have the same value:
     //   this means we actually need to do a hardware merge
-    fn unwrap_branch_value(v: VariableValueRef<'_>) -> MaybeUndefined<AssignedValue<&FlowValue>> {
-        unwrap_match!(v, MaybeAssignedValue::Assigned(value) => value)
+    fn unwrap_branch_value(v: &VariableContent) -> MaybeUndefined<Spanned<&VariableValue>> {
+        match v {
+            VariableContent::Assigned(v) => MaybeUndefined::Defined(v.as_ref()),
+            VariableContent::NotFullyAssigned(kind) => match kind {
+                VariableNotFullyAssigned::NotYetAssigned | VariableNotFullyAssigned::PartiallyAssigned => {
+                    unreachable!("expected variable content")
+                }
+                VariableNotFullyAssigned::Undefined => MaybeUndefined::Undefined,
+            },
+            VariableContent::Error(_) => unreachable!("expected variable content"),
+        }
+    }
+    fn unwrap_branch_slot(slot: &VariableSlotOption) -> &VariableContent {
+        assert!(slot.info.is_none());
+        slot.content.as_ref().unwrap()
     }
 
     // check that all types are hardware
@@ -1574,32 +1710,24 @@ fn merge_branch_values(
     let branch_tys = branches
         .iter()
         .map(|branch| {
-            let branch_value = match branch.common.variables.combined.get(&var.index) {
-                Some(branch_combined) => {
-                    assert!(branch_combined.info.is_none());
-                    branch_combined.value.as_ref().unwrap().as_ref()
-                }
-                None => parent_value,
+            let branch_content = match branch.common.variables.get(&var.index) {
+                Some(branch_slot) => unwrap_branch_slot(branch_slot),
+                None => parent_content,
             };
-
-            let branch_value = unwrap_branch_value(branch_value);
+            let branch_value = unwrap_branch_value(branch_content);
 
             let branch_value = match branch_value {
                 MaybeUndefined::Undefined => return Ok(HardwareType::Undefined),
                 MaybeUndefined::Defined(branch_value) => branch_value,
             };
-            let branch_ty = match &branch_value.value {
-                Value::Simple(v) => v.ty(),
-                Value::Compound(v) => v.ty(),
-                Value::Hardware(v) => v.value.ty.as_type(),
-            };
+            let branch_ty = branch_value.inner.ty();
 
             branch_ty.as_hardware_type(elab).map_err(|_| {
                 let ty_str = branch_ty.value_string(elab);
                 let diag = Diagnostic::new("merging if assignments needs hardware type")
                     .add_info(var_info.span_decl, "for this variable")
                     .add_info(
-                        branch_value.last_assignment_span,
+                        branch_value.span,
                         format!("value assigned here has type `{ty_str}` which cannot be represented in hardware"),
                     )
                     .add_error(span_merge, "merging happens here")
@@ -1624,17 +1752,15 @@ fn merge_branch_values(
             );
 
         for (branch, ty) in zip_eq(&*branches, branch_tys) {
-            if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
-                assert!(branch_combined.info.is_none());
-                let branch_combined = branch_combined.value.as_ref().unwrap().as_ref();
-
-                let branch_value = unwrap_branch_value(branch_combined);
+            if let Some(branch_slot) = branch.common.variables.get(&var.index) {
+                let branch_content = unwrap_branch_slot(branch_slot);
+                let branch_value = unwrap_branch_value(branch_content);
 
                 match branch_value {
                     MaybeUndefined::Undefined => {}
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
-                            branch_value.last_assignment_span,
+                            branch_value.span,
                             format!("value in branch assigned here has type `{}`", ty.value_string(elab)),
                         )
                     }
@@ -1642,13 +1768,13 @@ fn merge_branch_values(
             }
         }
         if used_parent_value {
-            let parent_value = unwrap_branch_value(parent_value);
+            let parent_value = unwrap_branch_value(parent_content);
 
             match parent_value {
                 MaybeUndefined::Undefined => {}
                 MaybeUndefined::Defined(parent_value) => {
                     diag = diag.add_info(
-                        parent_value.last_assignment_span,
+                        parent_value.span,
                         format!("value before branch assigned here has type `{}`", ty.value_string(elab)),
                     );
                 }
@@ -1658,45 +1784,40 @@ fn merge_branch_values(
     })?;
 
     // create result variable
-    let var_ir = match var_info.use_ir_variable {
-        Some(var_ir) => var_ir,
-        None => {
-            let var_ir_info = IrVariableInfo {
-                ty: ty.as_ir(refs),
-                debug_info_span: var_info.span_decl,
-                debug_info_id: var_info.id.str(refs.fixed.source).map(str::to_owned),
-            };
-            parent_flow.new_ir_variable(var_ir_info)
-        }
+    let var_ir_info = IrVariableInfo {
+        ty: ty.as_ir(refs),
+        debug_info_span: var_info.span_decl,
+        debug_info_id: var_info.id.as_str(refs.fixed.source).map(str::to_owned),
     };
+    let var_ir = parent_flow.new_ir_variable(var_ir_info);
 
     // store values into that variable
     let mut domain = ValueDomain::CompileTime;
     let mut domain_cond = ValueDomain::CompileTime;
 
-    let mut build_store = |value: VariableValueRef| {
-        let value = unwrap_branch_value(value);
-
+    let mut build_store = |value: MaybeUndefined<Spanned<&VariableValue>>| {
         match value {
             MaybeUndefined::Undefined => {
                 // undefined, skip store
                 Ok(None)
             }
             MaybeUndefined::Defined(assigned) => {
-                let (assigned_domain, assigned_expr) = match &assigned.value {
+                let (assigned_domain, assigned_expr) = match &assigned.inner {
                     Value::Simple(v) => (
                         v.domain(),
-                        v.as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
+                        v.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?,
                     ),
                     Value::Compound(v) => (
                         v.domain(),
-                        v.as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
+                        v.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?,
                     ),
-                    Value::Hardware(v) => (
-                        v.value.domain(),
-                        v.value
-                            .as_ir_expression_unchecked(refs, large, assigned.last_assignment_span, &ty)?,
-                    ),
+                    Value::Hardware(v) => {
+                        let value = v.as_hardware_value(large, var);
+                        let expr = value
+                            .value
+                            .as_ir_expression_unchecked(refs, large, assigned.span, &ty)?;
+                        (value.value.domain, expr)
+                    }
                 };
 
                 domain = domain.join(assigned_domain);
@@ -1712,19 +1833,19 @@ fn merge_branch_values(
         }
     };
 
-    for branch in &mut *branches {
-        if let Some(branch_combined) = branch.common.variables.combined.get(&var.index) {
-            assert!(branch_combined.info.is_none());
-            let branch_value = branch_combined.value.as_ref().unwrap();
-            if let Some(store) = build_store(branch_value.as_ref())? {
+    for branch in branches {
+        if let Some(branch_slot) = branch.common.variables.get(&var.index) {
+            let branch_content = unwrap_branch_slot(branch_slot);
+            let branch_value = unwrap_branch_value(branch_content);
+            if let Some(store) = build_store(branch_value)? {
                 branch.common.statements.push(store);
             }
         }
         domain_cond = domain_cond.join(branch.cond_domain.inner);
     }
     if used_parent_value {
-        // re-borrow parent_value
-        let parent_value = parent_flow.var_get_maybe(var_spanned)?;
+        let parent_content = parent_flow.var_get_content(var_spanned)?;
+        let parent_value = unwrap_branch_value(parent_content);
         if let Some(store) = build_store(parent_value)? {
             parent_flow.push_ir_statement(store);
         }
@@ -1732,30 +1853,254 @@ fn merge_branch_values(
     domain = domain.join(domain_cond);
 
     // wrap result
+    // (we don't need to set an implied range here, we've just created a new variable with the right type)
     let result_value = HardwareValue {
         ty,
         domain,
         expr: IrExpression::Variable(var_ir),
     };
     let result_version = parent_flow.root.next_version();
-
-    let result_assigned = AssignedValue {
-        last_assignment_span: span_merge,
-        value: Value::Hardware(HardwareValueWithVersion {
-            value: result_value,
-            version: result_version,
-        }),
+    let result_var_value = VariableValueHardware {
+        value_raw: result_value,
+        version: result_version,
+        implied_int_range: None,
     };
-    Ok(MaybeAssignedValue::Assigned(MaybeUndefined::Defined(result_assigned)))
+    Ok(VariableContent::Assigned(Spanned::new(
+        span_merge,
+        VariableValue::Hardware(result_var_value),
+    )))
 }
 
-fn merge_branch_implied_types(
-    parent: &mut IndexMap<ValueVersion, ImpliedType>,
-    branch_implications: &[IndexMap<ValueVersion, ImpliedType>],
-) {
-    // TODO do something more interesting here, this placeholder implementation is correct but a missed opportunity
-    // TODO we might need to merge this with the actual values, all in merge_branch_values
-    let _ = (parent, branch_implications);
+fn merge_branch_signal(
+    parent_flow: &mut FlowHardware,
+    signal: Signal,
+    branches: &mut [FlowHardwareBranchContent],
+) -> DiagResult<SignalContent> {
+    // TODO extract general TriLattice type for this?
+    enum Merged<T> {
+        None,
+        AllMatch(T),
+        Different,
+    }
+
+    // we don't need to merge versions, if we get to this point we know there are differences between the branches
+    let mut merged_compile: Merged<&CompileValue> = Merged::None;
+    let mut merged_int_range: Merged<ClosedNonEmptyMultiRange<_>> = Merged::None;
+
+    let parent_content = parent_flow.signal_get_content(signal)?;
+
+    for branch in branches {
+        let branch_content = branch.common.signals.get(&signal).unwrap_or(parent_content);
+
+        match branch_content {
+            SignalContent::Compile(branch_value) => {
+                merged_compile = match merged_compile {
+                    Merged::None => Merged::AllMatch(branch_value),
+                    Merged::AllMatch(prev_value) => {
+                        if prev_value == branch_value {
+                            Merged::AllMatch(prev_value)
+                        } else {
+                            Merged::Different
+                        }
+                    }
+                    Merged::Different => Merged::Different,
+                };
+
+                merged_int_range = if let CompileValue::Simple(SimpleCompileValue::Int(branch_value)) = branch_value {
+                    match merged_int_range {
+                        Merged::None => Merged::AllMatch(ClosedNonEmptyMultiRange::single(branch_value.clone())),
+                        Merged::AllMatch(range) => {
+                            Merged::AllMatch(range.union(&ClosedMultiRange::single(branch_value.clone())))
+                        }
+                        Merged::Different => Merged::Different,
+                    }
+                } else {
+                    Merged::Different
+                }
+            }
+            SignalContent::Hardware(branch_content) => {
+                let SignalContentHardware {
+                    version: _,
+                    implied_int_range,
+                } = branch_content;
+
+                merged_compile = Merged::Different;
+
+                merged_int_range = if let Some(implied_int_range) = implied_int_range {
+                    match merged_int_range {
+                        Merged::None => Merged::AllMatch(implied_int_range.clone()),
+                        Merged::AllMatch(range) => {
+                            Merged::AllMatch(range.union(&ClosedMultiRange::from(implied_int_range.clone())))
+                        }
+                        Merged::Different => Merged::Different,
+                    }
+                } else {
+                    Merged::Different
+                };
+            }
+        }
+    }
+
+    let merged_content = match merged_compile {
+        Merged::AllMatch(merged_compile) => SignalContent::Compile(merged_compile.clone()),
+        Merged::None | Merged::Different => {
+            let version = parent_flow.root.next_version();
+
+            let implied_int_range = match merged_int_range {
+                Merged::AllMatch(range) => Some(range),
+                Merged::None | Merged::Different => None,
+            };
+
+            SignalContent::Hardware(SignalContentHardware {
+                version,
+                implied_int_range,
+            })
+        }
+    };
+    Ok(merged_content)
+}
+
+impl VariableId {
+    pub fn as_str<'s>(&self, source: &'s SourceDatabase) -> Option<&'s str> {
+        match self {
+            VariableId::Id(id) => match id {
+                MaybeIdentifier::Dummy { .. } => None,
+                MaybeIdentifier::Identifier(id) => Some(id.spanned_str(source).inner),
+            },
+            VariableId::Custom(s) => Some(s),
+        }
+    }
+}
+
+impl VariableContent {
+    fn err_ref(e: DiagError) -> &'static VariableContent {
+        let _ = e;
+        static ERR: VariableContent = VariableContent::Error(DiagError::promise_error_has_been_reported());
+        &ERR
+    }
+}
+
+impl VariableValueHardware {
+    pub fn ty_hw(&self) -> HardwareType {
+        match &self.implied_int_range {
+            Some(range) => HardwareType::Int(range.clone()),
+            None => self.value_raw.ty.clone(),
+        }
+    }
+
+    pub fn as_hardware_value(&self, large: &mut IrLargeArena, var: Variable) -> HardwareValueWithVersion {
+        let VariableValueHardware {
+            value_raw,
+            version,
+            implied_int_range,
+        } = self;
+
+        let value = if let Some(implied_int_range) = implied_int_range {
+            let expr = large.push_expr(IrExpressionLarge::ConstrainIntRange(
+                implied_int_range.enclosing_range().cloned(),
+                value_raw.expr.clone(),
+            ));
+            HardwareValue {
+                ty: HardwareType::Int(implied_int_range.clone()),
+                domain: value_raw.domain,
+                expr,
+            }
+        } else {
+            value_raw.clone()
+        };
+
+        HardwareValueWithVersion {
+            value,
+            version: ValueVersion {
+                signal: SignalOrVariable::Variable(var),
+                index: *version,
+            },
+        }
+    }
+}
+
+impl Typed for VariableValueHardware {
+    fn ty(&self) -> Type {
+        self.ty_hw().as_type()
+    }
+}
+
+impl SignalContent {
+    pub const INITIAL: Self = SignalContent::Hardware(SignalContentHardware::INITIAL);
+}
+
+impl SignalContentHardware {
+    pub const INITIAL: Self = SignalContentHardware {
+        version: VERSION_INITIAL,
+        implied_int_range: None,
+    };
+
+    pub fn ty_hw(&self, ctx: &mut CompileItemContext, signal: Signal, span: Span) -> DiagResult<HardwareType> {
+        match &self.implied_int_range {
+            Some(range) => Ok(HardwareType::Int(range.clone())),
+            None => Ok(signal.expect_ty(ctx, span)?.inner.clone()),
+        }
+    }
+
+    pub fn as_hardware_value(
+        &self,
+        ctx: &mut CompileItemContext,
+        signal: Signal,
+        span: Span,
+    ) -> DiagResult<HardwareValueWithVersion> {
+        let &SignalContentHardware {
+            version,
+            ref implied_int_range,
+        } = self;
+
+        // read from signal (or shadow variable)
+        let value_raw = signal.as_hardware_value(ctx, span)?;
+
+        // constrain range if needed
+        let value = match implied_int_range {
+            None => value_raw,
+            Some(range) => {
+                let expr = ctx.large.push_expr(IrExpressionLarge::ConstrainIntRange(
+                    range.enclosing_range().cloned(),
+                    value_raw.expr,
+                ));
+                HardwareValue {
+                    ty: HardwareType::Int(range.clone()),
+                    domain: value_raw.domain,
+                    expr,
+                }
+            }
+        };
+
+        // wrap result
+        let version = ValueVersion {
+            signal: SignalOrVariable::Signal(signal),
+            index: version,
+        };
+        Ok(HardwareValueWithVersion { value, version })
+    }
+}
+
+impl VariableNotFullyAssigned {
+    pub fn report_diag(&self, diags: &Diagnostics, span: Span, var_info: &VariableInfo) -> DiagError {
+        match self {
+            VariableNotFullyAssigned::NotYetAssigned => {
+                let diag = Diagnostic::new("variable has not yet been assigned a value")
+                    .add_error(span, "variable used here")
+                    .add_info(var_info.span_decl, "variable declared here")
+                    .finish();
+                diags.report(diag)
+            }
+            VariableNotFullyAssigned::PartiallyAssigned => {
+                let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
+                    .add_error(span, "variable used here")
+                    .add_info(var_info.span_decl, "variable declared here")
+                    .finish();
+                diags.report(diag)
+            }
+            VariableNotFullyAssigned::Undefined => diags.report_internal_error(span, "evaluating undefined variable"),
+        }
+    }
 }
 
 /// The borrow checking has trouble with nested chains of parent references,
@@ -1770,6 +2115,9 @@ mod lifetime_cast {
     }
     pub unsafe fn compile_mut<'s>(flow: &'s mut FlowCompile) -> &'s mut FlowCompile<'s> {
         unsafe { &mut *(flow as *mut FlowCompile<'_> as *mut FlowCompile<'s>) }
+    }
+    pub unsafe fn hardware_ref<'s>(flow: &'s FlowHardware) -> &'s FlowHardware<'s> {
+        unsafe { &*(flow as *const FlowHardware<'_> as *const FlowHardware<'s>) }
     }
     pub unsafe fn hardware_mut<'s>(flow: &'s mut FlowHardware) -> &'s mut FlowHardware<'s> {
         unsafe { &mut *(flow as *mut FlowHardware<'_> as *mut FlowHardware<'s>) }

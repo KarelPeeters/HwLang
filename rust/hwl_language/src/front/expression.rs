@@ -1,14 +1,14 @@
 use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
 use crate::front::check::{
-    check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool, check_type_is_int,
-    check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint, check_type_is_uint_compile,
-    TypeContainsReason,
+    TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool,
+    check_type_is_int, check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint,
+    check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::flow::{ExtraRegisters, ValueVersion, VariableId};
-use crate::front::function::{error_unique_mismatch, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue};
+use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
+use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -31,7 +31,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{vec_concat, NonEmptyVec, VecExt};
+use crate::util::data::{NonEmptyVec, VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
@@ -44,7 +44,7 @@ use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
-use crate::util::{result_pair, ResultDoubleExt};
+use crate::util::{ResultDoubleExt, result_pair};
 use annotate_snippets::Level;
 use itertools::Either;
 use std::sync::Arc;
@@ -78,7 +78,8 @@ impl<'a> CompileItemContext<'a, '_> {
         match id {
             GeneralIdentifier::Simple(id) => Ok(id.spanned_str(self.refs.fixed.source).map_inner(ArcOrRef::Ref)),
             GeneralIdentifier::FromString(span, expr) => {
-                let value = self.eval_expression_as_compile(scope, flow, &Type::String, expr, Spanned::new(span, "id string"))?;
+                let value =
+                    self.eval_expression_as_compile(scope, flow, &Type::String, expr, Spanned::new(span, "id string"))?;
                 let value = check_type_is_string_compile(diags, elab, TypeContainsReason::Operator(span), value)?;
 
                 Ok(Spanned::new(id.span(), ArcOrRef::Arc(value)))
@@ -218,19 +219,17 @@ impl<'a> CompileItemContext<'a, '_> {
                             flow.var_eval(diags, &mut self.large, Spanned::new(expr.span, var))?
                         }
                         NamedValue::Port(port) => {
-                            let flow = flow.check_hardware(expr.span, "port access")?;
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
                         }
                         NamedValue::Wire(wire) => {
-                            let flow = flow.check_hardware(expr.span, "wire access")?;
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
                         }
                         NamedValue::Register(reg) => {
-                            let flow = flow.check_hardware(expr.span, "register access")?;
-
-                            let reg_info = &mut self.registers[reg];
-                            if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
-                                reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
+                            if let FlowKind::Hardware(flow) = flow.kind_mut() {
+                                if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
+                                    let reg_info = &mut self.registers[reg];
+                                    reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
+                                }
                             }
 
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?
@@ -303,16 +302,16 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start?;
                         let end = end?;
 
-                        // check that `start < end`
+                        // check validness
                         if let (Some(start), Some(end)) = (&start, &end) {
                             let start_range = start.inner.range();
                             let end_range = end.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.enclosing_range().end <= end_range.enclosing_range().start) {
+                            if !(start_range.enclosing_range().end - 1 <= *end_range.enclosing_range().start) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_range, None);
-                                let diag = Diagnostic::new("range requires that start < end")
+                                let diag = Diagnostic::new("range requires that start <= end")
                                     .add_error(op_span, "range constructed here")
                                     .add_info(start.span, msg_start)
                                     .add_info(end.span, msg_end)
@@ -338,16 +337,16 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start?;
                         let end_inc = end_inc?;
 
-                        // check that `start <= end_inc`
+                        // check validness
                         if let Some(start) = &start {
                             let start_range = start.inner.range();
                             let end_inc_range = end_inc.inner.range();
 
                             #[allow(clippy::nonminimal_bool)]
-                            if !(start_range.enclosing_range().end - 1 <= *end_inc_range.enclosing_range().start) {
+                            if !(start_range.enclosing_range().end - 1 <= end_inc_range.enclosing_range().start + 1) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_inc_range, None);
-                                let diag = Diagnostic::new("inclusive range requires that start <= end")
+                                let diag = Diagnostic::new("inclusive range requires that start <= end_inc + 1")
                                     .add_error(op_span, "inclusive range constructed here")
                                     .add_info(start.span, msg_start)
                                     .add_info(end_inc.span, msg_end)
@@ -473,8 +472,12 @@ impl<'a> CompileItemContext<'a, '_> {
                     self.refs.check_should_stop(expr.span)?;
 
                     let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
-                    let index_var =
-                        flow.var_new_immutable_init(index.span(), VariableId::Id(index), span_keyword, Ok(index_value));
+                    let index_var = flow.var_new_immutable_init(
+                        index.span(),
+                        VariableId::Id(index),
+                        span_keyword,
+                        Ok(index_value),
+                    )?;
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = Scope::new_child(scope_span, scope);
@@ -556,40 +559,67 @@ impl<'a> CompileItemContext<'a, '_> {
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
                 return Ok(ValueInner::Value(result));
             }
-            &ExpressionKind::ArrayIndex(base, ref indices) => {
-                self.eval_array_index_expression(scope, flow, base, indices)?
+            &ExpressionKind::ArrayIndex {
+                span_brackets,
+                base,
+                ref indices,
+            } => {
+                // eval base
+                let base = self.eval_expression(scope, flow, &Type::Any, base)?;
+
+                // TODO support nd arrays
+                // evaluate index
+                let index = indices
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional array indexing"))?;
+                let index = match index {
+                    &ArrayLiteralElement::Single(index) => index,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(index.span(), "multidimensional array indexing"));
+                    }
+                };
+
+                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let steps = ArraySteps::new(vec![Spanned::new(span_brackets, index_step)]);
+
+                // apply steps to value
+                steps.apply_to_value(self.refs, &mut self.large, base)?
             }
-            &ExpressionKind::ArrayType(ref lens, base) => {
-                let lens = lens
-                    .inner
-                    .iter()
-                    .map(|&len| {
-                        let len = match len {
-                            ArrayLiteralElement::Single(len) => len,
-                            ArrayLiteralElement::Spread(_, _) => {
-                                return Err(diags.report_todo(len.span(), "spread in array type lengths"));
-                            }
-                        };
-                        let ty_uint = Type::Int(MultiRange::from(Range {
-                            start: Some(BigInt::ZERO),
-                            end: None,
-                        }));
-                        let len = self.eval_expression_as_compile(scope, flow, &ty_uint, len, Spanned::new(expr.span, "array type length"))?;
-                        let reason = TypeContainsReason::ArrayLen { span_len: len.span };
-                        check_type_is_uint_compile(diags, elab, reason, len)
-                    })
-                    .try_collect_all_vec();
-                let base = self.eval_expression_as_ty(scope, flow, base);
+            &ExpressionKind::ArrayType {
+                span_brackets: _,
+                ref lengths,
+                inner_ty,
+            } => {
+                // TODO add syntax for "any-length" lists, maybe `[_]inner`, that also scales nicely?
+                // TODO support nd arrays
+                // evaluate length
+                let length = lengths
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                let length = match length {
+                    &ArrayLiteralElement::Single(length) => length,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(length.span(), "multidimensional arrays"));
+                    }
+                };
 
-                let lens = lens?;
-                let base = base?;
+                let ty_uint = Type::Int(MultiRange::from(Range {
+                    start: Some(BigInt::ZERO),
+                    end: None,
+                }));
+                let length = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &ty_uint,
+                    length,
+                    Spanned::new(expr.span, "array type length"),
+                )?;
+                let reason = TypeContainsReason::ArrayLen { span_len: length.span };
+                let length = check_type_is_uint_compile(diags, elab, reason, length)?;
 
-                // apply lengths inside-out
-                let result = lens
-                    .into_iter()
-                    .rev()
-                    .fold(base.inner, |acc, len| Type::Array(Arc::new(acc), len));
-                Value::new_ty(result)
+                // eval inner type and construct new array type
+                let inner_ty = self.eval_expression_as_ty(scope, flow, inner_ty)?;
+                Value::new_ty(Type::Array(Arc::new(inner_ty.inner), length))
             }
             &ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
@@ -660,7 +690,13 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
-                let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, Spanned::new(expr.span, "call target"))?;
+                let target = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::Any,
+                    target,
+                    Spanned::new(expr.span, "call target"),
+                )?;
 
                 // handle special cases that can't immediately evaluate their arguments
                 match target.inner {
@@ -726,7 +762,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 // evaluate value and domain
-                let flow_hw = flow.check_hardware(expr.span, "domain cast")?;
+                let flow_hw = flow.require_hardware(expr.span, "domain cast")?;
 
                 let value = {
                     // evaluate the value with disabled domain checks
@@ -775,8 +811,13 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // eval
                 let value = self.eval_expression(scope, flow, expected_ty, value);
-                let init =
-                    self.eval_expression_as_compile_or_undefined(scope, flow, expected_ty, init, Spanned::new(span_keyword, "register init"));
+                let init = self.eval_expression_as_compile_or_undefined(
+                    scope,
+                    flow,
+                    expected_ty,
+                    init,
+                    Spanned::new(span_keyword, "register init"),
+                );
                 let (value, init) = result_pair(value, init)?;
 
                 // figure out type
@@ -795,7 +836,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     diags.report(diag)
                 })?;
 
-                let flow = flow.check_hardware(expr.span, "register expression")?;
+                let flow = flow.require_hardware(expr.span, "register expression")?;
 
                 // convert values to hardware
                 let value =
@@ -927,7 +968,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let port = port_interface_info.ports[port_index];
 
-                let flow = flow.check_hardware(expr_span, "port access")?;
+                let flow = flow.require_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
                 return Ok(ValueInner::Value(ValueWithImplications::simple_version(port_eval)));
             }
@@ -949,7 +990,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })?;
                 let wire = wire_interface_info.wires[wire_index];
 
-                let flow = flow.check_hardware(expr_span, "wire access")?;
+                let flow = flow.require_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
                 return Ok(ValueInner::Value(ValueWithImplications::simple_version(wire_eval)));
             }
@@ -1225,32 +1266,12 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    fn eval_array_index_expression(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        base: Expression,
-        indices: &Spanned<Vec<Expression>>,
-    ) -> DiagResult<Value> {
-        let base = self.eval_expression(scope, flow, &Type::Any, base);
-        let steps = indices
-            .inner
-            .iter()
-            .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
-            .try_collect_all_vec();
-
-        let base = base?;
-        let steps = ArraySteps::new(steps?);
-
-        steps.apply_to_value(self.refs, &mut self.large, base)
-    }
-
     fn eval_expression_as_array_step(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
         index: Expression,
-    ) -> DiagResult<Spanned<ArrayStep>> {
+    ) -> DiagResult<ArrayStep> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1352,10 +1373,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
         };
 
-        Ok(Spanned {
-            span: index.span,
-            inner: step,
-        })
+        Ok(step)
     }
 
     pub fn eval_expression_as_compile(
@@ -1515,28 +1533,37 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 }
             }
-            ExpressionKind::ArrayIndex(inner_target, ref indices) => {
-                let inner_target = self.eval_expression_as_assign_target(scope, flow, inner_target);
-                let array_steps = indices
-                    .inner
-                    .iter()
-                    .map(|&index| self.eval_expression_as_array_step(scope, flow, index))
-                    .try_collect_all_vec();
+            ExpressionKind::ArrayIndex {
+                span_brackets,
+                base,
+                ref indices,
+            } => {
+                // eval base
+                let base = self.eval_expression_as_assign_target(scope, flow, base)?;
 
-                let inner_target = inner_target?;
-                let array_steps = ArraySteps::new(array_steps?);
+                // eval index
+                let index = indices
+                    .single_ref()
+                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                let index = match index {
+                    &ArrayLiteralElement::Single(index) => index,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_todo(index.span(), "multidimensional arrays"));
+                    }
+                };
 
+                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let index_step = Spanned::new(span_brackets, index_step);
+
+                // wrap result
                 let AssignmentTarget {
-                    base: inner_base,
-                    array_steps: inner_array_steps,
-                } = inner_target.inner;
-                if !inner_array_steps.is_empty() {
-                    return Err(diags.report_todo(expr.span, "combining target expressions"));
-                }
-
+                    base: base_inner,
+                    array_steps: mut inner_array_steps,
+                } = base.inner;
+                inner_array_steps.steps.push(index_step);
                 AssignmentTarget {
-                    base: inner_base,
-                    array_steps,
+                    base: base_inner,
+                    array_steps: inner_array_steps,
                 }
             }
             ExpressionKind::DotIndex(base, index) => {
@@ -1842,7 +1869,8 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        let eval = self.eval_expression_as_compile(scope, flow, &Type::Module, expr, Spanned::new(expr.span, "module"))?;
+        let eval =
+            self.eval_expression_as_compile(scope, flow, &Type::Module, expr, Spanned::new(expr.span, "module"))?;
 
         let reason = TypeContainsReason::InstanceModule(span_keyword);
         check_type_contains_value(diags, elab, reason, &Type::Module, eval.as_ref())?;
@@ -2740,13 +2768,13 @@ fn array_literal_combine_values(
         for elem in values {
             match elem {
                 ArrayLiteralElement::Single(elem_inner) => {
-                    let elem_inner = unwrap_match!(elem_inner.inner, Value::Simple(v) => v);
-                    result.push(CompileValue::Simple(elem_inner));
+                    let elem_inner = CompileValue::try_from(&elem_inner.inner).unwrap();
+                    result.push(elem_inner);
                 }
                 ArrayLiteralElement::Spread(span_spread, elem_inner) => {
-                    let elem_inner = unwrap_match!(elem_inner.inner, Value::Simple(v) => v);
+                    let elem_inner = CompileValue::try_from(&elem_inner.inner).unwrap();
                     let elem_inner_array = match elem_inner {
-                        SimpleCompileValue::Array(elem_inner) => elem_inner,
+                        CompileValue::Simple(SimpleCompileValue::Array(elem_inner)) => elem_inner,
                         _ => {
                             return Err(diags.report_internal_error(span_spread, "expected array value"));
                         }

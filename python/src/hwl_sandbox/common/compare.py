@@ -105,3 +105,8 @@ def compare_compile(
         eval_mod=eval_mod,
         eval_mod_inst=eval_mod_inst
     )
+
+
+def compare_expression(ty_inputs: List[str], ty_res: str, expr: str, tmp_dir: Path) -> CompiledCompare:
+    body = f"return {expr};"
+    return compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=tmp_dir)

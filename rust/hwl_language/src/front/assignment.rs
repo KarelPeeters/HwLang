@@ -119,7 +119,7 @@ impl CompileItemContext<'_, '_> {
         // TODO maybe type inference for wires based on processes is not actually a good idea,
         //   module instances should be enough
         // TODO maybe elaborate child instances first, before any blocks, since we can infer more info based on them
-        let flow = flow.check_hardware(stmt.span, "assignment to hardware signal")?;
+        let flow = flow.require_hardware(stmt.span, "assignment to hardware signal")?;
         let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base_signal)?;
 
         // suggest target type
@@ -149,7 +149,7 @@ impl CompileItemContext<'_, '_> {
         // get inner type and steps
         let target_base_ty = target_base_signal
             .inner
-            .ty(self, target_base.span)?
+            .expect_ty(self, target_base.span)?
             .map_inner(Clone::clone);
         let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
 
@@ -192,11 +192,6 @@ impl CompileItemContext<'_, '_> {
         };
         let value = value.map_inner(ValueWithImplications::into_value);
 
-        // report assignment after everything has been evaluated
-        // TODO report exact range/sub-access that is being assigned
-        // TODO report assigned value type and even the full compile value, so we have more information later on
-        flow.signal_assign(target_base_signal, target_steps.is_empty());
-
         // check type
         let reason = TypeContainsReason::Assignment {
             span_target: target.span,
@@ -205,9 +200,15 @@ impl CompileItemContext<'_, '_> {
         check_type_contains_value(diags, elab, reason, &target_ty.as_type(), value.as_ref())?;
 
         // convert value to hardware
+        //   use the values type itself here, if we expand now we lose the potentially more specific type
+        let value_ty = value
+            .inner
+            .ty()
+            .as_hardware_type(elab)
+            .expect("already checked that type is subtype of hardware type");
         let value_hw = value
             .inner
-            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, target_ty)?;
+            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, value_ty)?;
 
         // suggest and check domains
         let value_domain = Spanned {
@@ -229,18 +230,17 @@ impl CompileItemContext<'_, '_> {
             value_domain,
         )?;
 
-        // get ir target
-        let target_ir = IrAssignmentTarget {
-            base: target_base_signal
-                .inner
-                .as_ir_target_base(self, target_base.span)?
-                .into(),
-            steps: target_steps_ir,
-        };
-
-        // push ir statement
-        let stmt_ir = IrStatement::Assign(target_ir, value_hw.expr);
-        flow.push_ir_statement(Spanned::new(stmt.span, stmt_ir));
+        // do the actual assignment
+        let value_compile = CompileValue::try_from(&value.inner).ok();
+        flow.signal_assign(
+            self,
+            stmt.span,
+            target_base_signal,
+            target_steps_ir,
+            target_ty,
+            value_hw,
+            value_compile,
+        )?;
 
         Ok(())
     }
@@ -360,7 +360,7 @@ impl CompileItemContext<'_, '_> {
         if !target_base_var_info.mutable {
             let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?;
             if !is_simple_first_assignment {
-                let diag = Diagnostic::new("assignment to immutable variable that has already been initialized")
+                let diag = Diagnostic::new("cannot assign to immutable variable")
                     .add_error(target_base.span, "variable assigned to here")
                     .add_info(target_base_var_info.span_decl, "variable declared as immutable here")
                     .finish();
@@ -406,9 +406,9 @@ impl CompileItemContext<'_, '_> {
                 Value::Simple(value_inner) => Value::Simple(value_inner),
                 Value::Compound(value_inner) => Value::Compound(value_inner),
                 Value::Hardware(value_inner) => {
-                    let debug_info_id = target_base_info.id.str(self.refs.fixed.source).map(str::to_owned);
-                    let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
-                    let ir_var = store_ir_expression_in_new_variable(
+                    let debug_info_id = target_base_info.id.as_str(self.refs.fixed.source).map(str::to_owned);
+                    let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
+                    let ir_var = store_hardware_value_in_new_ir_variable(
                         self.refs,
                         flow,
                         target_base.span,
@@ -420,7 +420,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             // set variable
-            flow.var_set(target_base.inner, stmt_span, Ok(value_stored));
+            flow.var_set(target_base.inner, stmt_span, Ok(value_stored))?;
             return Ok(());
         }
 
@@ -434,7 +434,7 @@ impl CompileItemContext<'_, '_> {
         any_hardware |= CompileValue::try_from(&right_eval.inner).is_err();
 
         let result = if any_hardware {
-            let flow = flow.check_hardware(stmt_span, "assignment involving hardware value")?;
+            let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
 
             // figure out the assigned value
             // TODO propagate implications?
@@ -549,7 +549,7 @@ impl CompileItemContext<'_, '_> {
             Value::from(result_value)
         };
 
-        flow.var_set(target_base.inner, stmt_span, Ok(result));
+        flow.var_set(target_base.inner, stmt_span, Ok(result))?;
         Ok(())
     }
 
@@ -566,6 +566,7 @@ impl CompileItemContext<'_, '_> {
 
         // pick a type and convert the current base value to hardware
         // TODO allow just inferring types, the user can specify one if they really want to
+        //   especially infer types where the final type is obvious, eg. bool
         let target_var_info = flow.var_info(target_base)?;
         let target_base_ty = target_var_info.ty.as_ref().ok_or_else(|| {
             let diag = Diagnostic::new("variable needs type annotation")
@@ -596,8 +597,9 @@ impl CompileItemContext<'_, '_> {
         let target_base_ir_expr =
             target_base_eval.as_hardware_value_unchecked(refs, &mut self.large, target_base.span, target_base_ty_hw)?;
 
-        let debug_info_id = target_var_info.id.str(refs.fixed.source).map(str::to_owned);
-        let result = store_ir_expression_in_new_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
+        let debug_info_id = target_var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+        let result =
+            store_hardware_value_in_new_ir_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
 
         Ok(HardwareValue {
             ty: Spanned::new(target_base_ty_span, result.ty),
@@ -670,7 +672,7 @@ impl CompileItemContext<'_, '_> {
 }
 
 // TODO move to better place, maybe in Flow?
-pub fn store_ir_expression_in_new_variable(
+pub fn store_hardware_value_in_new_ir_variable(
     refs: CompileRefs,
     flow: &mut FlowHardware,
     span: Span,
