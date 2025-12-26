@@ -712,7 +712,7 @@ impl Module {
 
         // lower
         let (ir_database, ir_module, lowered_verilog) = self.lower_verilog_impl(py)?;
-        let lowered_verilator = lower_verilator(&ir_database.ir_modules, ir_module);
+        let lowered_verilator = lower_verilator(&ir_database.ir_modules, ir_module, &lowered_verilog);
 
         let LoweredVerilog {
             source: source_verilog,
@@ -722,6 +722,7 @@ impl Module {
         let LoweredVerilator {
             source: source_cpp,
             top_class_name,
+            check_hash,
         } = lowered_verilator;
 
         // write to files
@@ -792,7 +793,7 @@ impl Module {
 
         // load library
         let lib = unsafe {
-            VerilatedLib::new(&ir_database.ir_modules, ir_module, &path_so)
+            VerilatedLib::new(&ir_database.ir_modules, ir_module, check_hash, &path_so)
                 .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e}")))?
         };
         Ok(ModuleVerilated {

@@ -1,27 +1,35 @@
+use crate::back::lower_verilog::LoweredVerilog;
 use crate::mid::ir::{IrModule, IrModules};
 use crate::syntax::ast::PortDirection;
-use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
+use fnv::FnvHasher;
 use hwl_util::swriteln;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Itertools, enumerate};
 use regex::{Captures, Regex};
 use std::convert::identity;
-use std::num::NonZeroU16;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug)]
 pub struct LoweredVerilator {
     pub source: String,
     pub top_class_name: String,
+    pub check_hash: u64,
 }
 
 // TODO initialize ports to undefined or at least some valid value
-pub fn lower_verilator(modules: &IrModules, top_module: IrModule) -> LoweredVerilator {
+/// Generate verilator C++ that wraps the top-level module into a dynamically linkable C API.
+/// This can then be compiled and used by [super::wrap_verilator].
+///
+/// `source_hash` is used as an extra safety check to ensure that the correct module is being used at runtime,
+/// can be any arbitrary value but needs to match the one passed to [super::wrap_verilator::VerilatedLib::new].
+pub fn lower_verilator(modules: &IrModules, top_module: IrModule, verilog: &LoweredVerilog) -> LoweredVerilator {
     let top_module_info = &modules[top_module];
 
     const TEMPLATE: &str = include_str!("verilator_template.cpp");
     let mut replacements = IndexMap::new();
 
+    // insert pert accessors
     for dir in [PortDirection::Input, PortDirection::Output] {
         let prefix = match dir {
             PortDirection::Input => "set",
@@ -55,25 +63,34 @@ pub fn lower_verilator(modules: &IrModules, top_module: IrModule) -> LoweredVeri
                 "{indent}case {port_index}: return {prefix}_port_impl(wrapper->top->{port_name}, data_len, data);"
             );
         }
-        replacements.insert_first(format!("PORTS-{}", prefix.to_uppercase()), f);
+        replacements.insert_first(format!("PORTS_{}", prefix.to_uppercase()), f);
     }
 
-    let arena_random: NonZeroU16 = modules.check().inner();
-    replacements.insert_first("ARENA-RANDOM".to_owned(), arena_random.to_string());
-    replacements.insert_first("TOP-MODULE-INDEX".to_owned(), top_module.inner().index().to_string());
+    // insert check values
+    // TODO hash generated C++?
+    let check_hash = {
+        let mut hasher = FnvHasher::default();
+        verilog.source.hash(&mut hasher);
+        verilog.top_module_name.hash(&mut hasher);
+        TEMPLATE.hash(&mut hasher);
+        hasher.finish()
+    };
+    replacements.insert_first("CHECK_HASH".to_owned(), format!("{check_hash}u"));
 
+    // insert top class name
     const TOP_CLASS_NAME: &str = "VTop";
-    replacements.insert_first("TOP-CLASS-NAME".to_owned(), TOP_CLASS_NAME.to_owned());
+    replacements.insert_first("TOP_CLASS_NAME".to_owned(), TOP_CLASS_NAME.to_owned());
 
     let source = template_replace(TEMPLATE, &replacements).unwrap();
     LoweredVerilator {
         source,
         top_class_name: TOP_CLASS_NAME.to_owned(),
+        check_hash,
     }
 }
 
 fn template_replace(template: &str, replacements: &IndexMap<String, String>) -> Result<String, String> {
-    let regex = Regex::new("/\\*\\[TEMPLATE-(.+)]\\*/").unwrap();
+    let regex = Regex::new("/\\*\\[TEMPLATE_(.+)]\\*/").unwrap();
 
     let mut not_found = IndexSet::new();
     let mut used = vec![false; replacements.len()];

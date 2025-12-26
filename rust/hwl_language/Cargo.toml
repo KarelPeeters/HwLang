@@ -14,6 +14,7 @@ annotate-snippets.workspace = true
 dashmap.workspace = true
 derive_more.workspace = true
 dlopen2 = { workspace = true, optional = true }
+fnv.workspace = true
 indexmap = { workspace = true, features = ["serde"] }
 itertools.workspace = true
 lalrpop-util.workspace = true

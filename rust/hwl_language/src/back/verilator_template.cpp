@@ -4,7 +4,7 @@
 
 #include "verilated.h"
 #include "verilated_vcd_c.h"
-#include "/*[TEMPLATE-TOP-CLASS-NAME]*/.h"
+#include "/*[TEMPLATE_TOP_CLASS_NAME]*/.h"
 
 typedef uint8_t Result;
 const Result SUCCESS = 0;
@@ -100,10 +100,10 @@ Result set_port_impl(VlWide<W> &port, size_t data_len, uint8_t const *data) {
 class Wrapper {
    public:
     VerilatedContext *context;
-    /*[TEMPLATE-TOP-CLASS-NAME]*/ *top;
+    /*[TEMPLATE_TOP_CLASS_NAME]*/ *top;
     VerilatedVcdC *trace;
 
-    Wrapper(char *trace_path) : context(new VerilatedContext()), top(new /*[TEMPLATE-TOP-CLASS-NAME]*/(context)), trace(nullptr) {
+    Wrapper(char *trace_path) : context(new VerilatedContext()), top(new /*[TEMPLATE_TOP_CLASS_NAME]*/(context)), trace(nullptr) {
         if (trace_path) {
             context->traceEverOn(true);
             trace = new VerilatedVcdC();
@@ -123,13 +123,8 @@ class Wrapper {
 //     that prefixes all ports so they never conflict with any builtin
 //     properties
 extern "C" {
-    Result check(uint16_t arena_random, size_t top_module_index) {
-        const uint16_t expected_arena_random = /*[TEMPLATE-ARENA-RANDOM]*/;
-        const size_t expected_top_module_index = /*[TEMPLATE-TOP-MODULE-INDEX]*/;
-        if (arena_random != expected_arena_random || top_module_index != expected_top_module_index) {
-            return FAIL_CHECK;
-        }
-        return SUCCESS;
+    uint64_t check_hash() {
+        return /*[TEMPLATE_CHECK_HASH]*/;
     }
 
     Wrapper *create_instance(char *trace_path) {
@@ -170,7 +165,7 @@ extern "C" {
     Result get_port(Wrapper *wrapper, uint32_t port_index, size_t data_len, uint8_t *data) {
         // clang-format off
         switch (port_index) {
-            /*[TEMPLATE-PORTS-GET]*/
+            /*[TEMPLATE_PORTS_GET]*/
             default: return FAIL_INVALID_PORT;
         }
         // clang-format on
@@ -180,7 +175,7 @@ extern "C" {
         // TODO check somewhere that sync signals only change on the right edges?
         // clang-format off
         switch (port_index) {
-            /*[TEMPLATE-PORTS-SET]*/
+            /*[TEMPLATE_PORTS_SET]*/
             default: return FAIL_INVALID_PORT;
         }
         // clang-format on

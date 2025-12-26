@@ -53,7 +53,7 @@ impl From<dlopen2::Error> for VerilatorError {
 
 #[derive(WrapperApi)]
 struct VerilatedApi {
-    check: unsafe extern "C" fn(arena_random: u16, top_module_index: usize) -> u8,
+    check_hash: unsafe extern "C" fn() -> u64,
     create_instance: unsafe extern "C" fn(trace_path: *const c_char) -> *mut c_void,
     destroy_instance: unsafe extern "C" fn(instance: *mut c_void),
     save_trace: unsafe extern "C" fn(instance: *mut c_void),
@@ -89,15 +89,20 @@ impl VerilatedLib {
     /// The conditions above must be met, there is no runtime way to fully check for them.
     /// We only make a best-effort to check that the right functions are present in the library
     /// and that the same `modules` and `top_module` were used.
-    pub unsafe fn new(modules: &IrModules, top_module: IrModule, path: &Path) -> Result<Self, VerilatorError> {
-        let (lib, result) = unsafe {
+    pub unsafe fn new(
+        modules: &IrModules,
+        top_module: IrModule,
+        check_hash: u64,
+        path: &Path,
+    ) -> Result<Self, VerilatorError> {
+        let lib = unsafe {
             let lib: Container<VerilatedApi> = Container::load(path)?;
-            let result = lib.check(modules.check().inner().get(), top_module.inner().index());
-            (lib, result)
+            let check_hash_actual = lib.check_hash();
+            if check_hash_actual != check_hash {
+                return Err(VerilatorError::CheckFailed);
+            }
+            lib
         };
-        if result != 0 {
-            return Err(VerilatorError::CheckFailed);
-        }
 
         let top_info = &modules[top_module];
         let ports_named = top_info.ports.iter().map(|(p, info)| (info.name.clone(), p)).collect();
