@@ -41,8 +41,8 @@ pub struct LoweredVerilog {
 // TODO identifier ID: prefix _all_ signals with something: wire, reg, local, ...,
 //   so nothing can conflict with ports/module names. Not fully right yet, but maybe a good idea.
 // TODO avoid a bunch of string allocations
-// TODO for shadowing, don't write back once at the end, instead write through immediately,
-//   to hopefully get some better synthesis
+// TODO should we always shadow output ports with intermediate signals so we can read back from them,
+//   even in old verilog versions?
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     modules: &IrModules,
@@ -206,43 +206,49 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult 
     Ok(())
 }
 
-impl<'n> NameMap<'n> {
-    pub fn map_signal_or_var(&self, v: IrSignalOrVariable) -> Result<&'n LoweredName, Either<ZeroWidth, NotRead>> {
-        match v {
-            IrSignalOrVariable::Signal(v) => self.map_signal(v).map_err(Either::Left),
-            IrSignalOrVariable::Variable(v) => self.map_var(v),
-        }
-    }
-
-    pub fn map_signal(&self, signal: IrSignal) -> Result<&'n LoweredName, ZeroWidth> {
-        match signal {
-            IrSignal::Port(port) => self.ports.get(&port).unwrap().as_ref_ok(),
-            IrSignal::Wire(wire) => self.wires.get(&wire).unwrap().as_ref_ok(),
-            IrSignal::Register(reg) => self.map_reg(reg),
-        }
-    }
-
-    pub fn map_reg(&self, reg: IrRegister) -> Result<&'n LoweredName, ZeroWidth> {
-        match self.regs_shadowed.get(&reg) {
-            Some(name) => Ok(name),
-            None => self.regs_outer.get(&reg).unwrap().as_ref_ok(),
-        }
-    }
-
-    pub fn map_var(self, var: IrVariable) -> Result<&'n LoweredName, Either<ZeroWidth, NotRead>> {
-        self.variables.get(&var).unwrap().as_ref_ok()
-    }
+#[derive(Debug, Copy, Clone)]
+struct ModuleNameMap<'n> {
+    ports: &'n IndexMap<IrPort, Result<LoweredName, ZeroWidth>>,
+    wires: &'n IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
+    regs: &'n IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
 }
 
 #[derive(Debug, Copy, Clone)]
-struct NameMap<'n> {
-    ports: &'n IndexMap<IrPort, Result<LoweredName, ZeroWidth>>,
-    wires: &'n IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
+struct ProcessNameMap<'n> {
+    module_name_map: ModuleNameMap<'n>,
     regs_shadowed: &'n IndexMap<IrRegister, LoweredName>,
-    regs_outer: &'n IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
-    variables: &'n IndexMap<IrVariable, Result<LoweredName, Either<ZeroWidth, NotRead>>>,
+    variables: &'n IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>,
 }
 
+impl<'n> ModuleNameMap<'n> {
+    pub fn map_signal(&self, s: IrSignal) -> Result<&'n LoweredName, ZeroWidth> {
+        match s {
+            IrSignal::Port(port) => self.ports.get(&port).unwrap().as_ref_ok(),
+            IrSignal::Wire(wire) => self.wires.get(&wire).unwrap().as_ref_ok(),
+            IrSignal::Register(reg) => self.regs.get(&reg).unwrap().as_ref_ok(),
+        }
+    }
+}
+
+impl<'n> ProcessNameMap<'n> {
+    pub fn read_signal(&self, signal: IrSignal) -> Result<&'n LoweredName, ZeroWidth> {
+        match signal {
+            IrSignal::Port(_) | IrSignal::Wire(_) => self.module_name_map.map_signal(signal),
+            IrSignal::Register(reg) => match self.regs_shadowed.get(&reg) {
+                Some(name) => Ok(name),
+                None => self.module_name_map.map_signal(signal),
+            },
+        }
+    }
+
+    pub fn map_var(&self, v: IrVariable) -> Result<&'n LoweredName, ZeroWidth> {
+        self.variables.get(&v).unwrap().as_ref_ok()
+    }
+}
+
+// Processes with empty sensitivity lists never run, not even at startup
+// to avoid this, we make all combinatorial processes sensitive to a dummy signal.
+// In many cases this dummy signal could be skipped, but that's extra unnecessary complexity.
 const SENSITIVITY_DUMMY_NAME_SIGNAL: &str = "dummy";
 const SENSITIVITY_DUMMY_NAME_VAR: &str = "dummy_var";
 
@@ -253,10 +259,10 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     let module_info = &ctx.modules[module];
     let IrModuleInfo {
         ports,
-        large,
+        large: _,
         registers,
         wires,
-        children: processes,
+        children: _,
         debug_info_file,
         debug_info_id,
         debug_info_generic_args,
@@ -292,6 +298,11 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         &mut newline_module,
         &mut f,
     )?;
+    let module_names = ModuleNameMap {
+        ports: &port_name_map,
+        wires: &wire_name_map,
+        regs: &reg_name_map,
+    };
 
     // declare dummy signal, used to ensure combinatorial block sensitivity lists are never empty
     // TODO only declare when actually used?
@@ -306,15 +317,10 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
     lower_module_statements(
         ctx,
-        large,
         module_info,
         &mut module_name_scope,
         &dummy_name,
-        &port_name_map,
-        &reg_name_map,
-        &wire_name_map,
-        registers,
-        processes,
+        module_names,
         &mut newline_module,
         &mut f,
     )?;
@@ -475,43 +481,33 @@ fn lower_module_signals(
 
 fn lower_module_statements(
     ctx: &mut LowerContext,
-    large: &IrLargeArena,
-    module: &IrModuleInfo,
+    module_info: &IrModuleInfo,
     module_name_scope: &mut LoweredNameScope,
     dummy_name: &LoweredName,
-    port_name_map: &IndexMap<IrPort, Result<LoweredName, ZeroWidth>>,
-    reg_name_map: &IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
-    wire_name_map: &IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
-    registers: &Arena<IrRegister, IrRegisterInfo>,
-    children: &[Spanned<IrModuleChild>],
+    module_name_map: ModuleNameMap,
     newline_module: &mut NewlineGenerator,
     f: &mut String,
 ) -> DiagResult {
     let diags = ctx.diags;
+    let large = &module_info.large;
 
-    for (child_index, child) in enumerate(children) {
+    for (child_index, child) in enumerate(&module_info.children) {
         newline_module.start_group_and_item(f);
 
         match &child.inner {
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
-                let variables_read = collect_variables_read_and_shadow_registers(large, block, None);
 
                 swriteln!(f, "{I}always @(*) begin");
                 let indent = Indent::new(2);
 
-                // Processes with empty sensitivity lists never run, not even at startup
-                //   to avoid this, we make all combinatorial processes sensitive to a dummy signal.
-                //   Determining when this can be skipped is tricky,
-                //   not all IRSignals that are used actually end up being used in the generated verilog.
                 let mut name_scope = module_name_scope.new_child();
                 let dummy_name_internal =
                     name_scope.make_unique_str(diags, child.span, SENSITIVITY_DUMMY_NAME_VAR, false)?;
                 swriteln!(f, "{indent}reg {dummy_name_internal};");
 
                 let mut newline_process = NewlineGenerator::new();
-                let variables =
-                    declare_locals(diags, f, &mut newline_process, &mut name_scope, locals, variables_read)?;
+                let variables = declare_locals(diags, f, &mut newline_process, &mut name_scope, locals)?;
 
                 let temporaries = GrowVec::new();
                 let temporaries_offset = f.len();
@@ -519,10 +515,9 @@ fn lower_module_statements(
                 newline_process.start_item(f);
                 swriteln!(f, "{indent}{dummy_name_internal} = {dummy_name};");
 
-                let name_map = NameMap {
-                    ports: port_name_map,
-                    wires: wire_name_map,
-                    regs_outer: reg_name_map,
+                // combinatorial processes don't have register shadowing, they can't write to any
+                let process_name_map = ProcessNameMap {
+                    module_name_map,
                     regs_shadowed: &IndexMap::default(),
                     variables: &variables,
                 };
@@ -530,9 +525,9 @@ fn lower_module_statements(
                 let mut ctx = LowerBlockContext {
                     diags,
                     large,
-                    module,
+                    module: module_info,
                     locals,
-                    name_map,
+                    name_map: process_name_map,
                     name_scope: &mut name_scope,
                     temporaries: &temporaries,
                     indent,
@@ -554,19 +549,11 @@ fn lower_module_statements(
                 } = process;
 
                 // lower the edges
-                let outer_name_map = NameMap {
-                    ports: port_name_map,
-                    wires: wire_name_map,
-                    regs_outer: reg_name_map,
-                    regs_shadowed: &IndexMap::default(),
-                    variables: &IndexMap::new(),
-                };
-
-                let clock_edge = lower_edge(diags, outer_name_map, clock_signal)?;
+                let clock_edge = lower_edge(diags, module_name_map, clock_signal)?;
                 let async_reset = async_reset
                     .as_ref()
                     .map(|info| {
-                        let reset_edge = lower_edge(diags, outer_name_map, info.signal)?;
+                        let reset_edge = lower_edge(diags, module_name_map, info.signal)?;
                         Ok((reset_edge, info))
                     })
                     .transpose()?;
@@ -587,17 +574,27 @@ fn lower_module_statements(
                 let mut name_scope = module_name_scope.new_child();
 
                 // declare locals and shadow registers
-                let mut shadow_regs = IndexMap::new();
-                let variables_read =
-                    collect_variables_read_and_shadow_registers(large, clock_block, Some(&mut shadow_regs));
+                let shadow_regs = collect_shadow_signals(large, clock_block);
 
-                let variables =
-                    declare_locals(diags, f, &mut newline_process, &mut name_scope, locals, variables_read)?;
-                let reg_name_map_shadowed =
-                    declare_shadow_registers(diags, f, &mut newline_process, &mut name_scope, registers, &shadow_regs)?;
+                let variables = declare_locals(diags, f, &mut newline_process, &mut name_scope, locals)?;
+                let reg_name_map_shadowed = declare_shadow_registers(
+                    diags,
+                    f,
+                    &mut newline_process,
+                    &mut name_scope,
+                    &module_info.registers,
+                    &shadow_regs,
+                )?;
 
                 let temporaries = GrowVec::new();
                 let temporaries_offset = f.len();
+
+                // build new name map
+                let process_name_map = ProcessNameMap {
+                    module_name_map,
+                    regs_shadowed: &reg_name_map_shadowed,
+                    variables: &variables,
+                };
 
                 // async reset header if any
                 let indent_clocked = match &async_reset {
@@ -605,32 +602,34 @@ fn lower_module_statements(
                     Some((reset_edge, reset_info)) => {
                         let IrAsyncResetInfo { signal: _, resets } = reset_info;
 
-                        // reset, using outer name map (no shadowing necessary since we only write)
                         swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.signal);
                         let indent_inner = Indent::new(3);
 
+                        let mut ctx_reset = LowerBlockContext {
+                            diags,
+                            large,
+                            module: module_info,
+                            locals,
+                            name_map: process_name_map,
+                            name_scope: &mut name_scope,
+                            temporaries: &temporaries,
+                            indent: indent_inner,
+                            newline: &mut newline_process,
+                            f,
+                        };
+
+                        // TODO should resets use blocking or non-blocking assignments?
                         for reset in resets {
-                            let (reg, value) = &reset.inner;
-                            let reg_name = match reg_name_map.get(reg).unwrap() {
+                            let &(reg, ref value) = &reset.inner;
+
+                            // use non-shadowed name
+                            let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
                                 Ok(reg_name) => reg_name,
                                 Err(ZeroWidth) => continue,
                             };
 
-                            let mut ctx_reset = LowerBlockContext {
-                                diags,
-                                large,
-                                module,
-                                locals,
-                                name_map: outer_name_map,
-                                name_scope: &mut name_scope,
-                                temporaries: &temporaries,
-                                indent: indent_inner,
-                                newline: &mut newline_process,
-                                f,
-                            };
-
                             let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
-                            swriteln!(f, "{indent_inner}{reg_name} <= {value};");
+                            swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} = {value};");
                         }
 
                         swriteln!(f, "{I}{I}end else begin");
@@ -640,33 +639,25 @@ fn lower_module_statements(
 
                 // populate shadow registers
                 newline_process.start_group();
-                for (&reg, shadow_name) in &reg_name_map_shadowed {
-                    let access = &shadow_regs[&reg];
-                    if access.any_read {
+                for (&reg, reg_name_shadow) in &reg_name_map_shadowed {
+                    if shadow_regs.contains(&reg) {
                         newline_process.start_item(f);
-                        let orig_name = match reg_name_map.get(&reg).unwrap() {
+                        let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
                             Ok(orig_name) => orig_name,
                             Err(ZeroWidth) => continue,
                         };
-                        swriteln!(f, "{indent_clocked}{shadow_name} = {orig_name};");
+                        swriteln!(f, "{indent_clocked}{reg_name_shadow} = {reg_name_raw};");
                     }
                 }
 
-                // lower body itself, using inner name map (with shadowing)
-                let inner_name_map = NameMap {
-                    ports: port_name_map,
-                    regs_outer: reg_name_map,
-                    regs_shadowed: &reg_name_map_shadowed,
-                    wires: wire_name_map,
-                    variables: &variables,
-                };
+                // lower body itself
                 newline_process.start_group();
                 let mut ctx = LowerBlockContext {
                     diags,
                     large,
-                    module,
+                    module: module_info,
                     locals,
-                    name_map: inner_name_map,
+                    name_map: process_name_map,
                     name_scope: &mut name_scope,
                     temporaries: &temporaries,
                     indent: indent_clocked,
@@ -675,18 +666,8 @@ fn lower_module_statements(
                 };
                 ctx.lower_block(clock_block)?;
 
+                // go back and insert temporary declarations at the start of the process
                 declare_temporaries(f, temporaries_offset, temporaries);
-
-                // write-back shadow registers
-                newline_process.start_group();
-                for (&reg, shadow_name) in &reg_name_map_shadowed {
-                    newline_process.start_item(f);
-                    let orig_name = match reg_name_map.get(&reg).unwrap() {
-                        Ok(orig_name) => orig_name,
-                        Err(ZeroWidth) => continue,
-                    };
-                    swriteln!(f, "{indent_clocked}{orig_name} <= {shadow_name};");
-                }
 
                 // reset tail
                 if async_reset.is_some() {
@@ -712,19 +693,12 @@ fn lower_module_statements(
                     swrite!(f, "{I}{inner_module_name} instance_{child_index}");
                 }
 
-                let name_map = NameMap {
-                    ports: port_name_map,
-                    regs_outer: reg_name_map,
-                    regs_shadowed: &IndexMap::default(),
-                    wires: wire_name_map,
-                    variables: &IndexMap::new(),
-                };
                 let port_name = |port_index| {
                     // TODO avoid clone here
                     let (_port, name) = inner_module.ports.get_index(port_index).unwrap();
                     name.clone()
                 };
-                lower_port_connections(f, name_map, port_name, port_connections)?;
+                lower_port_connections(f, port_connections, module_name_map, port_name)?;
             }
             IrModuleChild::ModuleExternalInstance(instance) => {
                 let IrModuleExternalInstance {
@@ -757,15 +731,8 @@ fn lower_module_statements(
                     swrite!(f, " instance_{child_index}");
                 }
 
-                let name_map = NameMap {
-                    ports: port_name_map,
-                    regs_outer: reg_name_map,
-                    regs_shadowed: &IndexMap::default(),
-                    wires: wire_name_map,
-                    variables: &IndexMap::new(),
-                };
                 let port_name = |port_index: usize| Ok(LoweredName(&port_names[port_index]));
-                lower_port_connections(f, name_map, port_name, port_connections)?;
+                lower_port_connections(f, port_connections, module_name_map, port_name)?;
             }
         }
     }
@@ -775,13 +742,13 @@ fn lower_module_statements(
 
 fn lower_port_connections<S: AsRef<str>>(
     f: &mut String,
-    name_map: NameMap,
-    port_name: impl Fn(usize) -> Result<LoweredName<S>, ZeroWidth>,
-    port_connections: &Vec<Spanned<IrPortConnection>>,
+    instance_connections: &Vec<Spanned<IrPortConnection>>,
+    parent_name_map: ModuleNameMap,
+    child_port_name: impl Fn(usize) -> Result<LoweredName<S>, ZeroWidth>,
 ) -> DiagResult {
     swrite!(f, "(");
 
-    if port_connections.is_empty() {
+    if instance_connections.is_empty() {
         swriteln!(f, ");");
         return Ok(());
     }
@@ -789,8 +756,8 @@ fn lower_port_connections<S: AsRef<str>>(
 
     let mut first = true;
 
-    for (port_index, connection) in enumerate(port_connections) {
-        let port_name = match port_name(port_index) {
+    for (port_index, connection) in enumerate(instance_connections) {
+        let port_name = match child_port_name(port_index) {
             Ok(port_name) => port_name,
             Err(ZeroWidth) => continue,
         };
@@ -802,7 +769,7 @@ fn lower_port_connections<S: AsRef<str>>(
 
         match connection.inner {
             IrPortConnection::Input(expr) => {
-                let signal_name = unwrap_zero_width(name_map.map_signal(expr.inner));
+                let signal_name = unwrap_zero_width(parent_name_map.map_signal(expr.inner));
                 swrite!(f, "{signal_name}");
             }
             IrPortConnection::Output(signal) => {
@@ -811,7 +778,7 @@ fn lower_port_connections<S: AsRef<str>>(
                         // write nothing, resulting in an empty `()`
                     }
                     Some(signal) => {
-                        let signal_name = unwrap_zero_width(name_map.map_signal(signal.as_signal()));
+                        let signal_name = unwrap_zero_width(parent_name_map.map_signal(signal.as_signal()));
                         swrite!(f, "{signal_name}");
                     }
                 }
@@ -830,9 +797,6 @@ fn lower_port_connections<S: AsRef<str>>(
 }
 
 #[derive(Debug, Copy, Clone)]
-struct NotRead;
-
-#[derive(Debug, Copy, Clone)]
 struct ZeroWidth;
 
 // TODO blocks with variables must be named
@@ -844,31 +808,28 @@ fn declare_locals(
     newline: &mut NewlineGenerator,
     name_scope: &mut LoweredNameScope,
     locals: &IrVariables,
-    variables_read: IndexSet<IrVariable>,
-) -> DiagResult<IndexMap<IrVariable, Result<LoweredName, Either<ZeroWidth, NotRead>>>> {
+) -> DiagResult<IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>> {
     let mut result = IndexMap::new();
 
     for (variable, variable_info) in locals {
-        let name = if variables_read.contains(&variable) {
-            let &IrVariableInfo {
-                ref ty,
-                debug_info_span,
-                ref debug_info_id,
-            } = variable_info;
+        let &IrVariableInfo {
+            ref ty,
+            debug_info_span,
+            ref debug_info_id,
+        } = variable_info;
 
-            match VerilogType::new_from_ir(diags, debug_info_span, ty)? {
-                Ok(ty_verilog) => {
-                    let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
-                    let name = name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+        let ty_verilog = VerilogType::new_from_ir(diags, debug_info_span, ty)?;
 
-                    newline.start_item(f);
-                    declare_local(f, ty_verilog, &name);
-                    Ok(name)
-                }
-                Err(ZeroWidth) => Err(Either::Left(ZeroWidth)),
+        let name = match ty_verilog {
+            Ok(ty_verilog) => {
+                let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
+                let name = name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+                newline.start_item(f);
+                declare_local(f, ty_verilog, &name);
+                Ok(name)
             }
-        } else {
-            Err(Either::Right(NotRead))
+            Err(ZeroWidth) => Err(ZeroWidth),
         };
 
         result.insert_first(variable, name);
@@ -883,11 +844,11 @@ fn declare_shadow_registers(
     newline: &mut NewlineGenerator,
     module_name_scope: &mut LoweredNameScope,
     registers: &Arena<IrRegister, IrRegisterInfo>,
-    shadow_regs: &IndexMap<IrRegister, AccessInfo>,
+    shadow_regs: &IndexSet<IrRegister>,
 ) -> DiagResult<IndexMap<IrRegister, LoweredName>> {
     let mut shadowing_reg_name_map = IndexMap::new();
 
-    for &reg in shadow_regs.keys() {
+    for &reg in shadow_regs {
         let register_info = &registers[reg];
         let debug_info_id = maybe_id_as_ref(&register_info.debug_info_id);
 
@@ -941,35 +902,36 @@ struct AccessInfo {
     any_write: bool,
 }
 
-fn collect_variables_read_and_shadow_registers(
-    large: &IrLargeArena,
-    block: &IrBlock,
-    mut shadow_regs: Option<&mut IndexMap<IrRegister, AccessInfo>>,
-) -> IndexSet<IrVariable> {
-    let mut variables_read = IndexSet::new();
+/// Collect all registers that should be shadowed.
+/// Shadowed registers get a local variable in the process that at all times stores a copy of the value in the signal.
+/// Writes to the register write to both the signal and the shadow variable, reads read from the shadow variable.
+///
+/// This ensures we implement the correct signal write behavior:
+/// Reads after writes in a process should read the new value, not the old one.
+/// But clocked block register writes should use non-blocking `<=` assignments, which would have the wrong behavior.
+///
+/// We still implement write-through on every assignment instead of only once at the end of the process,
+/// to keep the generated code similar to what users would write,
+/// and to hopefully better pattern match synthesis tool optimizations like clock gating.
+fn collect_shadow_signals(large: &IrLargeArena, block: &IrBlock) -> IndexSet<IrRegister> {
+    let mut regs: IndexMap<IrRegister, AccessInfo> = IndexMap::new();
 
-    block.visit_values_accessed(large, &mut |signal, access| match (signal, access) {
-        (IrSignalOrVariable::Variable(v), ValueAccess::Read) => {
-            variables_read.insert(v);
-        }
-        (IrSignalOrVariable::Signal(IrSignal::Register(reg)), access) => {
-            if let Some(shadow_regs) = &mut shadow_regs {
-                let entry = shadow_regs.entry(reg).or_default();
-                match access {
-                    ValueAccess::Read => entry.any_read = true,
-                    ValueAccess::Write => entry.any_write = true,
-                }
+    block.visit_values_accessed(large, &mut |value, access| match value {
+        IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
+            let entry = regs.entry(reg).or_default();
+            match access {
+                ValueAccess::Read => entry.any_read = true,
+                ValueAccess::Write => entry.any_write = true,
             }
         }
         _ => {}
     });
 
-    if let Some(shadow_regs) = &mut shadow_regs {
-        // we only need to shadow registers that are written to
-        shadow_regs.retain(|_, k| k.any_write);
-    }
-
-    variables_read
+    // TODO avoid reallocation here
+    regs.into_iter()
+        .filter(|(_, access)| access.any_write && access.any_read)
+        .map(|(s, _)| s)
+        .collect()
 }
 
 #[derive(Debug)]
@@ -1049,7 +1011,7 @@ struct LowerBlockContext<'a, 'n> {
     module: &'a IrModuleInfo,
     locals: &'a IrVariables,
 
-    name_map: NameMap<'n>,
+    name_map: ProcessNameMap<'n>,
     name_scope: &'a mut LoweredNameScope<'n>,
     temporaries: &'n GrowVec<TemporaryInfo>,
 
@@ -1086,18 +1048,11 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let target = match self.lower_assign_target(stmt.span, target)? {
-                    Ok(target) => target,
-                    Err(e) => {
-                        let _: Either<ZeroWidth, NotRead> = e;
-                        return Ok(());
-                    }
-                };
                 let source = match self.lower_expression(stmt.span, source)? {
                     Ok(source) => source,
                     Err(ZeroWidth) => return Ok(()),
                 };
-                swriteln!(self.f, "{indent}{target} = {source};");
+                self.lower_assignment(stmt.span, target, source)?;
             }
             IrStatement::Block(inner) => {
                 swriteln!(self.f, "{indent}begin");
@@ -1137,11 +1092,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Ok(index_ty) => {
                             let index = match self.name_map.map_var(index) {
                                 Ok(index) => index,
-                                Err(Either::Left(ZeroWidth)) => {
+                                Err(ZeroWidth) => {
                                     return Err(diags.report_internal_error(stmt.span, "index var zero-width"));
-                                }
-                                Err(Either::Right(NotRead)) => {
-                                    return Err(diags.report_internal_error(stmt.span, "index var not read"));
                                 }
                             };
 
@@ -1247,14 +1199,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 lower_int_constant(&range, x)
             }
 
-            &IrExpression::Signal(s) => Evaluated::Name(unwrap_zero_width(name_map.map_signal(s))),
-            &IrExpression::Variable(v) => {
-                Evaluated::Name(name_map.map_var(v).map_err(|e: Either<ZeroWidth, NotRead>| {
-                    let _: NotRead = unwrap_zero_width(e.into());
-                    self.diags.report_internal_error(span, "reading from not-read variable")
-                })?)
-            }
-
+            &IrExpression::Signal(s) => Evaluated::Name(unwrap_zero_width(name_map.read_signal(s))),
+            &IrExpression::Variable(v) => Evaluated::Name(unwrap_zero_width(name_map.map_var(v))),
             &IrExpression::Large(expr) => {
                 match &self.large[expr] {
                     IrExpressionLarge::Undefined(_) => {
@@ -1633,29 +1579,54 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(value)
     }
 
-    fn lower_assign_target(
-        &mut self,
-        span: Span,
-        target: &IrAssignmentTarget,
-    ) -> DiagResult<Result<Evaluated<'n>, Either<ZeroWidth, NotRead>>> {
+    fn lower_assignment(&mut self, span: Span, target: &IrAssignmentTarget, source: Evaluated<'n>) -> DiagResult {
         // TODO constant fold if some indices are constant?
         // TODO expose the extra knowledge we have about integer ranges to verilog?
-
         let &IrAssignmentTarget { base, ref steps } = target;
 
-        // early exit for simple cases to preserve that this is just a name
-        let base_name = try_inner!(self.name_map.map_signal_or_var(base));
-        if steps.is_empty() {
-            return Ok(Ok(Evaluated::Name(base_name)));
+        // evaluate indexing steps
+        let base_ty = base.as_expression().ty(self.module, self.locals);
+        let steps = self.build_target_steps(span, base_ty, steps)?;
+
+        // actually do the assignment(s)
+        let mut append_assign = |target: &LoweredName, assign_op: &str| {
+            let indent = self.indent;
+            swriteln!(self.f, "{indent}{target}{steps} {assign_op} {source};");
+        };
+        match base {
+            IrSignalOrVariable::Variable(var) => {
+                let name = unwrap_zero_width(self.name_map.map_var(var));
+                append_assign(name, "=");
+            }
+            IrSignalOrVariable::Signal(signal) => match signal {
+                IrSignal::Port(_) | IrSignal::Wire(_) => {
+                    let name = unwrap_zero_width(self.name_map.module_name_map.map_signal(signal));
+                    append_assign(name, "=");
+                }
+                IrSignal::Register(reg) => {
+                    let name_raw = unwrap_zero_width(self.name_map.module_name_map.map_signal(signal));
+                    let name_shadow = self.name_map.regs_shadowed.get(&reg);
+
+                    append_assign(name_raw, "<=");
+                    if let Some(name_shadow) = name_shadow {
+                        append_assign(name_shadow, "=");
+                    }
+                }
+            },
         }
 
-        // get base type info
-        let base_ty = base.as_expression().ty(self.module, self.locals);
-        let bit_range = bit_index_range(&base_ty.size_bits());
+        Ok(())
+    }
 
-        // start building index expression
+    fn build_target_steps(&mut self, span: Span, base_ty: IrType, steps: &[IrTargetStep]) -> DiagResult<String> {
+        // if there are no steps, skip entirely
+        if steps.is_empty() {
+            return Ok(String::new());
+        }
+
+        // string building utils
         let mut g = String::new();
-        swrite!(g, "{base_name}[");
+        swrite!(g, "[");
 
         let mut is_first_offset = true;
         let mut add_offset = |index: Evaluated, size_bits: &BigUint| {
@@ -1670,8 +1641,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
         };
 
-        // handle indexing operations
+        // handle steps
+        let bit_range = bit_index_range(&base_ty.size_bits());
         let mut curr_ty = base_ty;
+
         for step in steps {
             curr_ty = match step {
                 IrTargetStep::ArrayIndex(index) => {
@@ -1703,7 +1676,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         }
         swrite!(g, "]");
 
-        Ok(Ok(Evaluated::String(g)))
+        Ok(g)
     }
 
     fn new_temporary(&mut self, span: Span, ty: VerilogType) -> DiagResult<Temporary<'n>> {
@@ -1789,7 +1762,7 @@ struct EdgeString<'n> {
 
 fn lower_edge<'n>(
     diags: &Diagnostics,
-    name_map: NameMap<'n>,
+    name_map: ModuleNameMap<'n>,
     expr: Spanned<Polarized<IrSignal>>,
 ) -> DiagResult<EdgeString<'n>> {
     let Polarized { inverted, signal } = expr.inner;

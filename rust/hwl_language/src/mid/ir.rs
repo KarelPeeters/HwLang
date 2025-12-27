@@ -1,3 +1,12 @@
+//! Intermediate representation (IR) for hardware modules.
+//!
+//! The execution/memory model for processes is:
+//! * all writes are immediately visible to later reads in the current block
+//! * writes only become visible to other blocks once all blocks (recursively) triggered by the current event
+//!   have fully finished running.
+//!
+//! If a local variable is read without being written to, the resulting value is undefined.
+
 use crate::front::signal::Polarized;
 use crate::front::types::HardwareType;
 use crate::new_index_type;
@@ -129,17 +138,6 @@ pub enum IrModuleChild {
     ModuleExternalInstance(IrModuleExternalInstance),
 }
 
-// TODO change the execution model and block representation:
-//  * processes must explicitly request signals to read and report signals they drive
-//  * these read/write things correspond to IR variables that are read at the start, and always fully written at the end
-//  careful: would that style of codegen break automatic clock gating?
-
-/// The execution/memory model is:
-/// * all writes are immediately visible to later reads in the current block
-/// * writes only become visible to other blocks once all blocks (recursively) triggered by the current event
-///   have fully finished running
-///
-/// If a local is read without being written to, the resulting value is undefined.
 #[derive(Debug, Clone)]
 pub struct IrClockedProcess {
     // TODO rename to variables
@@ -185,20 +183,20 @@ pub enum IrPortConnection {
     Output(Option<IrWireOrPort>),
 }
 
-#[derive(Debug, Copy, Clone, From)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum IrSignalOrVariable {
     Signal(IrSignal),
     Variable(IrVariable),
 }
 
-#[derive(Debug, Copy, Clone, From)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum IrSignal {
     Port(IrPort),
     Wire(IrWire),
     Register(IrRegister),
 }
 
-#[derive(Debug, Copy, Clone, From)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum IrWireOrPort {
     Port(IrPort),
     Wire(IrWire),
