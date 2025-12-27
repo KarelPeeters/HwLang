@@ -55,14 +55,19 @@ enum Mode {
 
 #[rustfmt::skip]
 macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
+
 #[rustfmt::skip]
-#[macro_export]
 macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
 #[rustfmt::skip]
-#[macro_export]
 macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' }; }
+
 #[rustfmt::skip]
-macro_rules! pattern_decimal_digit { () => { '0'..='9' }; }
+macro_rules! pattern_int_start { () => { '0'..='9' }; }
+#[rustfmt::skip]
+macro_rules! pattern_int_continue { () => { pattern_int_start!() | '_' | 'b' | 'x' | 'a'..='f' | 'A'..='F' }; }
+
+pub const REGEX_ID: &str = "[_A-Za-z][_A-Za-z0-9]*";
+pub const REGEX_INT: &str = "0.[0-9_bxa-fA-F]*";
 
 #[derive(Debug, Copy, Clone)]
 enum NextInnerResult {
@@ -257,9 +262,9 @@ impl<'s> Tokenizer<'s> {
                 }
             }
 
-            [pattern_decimal_digit!(), _, _] => {
+            [pattern_int_start!(), _, _] => {
                 self.skip(1);
-                self.skip_while(|c| matches!(c, pattern_decimal_digit!() | '_' | 'b' | 'x' | 'a'..='f'));
+                self.skip_while(|c| matches!(c, pattern_int_continue!()));
 
                 let token_str = &start_left_str[..self.curr_byte - start.byte];
                 let invalid = || {
@@ -281,7 +286,7 @@ impl<'s> Tokenizer<'s> {
                     }
                     ['0', 'x', _] => {
                         let tail = &token_str[2..];
-                        let f = |c| matches!(c, pattern_decimal_digit!() | '_' | 'a'..='f');
+                        let f = |c| matches!(c, pattern_int_start!() | '_' | 'a'..='f' | 'A'..='F');
                         if !tail.chars().any(f_not_dummy) || !tail.chars().all(f) {
                             return invalid();
                         }
@@ -289,7 +294,7 @@ impl<'s> Tokenizer<'s> {
                         TokenType::IntLiteralHexadecimal
                     }
                     _ => {
-                        let f = |c| matches!(c, pattern_decimal_digit!() | '_');
+                        let f = |c| matches!(c, pattern_int_start!() | '_');
                         if !token_str.chars().any(f_not_dummy) || !token_str.chars().all(f) {
                             return invalid();
                         }

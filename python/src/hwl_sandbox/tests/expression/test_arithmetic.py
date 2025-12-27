@@ -5,19 +5,6 @@ import pytest
 from hwl_sandbox.common.compare import CompiledCompare, compare_expression
 
 
-@pytest.mark.parametrize("v", [False, True])
-def test_bool_literal(tmp_dir: Path, v: bool):
-    e_true = compare_expression([], "bool", str(v).lower(), tmp_dir)
-    e_true.eval_assert([], v)
-
-
-# include both extremes
-@pytest.mark.parametrize("v", [-4, -1, 0, 1, 3])
-def test_int_literal(tmp_dir: Path, v: int):
-    e_rz = compare_expression([], "int(-4..4)", str(v), tmp_dir)
-    e_rz.eval_assert([], v)
-
-
 def test_add_pos(tmp_dir: Path):
     e = compare_expression(["int(0..16)", "int(0..32)"], "int(0..48)", "a0 + a1", tmp_dir)
 

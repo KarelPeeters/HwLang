@@ -1,3 +1,4 @@
+use crate::syntax::token::REGEX_ID;
 use crate::syntax::token::TokenType;
 use hwl_util::constants::HWL_LANGUAGE_NAME;
 use indexmap::IndexMap;
@@ -11,10 +12,10 @@ pub fn generate_textmate_language_json() -> String {
     };
 
     // add patterns
-    // TODO should we add identifiers? we can't really classify them without doing a full parse though
     add_comments(&mut builder);
     add_literals(&mut builder);
     add_keywords_and_symbols(&mut builder);
+    add_identifier(&mut builder);
 
     // wrap in top-level
     let lang = json!({
@@ -37,6 +38,13 @@ struct Builder {
 /// Add the per-language suffix to a pattern name.
 fn name(base: &str) -> String {
     format!("{base}.{}", HWL_LANGUAGE_NAME.to_ascii_lowercase())
+}
+
+fn add_identifier(builder: &mut Builder) {
+    builder.patterns.push(json!({
+        "name": name("identifier"),
+        "match": format!("\\b{REGEX_ID}\\b"),
+    }));
 }
 
 fn add_comments(builder: &mut Builder) {

@@ -379,6 +379,10 @@
     {
       "name": "keyword.operator.careteq.hwlang",
       "match": "\\b\\^=\\b"
+    },
+    {
+      "name": "identifier.hwlang",
+      "match": "\\b[a-zA-Z_][a-zA-Z_0-9]*\\b"
     }
   ],
   "repository": {
