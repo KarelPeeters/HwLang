@@ -273,11 +273,15 @@ mod tests {
     use hwl_util::io::IoErrorExt;
 
     #[test]
-    fn matches_textmate_grammer() {
+    fn matches_textmate_grammar() {
         let expected = generate_textmate_language_json();
 
         let path_rel = "../../lsp_client/syntaxes/hwlang.tmLanguage.json";
         let path_abs = std::env::current_dir().unwrap().join(path_rel);
+
+        // TODO find a batter way to update the actual grammar
+        // std::fs::write(&path_abs, &expected).unwrap();
+
         let actual = std::fs::read_to_string(&path_abs)
             .map_err(|e| e.with_path(path_abs))
             .unwrap();
