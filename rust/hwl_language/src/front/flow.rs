@@ -210,6 +210,11 @@ pub struct VariableInfo {
     pub id: VariableId,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
+
+    /// If set, branch joining will always use this IR variable as the result.
+    /// This only works if all values are guaranteed to have the exact right type for this variable,
+    ///   and nothing else will use this variable at any point.
+    pub join_ir_variable: Option<IrVariable>,
 }
 
 #[derive(Debug)]
@@ -474,6 +479,7 @@ pub trait Flow: FlowPrivate {
             id,
             mutable: false,
             ty: None,
+            join_ir_variable: None,
         };
         let var = self.var_new(info);
         self.var_set(refs, var, assign_span, value)?;
@@ -1862,12 +1868,17 @@ fn merge_branch_variable(
     })?;
 
     // create result variable
-    let var_ir_info = IrVariableInfo {
-        ty: ty.as_ir(refs),
-        debug_info_span: var_info.span_decl,
-        debug_info_id: var_info.id.as_str(refs.fixed.source).map(str::to_owned),
+    let var_ir = match var_info.join_ir_variable {
+        None => {
+            let var_ir_info = IrVariableInfo {
+                ty: ty.as_ir(refs),
+                debug_info_span: var_info.span_decl,
+                debug_info_id: var_info.id.as_str(refs.fixed.source).map(str::to_owned),
+            };
+            parent_flow.new_ir_variable(var_ir_info)
+        }
+        Some(var_ir) => var_ir,
     };
-    let var_ir = parent_flow.new_ir_variable(var_ir_info);
 
     // store values into that variable
     let mut domain = ValueDomain::CompileTime;

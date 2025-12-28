@@ -461,6 +461,7 @@ impl CompileItemContext<'_, '_> {
                         id: VariableId::Id(id),
                         mutable,
                         ty,
+                        join_ir_variable: None,
                     };
                     let var = flow.var_new(info);
 
@@ -1279,6 +1280,7 @@ impl CompileItemContext<'_, '_> {
             id: VariableId::Id(index_id),
             mutable: false,
             ty: None,
+            join_ir_variable: None,
         });
         let mut scope_index = Scope::new_child(stmt.span, scope_parent);
         scope_index.maybe_declare(

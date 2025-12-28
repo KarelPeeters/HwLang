@@ -600,6 +600,7 @@ impl CompileItemContext<'_, '_> {
                             id: VariableId::Custom("return_value"),
                             mutable: false,
                             ty: None,
+                            join_ir_variable: None,
                         };
                         let return_var = flow.var_new(return_var_info);
 
