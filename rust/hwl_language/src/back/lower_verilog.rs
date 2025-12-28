@@ -602,6 +602,7 @@ fn lower_module_statements(
                     Some((reset_edge, reset_info)) => {
                         let IrAsyncResetInfo { signal: _, resets } = reset_info;
 
+                        newline_process.start_group_and_item(f);
                         swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.signal);
                         let indent_inner = Indent::new(3);
 
@@ -638,7 +639,6 @@ fn lower_module_statements(
                 };
 
                 // populate shadow registers
-                newline_process.start_group();
                 for (&reg, reg_name_shadow) in &reg_name_map_shadowed {
                     if shadow_regs.contains(&reg) {
                         newline_process.start_item(f);
