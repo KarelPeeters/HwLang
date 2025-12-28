@@ -24,12 +24,8 @@ use std::sync::Arc;
 use std::vec;
 use unwrap_match::unwrap_match;
 
-// TODO add an "optimization" pass that does some basic stuff like:
-//   * inline variables that are always equal to some other variable
-//   * skip empty blocks, skip useless ifs, ...
-//   That would allow the frontend to be freely generate redundant code,
-//     while still getting clean output RTL.
 // TODO dropping this type takes a long time (maybe due to the web of vecs caused by blocks/statements/...?)
+// TODO add some way to share Strings, especially for debug info there are lots of duplicates
 #[derive(Debug)]
 pub struct IrDatabase {
     pub top_module: IrModule,
@@ -142,9 +138,9 @@ pub enum IrModuleChild {
 pub struct IrClockedProcess {
     // TODO rename to variables
     pub locals: IrVariables,
+    pub async_reset: Option<IrAsyncResetInfo>,
     pub clock_signal: Spanned<Polarized<IrSignal>>,
     pub clock_block: IrBlock,
-    pub async_reset: Option<IrAsyncResetInfo>,
 }
 
 #[derive(Debug, Clone)]

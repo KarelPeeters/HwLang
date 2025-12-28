@@ -33,7 +33,7 @@ macro_rules! new_index_type {
         #[derive(Copy, Clone, Eq, PartialEq, Hash)]
         $vis struct $name($crate::util::arena::Idx);
 
-        // trick to make the imports not leak outside of the macro
+        // trick to make the imports not leak outside the macro
         const _: () = {
             use $crate::util::arena::IndexType;
             use $crate::util::arena::Idx;
@@ -73,7 +73,8 @@ pub struct RandomCheck(NonZeroU16);
 
 #[derive(Clone)]
 pub struct Arena<K: IndexType, T> {
-    values: Vec<T>,
+    values: Vec<Option<T>>,
+    count_removed: usize,
     check: RandomCheck,
     ph: PhantomData<K>,
 }
@@ -83,6 +84,7 @@ impl<K: IndexType, T> Arena<K, T> {
     pub fn new() -> Self {
         Self {
             values: vec![],
+            count_removed: 0,
             check: RandomCheck::new(),
             ph: PhantomData,
         }
@@ -101,12 +103,42 @@ impl<K: IndexType, T> Arena<K, T> {
             check: self.check,
         });
         let value = value(key);
-        self.values.push(value);
+        self.values.push(Some(value));
         key
     }
 
+    pub fn remove(&mut self, key: K) {
+        assert_eq!(
+            self.check,
+            key.inner().check,
+            "Arena index {key:?} used in arena which did not create it"
+        );
+        let slot = &mut self.values[key.inner().index];
+        if slot.is_some() {
+            *slot = None;
+            self.count_removed += 1;
+        } else {
+            panic!("Arena index {key:?} points to already removed value");
+        }
+    }
+
+    pub fn retain(&mut self, mut f: impl FnMut(K, &mut T) -> bool) {
+        for (index, slot) in self.values.iter_mut().enumerate() {
+            if let Some(value) = slot {
+                let key = K::new(Idx {
+                    index,
+                    check: self.check,
+                });
+                if !f(key, value) {
+                    *slot = None;
+                    self.count_removed += 1;
+                }
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
-        self.values.len()
+        self.values.len() - self.count_removed
     }
 
     pub fn is_empty(&self) -> bool {
@@ -130,7 +162,7 @@ impl<K: IndexType, T> Arena<K, T> {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &T> {
-        self.values.iter()
+        self.into_iter().map(|(_, v)| v)
     }
 
     pub fn map_values<U>(self, mut f: impl FnMut(K, T) -> U) -> Arena<K, U> {
@@ -148,9 +180,10 @@ impl<K: IndexType, T> Arena<K, T> {
                         index,
                         check: self.check,
                     });
-                    f(k, value)
+                    value.map(|value| f(k, value)).transpose()
                 })
                 .try_collect()?,
+            count_removed: self.count_removed,
             check: self.check,
             ph: PhantomData,
         })
@@ -177,7 +210,9 @@ impl<K: IndexType, T> Index<K> for Arena<K, T> {
             index.inner().check,
             "Arena index {index:?} used in arena which did not create it"
         );
-        &self.values[index.inner().index]
+        self.values[index.inner().index]
+            .as_ref()
+            .unwrap_or_else(|| panic!("Arena index {index:?} points to removed value"))
     }
 }
 
@@ -188,7 +223,9 @@ impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
             index.inner().check,
             "Arena index {index:?} used in arena which did not create it"
         );
-        &mut self.values[index.inner().index]
+        self.values[index.inner().index]
+            .as_mut()
+            .unwrap_or_else(|| panic!("Arena index {index:?} points to removed value"))
     }
 }
 
@@ -200,13 +237,13 @@ impl<K: IndexType, T: Debug> Debug for Arena<K, T> {
 }
 
 pub struct ArenaIteratorRef<'s, K, T> {
-    inner: std::iter::Enumerate<std::slice::Iter<'s, T>>,
+    inner: std::iter::Enumerate<std::slice::Iter<'s, Option<T>>>,
     check: RandomCheck,
     ph: PhantomData<K>,
 }
 
 pub struct ArenaIteratorMut<'s, K, T> {
-    inner: std::iter::Enumerate<std::slice::IterMut<'s, T>>,
+    inner: std::iter::Enumerate<std::slice::IterMut<'s, Option<T>>>,
     check: RandomCheck,
     ph: PhantomData<K>,
 }
@@ -241,7 +278,18 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorRef<'s, K, T> {
     type Item = (K, &'s T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(key_wrapper(self.check))
+        loop {
+            let (index, value) = self.inner.next()?;
+            let Some(value) = value else {
+                continue;
+            };
+
+            let key = K::new(Idx {
+                index,
+                check: self.check,
+            });
+            return Some((key, value));
+        }
     }
 }
 
@@ -259,12 +307,19 @@ impl<'s, K: IndexType, T: 's> Iterator for ArenaIteratorMut<'s, K, T> {
     type Item = (K, &'s mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(key_wrapper(self.check))
-    }
-}
+        loop {
+            let (index, value) = self.inner.next()?;
+            let Some(value) = value else {
+                continue;
+            };
 
-fn key_wrapper<K: IndexType, V>(check: RandomCheck) -> impl Fn((usize, V)) -> (K, V) {
-    move |(index, value)| (K::new(Idx { index, check }), value)
+            let key = K::new(Idx {
+                index,
+                check: self.check,
+            });
+            return Some((key, value));
+        }
+    }
 }
 
 impl Idx {
@@ -307,6 +362,7 @@ impl RandomCheck {
 #[cfg(test)]
 mod test {
     use crate::util::arena::Arena;
+    use itertools::Itertools;
 
     new_index_type!(TestIdx);
 
@@ -340,5 +396,20 @@ mod test {
         actual.sort_by_key(|(i, _)| i.0.index);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn remove() {
+        let mut arena: Arena<TestIdx, char> = Arena::new();
+        let ai = arena.push('a');
+        let bi = arena.push('b');
+
+        assert_eq!(arena.len(), 2);
+        assert_eq!(arena.iter().collect_vec(), vec![(ai, &'a'), (bi, &'b')]);
+
+        arena.remove(ai);
+
+        assert_eq!(arena.len(), 1);
+        assert_eq!(arena.iter().collect_vec(), vec![(bi, &'b')]);
     }
 }

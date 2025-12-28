@@ -13,6 +13,7 @@ use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::CompileValue as RustCompileValue;
+use hwl_language::mid::cleanup::cleanup_module;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
@@ -843,9 +844,14 @@ impl Module {
         let ir_module = compile.state.elaboration_arenas.module_internal_info(module).module_ir;
 
         // create temporary ir database
+        // TODO rework the IrDatabase API, this is a mess
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
-        let ir_database = map_diag_error(py, &diags, source, ir_database)?;
+        let mut ir_database = map_diag_error(py, &diags, source, ir_database)?;
+
+        for (_, info) in &mut ir_database.ir_modules {
+            cleanup_module(info);
+        }
 
         if cfg!(debug_assertions) {
             let validate_result = ir_database.validate(&diags);

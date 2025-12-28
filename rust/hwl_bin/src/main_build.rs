@@ -5,6 +5,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{COMPILE_THREAD_STACK_SIZE, ElaborationSet, compile};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::StdoutPrintHandler;
+use hwl_language::mid::cleanup::cleanup;
 use hwl_language::syntax::collect::collect_source_from_manifest;
 use hwl_language::syntax::hierarchy::HierarchyNode;
 use hwl_language::syntax::manifest::Manifest;
@@ -116,7 +117,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     }
 
     let start_compile = Instant::now();
-    let compiled = compile(
+    let mut compiled = compile(
         &diags,
         &source,
         &hierarchy,
@@ -128,6 +129,12 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         source.full_span(manifest.file),
     );
     let time_compile = start_compile.elapsed();
+
+    let start_cleanup = Instant::now();
+    if let Ok(compiled) = &mut compiled {
+        cleanup(compiled);
+    }
+    let time_cleanup = start_cleanup.elapsed();
 
     // TODO don't hardcode paths here
     // TODO make this configurable
@@ -208,6 +215,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         eprintln!("tokenize:         {time_tokenize:?}");
         eprintln!("parse + tokenize: {time_parse:?}");
         eprintln!("compile:          {time_compile:?}");
+        eprintln!("cleanup:          {time_cleanup:?}");
         if let Some((time_lower, time_simulator, _, _)) = lower_results {
             eprintln!("lower verilog:    {time_lower:?}");
             eprintln!("lower c++:        {time_simulator:?}");
