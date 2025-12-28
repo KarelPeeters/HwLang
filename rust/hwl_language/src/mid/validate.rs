@@ -255,7 +255,7 @@ impl IrExpression {
 
         // validate operands
         let mut any_err = Ok(());
-        self.for_each_expression_operand(large, &mut |op| {
+        self.for_each_operand(large, &mut |op| {
             any_err = any_err.and(op.validate(diags, module, locals, span))
         });
         any_err?;

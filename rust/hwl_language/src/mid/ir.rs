@@ -558,10 +558,10 @@ impl IrExpression {
             _ => {}
         }
 
-        self.for_each_expression_operand(large, &mut |op| op.visit_values_accessed(large, f));
+        self.for_each_operand(large, &mut |op| op.visit_values_accessed(large, f));
     }
 
-    pub fn for_each_expression_operand(&self, large: &IrLargeArena, f: &mut impl FnMut(&IrExpression)) {
+    pub fn for_each_operand(&self, large: &IrLargeArena, f: &mut impl FnMut(&IrExpression)) {
         match self {
             IrExpression::Bool(_) | IrExpression::Int(_) | IrExpression::Signal(_) | IrExpression::Variable(_) => {}
 
@@ -596,6 +596,134 @@ impl IrExpression {
                 IrExpressionLarge::ToBits(_ty, x) | IrExpressionLarge::FromBits(_ty, x) => f(x),
                 IrExpressionLarge::ExpandIntRange(_ty, x) => f(x),
                 IrExpressionLarge::ConstrainIntRange(_ty, x) => f(x),
+            },
+        }
+    }
+
+    /// This function does not mutate in-place,
+    ///   that's sketchy if a single expressions happens to be used in multiple places.
+    pub fn map_recursive(
+        &self,
+        large: &mut IrLargeArena,
+        mut f: &mut impl FnMut(&IrExpression) -> Option<IrExpression>,
+    ) -> Option<IrExpression> {
+        macro_rules! build_unary {
+            (|$inner:ident| $build:expr) => {{
+                match f($inner) {
+                    None => None,
+                    Some(inner_new) => {
+                        let $inner = inner_new;
+                        Some($build)
+                    }
+                }
+            }};
+        }
+        macro_rules! build_binary {
+            (|$left:ident, $right:ident| $build:expr) => {{
+                let left = $left;
+                let right = $right;
+                let left_new = f(left);
+                let right_new = f(right);
+                if left_new.is_some() || right_new.is_some() {
+                    let $left = left_new.unwrap_or_else(|| left.clone());
+                    let $right = right_new.unwrap_or_else(|| right.clone());
+                    Some($build)
+                } else {
+                    None
+                }
+            }};
+        }
+
+        // map operands
+        let self_new = match self {
+            IrExpression::Bool(_) | IrExpression::Int(_) | IrExpression::Signal(_) | IrExpression::Variable(_) => None,
+
+            &IrExpression::Large(expr) => match &large[expr] {
+                IrExpressionLarge::Undefined(_ty) => None,
+                IrExpressionLarge::BoolNot(inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::BoolNot(inner)))
+                }
+                &IrExpressionLarge::BoolBinary(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolBinary(op, left, right)))
+                }
+                &IrExpressionLarge::IntArithmetic(op, ref ty, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::IntArithmetic(
+                        op,
+                        ty.clone(),
+                        left,
+                        right
+                    )))
+                }
+                &IrExpressionLarge::IntCompare(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::IntCompare(op, left, right)))
+                }
+                IrExpressionLarge::TupleLiteral(elements) => {
+                    let elements_new = elements.iter().map(&mut f).collect_vec();
+
+                    if elements_new.iter().any(|e| e.is_some()) {
+                        let new_elements = elements
+                            .iter()
+                            .zip(elements_new.into_iter())
+                            .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
+                            .collect_vec();
+                        Some(large.push_expr(IrExpressionLarge::TupleLiteral(new_elements)))
+                    } else {
+                        None
+                    }
+                }
+                IrExpressionLarge::ArrayLiteral(ty, len, elements) => {
+                    let elements_new = elements
+                        .iter()
+                        .map(|e| match e {
+                            IrArrayLiteralElement::Single(v) => f(v).map(IrArrayLiteralElement::Single),
+                            IrArrayLiteralElement::Spread(v) => f(v).map(IrArrayLiteralElement::Spread),
+                        })
+                        .collect_vec();
+
+                    if elements_new.iter().any(|e| e.is_some()) {
+                        let new_elements = elements
+                            .iter()
+                            .zip(elements_new.into_iter())
+                            .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
+                            .collect_vec();
+                        Some(large.push_expr(IrExpressionLarge::ArrayLiteral(ty.clone(), len.clone(), new_elements)))
+                    } else {
+                        None
+                    }
+                }
+                &IrExpressionLarge::TupleIndex { ref base, index } => {
+                    build_unary!(|base| large.push_expr(IrExpressionLarge::TupleIndex { base, index }))
+                }
+                IrExpressionLarge::ArrayIndex { base, index } => {
+                    build_binary!(|base, index| large.push_expr(IrExpressionLarge::ArrayIndex { base, index }))
+                }
+                IrExpressionLarge::ArraySlice { base, start, len } => {
+                    build_binary!(|base, start| large.push_expr(IrExpressionLarge::ArraySlice {
+                        base,
+                        start,
+                        len: len.clone()
+                    }))
+                }
+                IrExpressionLarge::ToBits(ty, inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::ToBits(ty.clone(), inner)))
+                }
+                IrExpressionLarge::FromBits(ty, inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::FromBits(ty.clone(), inner)))
+                }
+                IrExpressionLarge::ExpandIntRange(ty, inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::ExpandIntRange(ty.clone(), inner)))
+                }
+                IrExpressionLarge::ConstrainIntRange(ty, inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::ConstrainIntRange(ty.clone(), inner)))
+                }
+            },
+        };
+
+        match self_new {
+            None => f(self),
+            Some(self_new) => match f(&self_new) {
+                None => Some(self_new),
+                Some(final_new) => Some(final_new),
             },
         }
     }

@@ -140,11 +140,11 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
                 // visit expressions
                 for step in steps.iter_mut() {
                     match step {
-                        IrTargetStep::ArrayIndex(index) => inline_vars_expr(state, index),
-                        IrTargetStep::ArraySlice { start, len: _ } => inline_vars_expr(state, start),
+                        IrTargetStep::ArrayIndex(index) => inline_vars_expr(large, state, index),
+                        IrTargetStep::ArraySlice { start, len: _ } => inline_vars_expr(large, state, start),
                     }
                 }
-                inline_vars_expr(state, source);
+                inline_vars_expr(large, state, source);
 
                 // record assignment
                 if let IrSignalOrVariable::Variable(base) = *base {
@@ -169,7 +169,7 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
                 then_block,
                 else_block,
             }) => {
-                inline_vars_expr(state, condition);
+                inline_vars_expr(large, state, condition);
 
                 let mut state_then = state.child();
                 inline_vars_block(large, &mut state_then, next_version, then_block);
@@ -201,7 +201,7 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
                         IrStringPiece::Literal(_str) => {}
                         IrStringPiece::Substitute(sub) => match sub {
                             IrStringSubstitution::Integer(expr, _radix) => {
-                                inline_vars_expr(state, expr);
+                                inline_vars_expr(large, state, expr);
                             }
                         },
                     }
@@ -211,17 +211,24 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
     }
 }
 
-fn inline_vars_expr(state: &VarState, expr: &mut IrExpression) {
-    // TODO recurse
-    if let IrExpression::Variable(var) = *expr {
-        let info = state.var_info(var);
+fn inline_vars_expr(large: &mut IrLargeArena, state: &VarState, expr: &mut IrExpression) {
+    let expr_new = expr.map_recursive(large, &mut |operand| {
+        if let IrExpression::Variable(var) = *operand {
+            let info = state.var_info(var);
 
-        if let Some((other_var, other_version)) = info.copy_of {
-            let other_info = state.var_info(other_var);
-            if other_info.version == other_version {
-                *expr = IrExpression::Variable(other_var);
+            if let Some((other_var, other_version)) = info.copy_of {
+                let other_info = state.var_info(other_var);
+                if other_info.version == other_version {
+                    return Some(IrExpression::Variable(other_var));
+                }
             }
         }
+
+        None
+    });
+
+    if let Some(new_expr) = expr_new {
+        *expr = new_expr;
     }
 }
 
