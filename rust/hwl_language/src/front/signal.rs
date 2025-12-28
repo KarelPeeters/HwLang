@@ -12,6 +12,7 @@ use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
 use annotate_snippets::Level;
+use derive_more::From;
 
 new_index_type!(pub Port);
 new_index_type!(pub PortInterface);
@@ -19,14 +20,14 @@ new_index_type!(pub Wire);
 new_index_type!(pub WireInterface);
 new_index_type!(pub Register);
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum Signal {
     Port(Port),
     Wire(Wire),
     Register(Register),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum SignalOrVariable {
     Signal(Signal),
     Variable(Variable),
@@ -492,5 +493,23 @@ impl Signal {
             Signal::Wire(wire) => ctx.wires[wire].as_hardware_value(ctx.refs, &mut ctx.wire_interfaces, span),
             Signal::Register(reg) => ctx.registers[reg].as_hardware_value(diags, span),
         }
+    }
+}
+
+impl From<Port> for SignalOrVariable {
+    fn from(value: Port) -> Self {
+        SignalOrVariable::Signal(Signal::Port(value))
+    }
+}
+
+impl From<Wire> for SignalOrVariable {
+    fn from(value: Wire) -> Self {
+        SignalOrVariable::Signal(Signal::Wire(value))
+    }
+}
+
+impl From<Register> for SignalOrVariable {
+    fn from(value: Register) -> Self {
+        SignalOrVariable::Signal(Signal::Register(value))
     }
 }

@@ -9,11 +9,11 @@ use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep
 use crate::syntax::pos::Span;
 use crate::syntax::pos::Spanned;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
 use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
-use unwrap_match::unwrap_match;
 
 #[derive(Debug, Clone)]
 pub struct ArraySteps<S = ArrayStep> {
@@ -48,21 +48,16 @@ impl<S> ArraySteps<S> {
 struct EncounteredAny;
 
 impl ArraySteps<ArrayStep> {
-    pub fn any_hardware(&self) -> bool {
-        self.steps.iter().any(|step| match step.inner {
-            ArrayStep::Compile(_) => false,
-            ArrayStep::Hardware(_) => true,
-        })
-    }
-
-    pub fn unwrap_compile(&self) -> ArraySteps<&ArrayStepCompile> {
-        ArraySteps {
-            steps: self
-                .steps
-                .iter()
-                .map(|s| s.as_ref().map_inner(|s| unwrap_match!(s, ArrayStep::Compile(s) => s)))
-                .collect(),
-        }
+    pub fn try_as_compile(&self) -> Result<ArraySteps<&ArrayStepCompile>, NotCompile> {
+        let steps = self
+            .steps
+            .iter()
+            .map(|s| match &s.inner {
+                MaybeCompile::Compile(s_compile) => Ok(Spanned::new(s.span, s_compile)),
+                MaybeCompile::Hardware(_) => Err(NotCompile),
+            })
+            .try_collect_vec()?;
+        Ok(ArraySteps { steps })
     }
 
     pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {

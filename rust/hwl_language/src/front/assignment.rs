@@ -1,38 +1,29 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
-use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
-use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, Variable};
+use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::Scope;
-use crate::front::signal::{Port, Register, Signal, Wire};
+use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, NotCompile, Value, ValueCommon};
-use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrStatement, IrVariable, IrVariableInfo};
-use crate::syntax::ast::{AssignBinaryOp, Assignment, SyncDomain};
+use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, ValueCommon};
+use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
+use crate::syntax::ast::{Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use annotate_snippets::Level;
 
 #[derive(Debug, Clone)]
-pub struct AssignmentTarget<B = AssignmentTargetBase> {
-    pub base: Spanned<B>,
+pub struct AssignmentTarget {
+    pub base: Spanned<SignalOrVariable>,
     // TODO add struct/tuple dot indices here
     pub array_steps: ArraySteps,
 }
 
-// TODO general name for this, eg. "SignalOrVariable"
-#[derive(Debug, Clone)]
-pub enum AssignmentTargetBase {
-    Port(Port),
-    Wire(Wire),
-    Register(Register),
-    Variable(Variable),
-}
-
 impl AssignmentTarget {
-    pub fn simple(base: Spanned<AssignmentTargetBase>) -> Self {
+    pub fn simple(base: Spanned<SignalOrVariable>) -> Self {
         Self {
             base,
             array_steps: ArraySteps::new(vec![]),
@@ -48,8 +39,9 @@ enum BlockKind {
 impl CompileItemContext<'_, '_> {
     // TODO this probably needs yet another refactor, there's a lot of semi-duplicate code here
     pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let refs = self.refs;
+        let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
 
         let &Assignment {
             span: _,
@@ -58,189 +50,324 @@ impl CompileItemContext<'_, '_> {
             value: right_expr,
         } = stmt;
 
-        // evaluate target
+        // evaluate target (as target, not yet as a value)
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
         let AssignmentTarget {
             base: target_base,
             array_steps: target_steps,
         } = &target.inner;
 
-        // figure out expected type if any
-        let target_base_ty = match target_base.inner {
-            AssignmentTargetBase::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
-            AssignmentTargetBase::Wire(wire) => {
-                let typed = self.wires[wire].typed_maybe(self.refs, &self.wire_interfaces)?;
-                typed.map(|typed| typed.ty.map_inner(|ty| ty.as_type()))
-            }
-            AssignmentTargetBase::Register(reg) => {
-                Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type))
-            }
-            AssignmentTargetBase::Variable(var) => flow.var_info(Spanned::new(target_base.span, var))?.ty.clone(),
-        };
-        let target_expected_ty = match target_base_ty {
-            None => Type::Any,
-            Some(target_base_ty) => {
-                target_steps.apply_to_expected_type(self.refs, Spanned::new(target_base.span, target_base_ty.inner))?
-            }
-        };
-
-        // evaluate right value
-        let right_expected_ty = if op.inner.is_some() {
-            &Type::Any
-        } else {
-            &target_expected_ty
-        };
-        let right_eval = self.eval_expression_with_implications(scope, flow, right_expected_ty, right_expr)?;
-
-        // figure out if we need a compile or hardware assignment
-        let target_base_signal = match target_base.inner {
-            AssignmentTargetBase::Port(port) => Signal::Port(port),
-            AssignmentTargetBase::Wire(wire) => Signal::Wire(wire),
-            AssignmentTargetBase::Register(reg) => Signal::Register(reg),
-            AssignmentTargetBase::Variable(var) => {
-                self.elaborate_variable_assignment(
-                    flow,
-                    stmt.span,
-                    target.span,
-                    Spanned::new(target_base.span, var),
-                    target_steps,
-                    target_expected_ty,
-                    op,
-                    right_eval,
-                )?;
-                return Ok(());
-            }
-        };
-        let target_base_signal = Spanned::new(target_base.span, target_base_signal);
-
-        // variable assignments have been handled, now we know the target is a signal
-        //   check this this is a hardware flow and that we're allowed to write to signals in this context
-        // TODO still count as driver or suggested type to supress future errors?
-        // TODO maybe type inference for wires based on processes is not actually a good idea,
-        //   module instances should be enough
-        // TODO maybe elaborate child instances first, before any blocks, since we can infer more info based on them
-        let flow = flow.require_hardware(stmt.span, "assignment to hardware signal")?;
-        let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base_signal)?;
-
-        // suggest target type
-        if target_steps.is_empty() && op.inner.is_none() {
-            let right_ty = right_eval
-                .inner
-                .ty()
-                .as_hardware_type(elab)
-                .map_err(|_: NonHardwareType| {
-                    let msg_value = format!(
-                        "assigned value is non-hardware with type `{}`",
-                        right_eval.inner.ty().value_string(&self.refs.shared.elaboration_arenas)
-                    );
-                    let diag = Diagnostic::new("assignment to hardware signal requires hardware type")
-                        .add_error(right_eval.span, msg_value)
-                        .add_info(op.span, "assignment to hardware signal here")
-                        .finish();
-                    diags.report(diag)
-                })?;
-
-            let ir_wires = flow.get_ir_wires();
-            target_base_signal
-                .inner
-                .suggest_ty(self, ir_wires, Spanned::new(target_base.span, &right_ty))?;
-        }
-
-        // get inner type and steps
-        let target_base_ty = target_base_signal
-            .inner
-            .expect_ty(self, target_base.span)?
-            .map_inner(Clone::clone);
-        let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
-
-        // evaluate the full value
-        let value = match op.inner {
-            None => right_eval,
-            Some(op_inner) => {
-                let target_base_eval = flow.signal_eval(self, target_base_signal)?;
-
-                let target_eval = if target_steps.is_empty() {
-                    ValueWithImplications::simple_version(target_base_eval)
-                } else {
-                    let target_eval = target_steps.apply_to_value(
-                        self.refs,
-                        &mut self.large,
-                        Spanned::new(target_base.span, target_base_eval.into_value()),
-                    )?;
-                    ValueWithImplications::simple(target_eval)
+        // compute source, by evaluating right but also left if needed
+        let source_value = match op.inner {
+            None => {
+                // figure out the expected type
+                // (the expected type still being unknown if fine for now, we can suggest one later)
+                let target_base_ty = match target_base.inner {
+                    SignalOrVariable::Signal(target_base) => match target_base {
+                        Signal::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
+                        Signal::Wire(wire) => self.wires[wire]
+                            .typed_maybe(refs, &self.wire_interfaces)?
+                            .map(|info| info.ty.map_inner(HardwareType::as_type)),
+                        Signal::Register(reg) => Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type)),
+                    },
+                    SignalOrVariable::Variable(var) => flow.var_info(Spanned::new(target_base.span, var))?.ty.clone(),
                 };
 
-                let value_eval = eval_binary_expression(
-                    self.refs,
+                let right_expected_ty = target_base_ty
+                    .as_ref()
+                    .map(|target_base_ty| target_steps.apply_to_expected_type(refs, target_base_ty.clone()))
+                    .transpose()?;
+                let right_expected_ty = right_expected_ty.as_ref().unwrap_or(&Type::Any);
+
+                // evaluate right
+                self.eval_expression_with_implications(scope, flow, right_expected_ty, right_expr)?
+            }
+            Some(op_inner) => {
+                // evaluate left
+                let left_base_value = match target_base.inner {
+                    SignalOrVariable::Signal(signal) => {
+                        flow.signal_eval(self, Spanned::new(target_base.span, signal))?
+                    }
+                    SignalOrVariable::Variable(var) => {
+                        flow.var_eval(refs, &mut self.large, Spanned::new(target_base.span, var))?
+                    }
+                };
+
+                // apply steps to left, preserving version if possible
+                let left_value = if target_steps.is_empty() {
+                    ValueWithImplications::simple_version(left_base_value)
+                } else {
+                    let left_base_value = left_base_value.into_value();
+                    let left_value = target_steps.apply_to_value(
+                        refs,
+                        &mut self.large,
+                        Spanned::new(target_base.span, left_base_value),
+                    )?;
+
+                    ValueWithImplications::simple(left_value)
+                };
+                let left_value = Spanned::new(target.span, left_value);
+
+                // evaluate right
+                let right_value = self.eval_expression_with_implications(scope, flow, &Type::Any, right_expr)?;
+
+                // evaluate operation
+                let source_value = eval_binary_expression(
+                    refs,
                     &mut self.large,
                     stmt.span,
                     Spanned::new(op.span, op_inner.to_binary_op()),
-                    Spanned::new(target.span, target_eval),
-                    right_eval,
+                    left_value,
+                    right_value,
                 )?;
-                let value_eval = match value_eval {
-                    Value::Hardware(value) => value,
-                    _ => {
-                        return Err(diags.report_internal_error(
-                            stmt.span,
-                            "binary op on hardware values should result in hardware value again",
-                        ));
-                    }
-                };
-                Spanned::new(stmt.span, Value::Hardware(value_eval))
+                Spanned::new(stmt.span, source_value)
             }
         };
-        let value = value.map_inner(ValueWithImplications::into_value);
 
-        // check type
-        let reason = TypeContainsReason::Assignment {
-            span_target: target.span,
-            span_target_ty: target_base_ty.span,
-        };
-        check_type_contains_value(diags, elab, reason, &target_ty.as_type(), value.as_ref())?;
+        // discard implications
+        // TODO don't do that, actually store them inside the flow
+        let source_value = source_value.map_inner(ValueWithImplications::into_value);
 
-        // convert value to hardware
-        //   use the values type itself here, if we expand now we lose the potentially more specific type
-        let value_ty = value
-            .inner
-            .ty()
-            .as_hardware_type(elab)
-            .expect("already checked that type is subtype of hardware type");
-        let value_hw = value
-            .inner
-            .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, value_ty)?;
+        // store result
+        match target_base.inner {
+            SignalOrVariable::Signal(target_base_signal) => {
+                let target_base = Spanned::new(target_base.span, target_base_signal);
+                let flow = flow.require_hardware(stmt.span, "signal assignment")?;
 
-        // suggest and check domains
-        let value_domain = Spanned {
-            span: value.span,
-            inner: value_hw.domain,
-        };
-        let suggested_domain = match flow_block_kind {
-            BlockKind::Clocked(domain) => domain.map_inner(ValueDomain::Sync),
-            BlockKind::Combinatorial => value_domain,
-        };
-        let target_domain = target_base_signal.inner.suggest_domain(self, suggested_domain)?;
+                // suggest domain
+                let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base)?;
+                let suggested_domain = match flow_block_kind {
+                    BlockKind::Clocked(domain) => domain.map_inner(ValueDomain::Sync),
+                    BlockKind::Combinatorial => Spanned::new(source_value.span, source_value.inner.domain()),
+                };
+                let target_base_domain = target_base_signal.suggest_domain(self, suggested_domain)?;
 
-        self.check_assignment_domains(
-            flow_block_kind,
-            flow.condition_domains(),
-            op.span,
-            target_domain,
-            target_steps,
-            value_domain,
-        )?;
+                // check domain
+                self.check_assignment_domains(
+                    flow_block_kind,
+                    flow.condition_domains(),
+                    op.span,
+                    target_base_domain,
+                    target_steps,
+                    Spanned::new(source_value.span, source_value.inner.domain()),
+                )?;
 
-        // do the actual assignment
-        let value_compile = CompileValue::try_from(&value.inner).ok();
-        flow.signal_assign(
-            self,
-            stmt.span,
-            target_base_signal,
-            target_steps_ir,
-            target_ty,
-            value_hw,
-            value_compile,
-        )?;
+                // suggest type
+                if target_steps.is_empty() {
+                    if let Ok(source_ty) = source_value.inner.ty().as_hardware_type(elab) {
+                        target_base_signal.suggest_ty(
+                            self,
+                            flow.get_ir_wires(),
+                            Spanned::new(source_value.span, &source_ty),
+                        )?;
+                    }
+                }
+
+                // check type
+                let (target_base_ty, target_base_ir) = target_base_signal.expect_ty_and_ir(self, target_base.span)?;
+                let target_base_ty = target_base_ty.cloned();
+                let (target_ty, target_steps_ir) =
+                    target_steps.apply_to_hardware_type(refs, target_base_ty.as_ref())?;
+                let reason = TypeContainsReason::Assignment {
+                    span_target: target_base.span,
+                    span_target_ty: target_base_ty.span,
+                };
+                check_type_contains_value(diags, elab, reason, &target_ty.as_type(), source_value.as_ref())?;
+
+                // convert source to hardware type and value
+                //   (don't expand to the target type yet, then flow could not see the more specific type)
+                let source_ty_hw = source_value
+                    .inner
+                    .ty()
+                    .as_hardware_type(elab)
+                    .map_err(|_: NonHardwareType| {
+                        diags.report_internal_error(stmt.span, "source type subtype not somehow non-hardware")
+                    })?;
+                let source_value_hw = source_value.inner.as_hardware_value_unchecked(
+                    refs,
+                    &mut self.large,
+                    source_value.span,
+                    source_ty_hw,
+                )?;
+
+                // append store statement
+                let value_hardware_expanded =
+                    source_value_hw.as_hardware_value_unchecked(refs, &mut self.large, source_value.span, target_ty)?;
+                let ir_target = IrAssignmentTarget {
+                    base: IrSignalOrVariable::Signal(target_base_ir),
+                    steps: target_steps_ir,
+                };
+                let ir_stmt = IrStatement::Assign(ir_target, value_hardware_expanded.expr);
+                flow.push_ir_statement(Spanned::new(stmt.span, ir_stmt));
+
+                // report assignment to flow
+                let source_value_compile = CompileValue::try_from(&source_value.inner);
+                let extra_info = if target_steps.is_empty() {
+                    match source_value_compile {
+                        Ok(source_value_compile) => Some(MaybeCompile::Compile(source_value_compile)),
+                        Err(NotCompile) => Some(MaybeCompile::Hardware(source_value_hw.ty)),
+                    }
+                } else if let Ok(source_value_compile) = source_value_compile
+                    && let Some(target_base_value) = flow.signal_eval_if_compile(target_base)?
+                    && let Ok(target_steps) = target_steps.try_as_compile()
+                {
+                    let result_value_compile = target_steps.set_compile_value(
+                        refs,
+                        Spanned::new(target_base.span, target_base_value.clone()),
+                        op.span,
+                        Spanned::new(source_value.span, source_value_compile),
+                    )?;
+                    Some(MaybeCompile::Compile(result_value_compile))
+                } else {
+                    None
+                };
+                flow.signal_report_assignment(target_base, extra_info);
+            }
+            SignalOrVariable::Variable(target_base_var) => {
+                let target_base = Spanned::new(target_base.span, target_base_var);
+
+                // check mutable or first assignment
+                let var_info = flow.var_info(target_base)?;
+                if !(var_info.mutable || (target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?)) {
+                    let diag = Diagnostic::new("cannot assign to immutable variable")
+                        .add_error(target_base.span, "variable assigned to here")
+                        .add_info(var_info.span_decl, "variable declared as immutable here")
+                        .finish();
+                    return Err(diags.report(diag));
+                }
+
+                // check type
+                let target_base_ty = var_info.ty.clone();
+                if let Some(target_base_ty) = &target_base_ty {
+                    let source_expected_ty = target_steps.apply_to_expected_type(refs, target_base_ty.clone())?;
+                    let reason = TypeContainsReason::Assignment {
+                        span_target: target_base.span,
+                        span_target_ty: target_base_ty.span,
+                    };
+                    check_type_contains_value(diags, elab, reason, &source_expected_ty, source_value.as_ref())?;
+                }
+
+                if target_steps.is_empty() {
+                    // simple step-less assignment, just do it
+                    // (this is a separate case to avoid evaluating the current value)
+                    flow.var_set(refs, target_base_var, stmt.span, Ok(source_value.inner))?;
+                } else {
+                    let target_base_value = flow.var_eval_without_copy(&mut self.large, target_base)?;
+
+                    // check if we can do this assignment at compile-time
+                    if let Ok(target_base_value_compile) = CompileValue::try_from(&target_base_value)
+                        && let Ok(source_value_compile) = CompileValue::try_from(&source_value.inner)
+                        && let Ok(target_steps_compile) = target_steps.try_as_compile()
+                    {
+                        let result_value = target_steps_compile.set_compile_value(
+                            refs,
+                            Spanned::new(target_base.span, target_base_value_compile),
+                            op.span,
+                            Spanned::new(source_value.span, source_value_compile),
+                        )?;
+
+                        flow.var_set_compile(target_base_var, stmt.span, Ok(result_value))?;
+                    } else {
+                        // we need to do a hardware assignment
+                        let flow = flow.require_hardware(stmt.span, "hardware variable assignment")?;
+
+                        // decide on a target (hardware) type
+                        //   if the var has a type hint use that, otherwise use the current type of the value
+                        let (target_base_ty, target_base_ty_origin) = match target_base_ty {
+                            Some(target_base_ty) => (target_base_ty, "type from this type hint"),
+                            None => (
+                                Spanned::new(target_base.span, target_base_value.ty()),
+                                "type based on the current value",
+                            ),
+                        };
+                        let target_base_ty_hw =
+                            target_base_ty
+                                .inner
+                                .as_hardware_type(elab)
+                                .map_err(|_: NonHardwareType| {
+                                    let diag = Diagnostic::new("failed to determine hardware type for variable")
+                                        .add_error(
+                                            target_base.span,
+                                            format!(
+                                                "type `{}` is not representable in hardware",
+                                                target_base_ty.inner.value_string(elab)
+                                            ),
+                                        )
+                                        .add_info(target_base_ty.span, target_base_ty_origin)
+                                        .add_info(op.span, "necessary because of this hardware partial assignment")
+                                        .finish();
+                                    diags.report(diag)
+                                })?;
+
+                        // convert target value to hardware
+                        let target_base_value = target_base_value.into_value().as_hardware_value_unchecked(
+                            refs,
+                            &mut self.large,
+                            target_base.span,
+                            target_base_ty_hw.clone(),
+                        )?;
+
+                        // decide the source value type
+                        let (source_ty_hw, target_steps_ir) = target_steps
+                            .apply_to_hardware_type(refs, Spanned::new(target_base.span, &target_base_ty_hw))?;
+
+                        // convert source value to hardware
+                        let reason = TypeContainsReason::Assignment {
+                            span_target: target_base.span,
+                            span_target_ty: target_base_ty.span,
+                        };
+                        check_type_contains_value(diags, elab, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
+                        let source_value_hw = source_value.inner.as_hardware_value_unchecked(
+                            refs,
+                            &mut self.large,
+                            source_value.span,
+                            source_ty_hw,
+                        )?;
+
+                        // determine the result domain
+                        let mut result_domain = target_base_value.domain().join(source_value_hw.domain);
+                        target_steps.for_each_domain(|d| {
+                            result_domain = result_domain.join(d.inner);
+                        });
+
+                        // make sure the target is an ir variable, reusing the existing variable if possible
+                        let target_base_var_ir = match &target_base_value.expr {
+                            &IrExpression::Variable(var) => var,
+                            _ => {
+                                let debug_info_id = flow
+                                    .var_info(target_base)?
+                                    .id
+                                    .as_str(refs.fixed.source)
+                                    .map(str::to_owned);
+                                flow.store_hardware_value_in_new_ir_variable(
+                                    refs,
+                                    target_base.span,
+                                    debug_info_id,
+                                    target_base_value,
+                                )
+                                .expr
+                            }
+                        };
+
+                        // actually do the assignment
+                        let ir_target = IrAssignmentTarget {
+                            base: IrSignalOrVariable::Variable(target_base_var_ir),
+                            steps: target_steps_ir,
+                        };
+                        let ir_stmt = IrStatement::Assign(ir_target, source_value_hw.expr);
+                        flow.push_ir_statement(Spanned::new(stmt.span, ir_stmt));
+
+                        // report the assignment to flow
+                        let result_value = HardwareValue {
+                            ty: target_base_ty_hw,
+                            domain: result_domain,
+                            expr: target_base_var_ir,
+                        };
+                        flow.var_set_without_copy(target_base_var, stmt.span, Ok(VarSetValue::Hardware(result_value)))?;
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -340,274 +467,6 @@ impl CompileItemContext<'_, '_> {
         Ok(block_kind)
     }
 
-    fn elaborate_variable_assignment(
-        &mut self,
-        flow: &mut impl Flow,
-        stmt_span: Span,
-        target_span: Span,
-        target_base: Spanned<Variable>,
-        target_steps: &ArraySteps,
-        target_expected_ty: Type,
-        op: Spanned<Option<AssignBinaryOp>>,
-        right_eval: Spanned<ValueWithImplications>,
-    ) -> DiagResult {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
-
-        // TODO move all of this into a function
-        // check mutable
-        let target_base_var_info = flow.var_info(target_base)?;
-        if !target_base_var_info.mutable {
-            let is_simple_first_assignment = target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?;
-            if !is_simple_first_assignment {
-                let diag = Diagnostic::new("cannot assign to immutable variable")
-                    .add_error(target_base.span, "variable assigned to here")
-                    .add_info(target_base_var_info.span_decl, "variable declared as immutable here")
-                    .finish();
-                return Err(diags.report(diag));
-            }
-        }
-
-        // If no steps, we can just do the full assignment immediately.
-        // This is separate because in this case the current target value should not be evaluated.
-        // TODO we still eval if there is an op, can we merge that?
-        if target_steps.is_empty() {
-            // evaluate value
-            let value = match op.inner {
-                None => right_eval,
-                Some(op_inner) => {
-                    let var_eval = flow.var_eval(diags, &mut self.large, target_base)?;
-                    let target_eval = Spanned::new(target_span, ValueWithImplications::simple_version(var_eval));
-                    let value_eval = eval_binary_expression(
-                        self.refs,
-                        &mut self.large,
-                        stmt_span,
-                        Spanned::new(op.span, op_inner.to_binary_op()),
-                        target_eval,
-                        right_eval,
-                    )?;
-                    Spanned::new(stmt_span, value_eval)
-                }
-            };
-            let value = value.map_inner(ValueWithImplications::into_value);
-
-            // check type
-            let target_base_info = flow.var_info(target_base)?;
-            if let Some(ty) = &target_base_info.ty {
-                let reason = TypeContainsReason::Assignment {
-                    span_target: target_span,
-                    span_target_ty: ty.span,
-                };
-                check_type_contains_value(diags, elab, reason, &ty.inner, value.as_ref())?;
-            }
-
-            // store hardware expression in IR variable, to avoid generating duplicate code if we end up using it multiple times
-            let value_stored = match value.inner {
-                Value::Simple(value_inner) => Value::Simple(value_inner),
-                Value::Compound(value_inner) => Value::Compound(value_inner),
-                Value::Hardware(value_inner) => {
-                    let debug_info_id = target_base_info.id.as_str(self.refs.fixed.source).map(str::to_owned);
-                    let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
-                    let ir_var = store_hardware_value_in_new_ir_variable(
-                        self.refs,
-                        flow,
-                        target_base.span,
-                        debug_info_id,
-                        value_inner,
-                    )?;
-                    Value::Hardware(ir_var.map_expression(IrExpression::Variable))
-                }
-            };
-
-            // set variable
-            flow.var_set(target_base.inner, stmt_span, Ok(value_stored))?;
-            return Ok(());
-        }
-
-        // at this point the current target value needs to be evaluated
-        let target_base_eval = Spanned::new(target_base.span, flow.var_eval(diags, &mut self.large, target_base)?);
-
-        // check if we will stay compile-time or be forced to convert to hardware
-        let mut any_hardware = false;
-        any_hardware |= CompileValue::try_from(&target_base_eval.inner).is_err();
-        any_hardware |= target_steps.any_hardware();
-        any_hardware |= CompileValue::try_from(&right_eval.inner).is_err();
-
-        let result = if any_hardware {
-            let flow = flow.require_hardware(stmt_span, "assignment involving hardware value")?;
-
-            // figure out the assigned value
-            // TODO propagate implications?
-            let value = match op.inner {
-                None => right_eval,
-                Some(op_inner) => {
-                    let target_eval = target_steps.apply_to_value(
-                        self.refs,
-                        &mut self.large,
-                        target_base_eval.clone().map_inner(|v| v.into_value()),
-                    )?;
-
-                    let value_eval = eval_binary_expression(
-                        self.refs,
-                        &mut self.large,
-                        stmt_span,
-                        Spanned::new(op.span, op_inner.to_binary_op()),
-                        Spanned::new(target_span, ValueWithImplications::simple(target_eval)),
-                        right_eval,
-                    )?;
-                    Spanned::new(stmt_span, value_eval)
-                }
-            };
-            let value = value.map_inner(ValueWithImplications::into_value);
-
-            // create a corresponding ir variable
-            let HardwareValue {
-                ty: target_base_ty,
-                domain: target_base_domain,
-                expr: target_base_ir_var,
-            } = self.convert_variable_to_new_ir_variable(
-                flow,
-                target_span,
-                target_base,
-                &target_base_eval.inner.into_value(),
-            )?;
-
-            // figure out the inner type and steps
-            let (target_inner_ty, target_steps_ir) =
-                target_steps.apply_to_hardware_type(self.refs, target_base_ty.as_ref())?;
-            let reason = TypeContainsReason::Assignment {
-                span_target: target_span,
-                span_target_ty: target_base_ty.span,
-            };
-            check_type_contains_value(diags, elab, reason, &target_inner_ty.as_type(), value.as_ref())?;
-
-            // do the current assignment
-            let value_ir =
-                value
-                    .inner
-                    .as_hardware_value_unchecked(self.refs, &mut self.large, value.span, target_inner_ty)?;
-            let target_ir = IrAssignmentTarget {
-                base: target_base_ir_var.into(),
-                steps: target_steps_ir,
-            };
-            let stmt_store = IrStatement::Assign(target_ir, value_ir.expr);
-            flow.push_ir_statement(Spanned::new(stmt_span, stmt_store));
-
-            // map variable to ir variable
-            let mut combined_domain = target_base_domain.join(value.inner.domain());
-            target_steps.for_each_domain(|d| combined_domain = combined_domain.join(d.inner));
-
-            let value_assigned = HardwareValue {
-                ty: target_base_ty.inner,
-                domain: combined_domain,
-                expr: IrExpression::Variable(target_base_ir_var),
-            };
-            Value::Hardware(value_assigned)
-        } else {
-            // everything is compile-time, do assignment at compile-time
-            let target_base_eval =
-                target_base_eval.map_inner(|m| CompileValue::try_from(&m.map_hardware(|m| m.value)).unwrap());
-            let target_steps = target_steps.unwrap_compile();
-            let right_eval = right_eval.map_inner(|m| CompileValue::try_from(&m.map_hardware(|m| m.value)).unwrap());
-
-            // handle op
-            let value_eval = match op.inner {
-                None => right_eval,
-                Some(op_inner) => {
-                    let target_eval =
-                        target_steps.get_compile_value(self.refs, &mut self.large, target_base_eval.clone())?;
-                    let value = eval_binary_expression(
-                        self.refs,
-                        &mut self.large,
-                        stmt_span,
-                        Spanned::new(op.span, op_inner.to_binary_op()),
-                        Spanned::new(target_span, ValueWithImplications::simple(Value::from(target_eval))),
-                        right_eval.map_inner(ValueWithImplications::from),
-                    )?
-                    .into_value();
-                    let value = CompileValue::try_from(&value).map_err(|_: NotCompile| {
-                        diags.report_internal_error(
-                            stmt_span,
-                            "binary op on compile values should result in compile value again",
-                        )
-                    })?;
-                    Spanned::new(stmt_span, value)
-                }
-            };
-
-            // check type
-            if let Some(var_ty) = &target_base_var_info.ty {
-                let reason = TypeContainsReason::Assignment {
-                    span_target: target_span,
-                    span_target_ty: var_ty.span,
-                };
-                check_type_contains_value(diags, elab, reason, &target_expected_ty, value_eval.as_ref())?;
-            }
-
-            // do assignment
-            let result_value = target_steps.set_compile_value(self.refs, target_base_eval, op.span, value_eval)?;
-            Value::from(result_value)
-        };
-
-        flow.var_set(target_base.inner, stmt_span, Ok(result))?;
-        Ok(())
-    }
-
-    fn convert_variable_to_new_ir_variable(
-        &mut self,
-        flow: &mut FlowHardware,
-        target_span: Span,
-        target_base: Spanned<Variable>,
-        target_base_eval: &Value,
-    ) -> DiagResult<HardwareValue<Spanned<HardwareType>, IrVariable>> {
-        let refs = self.refs;
-        let diags = refs.diags;
-        let elab = &refs.shared.elaboration_arenas;
-
-        // pick a type and convert the current base value to hardware
-        // TODO allow just inferring types, the user can specify one if they really want to
-        //   especially infer types where the final type is obvious, eg. bool
-        let target_var_info = flow.var_info(target_base)?;
-        let target_base_ty = target_var_info.ty.as_ref().ok_or_else(|| {
-            let diag = Diagnostic::new("variable needs type annotation")
-                .add_error(
-                    target_span,
-                    "for the assignment here the variable needs to be converted to hardware",
-                )
-                .add_info(target_var_info.span_decl, "variable declared without a type here")
-                .finish();
-            diags.report(diag)
-        })?;
-        let target_base_ty_span = target_base_ty.span;
-
-        let target_base_ty_hw = target_base_ty.inner.as_hardware_type(elab).map_err(|_| {
-            let diag = Diagnostic::new("variable needs hardware type because it is assigned a hardware value")
-                .add_error(
-                    target_span,
-                    format!(
-                        "actual type `{}` not representable in hardware",
-                        target_base_ty.inner.value_string(&self.refs.shared.elaboration_arenas)
-                    ),
-                )
-                .add_info(target_base_ty_span, "variable type set here")
-                .finish();
-            diags.report(diag)
-        })?;
-
-        let target_base_ir_expr =
-            target_base_eval.as_hardware_value_unchecked(refs, &mut self.large, target_base.span, target_base_ty_hw)?;
-
-        let debug_info_id = target_var_info.id.as_str(refs.fixed.source).map(str::to_owned);
-        let result =
-            store_hardware_value_in_new_ir_variable(refs, flow, target_span, debug_info_id, target_base_ir_expr)?;
-
-        Ok(HardwareValue {
-            ty: Spanned::new(target_base_ty_span, result.ty),
-            domain: result.domain,
-            expr: result.expr,
-        })
-    }
-
     fn check_assignment_domains(
         &self,
         block_kind: BlockKind,
@@ -669,31 +528,4 @@ impl CompileItemContext<'_, '_> {
             }
         }
     }
-}
-
-// TODO move to better place, maybe in Flow?
-pub fn store_hardware_value_in_new_ir_variable(
-    refs: CompileRefs,
-    flow: &mut FlowHardware,
-    span: Span,
-    debug_info_id: Option<String>,
-    expr: HardwareValue,
-) -> DiagResult<HardwareValue<HardwareType, IrVariable>> {
-    let var_ir_info = IrVariableInfo {
-        ty: expr.ty.as_ir(refs),
-        debug_info_span: span,
-        debug_info_id,
-    };
-
-    let var_ir = flow.new_ir_variable(var_ir_info);
-
-    let target = IrAssignmentTarget::simple(var_ir.into());
-    let stmt_store = IrStatement::Assign(target, expr.expr);
-    flow.push_ir_statement(Spanned::new(span, stmt_store));
-
-    Ok(HardwareValue {
-        ty: expr.ty,
-        domain: expr.domain,
-        expr: var_ir,
-    })
 }

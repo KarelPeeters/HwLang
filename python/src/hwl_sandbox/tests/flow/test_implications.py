@@ -34,6 +34,25 @@ def test_signal_checked():
     _ = c.resolve("top.top")
 
 
+def test_signal_reassigned():
+    src = """
+    import std.types.uint;
+    module top ports(p: in async uint(0..8), q: in async uint(0..8)) {
+        wire w;
+        comb {
+            w = p;
+            if (w < 4) {
+                w = q;
+                var v: uint(0..4) = w;
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        _ = c.resolve("top.top")
+
+
 def test_variable_does_not_fit():
     src = """
     import std.types.uint;
@@ -64,6 +83,24 @@ def test_variable_checked():
     """
     c = compile_custom(src)
     _ = c.resolve("top.top")
+
+
+def test_variable_reassigned():
+    src = """
+    import std.types.uint;
+    module top ports(p: in async uint(0..8), q: in async uint(0..8)) {
+        comb {
+            var s = p;
+            if (s < 4) {
+                s = q;
+                var v: uint(0..4) = s;
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        _ = c.resolve("top.top")
 
 
 def test_implied_type_int_const():

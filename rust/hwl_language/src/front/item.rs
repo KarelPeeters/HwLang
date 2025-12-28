@@ -502,6 +502,7 @@ impl CompileItemContext<'_, '_> {
 
                 let entry = self.eval_declaration_named(scope, flow, kind).and_then(|v| {
                     let var = flow.var_new_immutable_init(
+                        self.refs,
                         decl_id.span(),
                         VariableId::Id(decl_id),
                         decl_span,

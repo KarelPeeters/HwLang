@@ -526,7 +526,7 @@ impl CompileItemContext<'_, '_> {
         let compile = body.inner.params_must_be_compile();
         let mut matcher = ParamArgMacher::new(self.refs, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
 
-        self.compile_elaborate_extra_list(&mut scope, flow, &params.items, &mut |ctx, scope, flow, param| {
+        self.compile_elaborate_extra_list(&mut scope, flow, &params.items, &mut |slf, scope, flow, param| {
             let &Parameter {
                 span: _,
                 id,
@@ -534,11 +534,11 @@ impl CompileItemContext<'_, '_> {
                 default,
             } = param;
 
-            let ty = ctx.eval_expression_as_ty(scope, flow, ty)?;
+            let ty = slf.eval_expression_as_ty(scope, flow, ty)?;
             let default = default
                 .as_ref()
                 .map(|&default| {
-                    let value = ctx.eval_expression_as_compile(
+                    let value = slf.eval_expression_as_compile(
                         scope,
                         flow,
                         &ty.inner,
@@ -558,6 +558,7 @@ impl CompileItemContext<'_, '_> {
 
             // declare param in scope
             let param_var = flow.var_new_immutable_init(
+                slf.refs,
                 param.id.span,
                 VariableId::Id(MaybeIdentifier::Identifier(param.id)),
                 param.id.span,
@@ -793,7 +794,7 @@ pub fn check_function_return_type_and_set_value(
             let result_ty = check_type_contains_value(diags, elab, reason, ty.inner, value.as_ref());
 
             if let Some(return_var) = entry.return_var {
-                flow.var_set(return_var, span_stmt, result_ty.map(|()| value.inner))?;
+                flow.var_set(refs, return_var, span_stmt, result_ty.map(|()| value.inner))?;
             }
 
             result_ty?;
@@ -847,7 +848,7 @@ fn check_function_end(
     let value = if is_certain_return {
         if let Some(var) = return_entry.return_var {
             // normal return, get the value
-            flow.var_eval(diags, large, Spanned::new(body_span, var))
+            flow.var_eval(refs, large, Spanned::new(body_span, var))
                 .map_err(|_: DiagError| diags.report_internal_error(body_span, "failed to evaluate return value"))?
         } else {
             // normal return with unit return type, return unit
@@ -980,6 +981,7 @@ impl CapturedScope {
                             // TODO this can be simplified, identifiers can be stored by value now
                             let id_recreated = MaybeIdentifier::Identifier(Identifier { span });
                             let var = flow.var_new_immutable_init(
+                                refs,
                                 id_recreated.span(),
                                 VariableId::Id(id_recreated),
                                 span,

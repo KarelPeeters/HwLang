@@ -1,4 +1,4 @@
-use crate::front::assignment::{AssignmentTarget, AssignmentTargetBase};
+use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{
     TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool,
     check_type_is_int, check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint,
@@ -216,7 +216,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                     NamedOrValue::Named(value) => match value {
                         NamedValue::Variable(var) => {
-                            flow.var_eval(diags, &mut self.large, Spanned::new(expr.span, var))?
+                            flow.var_eval(refs, &mut self.large, Spanned::new(expr.span, var))?
                         }
                         NamedValue::Port(port) => {
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
@@ -473,6 +473,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                     let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
                     let index_var = flow.var_new_immutable_init(
+                        refs,
                         index.span(),
                         VariableId::Id(index),
                         span_keyword,
@@ -1508,9 +1509,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 match self.eval_named_or_value(scope, id)?.inner {
                     NamedOrValue::ItemValue(_) => return Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
-                        NamedValue::Variable(v) => {
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Variable(v)))
-                        }
+                        NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
                         NamedValue::Port(port) => {
                             // check direction
                             let direction = self.ports[port].direction;
@@ -1519,17 +1518,13 @@ impl<'a> CompileItemContext<'a, '_> {
                                 PortDirection::Output => {}
                             }
 
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Port(port)))
+                            AssignmentTarget::simple(Spanned::new(expr.span, port.into()))
                         }
                         NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
                             return Err(build_err("interface instance"));
                         }
-                        NamedValue::Wire(w) => {
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Wire(w)))
-                        }
-                        NamedValue::Register(r) => {
-                            AssignmentTarget::simple(Spanned::new(expr.span, AssignmentTargetBase::Register(r)))
-                        }
+                        NamedValue::Wire(w) => AssignmentTarget::simple(Spanned::new(expr.span, w.into())),
+                        NamedValue::Register(r) => AssignmentTarget::simple(Spanned::new(expr.span, r.into())),
                     },
                 }
             }
@@ -1594,10 +1589,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                             PortDirection::Output => {}
                                         }
 
-                                        AssignmentTarget::simple(Spanned::new(
-                                            expr.span,
-                                            AssignmentTargetBase::Port(port),
-                                        ))
+                                        AssignmentTarget::simple(Spanned::new(expr.span, port.into()))
                                     }
                                     NamedOrValue::Named(NamedValue::WireInterface(base)) => {
                                         // get port
@@ -1611,10 +1603,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                             interface_info.get_port(diags, self.refs.fixed.source, index)?;
                                         let wire = wire_interface_info.wires[wire_index];
 
-                                        AssignmentTarget::simple(Spanned::new(
-                                            expr.span,
-                                            AssignmentTargetBase::Wire(wire),
-                                        ))
+                                        AssignmentTarget::simple(Spanned::new(expr.span, wire.into()))
                                     }
                                     _ => {
                                         return Err(diags.report_simple(

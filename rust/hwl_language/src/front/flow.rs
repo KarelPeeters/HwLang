@@ -1,4 +1,3 @@
-use crate::front::assignment::store_hardware_value_in_new_ir_variable;
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -7,12 +6,12 @@ use crate::front::module::ExtraRegisterInit;
 use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile,
+    CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, MaybeUndefined, MixedCompoundValue, NotCompile,
     SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrTargetStep,
-    IrVariable, IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
+    IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::parsed::AstRefItem;
@@ -39,6 +38,7 @@ pub enum FlowKind<C, H> {
 
 #[derive(Debug)]
 pub struct FlowRoot<'d> {
+    // TODO maybe this should be refs, instead having an extra parameter for a couple of functions
     diags: &'d Diagnostics,
     check: RandomCheck,
 
@@ -241,11 +241,12 @@ type VariableValue = Value<SimpleCompileValue, MixedCompoundValue, VariableValue
 
 #[derive(Debug, Clone)]
 struct VariableValueHardware {
-    // TODO this should probably just be an IrVariable? will we ever store anything else?
-    value_raw: HardwareValue,
+    value_raw: HardwareValue<HardwareType, IrVariable>,
     version: VersionIndex,
     implied_int_range: Option<ClosedNonEmptyMultiRange<BigInt>>,
 }
+
+pub type VarSetValue = Value<SimpleCompileValue, MixedCompoundValue, HardwareValue<HardwareType, IrVariable>>;
 
 enum SignalContent {
     Compile(CompileValue),
@@ -290,6 +291,8 @@ trait FlowPrivate: Sized {
     fn signal_get_content(&self, signal: Signal) -> DiagResult<&SignalContent>;
 }
 
+const VAR_EVAL_HW_REASON: &str = "accessing a hardware variable";
+
 #[allow(private_bounds)]
 pub trait Flow: FlowPrivate {
     #[allow(clippy::needless_lifetimes)]
@@ -311,8 +314,44 @@ pub trait Flow: FlowPrivate {
         })
     }
 
-    fn var_set(&mut self, var: Variable, assignment_span: Span, value: DiagResult<Value>) -> DiagResult {
-        // TODO for hardware values, forcibly create a new IrVariable?
+    fn var_set(
+        &mut self,
+        refs: CompileRefs,
+        var: Variable,
+        assignment_span: Span,
+        value: DiagResult<Value>,
+    ) -> DiagResult {
+        // store value in IrVariable if it's a hardware value
+        let value = value.and_then(|value| {
+            value.try_map_hardware(|value| {
+                let var_info = self.var_info(Spanned::new(assignment_span, var))?;
+                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+
+                let flow = self.require_hardware(assignment_span, "assigning hardware value")?;
+
+                Ok(flow.store_hardware_value_in_new_ir_variable(refs, assignment_span, debug_info_id, value))
+            })
+        });
+
+        self.var_set_without_copy(var, assignment_span, value)
+    }
+
+    /// More specific form of [var_set] that only works for compile-time value.
+    fn var_set_compile(&mut self, var: Variable, assignment_span: Span, value: DiagResult<CompileValue>) -> DiagResult {
+        self.var_set_without_copy(var, assignment_span, value.map(VarSetValue::from))
+    }
+
+    /// More specific form of [var_set] if the value is already in an IR variable,
+    /// and transferring the ownership of that variable to the flow is desired.
+    fn var_set_without_copy(
+        &mut self,
+        var: Variable,
+        assignment_span: Span,
+        value: DiagResult<VarSetValue>,
+    ) -> DiagResult {
+        // TODO stop accepting DiagError here, if something fails we should stop immediately,
+        //   there are too many much type inference and side effects that can cause secondary issues
+        // TODO double-check that we're not setting a hardware value in a compile context, that should be impossible
         let assigned = match value {
             Ok(value) => {
                 let value = value.map_hardware(|value| VariableValueHardware {
@@ -332,17 +371,46 @@ pub trait Flow: FlowPrivate {
         self.var_set_content(var, span, content)
     }
 
+    /// Evaluate the given variable.
+    ///
+    /// The [IrVariable] in the hardware case is already a defensive copy, and can be used by the caller freely.
+    /// The flow will not modify it later.
     fn var_eval(
-        &self,
-        diags: &Diagnostics,
+        &mut self,
+        refs: CompileRefs,
         large: &mut IrLargeArena,
         var: Spanned<Variable>,
     ) -> DiagResult<ValueWithVersion> {
+        self.var_eval_without_copy(large, var)?
+            .try_map_hardware(|value_uncopied| {
+                // store into intermediate variable (copy-on-read)
+                let var_info = self.var_info(var)?;
+                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+                let flow = self.require_hardware(var.span, VAR_EVAL_HW_REASON)?;
+
+                let value =
+                    flow.store_hardware_value_in_new_ir_variable(refs, var.span, debug_info_id, value_uncopied.value);
+
+                Ok(HardwareValueWithVersion {
+                    value: value.map_expression(IrExpression::Variable),
+                    version: value_uncopied.version,
+                })
+            })
+    }
+
+    /// Variant of [var_eval] that does not create a defensive copy of the hardware value.
+    fn var_eval_without_copy(
+        &mut self,
+        large: &mut IrLargeArena,
+        var: Spanned<Variable>,
+    ) -> DiagResult<ValueWithVersion> {
+        let diags = self.root().diags;
+
         let result = match self.var_get_content(var)? {
             VariableContent::Assigned(value) => match &value.inner {
                 Value::Simple(v) => Value::Simple(v.clone()),
                 Value::Compound(v) => Value::Compound(v.clone()),
-                Value::Hardware(v) => Value::Hardware(v.as_hardware_value(large, var.inner)),
+                Value::Hardware(v) => Value::Hardware(v.as_hardware_value_without_copy(large, var.inner)),
             },
             VariableContent::NotFullyAssigned(kind) => {
                 let var_info = self.var_info(var)?;
@@ -352,11 +420,12 @@ pub trait Flow: FlowPrivate {
         };
 
         // check that we're not returning a hardware value in a compile context
+        //   (this check also catches compound values with hardware parts)
         match self.kind() {
             FlowKind::Hardware(_) => {}
             FlowKind::Compile(slf) => {
                 if CompileValue::try_from(&result).is_err() {
-                    return Err(slf.err_not_hardware(var.span, "accessing a hardware variable"));
+                    return Err(slf.err_not_hardware(var.span, VAR_EVAL_HW_REASON));
                 }
             }
         }
@@ -394,6 +463,7 @@ pub trait Flow: FlowPrivate {
 
     fn var_new_immutable_init(
         &mut self,
+        refs: CompileRefs,
         span_decl: Span,
         id: VariableId,
         assign_span: Span,
@@ -406,7 +476,7 @@ pub trait Flow: FlowPrivate {
             ty: None,
         };
         let var = self.var_new(info);
-        self.var_set(var, assign_span, value)?;
+        self.var_set(refs, var, assign_span, value)?;
         Ok(var)
     }
 
@@ -432,6 +502,13 @@ pub trait Flow: FlowPrivate {
             },
             VariableContent::Assigned(_) => Ok(false),
             &VariableContent::Error(e) => Err(e),
+        }
+    }
+
+    fn signal_eval_if_compile(&mut self, signal: Spanned<Signal>) -> DiagResult<Option<&CompileValue>> {
+        match self.signal_get_content(signal.inner)? {
+            SignalContent::Compile(value) => Ok(Some(value)),
+            SignalContent::Hardware(_) => Ok(None),
         }
     }
 
@@ -471,20 +548,19 @@ pub trait Flow: FlowPrivate {
                     }
                 }
 
-                // copy the value into a temporary register to avoid later writes from leaking through
+                // copy the value into a temporary variable to avoid later writes from leaking through
                 let slf = match self.kind_mut() {
                     FlowKind::Compile(_) => unreachable!(),
                     FlowKind::Hardware(slf) => slf,
                 };
 
                 let debug_info_id = signal.inner.diagnostic_string(ctx).to_owned();
-                let value_var = store_hardware_value_in_new_ir_variable(
+                let value_var = slf.store_hardware_value_in_new_ir_variable(
                     ctx.refs,
-                    slf,
                     signal.span,
                     Some(debug_info_id),
                     value.value,
-                )?;
+                );
                 let value = HardwareValueWithVersion {
                     value: value_var.map_expression(IrExpression::Variable),
                     version: value.version,
@@ -1231,62 +1307,64 @@ impl<'p> FlowHardware<'p> {
         self.first_common_mut().signals.insert(signal, content);
     }
 
-    pub fn signal_assign(
+    /// Report that `signal` has been assigned a new value.
+    ///
+    /// `extra_info` contains any extra information about the assigned value,
+    /// either the full compile-time value or a more specific type of the assigned value.
+    /// This must apply to the entire new value of the signal, not just the assigned part.
+    pub fn signal_report_assignment(
         &mut self,
-        ctx: &mut CompileItemContext,
-        assign_span: Span,
         signal: Spanned<Signal>,
-        steps: Vec<IrTargetStep>,
-        target_type: HardwareType,
-        value_hardware: HardwareValue,
-        value_compile: Option<CompileValue>,
-    ) -> DiagResult {
+        extra_info: Option<MaybeCompile<CompileValue, HardwareType>>,
+    ) {
         // TODO track partial drivers to avoid clashes and to generate extra concat blocks
         // TODO comb blocks: check that all written signals are _always_ written
         // TODO ban signal assignments in wire expressions and port connections
 
-        // expand value to target type
-        let value_hardware_expanded =
-            value_hardware.as_hardware_value_unchecked(ctx.refs, &mut ctx.large, assign_span, target_type)?;
-
-        // set content
-        let content = if steps.is_empty() {
-            match value_compile {
-                Some(value_compile) => SignalContent::Compile(value_compile),
-                None => {
-                    let version = self.root.next_version();
-                    let implied_int_range = match value_hardware.ty {
-                        HardwareType::Int(range) => Some(range),
-                        _ => None,
-                    };
-                    SignalContent::Hardware(SignalContentHardware {
-                        version,
-                        implied_int_range,
-                    })
-                }
-            }
-        } else {
-            let version = self.root.next_version();
+        let new_hardware_content = |implied_int_range| {
             SignalContent::Hardware(SignalContentHardware {
-                version,
-                implied_int_range: None,
+                version: self.root.next_version(),
+                implied_int_range,
             })
         };
-        self.signal_set_content(signal.inner, content);
 
-        // push the actual assignment
-        let signal_ir = signal.inner.expect_ir(ctx, signal.span)?;
-        let stmt = IrStatement::Assign(
-            IrAssignmentTarget {
-                base: signal_ir.into(),
-                steps,
+        let content = match extra_info {
+            Some(extra_info) => match extra_info {
+                MaybeCompile::Compile(value) => SignalContent::Compile(value),
+                MaybeCompile::Hardware(ty) => match ty {
+                    HardwareType::Int(range) => new_hardware_content(Some(range)),
+                    _ => new_hardware_content(None),
+                },
             },
-            value_hardware_expanded.expr,
-        );
-        let stmt = Spanned::new(assign_span, stmt);
-        self.push_ir_statement(stmt);
+            None => new_hardware_content(None),
+        };
+        self.signal_set_content(signal.inner, content);
+    }
 
-        Ok(())
+    pub fn store_hardware_value_in_new_ir_variable(
+        &mut self,
+        refs: CompileRefs,
+        span: Span,
+        debug_info_id: Option<String>,
+        value: HardwareValue,
+    ) -> HardwareValue<HardwareType, IrVariable> {
+        let var_ir_info = IrVariableInfo {
+            ty: value.ty.as_ir(refs),
+            debug_info_span: span,
+            debug_info_id,
+        };
+
+        let var_ir = self.new_ir_variable(var_ir_info);
+
+        let target = IrAssignmentTarget::simple(var_ir.into());
+        let stmt_store = IrStatement::Assign(target, value.expr);
+        self.push_ir_statement(Spanned::new(span, stmt_store));
+
+        HardwareValue {
+            ty: value.ty,
+            domain: value.domain,
+            expr: var_ir,
+        }
     }
 }
 
@@ -1812,7 +1890,9 @@ fn merge_branch_variable(
                         v.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?,
                     ),
                     Value::Hardware(v) => {
-                        let value = v.as_hardware_value(large, var);
+                        // no need to take a copy here,
+                        //   we're immediately using this value in a store operation and then discarding it
+                        let value = v.as_hardware_value_without_copy(large, var);
                         let expr = value
                             .value
                             .as_ir_expression_unchecked(refs, large, assigned.span, &ty)?;
@@ -1857,7 +1937,7 @@ fn merge_branch_variable(
     let result_value = HardwareValue {
         ty,
         domain,
-        expr: IrExpression::Variable(var_ir),
+        expr: var_ir,
     };
     let result_version = parent_flow.root.next_version();
     let result_var_value = VariableValueHardware {
@@ -1988,7 +2068,7 @@ impl VariableValueHardware {
         }
     }
 
-    pub fn as_hardware_value(&self, large: &mut IrLargeArena, var: Variable) -> HardwareValueWithVersion {
+    pub fn as_hardware_value_without_copy(&self, large: &mut IrLargeArena, var: Variable) -> HardwareValueWithVersion {
         let VariableValueHardware {
             value_raw,
             version,
@@ -1998,7 +2078,7 @@ impl VariableValueHardware {
         let value = if let Some(implied_int_range) = implied_int_range {
             let expr = large.push_expr(IrExpressionLarge::ConstrainIntRange(
                 implied_int_range.enclosing_range().cloned(),
-                value_raw.expr.clone(),
+                IrExpression::Variable(value_raw.expr),
             ));
             HardwareValue {
                 ty: HardwareType::Int(implied_int_range.clone()),
@@ -2006,7 +2086,11 @@ impl VariableValueHardware {
                 expr,
             }
         } else {
-            value_raw.clone()
+            HardwareValue {
+                ty: value_raw.ty.clone(),
+                domain: value_raw.domain,
+                expr: IrExpression::Variable(value_raw.expr),
+            }
         };
 
         HardwareValueWithVersion {

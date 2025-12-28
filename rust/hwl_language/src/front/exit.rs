@@ -1,4 +1,5 @@
 use crate::front::block::EarlyExitKind;
+use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
 use crate::front::flow::{Flow, FlowKind, ValueVersion, Variable, VariableId, VariableInfo};
@@ -91,27 +92,28 @@ impl ExitFlag {
         let var = flow.var_new(info);
 
         // initialize to false
-        flow.var_set(var, span, Ok(Value::new_bool(false)))?;
+        flow.var_set_compile(var, span, Ok(Value::new_bool(false)))?;
 
         Ok(Self { var })
     }
 
     pub fn clear(&mut self, flow: &mut impl Flow, span: Span) -> DiagResult {
-        flow.var_set(self.var, span, Ok(Value::new_bool(false)))
+        flow.var_set_compile(self.var, span, Ok(Value::new_bool(false)))
     }
 
     pub fn set(&mut self, flow: &mut impl Flow, span: Span) -> DiagResult {
-        flow.var_set(self.var, span, Ok(Value::new_bool(true)))
+        flow.var_set_compile(self.var, span, Ok(Value::new_bool(true)))
     }
 
     pub fn get(
         &self,
+        refs: CompileRefs,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
         span: Span,
     ) -> DiagResult<MaybeCompile<bool, HardwareValueWithVersion<ValueVersion, TypeBool>>> {
-        match flow.var_eval(diags, large, Spanned::new(span, self.var)) {
+        match flow.var_eval(refs, large, Spanned::new(span, self.var)) {
             Ok(value) => {
                 let value = match value {
                     Value::Simple(value) => {
@@ -161,6 +163,7 @@ impl<'r> ExitStack<'r> {
 
     pub fn early_exit_condition(
         &mut self,
+        refs: CompileRefs,
         diags: &Diagnostics,
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
@@ -168,7 +171,7 @@ impl<'r> ExitStack<'r> {
     ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
         let mut add_flag = |c: MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>, flag: &ExitFlag| {
             let flag = flag
-                .get(diags, large, flow, span)?
+                .get(refs, diags, large, flow, span)?
                 .map_hardware(HardwareValueWithImplications::simple_version);
             Ok(eval_binary_bool_typed(large, IrBoolBinaryOp::Or, c, flag))
         };

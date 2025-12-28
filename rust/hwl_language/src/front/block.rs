@@ -1,4 +1,3 @@
-use crate::front::assignment::store_hardware_value_in_new_ir_variable;
 use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
     check_type_is_range_compile,
@@ -312,7 +311,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<BlockEnd> {
         let &Block { span, ref statements } = block;
 
-        // Create a new scope, neccesary to ensure declarations don't leak into the parent scope.
+        // Create a new scope, necessary to ensure declarations don't leak into the parent scope.
         let mut scope = Scope::new_child(span, scope_parent);
 
         // Create a new scoped flow, not strictly necessary for correctness,
@@ -347,7 +346,7 @@ impl CompileItemContext<'_, '_> {
                 .join(statements.last().unwrap().span())
         };
 
-        let end = match stack.early_exit_condition(diags, &mut self.large, flow, span)? {
+        let end = match stack.early_exit_condition(self.refs, diags, &mut self.large, flow, span)? {
             MaybeCompile::Compile(exit_cond) => {
                 if exit_cond {
                     return Err(diags
@@ -466,22 +465,8 @@ impl CompileItemContext<'_, '_> {
                     let var = flow.var_new(info);
 
                     // store initial value if there is one
-                    //   for hardware values, also store them in an IR variable to avoid duplicate expressions
-                    //   and to keep the generated RTL somewhat similar to the source
                     if let Some(init) = init {
-                        let init = init.inner.try_map_hardware(|init_inner| {
-                            let flow = flow.require_hardware(init.span, "hardware value")?;
-                            let debug_info_id = id.spanned_string(self.refs.fixed.source).inner;
-                            store_hardware_value_in_new_ir_variable(
-                                self.refs,
-                                flow,
-                                id.span(),
-                                debug_info_id,
-                                init_inner,
-                            )
-                            .map(|h| h.map_expression(IrExpression::Variable))
-                        })?;
-                        flow.var_set(var, decl.span, Ok(init))?;
+                        flow.var_set(self.refs, var, decl.span, Ok(init.inner))?;
                     }
 
                     Ok(ScopedEntry::Named(NamedValue::Variable(var)))
@@ -847,6 +832,7 @@ impl CompileItemContext<'_, '_> {
                     }) = declare
                     {
                         let var = flow.var_new_immutable_init(
+                            self.refs,
                             declare_id.span(),
                             VariableId::Id(declare_id),
                             pattern_span,
@@ -1106,6 +1092,7 @@ impl CompileItemContext<'_, '_> {
                 let BranchDeclare { id, value } = declare;
                 if let MaybeIdentifier::Identifier(id) = id {
                     let var = branch_flow.as_flow().var_new_immutable_init(
+                        self.refs,
                         id.span(),
                         VariableId::Id(MaybeIdentifier::Identifier(id)),
                         id.span(),
@@ -1303,7 +1290,7 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_loop(flow, stack, span_keyword, iter, |slf, flow, stack, index_value| {
             let index_value = index_value.map_hardware(|h| h.map_expression(|h| slf.large.push_expr(h)));
 
-            // typecheck index
+            // typecheck index (if specified)
             if let Some(index_ty) = &index_ty {
                 let curr_spanned = Spanned {
                     span: stmt.inner.iter.span,
@@ -1313,10 +1300,8 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, elab, reason, &index_ty.inner, curr_spanned)?;
             }
 
-            // set index
-            flow.var_set(index_var, span_keyword, Ok(index_value))?;
-
-            // elaborate body
+            // set index and elaborate body
+            flow.var_set(slf.refs, index_var, span_keyword, Ok(index_value))?;
             slf.elaborate_block(&scope_index, flow, stack, body)
         })
     }

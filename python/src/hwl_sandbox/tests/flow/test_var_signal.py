@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import hwl
+import pytest
 
 from hwl_sandbox.common.util import compile_custom
 
@@ -8,18 +9,43 @@ from hwl_sandbox.common.util import compile_custom
 def test_read_const_from_signal(tmp_dir: Path):
     src = """
     import std.types.uint;
+    import std.util.assert;
     module top ports(clk: in clock, p: out async uint(8)) {
         wire w: uint(8);
         reg r: uint(8) = undef;
         comb {
             w = 3;
             p = 4;
-            const _ = p;
-            const _ = w;
+            const {
+                assert(w == 3);
+                assert(p == 4);
+            }
         }
         clocked(clk) {
             r = 5;
-            const _ = r;
+            const {
+                assert(r == 5);
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_read_const_from_signal_after_step(tmp_dir: Path):
+    src = """
+    import std.types.uint;
+    import std.util.assert;
+    module top ports(clk: in clock) {
+        wire w: [2]uint(8);
+        comb {
+            w = [3, 4];
+            w[0] = 5;
+            const {
+                assert(w[0] == 5);
+                assert(w[1] == 4);
+            }
         }
     }
     """
@@ -171,3 +197,111 @@ def test_const_assign_outside_var():
     """
     c = compile_custom(src)
     _ = c.resolve("top.top")
+
+
+def test_var_type_enforced_scalar():
+    src_a = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v: bool = false;
+            v = true;
+        }
+    }
+    """
+    _ = compile_custom(src_a).resolve("top.top")
+
+    src_c = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v = false;
+            v = 5;
+        }
+    }
+    """
+    _ = compile_custom(src_c).resolve("top.top")
+
+    src_b = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v: bool = false;
+            v = 5;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        _ = compile_custom(src_b).resolve("top.top")
+
+
+def test_var_type_enforced_array():
+    src_a = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v: [2]bool = [false, true];
+            v[0] = true;
+        }
+    }
+    """
+    _ = compile_custom(src_a).resolve("top.top")
+
+    src_c = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v = [false, true];
+            v[0] = 5;
+        }
+    }
+    """
+    _ = compile_custom(src_c).resolve("top.top")
+
+    src_b = """
+    import std.types.bool;
+    module top ports(c: in async bool) {
+        comb {
+            var v: [2]bool = [false, true];
+            v[0] = 5;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        _ = compile_custom(src_b).resolve("top.top")
+
+
+def test_wire_infer_type():
+    src = """
+    module top ports() {
+        wire w;
+        comb {
+            w = false;
+        }
+    }
+    """
+    _ = compile_custom(src).resolve("top.top")
+
+
+def test_assign_immutable():
+    src_a = """
+    module top ports() {
+        comb {
+            val w;
+            w = false;
+        }
+    }
+    """
+    _ = compile_custom(src_a).resolve("top.top")
+
+    src_b = """
+        module top ports() {
+            comb {
+                val w;
+                w = false;
+                w = true;
+            }
+        }
+        """
+    with pytest.raises(hwl.DiagnosticException, match="cannot assign to immutable variable"):
+        _ = compile_custom(src_b).resolve("top.top")

@@ -1,6 +1,7 @@
 use crate::front::flow::ValueVersion;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
+use crate::mid::ir::IrExpression;
 use crate::util::big_int::BigInt;
 use crate::util::range_multi::MultiRange;
 use std::fmt::Debug;
@@ -31,21 +32,21 @@ pub enum ImplicationIntOp {
     Gt,
 }
 
-pub type ValueWithVersion<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
-    Value<S, C, HardwareValueWithVersion<ValueVersion, T>>;
-pub type ValueWithImplications<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType> =
-    Value<S, C, HardwareValueWithImplications<T>>;
+pub type ValueWithVersion<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType, E = IrExpression> =
+    Value<S, C, HardwareValueWithVersion<ValueVersion, T, E>>;
+pub type ValueWithImplications<S = SimpleCompileValue, C = MixedCompoundValue, T = HardwareType, E = IrExpression> =
+    Value<S, C, HardwareValueWithImplications<T, E>>;
 pub type HardwareValueWithMaybeVersion = HardwareValueWithVersion<Option<ValueVersion>>;
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithVersion<V = ValueVersion, T = HardwareType> {
-    pub value: HardwareValue<T>,
+pub struct HardwareValueWithVersion<V = ValueVersion, T = HardwareType, E = IrExpression> {
+    pub value: HardwareValue<T, E>,
     pub version: V,
 }
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithImplications<T = HardwareType> {
-    pub value: HardwareValue<T>,
+pub struct HardwareValueWithImplications<T = HardwareType, E = IrExpression> {
+    pub value: HardwareValue<T, E>,
     pub version: Option<ValueVersion>,
     pub implications: BoolImplications,
 }
@@ -149,5 +150,11 @@ impl Typed for ValueWithImplications {
             Value::Compound(v) => v.ty(),
             Value::Hardware(v) => v.value.ty(),
         }
+    }
+}
+
+impl<V, E> Typed for HardwareValueWithVersion<V, HardwareType, E> {
+    fn ty(&self) -> Type {
+        self.value.ty.as_type()
     }
 }
