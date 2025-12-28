@@ -193,7 +193,7 @@ impl VerilatedInstance {
 
         let value = port_info.ty.value_from_bits(&bits).map_err(|e| match e {
             Either::Left(FromBitsInvalidValue) => {
-                VerilatorError::FromBitsInvalidValue(bits, port_info.ty.diagnostic_string())
+                VerilatorError::FromBitsInvalidValue(bits, format!("{:?}", port_info.ty))
             }
             Either::Right(FromBitsWrongLength) => VerilatorError::InternalError("from bits wrong length"),
         })?;
