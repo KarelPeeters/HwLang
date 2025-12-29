@@ -18,7 +18,7 @@ pub struct Scope<'p> {
     content: ScopeContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum ScopedEntry {
     /// Indirection though an item, the item should be evaluated.
     Item(AstRefItem),
@@ -62,7 +62,7 @@ enum DeclaredValue {
     Error(DiagError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum DeclaredValueSingle<S = ScopedEntry> {
     Value { span: Span, value: S },
     FailedCapture(Span, FailedCaptureReason),
@@ -120,12 +120,12 @@ impl<'p> Scope<'p> {
         self.content
     }
 
-    pub fn immediate_entries(&self) -> impl Iterator<Item = (&str, DeclaredValueSingle<&ScopedEntry>)> {
+    pub fn immediate_entries(&self) -> impl Iterator<Item = (&str, DeclaredValueSingle<ScopedEntry>)> {
         self.content.values.iter().map(|(k, v)| {
             let v = match *v {
-                DeclaredValue::Once { ref value, span } => match value {
+                DeclaredValue::Once { value, span } => match value {
                     Ok(value) => DeclaredValueSingle::Value { span, value },
-                    &Err(e) => DeclaredValueSingle::Error(e),
+                    Err(e) => DeclaredValueSingle::Error(e),
                 },
                 DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
                 DeclaredValue::FailedCapture(span, reason) => DeclaredValueSingle::FailedCapture(span, reason),
@@ -133,6 +133,10 @@ impl<'p> Scope<'p> {
             };
             (k.as_str(), v)
         })
+    }
+
+    pub fn has_immediate_entry(&self, id: &str) -> bool {
+        self.content.values.contains_key(id)
     }
 
     /// Declare a value in this scope.

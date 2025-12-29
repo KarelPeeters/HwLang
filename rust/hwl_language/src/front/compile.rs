@@ -3,7 +3,7 @@ use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
-use crate::front::scope::{Scope, ScopedEntry};
+use crate::front::scope::{DeclaredValueSingle, Scope, ScopedEntry};
 use crate::front::signal::Signal;
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInterface,
@@ -437,7 +437,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         parsed,
     } = fixed;
 
-    // pass 0: add all items to their own file scope
+    // pass 0: add all declared items to the file scope
     let mut file_scopes: FileScopes = IndexMap::new();
     for file in hierarchy.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
@@ -457,7 +457,8 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         file_scopes.insert_first(file, scope);
     }
 
-    // pass 1: collect import items from source scopes for each target file
+    // pass 1: resolve all imports and collect the imported items
+    // (don't immediately add them, then then would already be visible for later imports from other files)
     let mut file_imported_items: Vec<Vec<(MaybeIdentifier, DiagResult<ScopedEntry>)>> = vec![];
     for target_file in hierarchy.files() {
         let mut curr_imported_items = vec![];
@@ -517,11 +518,42 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         file_imported_items.push(curr_imported_items);
     }
 
-    // pass 3: add imported items to the target file scope
+    // pass 2: actually add the imported items to the file scopes
     for (target_file, items) in zip_eq(hierarchy.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
                 scope.maybe_declare(diags, Ok(target_id.spanned_str(source)), value);
+            }
+        }
+    }
+
+    // pass 3: add prelude items to all files scopes
+    let mut prelude_imported_items: Vec<(String, DeclaredValueSingle)> = vec![];
+    for std_file in ["types", "util", "math"] {
+        let file = hierarchy
+            .root
+            .children
+            .get("std")
+            .and_then(|n| n.children.get(std_file))
+            .and_then(|n| n.file);
+
+        if let Some(file) = file {
+            let scope = &file_scopes.get(&file).unwrap();
+            if let Ok(scope) = scope {
+                for (name, value) in scope.immediate_entries() {
+                    prelude_imported_items.push((name.to_owned(), value));
+                }
+            }
+        } else {
+            todo!("err")
+        }
+    }
+    for file in hierarchy.files() {
+        if let Ok(scope) = file_scopes.get_mut(&file).unwrap() {
+            for (name, value) in &prelude_imported_items {
+                if !scope.has_immediate_entry(name) {
+                    scope.declare_already_checked(name.clone(), *value);
+                }
             }
         }
     }
