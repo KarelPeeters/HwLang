@@ -411,8 +411,8 @@ fn print_hardware_sub(
                     builder.push_str("(");
                     block_case.extend(print_hardware_sub(elab, new_ir_var, large, builder, &payload));
                     builder.push_str(")");
-                    builder.print_and_clear(&mut block_case);
                 }
+                builder.print_and_clear(&mut block_case);
 
                 rest = IrStatement::If(IrIfStatement {
                     condition: cond,
