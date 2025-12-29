@@ -9,7 +9,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{Annotation, DiagResult, Diagnostic, Diagnostics};
 use hwl_language::front::print::IgnorePrintHandler;
-use hwl_language::syntax::collect::{add_source_files_to_tree, collect_source_files_from_tree};
+use hwl_language::syntax::collect::{add_source_files_to_tree, add_std_sources, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
@@ -253,6 +253,8 @@ fn collect_partial_manifest(
     let diags = &common.diags;
     let source = &mut common.source;
     let mut hierarchy = SourceHierarchy::new();
+
+    add_std_sources(diags, source, &mut hierarchy)?;
 
     // TODO get more precise span
     let manifest_span = source.full_span(common.manifest_file);

@@ -528,6 +528,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
 
     // pass 3: add prelude items to all files scopes
+    // TODO this silently fails if there is no std library, is that okay?
     let mut prelude_imported_items: Vec<(String, DeclaredValueSingle)> = vec![];
     for std_file in ["types", "util", "math"] {
         let file = hierarchy
@@ -544,10 +545,6 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                     prelude_imported_items.push((name.to_owned(), value));
                 }
             }
-        } else {
-            let diag =
-                Diagnostic::new_internal_error(format!("prelude failed to find std file std.{std_file}")).finish();
-            diags.report(diag);
         }
     }
     for file in hierarchy.files() {
