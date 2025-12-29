@@ -6,9 +6,9 @@ use crate::front::item::ElaborationArenas;
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
-    SimpleCompileValue, Value,
+    MixedString, SimpleCompileValue, Value,
 };
-use crate::syntax::ast::{StringPiece, SyncDomain};
+use crate::syntax::ast::SyncDomain;
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
@@ -447,7 +447,7 @@ pub fn check_type_is_string(
     elab: &ElaborationArenas,
     reason: TypeContainsReason,
     value: Spanned<Value>,
-) -> DiagResult<Arc<Vec<StringPiece<String, HardwareValue>>>> {
+) -> DiagResult<Arc<MixedString>> {
     check_type_contains_value(diags, elab, reason, &Type::String, value.as_ref())?;
 
     match value.inner {

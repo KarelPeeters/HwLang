@@ -1,6 +1,6 @@
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrForStatement,
-    IrIfStatement, IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrStringPiece,
+    IrIfStatement, IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
     IrStringSubstitution, IrTargetStep, IrVariable, IrVariables, ValueAccess,
 };
 use indexmap::{IndexMap, IndexSet};
@@ -111,6 +111,7 @@ fn remove_dead_vars_block(block: &mut IrBlock, used: &IndexSet<IrVariable>) {
             true
         }
         IrStatement::Print(_) => true,
+        IrStatement::AssertFailed => true,
     })
 }
 
@@ -195,18 +196,21 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
                         }
                     });
             }
-            IrStatement::Print(pieces) => {
-                for piece in pieces {
-                    match piece {
-                        IrStringPiece::Literal(_str) => {}
-                        IrStringPiece::Substitute(sub) => match sub {
-                            IrStringSubstitution::Integer(expr, _radix) => {
-                                inline_vars_expr(large, state, expr);
-                            }
-                        },
-                    }
+            IrStatement::Print(pieces) => inline_vars_string(large, state, pieces),
+            IrStatement::AssertFailed => {}
+        }
+    }
+}
+
+fn inline_vars_string(large: &mut IrLargeArena, state: &VarState, s: &mut IrString) {
+    for piece in s {
+        match piece {
+            IrStringPiece::Literal(_str) => {}
+            IrStringPiece::Substitute(sub) => match sub {
+                IrStringSubstitution::Integer(expr, _radix) => {
+                    inline_vars_expr(large, state, expr);
                 }
-            }
+            },
         }
     }
 }

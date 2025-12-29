@@ -5,7 +5,7 @@ use crate::mid::ir::{
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
-    IrSignalOrVariable, IrStatement, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
+    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
     IrVariables, IrWire, IrWireInfo, ValueAccess, ir_modules_topological_sort,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
@@ -1112,44 +1112,55 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     }
                 }
             }
-            IrStatement::Print(pieces) => {
-                let mut f_str = String::new();
-                let mut f_args = String::new();
-
-                for p in pieces {
-                    match p {
-                        StringPiece::Literal(p) => {
-                            f_str.push_str(&escape_verilog_str(p));
-                        }
-                        StringPiece::Substitute(p) => match p {
-                            IrStringSubstitution::Integer(p, radix) => {
-                                // TODO how does signed bin/hex behave?
-                                let signed = p.ty(self.module, self.locals).unwrap_int().as_ref().start.is_negative();
-                                let p = self.lower_expression(stmt.span, p)?;
-
-                                let radix = match radix {
-                                    IrIntegerRadix::Binary => "%b",
-                                    IrIntegerRadix::Decimal => "%d",
-                                    IrIntegerRadix::Hexadecimal => "%h",
-                                };
-
-                                match p {
-                                    Ok(p) => {
-                                        swrite!(f_str, "{radix}");
-                                        swrite!(f_args, ", {}", p.as_signed_maybe(signed));
-                                    }
-                                    Err(ZeroWidth) => {
-                                        swrite!(f_str, "0");
-                                    }
-                                }
-                            }
-                        },
-                    }
-                }
-
-                swriteln!(self.f, "{indent}$write(\"{f_str}\"{f_args});");
+            IrStatement::Print(string) => {
+                self.lower_print(stmt.span, string)?;
+            }
+            IrStatement::AssertFailed => {
+                // TODO if targeting SystemVerilog, use $fatal/$error
+                swriteln!(self.f, "{indent}$finish;");
             }
         }
+        Ok(())
+    }
+
+    fn lower_print(&mut self, span: Span, s: &IrString) -> DiagResult {
+        let mut f_str = String::new();
+        let mut f_args = String::new();
+
+        for p in s {
+            match p {
+                StringPiece::Literal(p) => {
+                    f_str.push_str(&escape_verilog_str(p));
+                }
+                StringPiece::Substitute(p) => match p {
+                    IrStringSubstitution::Integer(p, radix) => {
+                        // TODO how does signed bin/hex behave?
+                        let signed = p.ty(self.module, self.locals).unwrap_int().as_ref().start.is_negative();
+                        let p = self.lower_expression(span, p)?;
+
+                        let radix = match radix {
+                            IrIntegerRadix::Binary => "%b",
+                            IrIntegerRadix::Decimal => "%d",
+                            IrIntegerRadix::Hexadecimal => "%h",
+                        };
+
+                        match p {
+                            Ok(p) => {
+                                swrite!(f_str, "{radix}");
+                                swrite!(f_args, ", {}", p.as_signed_maybe(signed));
+                            }
+                            Err(ZeroWidth) => {
+                                swrite!(f_str, "0");
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        let indent = self.indent;
+        swriteln!(self.f, "{indent}$write(\"{f_str}\"{f_args});");
+
         Ok(())
     }
 

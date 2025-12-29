@@ -798,6 +798,10 @@ impl CodegenBlockContext<'_> {
 
                     swriteln!(self.f, "{indent}printf(\"{f_str}\"{f_args});");
                 }
+                IrStatement::AssertFailed => {
+                    // TODO do we want to use exceptions for assertions, or some other mechanism?
+                    swriteln!(self.f, "raise std::runtime_error(\"assertion failed\");");
+                }
             }
         }
 

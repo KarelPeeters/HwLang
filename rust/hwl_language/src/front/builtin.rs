@@ -1,9 +1,6 @@
-use crate::front::check::{
-    TypeContainsReason, check_type_is_bool, check_type_is_bool_compile, check_type_is_string,
-    check_type_is_string_compile,
-};
+use crate::front::check::{TypeContainsReason, check_type_is_bool, check_type_is_string, check_type_is_string_compile};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::DiagResult;
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::ValueDomain;
 use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind};
@@ -12,14 +9,15 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, Value};
-use crate::mid::ir::IrExpression;
-use crate::syntax::ast::{Arg, Args, ExpressionKind};
+use crate::front::value::{HardwareValue, MaybeCompile, NotCompile, Value};
+use crate::mid::ir::{IrExpression, IrStatement};
+use crate::syntax::ast::{Arg, Args, ExpressionKind, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::data::VecExt;
 use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
+use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {
     pub fn eval_type_of(
@@ -161,22 +159,22 @@ impl CompileItemContext<'_, '_> {
             ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
             ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
             ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(MultiRange::open()))),
+
             // print
             ("fn", "print", &[msg]) => {
                 let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
+
                 let reason_str = TypeContainsReason::Internal(expr_span);
+                let msg = check_type_is_string(diags, elab, reason_str, msg)?;
 
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
-                        let msg_inner = CompileValue::try_from(&msg.inner).map_err(|_: NotCompile| {
-                            diags.report_internal_error(expr_span, "non-compile expression in compile flow")
+                        let msg = msg.try_as_compile().map_err(|_: NotCompile| {
+                            diags.report_internal_error(expr_span, "non-compile message in compile flow")
                         })?;
-                        let msg =
-                            check_type_is_string_compile(diags, elab, reason_str, Spanned::new(msg.span, msg_inner))?;
                         self.refs.print_handler.print(&msg);
                     }
                     FlowKind::Hardware(flow) => {
-                        let msg = check_type_is_string(diags, elab, TypeContainsReason::Internal(expr_span), msg)?;
                         hardware_print_string(
                             &self.refs.shared.elaboration_arenas,
                             flow,
@@ -189,39 +187,59 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(Value::unit())
             }
+
             // assert
-            ("fn", "assert", &[cond, msg]) => {
-                // TODO support hardware cond and msg
-                let cond = self.eval_expression_as_compile(
-                    scope,
-                    flow,
-                    &Type::Bool,
-                    cond.value,
-                    Spanned::new(target_span, "assertion condition"),
-                )?;
-                let cond = check_type_is_bool_compile(diags, elab, TypeContainsReason::Internal(expr_span), cond)?;
+            ("fn", "assert_fail", &[msg]) => {
+                let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
 
-                let msg = self.eval_expression_as_compile(
-                    scope,
-                    flow,
-                    &Type::String,
-                    msg.value,
-                    Spanned::new(target_span, "assertion message"),
-                )?;
-                let msg = check_type_is_string_compile(diags, elab, TypeContainsReason::Internal(expr_span), msg)?;
+                let reason_str = TypeContainsReason::Internal(expr_span);
+                let msg = check_type_is_string(diags, elab, reason_str, msg)?;
 
-                if cond {
-                    Ok(Value::unit())
-                } else {
-                    // TODO include stack trace
-                    //   (and ensure it's deterministic even in multithreaded builds)
-                    Err(diags.report_simple(
-                        format!("assertion failed with message {msg:?}"),
-                        expr_span,
-                        "failed here",
-                    ))
+                const ASSERT_PREFIX: &str = "assertion failed";
+                match flow.kind_mut() {
+                    FlowKind::Compile(_) => {
+                        let msg = msg.try_as_compile().map_err(|_: NotCompile| {
+                            diags.report_internal_error(expr_span, "non-compile message in compile flow")
+                        })?;
+
+                        let msg = if msg.is_empty() {
+                            ASSERT_PREFIX.to_string()
+                        } else {
+                            format!("{ASSERT_PREFIX}: `{}`", msg.as_str())
+                        };
+
+                        let diag = Diagnostic::new(msg)
+                            .add_error(expr_span, "assertion failed here")
+                            .finish();
+                        Err(diags.report(diag))
+                    }
+                    FlowKind::Hardware(flow) => {
+                        let mut msg = Arc::unwrap_or_clone(msg);
+
+                        if msg.pieces.is_empty() {
+                            msg.pieces
+                                .push(StringPiece::Literal(Arc::new(ASSERT_PREFIX.to_string())));
+                        } else {
+                            msg.pieces
+                                .insert(0, StringPiece::Literal(Arc::new(format!("{ASSERT_PREFIX}: `"))));
+                            msg.pieces.push(StringPiece::Literal(Arc::new("`".to_string())));
+                        };
+
+                        // TODO keep the message and assert failure connected, so backends can use them properly
+                        hardware_print_string(
+                            &self.refs.shared.elaboration_arenas,
+                            flow,
+                            &mut self.large,
+                            expr_span,
+                            &msg,
+                        );
+                        flow.push_ir_statement(Spanned::new(expr_span, IrStatement::AssertFailed));
+
+                        Ok(Value::unit())
+                    }
                 }
             }
+
             // casting
             ("fn", "unsafe_bool_to_clock", &[value]) => {
                 let value = self.eval_expression(scope, flow, &Type::Bool, value.value)?;

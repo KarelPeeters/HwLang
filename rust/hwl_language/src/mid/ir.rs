@@ -215,9 +215,11 @@ pub enum IrStatement {
     If(IrIfStatement),
     For(IrForStatement),
     /// This does not automatically include a trailing newline.
-    Print(Vec<IrStringPiece>),
+    Print(IrString),
+    AssertFailed,
 }
 
+pub type IrString = Vec<IrStringPiece>;
 pub type IrStringPiece = StringPiece<String, IrStringSubstitution>;
 
 #[derive(Debug, Clone)]
@@ -469,18 +471,25 @@ impl IrStatement {
                 f(IrSignalOrVariable::Variable(index), ValueAccess::Read);
                 block.visit_values_accessed(large, f);
             }
-            IrStatement::Print(pieces) => {
-                for p in pieces {
-                    match p {
-                        StringPiece::Literal(_) => {}
-                        StringPiece::Substitute(v) => {
-                            let v = match v {
-                                IrStringSubstitution::Integer(v, _) => v,
-                            };
-                            v.visit_values_accessed(large, f);
-                        }
-                    }
-                }
+            IrStatement::Print(s) => visit_values_accessed_string(s, large, f),
+            IrStatement::AssertFailed => {}
+        }
+    }
+}
+
+pub fn visit_values_accessed_string(
+    pieces: &IrString,
+    large: &IrLargeArena,
+    f: &mut impl FnMut(IrSignalOrVariable, ValueAccess),
+) {
+    for p in pieces {
+        match p {
+            StringPiece::Literal(_) => {}
+            StringPiece::Substitute(v) => {
+                let v = match v {
+                    IrStringSubstitution::Integer(v, _) => v,
+                };
+                v.visit_values_accessed(large, f);
             }
         }
     }

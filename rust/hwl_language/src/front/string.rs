@@ -5,8 +5,8 @@ use crate::front::item::ElaborationArenas;
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, RangeValue, SimpleCompileValue,
-    StructValue, Value,
+    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString, RangeValue,
+    SimpleCompileValue, StructValue, Value,
 };
 use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
@@ -35,6 +35,11 @@ impl StringBuilder {
 
     pub fn push_str<'s>(&mut self, value: impl Into<Cow<'s, str>>) {
         let value = value.into();
+
+        if value.is_empty() {
+            return;
+        }
+
         if let Some(StringPiece::Literal(last)) = self.pieces.last_mut() {
             // concatenate adjacent literals to canonicalize
             last.push_str(&value);
@@ -49,10 +54,11 @@ impl StringBuilder {
             Value::Simple(value) => self.push_str(value.value_string(elab)),
             Value::Compound(value) => match value {
                 MixedCompoundValue::String(value) => {
-                    for piece in value.iter() {
+                    let MixedString { pieces } = value.as_ref();
+                    for piece in pieces {
                         match piece {
                             StringPiece::Literal(piece) => {
-                                self.push_str(piece);
+                                self.push_str(piece.as_str());
                             }
                             StringPiece::Substitute(piece) => {
                                 self.pieces.push(StringPiece::Substitute(piece.clone()));
@@ -132,8 +138,14 @@ impl StringBuilder {
         }
     }
 
-    pub fn finish(self) -> Vec<StringPiece<String, HardwareValue>> {
+    pub fn finish(self) -> Vec<StringPiece<Arc<String>, HardwareValue>> {
         self.pieces
+            .into_iter()
+            .map(|piece| match piece {
+                StringPiece::Literal(s) => StringPiece::Literal(Arc::new(s)),
+                StringPiece::Substitute(v) => StringPiece::Substitute(v),
+            })
+            .collect_vec()
     }
 }
 
@@ -153,7 +165,10 @@ impl CompileItemContext<'_, '_> {
                 StringPiece::Literal(piece_span) => {
                     let raw = self.refs.fixed.source.span_str(piece_span);
                     let escaped = apply_string_literal_escapes(raw);
-                    builder.push_str(escaped);
+
+                    if !escaped.is_empty() {
+                        builder.push_str(escaped);
+                    }
                 }
                 StringPiece::Substitute(piece_value) => {
                     let piece_value = self.eval_expression(scope, flow, &Type::Any, piece_value);
@@ -171,7 +186,10 @@ impl CompileItemContext<'_, '_> {
         }
 
         any_err?;
-        Ok(Value::Compound(MixedCompoundValue::String(Arc::new(builder.finish()))))
+
+        let pieces = builder.finish();
+        let mixed_str = MixedString { pieces };
+        Ok(Value::Compound(MixedCompoundValue::String(Arc::new(mixed_str))))
     }
 }
 
@@ -180,12 +198,13 @@ pub fn hardware_print_string(
     flow: &mut FlowHardware,
     large: &mut IrLargeArena,
     span: Span,
-    pieces: &[StringPiece<String, HardwareValue>],
+    string: &MixedString,
 ) {
     let mut new_ir_var = |info| flow.new_ir_variable(info);
     let mut builder = IrStringBuilder { span, pieces: vec![] };
     let mut block = vec![];
 
+    let MixedString { pieces } = string;
     for piece in pieces {
         match piece {
             StringPiece::Literal(s) => builder.push_str(s),

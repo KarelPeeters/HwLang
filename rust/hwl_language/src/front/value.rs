@@ -10,13 +10,14 @@ use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrL
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::NonEmptyVec;
+use crate::util::data::{NonEmptyVec, VecExt};
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultNeverExt};
 use itertools::zip_eq;
 use std::sync::Arc;
+use unwrap_match::unwrap_match;
 
 pub type CompileValue = Value<SimpleCompileValue, CompileCompoundValue, Never>;
 
@@ -43,11 +44,16 @@ pub enum SimpleCompileValue {
 
 #[derive(Debug, Clone)]
 pub enum MixedCompoundValue {
-    String(Arc<Vec<StringPiece<String, HardwareValue>>>),
+    String(Arc<MixedString>),
     Range(RangeValue),
     Tuple(NonEmptyVec<Value>),
     Struct(StructValue<Value>),
     Enum(EnumValue<Box<Value>>),
+}
+
+#[derive(Debug, Clone)]
+pub struct MixedString {
+    pub pieces: Vec<StringPiece<Arc<String>, HardwareValue>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -229,10 +235,7 @@ impl ValueCommon for SimpleCompileValue {
 impl ValueCommon for MixedCompoundValue {
     fn domain(&self) -> ValueDomain {
         match self {
-            MixedCompoundValue::String(v) => ValueDomain::fold(v.iter().map(|p| match p {
-                StringPiece::Literal(_) => ValueDomain::CompileTime,
-                StringPiece::Substitute(v) => v.domain,
-            })),
+            MixedCompoundValue::String(v) => v.domain(),
             MixedCompoundValue::Range(v) => {
                 fn opt_domain<C, H>(x: Option<&MaybeCompile<C, HardwareValue<H>>>) -> ValueDomain {
                     match x {
@@ -333,6 +336,45 @@ impl ValueCommon for MixedCompoundValue {
                 _ => Err(err_type()),
             },
         }
+    }
+}
+
+impl MixedString {
+    pub fn try_as_compile(&self) -> Result<Arc<String>, NotCompile> {
+        // TODO simplify this by banning consecutive literals?
+        let MixedString { pieces } = self;
+
+        // check all compile
+        for piece in pieces {
+            match piece {
+                StringPiece::Literal(s) => {
+                    let _: &Arc<String> = s;
+                }
+                StringPiece::Substitute(v) => {
+                    let _: &HardwareValue = v;
+                    return Err(NotCompile);
+                }
+            }
+        }
+
+        // convert to single string
+        if let Some(piece) = pieces.single_ref() {
+            Ok(unwrap_match!(piece, StringPiece::Literal(s) => s.clone()))
+        } else {
+            let mut result = String::new();
+            for piece in pieces {
+                result.push_str(unwrap_match!(piece, StringPiece::Literal(s) => s.as_str()));
+            }
+            Ok(Arc::new(result))
+        }
+    }
+
+    pub fn domain(&self) -> ValueDomain {
+        let MixedString { pieces } = self;
+        ValueDomain::fold(pieces.iter().map(|p| match p {
+            StringPiece::Literal(_) => ValueDomain::CompileTime,
+            StringPiece::Substitute(v) => v.domain,
+        }))
     }
 }
 
@@ -522,7 +564,12 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
     fn from(v: CompileCompoundValue) -> Self {
         match v {
             CompileCompoundValue::String(v) => {
-                MixedCompoundValue::String(Arc::new(vec![StringPiece::Literal(Arc::unwrap_or_clone(v))]))
+                let pieces = if v.as_str().is_empty() {
+                    vec![]
+                } else {
+                    vec![StringPiece::Literal(v.clone())]
+                };
+                MixedCompoundValue::String(Arc::new(MixedString { pieces }))
             }
             CompileCompoundValue::Range(v) => {
                 MixedCompoundValue::Range(RangeValue::Normal(v.map(MaybeCompile::Compile)))
@@ -579,20 +626,7 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
     type Error = NotCompile;
     fn try_from(v: &MixedCompoundValue) -> Result<Self, Self::Error> {
         match v {
-            MixedCompoundValue::String(v) => {
-                // TODO simplify this by forcing banning consecutive literals
-                let mut s = String::new();
-                for p in v.iter() {
-                    match p {
-                        StringPiece::Literal(p) => s.push_str(p),
-                        StringPiece::Substitute(p) => {
-                            let _: &HardwareValue = p;
-                            return Err(NotCompile);
-                        }
-                    }
-                }
-                Ok(CompileCompoundValue::String(Arc::new(s)))
-            }
+            MixedCompoundValue::String(v) => v.try_as_compile().map(CompileCompoundValue::String),
             MixedCompoundValue::Range(v) => {
                 fn try_map_bound<I: Clone>(
                     b: &MaybeCompile<I, HardwareValue<ClosedNonEmptyMultiRange<I>>>,

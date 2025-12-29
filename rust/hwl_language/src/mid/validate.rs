@@ -3,8 +3,8 @@ use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
     IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrStringSubstitution, IrTargetStep, IrType,
-    IrVariables, IrWireOrPort,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrString, IrStringSubstitution, IrTargetStep,
+    IrType, IrVariables, IrWireOrPort,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
@@ -209,23 +209,33 @@ impl IrBlock {
 
                     block.validate(diags, module, locals)?;
                 }
-                IrStatement::Print(pieces) => {
-                    for p in pieces {
-                        match p {
-                            StringPiece::Literal(_) => {}
-                            StringPiece::Substitute(p) => match p {
-                                IrStringSubstitution::Integer(p, _) => {
-                                    p.validate(diags, module, locals, stmt.span)?;
-                                    check_type_is_int(diags, stmt.span, &p.ty(module, locals))?;
-                                }
-                            },
-                        }
-                    }
-                }
+                IrStatement::Print(pieces) => validate_string(diags, module, locals, stmt.span, pieces)?,
+                IrStatement::AssertFailed => {}
             }
         }
         Ok(())
     }
+}
+
+fn validate_string(
+    diags: &Diagnostics,
+    module: &IrModuleInfo,
+    locals: &IrVariables,
+    span: Span,
+    s: &IrString,
+) -> DiagResult {
+    for p in s {
+        match p {
+            StringPiece::Literal(_) => {}
+            StringPiece::Substitute(p) => match p {
+                IrStringSubstitution::Integer(p, _) => {
+                    p.validate(diags, module, locals, span)?;
+                    check_type_is_int(diags, span, &p.ty(module, locals))?;
+                }
+            },
+        }
+    }
+    Ok(())
 }
 
 fn assignment_target_ty<'a>(module: &'a IrModuleInfo, locals: &'a IrVariables, target: &IrAssignmentTarget) -> IrType {
