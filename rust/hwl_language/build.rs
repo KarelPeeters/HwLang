@@ -1,17 +1,14 @@
 fn main() {
-    // increase stack space for lalrpop
+    // compile grammar, with increased stack space to avoid stack overflows
     std::thread::Builder::new()
         .stack_size(1024 * 1024 * 1024)
-        .spawn(main_inner)
+        .spawn(|| {
+            lalrpop::Configuration::new()
+                .use_cargo_dir_conventions()
+                .process_file("src/syntax/grammar.lalrpop")
+                .unwrap();
+        })
         .unwrap()
         .join()
-        .unwrap();
-}
-
-fn main_inner() {
-    // compile grammar
-    lalrpop::Configuration::new()
-        .use_cargo_dir_conventions()
-        .process_file("src/syntax/grammar.lalrpop")
         .unwrap();
 }

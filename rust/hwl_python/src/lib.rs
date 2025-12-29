@@ -16,7 +16,8 @@ use hwl_language::front::value::CompileValue as RustCompileValue;
 use hwl_language::mid::cleanup::cleanup_module;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
-    add_source_files_to_tree, collect_source_files_from_tree, collect_source_from_manifest, io_error_message,
+    add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
+    io_error_message,
 };
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file as rust_format_file};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
@@ -239,17 +240,24 @@ const DUMMY_SOURCE: &str = "// dummy file, representing the python caller";
 #[pymethods]
 impl Source {
     #[new]
-    fn new() -> Self {
+    fn new(py: Python) -> PyResult<Self> {
         let mut source = RustSourceDatabase::new();
+        let mut hierarchy = SourceHierarchy::new();
 
+        // add dummy file so we have a span to point to for errors caused by the python caller
         let dummy_file = source.add_file("dummy_caller.py".to_owned(), DUMMY_SOURCE.to_owned());
         let dummy_span = source.full_span(dummy_file);
 
-        Source {
+        // add std
+        let diags = Diagnostics::new();
+        let r = add_std_sources(&diags, &mut source, &mut hierarchy);
+        map_diag_error(py, &diags, &source, r)?;
+
+        Ok(Source {
             source,
-            hierarchy: SourceHierarchy::new(),
+            hierarchy,
             dummy_span,
-        }
+        })
     }
 
     #[staticmethod]

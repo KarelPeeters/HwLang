@@ -4,19 +4,14 @@ use hwl_util::swriteln;
 use itertools::Itertools;
 use std::ffi::OsStr;
 use std::path::Path;
-// TODO move the things used from hwl_language into a separate crate,
-//   so the cargo build does not appear to fail whenever _anything_ in hwl_language fails to build
 
 fn main() {
-    // collect stdlib
-    // TODO move std to a better location
-    // TODO add options to binary to choose builtin vs external std?
-    // TODO make this configurable, so we don't have to re-built the compiler on every stdlib change
-    let std_folder = "../../design/project/std";
+    // collect std sources
+    let std_folder = "./src/std";
     println!("cargo:rerun-if-changed={std_folder}");
 
     let mut f = String::new();
-    swriteln!(f, "pub const STD_SOURCES: &[(&[&str], &str, &str)] = &[");
+    swriteln!(f, "&[");
 
     let mut found_any = false;
 
@@ -32,7 +27,12 @@ fn main() {
             let entry_path = entry_path.to_str().unwrap();
             let include_str = format!("include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/\", {entry_path:?})");
 
-            swriteln!(f, "    (&{steps:?}, {path:?}, {include_str})),",);
+            swriteln!(f, "    StdSourceFile {{");
+            swriteln!(f, "        path: {path:?},");
+            swriteln!(f, "        steps: &{steps:?},");
+            swriteln!(f, "        content: {include_str}),");
+            swriteln!(f, "    }},");
+
             found_any = true;
         }
         Ok::<_, IoErrorWithPath>(())
@@ -46,9 +46,9 @@ fn main() {
         );
     }
 
-    swriteln!(f, "];");
+    swriteln!(f, "]");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
-    std::fs::write(out_dir.join("std_sources.rs"), f).unwrap();
+    std::fs::write(out_dir.join("std_source_files.in"), f).unwrap();
 }

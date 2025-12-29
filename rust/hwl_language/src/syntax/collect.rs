@@ -3,10 +3,11 @@ use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::manifest::{ManifestSource, SourceEntry};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
+use hwl_std::{STD_SOURCE_FILES, StdSourceFile};
 use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath, recurse_for_each_file};
 use indexmap::IndexMap;
-use itertools::{chain, zip_eq};
+use itertools::{Itertools, chain, zip_eq};
 use path_clean::PathClean;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -22,8 +23,11 @@ pub fn collect_source_from_manifest(
     let mut hierarchy = SourceHierarchy::new();
     let mut file_map = IndexMap::new();
 
-    let manifest_span = source.full_span(manifest_file);
+    // add std
+    add_std_sources(diags, source, &mut hierarchy)?;
 
+    // add manifest entries
+    let manifest_span = source.full_span(manifest_file);
     for entry in manifest.entries() {
         let SourceEntry { steps, path_relative } = entry;
         let entry_path = manifest_path.join(path_relative).clean();
@@ -129,6 +133,24 @@ pub fn collect_source_files_from_tree(
     step_err?;
 
     Ok(files)
+}
+
+pub fn add_std_sources(
+    diags: &Diagnostics,
+    source: &mut SourceDatabase,
+    hierarchy: &mut SourceHierarchy,
+) -> DiagResult {
+    for file in STD_SOURCE_FILES {
+        let &StdSourceFile { path, steps, content } = file;
+
+        let id = source.add_file(path.to_owned(), content.to_owned());
+
+        let dummy_span = source.full_span(id);
+        let steps = steps.iter().copied().map(str::to_owned).collect_vec();
+        hierarchy.add_file(diags, source, dummy_span, &steps, id)?;
+    }
+
+    Ok(())
 }
 
 pub fn io_error_message(e: IoErrorWithPath) -> String {

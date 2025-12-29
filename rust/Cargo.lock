@@ -513,6 +513,7 @@ dependencies = [
  "derive_more",
  "dlopen2",
  "fnv",
+ "hwl_std",
  "hwl_util",
  "indexmap",
  "itertools 0.13.0",
@@ -562,6 +563,14 @@ dependencies = [
  "num-bigint",
  "num_cpus",
  "pyo3",
+]
+
+[[package]]
+name = "hwl_std"
+version = "0.1.0"
+dependencies = [
+ "hwl_util",
+ "itertools 0.13.0",
 ]
 
 [[package]]

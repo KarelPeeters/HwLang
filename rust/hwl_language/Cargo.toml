@@ -9,6 +9,7 @@ wrap_verilator = ["dep:dlopen2"]
 
 [dependencies]
 hwl_util.workspace = true
+hwl_std.workspace = true
 
 annotate-snippets.workspace = true
 dashmap.workspace = true

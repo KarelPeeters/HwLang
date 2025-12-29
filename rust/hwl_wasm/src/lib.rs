@@ -3,7 +3,9 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::print::CollectPrintHandler;
+use hwl_language::syntax::collect::add_std_sources;
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
+use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
@@ -13,11 +15,12 @@ use std::time::Duration;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-// Suppress the "unused crate" warning for `getrandom`.
-// It's in the dependency list for its side effects, not for direct use.
-#[allow(unused_imports)]
-use getrandom as _;
-use hwl_language::syntax::hierarchy::SourceHierarchy;
+mod supress_unused {
+    // Suppress the "unused crate" warning for `getrandom`.
+    // It's in the dependency list for its side effects, not for direct use.
+    #[allow(unused_imports)]
+    use getrandom as _;
+}
 
 /// This function automatically runs when the module gets initialized.
 #[wasm_bindgen(start)]
@@ -117,14 +120,10 @@ pub fn format_source(source: String) -> Option<String> {
     }
 }
 
-mod included_sources {
-    pub const SRC_INITIAL_TOP: &str = include_str!("../../../design/top_webdemo.kh");
-    include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));
-}
-
 #[wasm_bindgen]
 pub fn initial_source() -> String {
-    included_sources::SRC_INITIAL_TOP.to_owned()
+    const SRC_INITIAL_TOP: &str = include_str!("../../../design/top_webdemo.kh");
+    SRC_INITIAL_TOP.to_owned()
 }
 
 fn build_source(
@@ -133,13 +132,7 @@ fn build_source(
     top_src: String,
 ) -> DiagResult<(SourceHierarchy, FileId)> {
     let mut hierarchy = SourceHierarchy::new();
-
-    for &(steps, path, content) in included_sources::STD_SOURCES {
-        let file = source.add_file(path.to_owned(), content.to_owned());
-        let dummy_span = source.full_span(file);
-        let steps = steps.iter().map(|&s| s.to_owned()).collect_vec();
-        hierarchy.add_file(diags, source, dummy_span, &steps, file)?;
-    }
+    add_std_sources(diags, source, &mut hierarchy)?;
 
     let file = source.add_file("top.kh".to_owned(), top_src);
     let dummy_span = source.full_span(file);

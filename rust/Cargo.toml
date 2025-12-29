@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "hwl_language",
+    "hwl_std",
     "hwl_util",
     "hwl_bin",
     "hwl_lsp_server",
@@ -17,8 +18,9 @@ rust-version = "1.88.0"
 
 [workspace.dependencies]
 # internal dependencies
-hwl_util = { path = "hwl_util" }
 hwl_language = { path = "hwl_language" }
+hwl_std = { path = "hwl_std" }
+hwl_util = { path = "hwl_util" }
 
 # external dependencies
 annotate-snippets = "0.11.5"
