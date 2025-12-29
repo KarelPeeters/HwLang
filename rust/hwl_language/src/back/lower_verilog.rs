@@ -498,7 +498,7 @@ fn lower_module_statements(
             IrModuleChild::CombinatorialProcess(process) => {
                 let IrCombinatorialProcess { locals, block } = process;
 
-                swriteln!(f, "{I}always @(*) begin");
+                swriteln!(f, "{I}always @(*) begin: comb_{child_index}");
                 let indent = Indent::new(2);
 
                 let mut name_scope = module_name_scope.new_child();
@@ -561,13 +561,18 @@ fn lower_module_statements(
                 match &async_reset {
                     Some((reset_edge, _)) => swriteln!(
                         f,
-                        "{I}always @({} {}, {} {}) begin",
+                        "{I}always @({} {}, {} {}) begin: clocked_{child_index}",
                         clock_edge.edge,
                         clock_edge.signal,
                         reset_edge.edge,
                         reset_edge.signal,
                     ),
-                    None => swriteln!(f, "{I}always @({} {}) begin", clock_edge.edge, clock_edge.signal,),
+                    None => swriteln!(
+                        f,
+                        "{I}always @({} {}) begin: clocked_{child_index}",
+                        clock_edge.edge,
+                        clock_edge.signal,
+                    ),
                 }
 
                 let mut newline_process = NewlineGenerator::new();
@@ -799,7 +804,6 @@ fn lower_port_connections<S: AsRef<str>>(
 #[derive(Debug, Copy, Clone)]
 struct ZeroWidth;
 
-// TODO blocks with variables must be named
 /// Declare local variables.
 /// We skip declaring variables that never read, any potential writes to them will also be skipped.
 fn declare_locals(
