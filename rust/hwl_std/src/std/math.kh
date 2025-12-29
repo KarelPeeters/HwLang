@@ -1,6 +1,3 @@
-import std.types.[bool, int, uint, natural];
-import std.util.assert;
-
 // TODO get multiple returns working in hardware
 pub fn min(x: int, y: int) -> int {
     val result;

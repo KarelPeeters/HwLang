@@ -1,7 +1,3 @@
-import std.types.[bool, int, uint, natural, any, Option];
-import std.math.[gcd, min, max];
-import std.util.print;
-
 pub module top ports(
     clk: in clock,
     rst: in async bool,

@@ -8,19 +8,19 @@ from hwl_sandbox.common.util import compile_custom
 
 
 def test_interact_add():
-    c = compile_custom("import std.types.int; fn f(a: int, b: int) -> int { return a + b; }")
+    c = compile_custom("fn f(a: int, b: int) -> int { return a + b; }")
     f = c.resolve("top.f")
     assert f(3, 4) == 7
 
 
 def test_interact_string_array():
-    c = compile_custom("import std.types.[int, str]; fn f(a: [3]str, b: int) -> str { return a[b]; }")
+    c = compile_custom("fn f(a: [3]str, b: int) -> str { return a[b]; }")
     f = c.resolve("top.f")
     assert f(["a", "b", "c"], 1) == "b"
 
 
 def test_interact_types():
-    c = compile_custom("import std.types.bool; fn f(T: type, x: T) -> T { return x; }")
+    c = compile_custom("fn f(T: type, x: T) -> T { return x; }")
     f = c.resolve("top.f")
 
     assert f(bool, False) is False
@@ -47,17 +47,14 @@ def test_format():
 
 
 def test_capture_prints():
-    c = compile_custom(
-        """
-        import std.types.int;
-        import std.util.print;
-        fn f(a: int) -> int {
-            print("hello");
-            print("world");
-            return a + 1;
-        }
-        """
-    )
+    src = """
+    fn f(a: int) -> int {
+        print("hello");
+        print("world");
+        return a + 1;
+    }
+    """
+    c = compile_custom(src)
     f = c.resolve("top.f")
 
     with c.capture_prints() as capture:

@@ -1,6 +1,3 @@
-import std.util.print;
-import std.types.[bool, int, Option];
-
 module top ports(x: in async Option(bool)) {
     comb {
         match (x) {

@@ -8,8 +8,6 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_read_const_from_signal(tmp_dir: Path):
     src = """
-    import std.types.uint;
-    import std.util.assert;
     module top ports(clk: in clock, p: out async uint(8)) {
         wire w: uint(8);
         reg r: uint(8) = undef;
@@ -35,8 +33,6 @@ def test_read_const_from_signal(tmp_dir: Path):
 
 def test_read_const_from_signal_after_step(tmp_dir: Path):
     src = """
-    import std.types.uint;
-    import std.util.assert;
     module top ports(clk: in clock) {
         wire w: [2]uint(8);
         comb {
@@ -55,7 +51,6 @@ def test_read_const_from_signal_after_step(tmp_dir: Path):
 
 def test_read_range_from_signal(tmp_dir: Path):
     src = """
-    import std.types.uint;
     module top ports(p: out async uint(8), q: in async uint(4)) {
         comb {
             p = q;
@@ -70,7 +65,6 @@ def test_read_range_from_signal(tmp_dir: Path):
 # TODO test that signals are immediately read back instead of only the next cycle
 # def test_signal_readback(tmp_dir: Path):
 #     src = """
-#     import std.types.[bool, int, uint];
 #     module top ports(clk: in clock, x: in sync(clk) uint(8), y: out sync(clk) uint(8)) {
 #         reg out y = undef;
 #         clocked(clk) {
@@ -100,7 +94,6 @@ def test_read_range_from_signal(tmp_dir: Path):
 
 def test_write_after_read_var(tmp_dir: Path):
     src = """
-    import std.types.uint;
     module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
             var v = x;
@@ -117,7 +110,6 @@ def test_write_after_read_var(tmp_dir: Path):
 
 def test_write_after_read_var_array(tmp_dir: Path):
     src = """
-    import std.types.uint;
     module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
             var v: [1]uint(8) = [x];
@@ -134,7 +126,6 @@ def test_write_after_read_var_array(tmp_dir: Path):
 
 def test_write_after_read_wire(tmp_dir: Path):
     src = """
-    import std.types.uint;
     module top ports(x: in async uint(8), y: out async uint(16)) {
         wire w: uint(8);
         comb {
@@ -152,7 +143,6 @@ def test_write_after_read_wire(tmp_dir: Path):
 
 def test_write_after_read_wire_array(tmp_dir: Path):
     src = """
-    import std.types.uint;
     module top ports(x: in async uint(8), y: out async uint(16)) {
         wire w: [1]uint(8);
         comb {
@@ -181,8 +171,6 @@ def check_write_after_read(tmp_dir: Path, src: str):
 
 def test_const_assign_outside_var():
     src = """
-    import std.types.bool;
-    import std.util.assert;
     module top ports(c: in async bool) {
         comb {
             var v = c;
@@ -201,7 +189,6 @@ def test_const_assign_outside_var():
 
 def test_var_type_enforced_scalar():
     src_a = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v: bool = false;
@@ -212,7 +199,6 @@ def test_var_type_enforced_scalar():
     _ = compile_custom(src_a).resolve("top.top")
 
     src_c = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v = false;
@@ -223,7 +209,6 @@ def test_var_type_enforced_scalar():
     _ = compile_custom(src_c).resolve("top.top")
 
     src_b = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v: bool = false;
@@ -237,7 +222,6 @@ def test_var_type_enforced_scalar():
 
 def test_var_type_enforced_array():
     src_a = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v: [2]bool = [false, true];
@@ -248,7 +232,6 @@ def test_var_type_enforced_array():
     _ = compile_custom(src_a).resolve("top.top")
 
     src_c = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v = [false, true];
@@ -259,7 +242,6 @@ def test_var_type_enforced_array():
     _ = compile_custom(src_c).resolve("top.top")
 
     src_b = """
-    import std.types.bool;
     module top ports(c: in async bool) {
         comb {
             var v: [2]bool = [false, true];

@@ -1,8 +1,4 @@
 // Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
-import std.types.[bool, int, uint, natural, any];
-import std.util.print;
-import std.math.[gcd, min, max, clog2];
-
 import examples.axi_stream.axi_stream;
 
 pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(

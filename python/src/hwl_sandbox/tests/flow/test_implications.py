@@ -6,7 +6,6 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_signal_does_not_fit():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8)) {
         comb {
             var v: uint(0..4) = p;
@@ -21,7 +20,6 @@ def test_signal_does_not_fit():
 
 def test_signal_checked():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8)) {
         comb {
             if (p < 4) {
@@ -36,7 +34,6 @@ def test_signal_checked():
 
 def test_signal_reassigned():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8), q: in async uint(0..8)) {
         wire w;
         comb {
@@ -55,7 +52,6 @@ def test_signal_reassigned():
 
 def test_variable_does_not_fit():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8)) {
         comb {
             var s = p;
@@ -71,7 +67,6 @@ def test_variable_does_not_fit():
 
 def test_variable_checked():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8)) {
         comb {
             var s = p;
@@ -87,7 +82,6 @@ def test_variable_checked():
 
 def test_variable_reassigned():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8), q: in async uint(0..8)) {
         comb {
             var s = p;
@@ -152,8 +146,6 @@ def test_implied_type_operators():
 
 def check_unary_cond(ty: str, cond: str, ty_true: str, ty_false: str):
     src = f"""
-    import std.types.[uint, int];
-    import std.util.print;
     module top ports(p: in async int({ty})) {{
         comb {{
             const {{ print(type(p)); }}
@@ -176,8 +168,6 @@ def check_unary_cond(ty: str, cond: str, ty_true: str, ty_false: str):
 
 def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_a: str):
     src = f"""
-    import std.types.[uint, int];
-    import std.util.print;
     module top ports(a: in async int({ty_a}), b: in async int({ty_b})) {{
         comb {{
             const {{ print(type(a)); print(type(b)); }}
@@ -206,8 +196,6 @@ def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_
 
 def test_bool_implies_itself():
     src = """
-    import std.types.bool;
-    import std.util.print;
     module top ports(p: in async bool) {
         comb {
             if (p) {
@@ -241,7 +229,6 @@ def test_bool_implies_itself():
 
 def test_imply_non_zero_div():
     src_raw = """
-    import std.types.int;
     module top ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
         comb {
             y = 4 / x;
@@ -252,7 +239,6 @@ def test_imply_non_zero_div():
         _ = compile_custom(src_raw).resolve("top.top")
 
     src_checked = """
-    import std.types.int;
     module top ports(x: in async int(-4..=4), y: out async int(-4..=4)) {
         comb {
             if (x != 0) {
@@ -268,7 +254,6 @@ def test_imply_non_zero_div():
 
 def test_imply_nested():
     src = """
-    import std.types.uint;
     module top ports(p: in async uint(0..8)) {
         comb {
             if (p < 6) {
@@ -285,8 +270,6 @@ def test_imply_nested():
 
 def test_merge_implication_signal_bool_const():
     src = """
-    import std.types.bool;
-    import std.util.assert;
     module top ports(p: in async bool, q: out async bool) {
         comb {
             q = p;
@@ -303,8 +286,6 @@ def test_merge_implication_signal_bool_const():
 
 def test_merge_implication_var_bool_const():
     src = """
-    import std.types.bool;
-    import std.util.assert;
     module top ports(p: in async bool) {
         comb {
             var v = p;
@@ -321,8 +302,6 @@ def test_merge_implication_var_bool_const():
 
 def test_merge_implication_signal_int_const():
     src = """
-    import std.types.[bool, uint];
-    import std.util.assert;
     module top ports(c: in async bool, q: out async uint(4)) {
         comb {
             if (c) {
@@ -340,8 +319,6 @@ def test_merge_implication_signal_int_const():
 
 def test_merge_implication_var_int_const():
     src = """
-    import std.types.[bool, uint];
-    import std.util.assert;
     module top ports(c: in async bool) {
         comb {
             val v;
@@ -360,8 +337,6 @@ def test_merge_implication_var_int_const():
 
 def test_merge_implication_signal_int_range():
     src = """
-    import std.types.[bool, uint, int];
-    import std.util.assert;
     module top ports(p: in async int(5), q: out async uint(4)) {
         wire w: int(5);
         comb {
@@ -379,8 +354,6 @@ def test_merge_implication_signal_int_range():
 
 def test_merge_implication_var_int_range():
     src = """
-    import std.types.[bool, uint, int];
-    import std.util.assert;
     module top ports(p: in async int(5), q: out async uint(4)) {
         comb {
             var v = p;
@@ -397,9 +370,6 @@ def test_merge_implication_var_int_range():
 
 def test_merge_implication_signal_int_range_abs():
     src = """
-    import std.types.[bool, uint, int];
-    import std.util.[print, assert];
-    
     module top ports(p: in async int(-4..4)) {
         wire w: int(5);
         comb {
@@ -421,9 +391,6 @@ def test_merge_implication_signal_int_range_abs():
 
 def test_merge_implication_var_int_range_abs():
     src = """
-    import std.types.[bool, uint, int];
-    import std.util.[print, assert];
-    
     module top ports(p: in async int(-4..4)) {
         comb {
             val v;

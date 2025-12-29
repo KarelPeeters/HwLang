@@ -8,9 +8,6 @@
 //   in particular not every identifier should be highlighted,
 //   and maybe we want a separate color for builtin types
 
-import std.types.[bool, int, uint, natural, Option];
-import std.util.assert;
-
 module cdc_sync_ff(N: int(2..) = 2) ports(
     in_data: in async bool,
     out_clk: in clock,

@@ -1,7 +1,3 @@
-import std.types.[bool, int, uint, natural];
-import std.math.clog2;
-import std.util.print;
-
 struct Generator(L: natural) {
     generator_0: [L]bool,
     generator_1: [L]bool,

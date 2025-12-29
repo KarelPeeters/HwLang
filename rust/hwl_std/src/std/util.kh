@@ -1,5 +1,3 @@
-import std.types.[any, bool, int, uint, str];
-
 // TODO add named-only args?
 pub fn print(value: any, end: str = "\n") {
     __builtin("fn", "print", "{value}{end}");

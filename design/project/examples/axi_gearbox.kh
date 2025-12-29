@@ -1,7 +1,3 @@
-import std.types.[bool, int, uint, natural, any];
-import std.util.print;
-import std.math.[gcd, min, max, clog2];
-
 import examples.axi_stream.axi_stream;
 
 pub module axi_gearbox(T: type, input_width: natural, output_width: natural) ports(

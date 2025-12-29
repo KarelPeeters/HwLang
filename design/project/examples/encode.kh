@@ -1,6 +1,3 @@
-import std.types.[bool, int, uint, natural, Option];
-import std.util.[print, assert];
-
 // TODO get this early return working in hardware
 fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int(0..n)) {
     for (i in 0..n) {

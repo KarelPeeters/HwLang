@@ -1,5 +1,3 @@
-import std.types.[bool, uint];
-
 pub external module ram_single_port_sync(W: uint, H: uint) ports(
     clk: in clock,
     rst: in async bool,

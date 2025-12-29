@@ -36,7 +36,6 @@ def check_range_compile(a: Optional[int], ty_range: str, b: Optional[int], valid
     assert ty_range in ["..", "..=", "..+"]
 
     src = f"""
-    import std.types.any;
     fn f() -> any {{
          return {a if a is not None else ""}{ty_range}{b if b is not None else ""};
     }}
@@ -54,7 +53,6 @@ def check_range_hardware(ty_a: Optional[str], ty_range: str, ty_b: Optional[str]
     assert ty_range in ["..", "..=", "..+"]
 
     src = f"""
-    import std.types.int;
     module foo ports(a: in async int({ty_a}), b: in async int({ty_b})) {{
         comb {{
             val r = a{ty_range}b;

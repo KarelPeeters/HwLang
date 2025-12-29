@@ -6,8 +6,6 @@ A webdemo is available at https://karelpeeters.github.io/HwLang/.
 A short sneak-peak at the language:
 
 ```
-import std.types.[bool, int, uint, natural, any];
-
 pub module top ports( 
     clk: in clock,
     rst: in async bool,

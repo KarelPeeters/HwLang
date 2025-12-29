@@ -6,7 +6,6 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_conditional_write():
     src = """
-    import std.types.[bool, int];
     module foo ports(x: in async int(0..8)) {
         comb {
             var a = false;

@@ -5,7 +5,6 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_func_capture_const():
     src = """
-    import std.types.[int, any];
     const c = 5;
     fn f() -> any {
         fn g() -> int { 
@@ -20,7 +19,6 @@ def test_func_capture_const():
 
 def test_func_capture_param():
     src = """
-    import std.types.[int, any];
     fn f(x: int) -> any {
         fn g() -> int {
             return x;
@@ -35,7 +33,6 @@ def test_func_capture_param():
 
 def test_func_capture_iter_var():
     src = """
-    import std.types.[any, int, uint];
     fn f(n: uint) -> any {
         var r = [];
         for (i in 0..n) {

@@ -1,6 +1,3 @@
-import std.types.[bool, int, uint, str, any];
-import std.util.print;
-
 // TODO expand this into an axi pipeline module, with real backpressure and valid so the undef resets don't leak out
 pub module pipeline(N: uint, T: [N + 1]type, F: [N]any) ports(
     clk: in clock,

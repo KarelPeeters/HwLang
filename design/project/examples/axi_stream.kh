@@ -1,5 +1,3 @@
-import std.types.bool;
-
 // TODO consider using Option(T) instead of data/valid
 pub interface axi_stream(T: type) {
     data: T,

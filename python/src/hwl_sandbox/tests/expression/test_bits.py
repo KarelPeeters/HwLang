@@ -53,7 +53,6 @@ def test_bool_from_bits_signed(tmp_dir: Path):
 
 def test_from_bits_rejected():
     src = """
-        import std.types.[bool, int];
         fn f(x: [2]bool) -> int(0..3) {
             return int(0..3).from_bits(x);
         }
@@ -66,7 +65,6 @@ def test_from_bits_rejected():
 
 def test_from_bits_unsafe_compile():
     src = """
-        import std.types.[bool, int];
         fn f(x: [2]bool) -> int(0..3) {
             return int(0..3).from_bits_unsafe(x);
         }

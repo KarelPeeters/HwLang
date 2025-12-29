@@ -39,7 +39,7 @@ def test_int_literal_extra():
     ]
 
     for s, i in samples:
-        src = f"import std.types.int; fn f() -> int {{ return {s}; }}"
+        src = f"fn f() -> int {{ return {s}; }}"
         c = compile_custom(src)
         f: hwl.Function = c.resolve("top.f")
         assert f() == i

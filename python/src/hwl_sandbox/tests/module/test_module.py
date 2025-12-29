@@ -8,7 +8,6 @@ from hwl_sandbox.common.util import compile_custom
 def test_inline_register():
     # TODO simulate and check that this results in two cycles of delay
     src = """
-    import std.types.[bool, int];
     module foo ports(clk: in clock, x: in sync(clk) bool, y: out sync(clk) bool) {
         reg out y = undef;
         clocked(clk) {
@@ -21,7 +20,6 @@ def test_inline_register():
 
 def test_port_reg_name(tmpdir: Path):
     src = """
-    import std.types.bool;
     module foo ports(clk: in clock, a: out sync(clk) bool) {
         reg out a = undef;
         clocked(clk) {
@@ -37,7 +35,6 @@ def test_port_reg_name(tmpdir: Path):
 
 def test_simple_module_instance(tmp_dir: Path):
     src = """
-    import std.types.bool;
     module parent ports(x: in async bool, y: out async bool) { instance child ports(x, y); }
     module child ports(x: in async bool, y: out async bool) { comb { y = x; } }
     """

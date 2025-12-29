@@ -1,5 +1,3 @@
-import std.types.bool;
-
 module top ports(x: in async bool, y: out async bool) {
     comb {
         y = x;

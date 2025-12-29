@@ -49,8 +49,6 @@ def compare_codegen(ty_inputs: List[str], ty_res: str, body: str, prefix: str) -
     body_indented = "\n".join("    " + s for s in body.splitlines())
 
     src = f"""
-import std.types.[any, bool, int, uint];
-import std.util.print;
 {prefix}
 fn eval_func({args}) -> any {{
 {body_indented}

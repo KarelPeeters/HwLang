@@ -5,9 +5,6 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_print_compile():
     c = compile_custom("""
-        import std.types.[int, str];
-        import std.util.print;
-        
         struct Point(T: type) { x: T, y: T }
         enum Option(T: type) { None, Some(T) }
         
@@ -49,9 +46,6 @@ def test_print_compile():
 # TODO capture outputs and check that they are correct
 def test_print_hardware():
     c = compile_custom("""
-        import std.types.[bool, int, uint, str];
-        import std.util.print;
-        
         struct Point(T: type) { x: T, y: T }
         enum Option(T: type) { None, Some(T) }
         

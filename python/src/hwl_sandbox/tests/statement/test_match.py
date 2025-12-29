@@ -44,7 +44,6 @@ def test_match_int(tmp_dir: Path):
 def test_match_enum(tmp_dir: Path):
     # TODO simplify this once enums are constructible in python
     prefix = """
-    import std.util.bool_to_int;
     enum ABC { A(bool), B(uint(0..2)), C, D }
     """
     src = """
@@ -77,7 +76,6 @@ def test_match_enum(tmp_dir: Path):
 
 def test_match_fallthrough_compile():
     src = """
-    import std.types.int;
     fn f(x: int) -> int {
         match (x) {
             0 => { return 0; } 
@@ -94,7 +92,6 @@ def test_match_fallthrough_compile():
 
 def test_match_fallthrough_hardware_int():
     src = """
-    import std.types.int;
     module foo_int ports(x: in async int(0..=4)) {
         comb {
             match (x) {
