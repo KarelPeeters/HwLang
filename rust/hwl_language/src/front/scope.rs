@@ -70,14 +70,14 @@ pub enum DeclaredValueSingle<S = ScopedEntry> {
 }
 
 #[derive(Debug)]
-pub struct ScopeFound<'s> {
+pub struct ScopeFound {
     pub defining_span: Span,
-    pub value: &'s ScopedEntry,
+    pub value: ScopedEntry,
 }
 
 #[derive(Debug)]
-pub enum TryScopeFound<'s> {
-    Found(ScopeFound<'s>),
+pub enum TryScopeFound {
+    Found(ScopeFound),
     NotFoundAnyIdErr(DiagResult),
 }
 
@@ -234,22 +234,22 @@ impl<'p> Scope<'p> {
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s>(&'s self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound<'s>> {
+    pub fn find(&self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound> {
         self.find_impl(diags, id.inner, Some(id.span), self.span, true)
     }
 
-    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound<'_>> {
+    pub fn find_immediate_str(&self, diags: &Diagnostics, id: &str) -> DiagResult<ScopeFound> {
         self.find_impl(diags, id, None, self.span, false)
     }
 
-    fn find_impl<'s>(
-        &'s self,
+    fn find_impl(
+        &self,
         diags: &Diagnostics,
         id: &str,
         id_span: Option<Span>,
         initial_scope_span: Span,
         check_parents: bool,
-    ) -> DiagResult<ScopeFound<'s>> {
+    ) -> DiagResult<ScopeFound> {
         match self.try_find_impl(diags, id, id_span, initial_scope_span, check_parents)? {
             TryScopeFound::Found(found) => Ok(found),
             TryScopeFound::NotFoundAnyIdErr(any_id_err) => {
@@ -280,21 +280,21 @@ impl<'p> Scope<'p> {
         }
     }
 
-    fn try_find_impl<'s>(
-        &'s self,
+    fn try_find_impl(
+        &self,
         diags: &Diagnostics,
         id: &str,
         id_span: Option<Span>,
         initial_scope_span: Span,
         check_parents: bool,
-    ) -> DiagResult<TryScopeFound<'s>> {
+    ) -> DiagResult<TryScopeFound> {
         let mut curr = self;
         let mut any_id_err = Ok(());
 
         loop {
             if let Some(declared) = curr.content.values.get(id) {
                 let (value, value_span) = match *declared {
-                    DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
+                    DeclaredValue::Once { value, span } => (value?, span),
                     DeclaredValue::Multiple { spans: _, err } => return Err(err),
                     DeclaredValue::Error(err) => return Err(err),
                     DeclaredValue::FailedCapture(span, reason) => {

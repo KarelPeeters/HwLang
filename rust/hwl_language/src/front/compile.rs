@@ -484,7 +484,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                         let &ast::ImportEntry { span: _, id, as_ } = entry;
                         let source_value = source_scope
                             .and_then(|source_scope| source_scope.find(diags, id.spanned_str(source)))
-                            .map(|found| found.value.clone());
+                            .map(|found| found.value);
 
                         // check visibility, but still proceed as if the import succeeded
                         if let Ok(ScopedEntry::Item(source_item)) = source_value {
@@ -545,7 +545,9 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                 }
             }
         } else {
-            todo!("err")
+            let diag =
+                Diagnostic::new_internal_error(format!("prelude failed to find std file std.{std_file}")).finish();
+            diags.report(diag);
         }
     }
     for file in hierarchy.files() {
@@ -629,7 +631,7 @@ fn find_top_module(
     let top_entry = top_file_scope.find_immediate_str(diags, "top")?;
 
     match top_entry.value {
-        &ScopedEntry::Item(item) => match &fixed.parsed[item] {
+        ScopedEntry::Item(item) => match &fixed.parsed[item] {
             ast::Item::ModuleInternal(module) => match &module.params {
                 None => Ok(AstRefModuleInternal::new_unchecked(item, module)),
                 Some(_) => {

@@ -108,7 +108,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let found = scope.find(diags, id)?;
         let def_span = found.defining_span;
-        let result = match *found.value {
+        let result = match found.value {
             ScopedEntry::Named(value) => NamedOrValue::Named(value),
             ScopedEntry::Item(item) => {
                 // TODO do we need to push a stack entry here? maybe it's better to move that into eval_item,

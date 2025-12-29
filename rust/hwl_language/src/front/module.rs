@@ -899,7 +899,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                     match &decl.vis {
                         Visibility::Public { span: _ } => {
-                            pub_declarations.push((id.clone(), entry.clone()));
+                            pub_declarations.push((id.clone(), entry));
                         }
                         Visibility::Private => {}
                     }
@@ -927,7 +927,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                     match &decl.vis {
                         Visibility::Public { span: _ } => {
-                            pub_declarations.push((id.clone(), entry.clone()));
+                            pub_declarations.push((id.clone(), entry));
                         }
                         Visibility::Private => {}
                     }
@@ -2468,7 +2468,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         // find port
         let port = scope_body.find(diags, id).and_then(|port| match port.value {
-            &ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
+            ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
             _ => {
                 let diag = Diagnostic::new("register port marker needs to be on a port")
                     .add_error(id.span, "non-port value here")
@@ -2570,7 +2570,7 @@ fn process_todo_and_decls<'a>(
 
     for (id, entry) in &decls {
         let id_ref = id.as_ref_ok().map(|id| id.as_ref().map_id(|id| id.as_ref()));
-        scope.maybe_declare(diags, id_ref, entry.clone());
+        scope.maybe_declare(diags, id_ref, *entry);
     }
     decls_children.extend(decls);
 }

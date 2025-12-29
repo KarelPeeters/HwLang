@@ -426,7 +426,7 @@ impl Compile {
         let diags = Diagnostics::new();
         let found = map_diag_error(py, &diags, source, scope.find_immediate_str(&diags, item_name))?;
         let item = match found.value {
-            &ScopedEntry::Item(ast_ref_item) => ast_ref_item,
+            ScopedEntry::Item(ast_ref_item) => ast_ref_item,
             ScopedEntry::Named(_) => {
                 let e = diags.report_internal_error(
                     found.defining_span,
