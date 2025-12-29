@@ -663,7 +663,7 @@ impl IrExpression {
                     if elements_new.iter().any(|e| e.is_some()) {
                         let new_elements = elements
                             .iter()
-                            .zip(elements_new.into_iter())
+                            .zip(elements_new)
                             .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
                             .collect_vec();
                         Some(large.push_expr(IrExpressionLarge::TupleLiteral(new_elements)))
@@ -683,7 +683,7 @@ impl IrExpression {
                     if elements_new.iter().any(|e| e.is_some()) {
                         let new_elements = elements
                             .iter()
-                            .zip(elements_new.into_iter())
+                            .zip(elements_new)
                             .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
                             .collect_vec();
                         Some(large.push_expr(IrExpressionLarge::ArrayLiteral(ty.clone(), len.clone(), new_elements)))
