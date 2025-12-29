@@ -956,170 +956,181 @@ impl<'p> FlowHardware<'p> {
         cond_domain: Spanned<ValueDomain>,
         cond_implications: Vec<Implication>,
     ) -> DiagResult<Result<FlowHardwareBranch<'_>, ImplicationContradiction>> {
-        let mut signals: IndexMap<Signal, SignalContent> = IndexMap::new();
-        let mut variables: IndexMap<VariableIndex, VariableSlotOption> = IndexMap::new();
+        // build new flow
+        let root = self.root;
+        let slf = unsafe { lifetime_cast::hardware_mut(self) };
 
-        // TODO split out into function(s)
+        let mut result = FlowHardwareBranch {
+            root,
+            parent: slf,
+            cond_domain,
+            common: FlowHardwareCommon {
+                variables: IndexMap::new(),
+                signals: IndexMap::new(),
+                statements: vec![],
+            },
+        };
+
+        // apply implications
+        let mut result_hw = result.as_flow();
         for implication in cond_implications {
-            let Implication { version, kind } = implication;
-            let ValueVersion { signal, index } = version;
+            try_inner!(result_hw.add_implication(ctx, span, implication)?);
+        }
 
-            match signal {
-                SignalOrVariable::Signal(signal) => {
-                    let prev_content = match signals.get(&signal) {
-                        Some(c) => c,
-                        None => self.signal_get_content(signal)?,
-                    };
-                    // only apply implications to the latest version
-                    match prev_content {
-                        SignalContent::Compile(_) => {}
-                        SignalContent::Hardware(prev_content) => {
-                            if prev_content.version != index {
-                                continue;
-                            }
+        Ok(Ok(result))
+    }
+
+    pub fn add_implication(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        span: Span,
+        implication: Implication,
+    ) -> DiagResult<Result<(), ImplicationContradiction>> {
+        let Implication { version, kind } = implication;
+        let ValueVersion { signal, index } = version;
+
+        match signal {
+            SignalOrVariable::Signal(signal) => {
+                let prev_content = self.signal_get_content(signal)?;
+
+                // only apply implications to the latest version
+                match prev_content {
+                    SignalContent::Compile(_) => {}
+                    SignalContent::Hardware(prev_content) => {
+                        if prev_content.version != index {
+                            return Ok(Ok(()));
                         }
                     }
+                }
 
-                    match kind {
-                        ImplicationKind::BoolEq(impl_value) => {
-                            if let &SignalContent::Compile(CompileValue::Simple(SimpleCompileValue::Bool(prev_value))) =
-                                prev_content
-                            {
+                match kind {
+                    ImplicationKind::BoolEq(impl_value) => {
+                        if let &SignalContent::Compile(CompileValue::Simple(SimpleCompileValue::Bool(prev_value))) =
+                            prev_content
+                        {
+                            // already compile, just check
+                            if prev_value != impl_value {
+                                return Ok(Err(ImplicationContradiction));
+                            }
+                        } else {
+                            // not yet compile, remember value
+                            self.first_common_mut()
+                                .signals
+                                .insert(signal, SignalContent::Compile(CompileValue::new_bool(impl_value)));
+                        }
+                    }
+                    ImplicationKind::IntIn(impl_range) => {
+                        match prev_content {
+                            SignalContent::Compile(prev_value) => {
                                 // already compile, just check
-                                if prev_value != impl_value {
+                                let prev_value =
+                                    unwrap_match!(prev_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
+                                if !impl_range.contains(prev_value) {
                                     return Ok(Err(ImplicationContradiction));
                                 }
-                            } else {
-                                // not yet compile, remember value
-                                signals.insert(signal, SignalContent::Compile(CompileValue::new_bool(impl_value)));
                             }
-                        }
-                        ImplicationKind::IntIn(impl_range) => {
-                            match prev_content {
-                                SignalContent::Compile(prev_value) => {
-                                    // already compile, just check
-                                    let prev_value = unwrap_match!(prev_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
-                                    if !impl_range.contains(prev_value) {
-                                        return Ok(Err(ImplicationContradiction));
-                                    }
-                                }
-                                SignalContent::Hardware(prev_value) => {
-                                    // not yet compile, intersect ranges
-                                    let prev_ty = prev_value.ty_hw(ctx, signal, span)?;
-                                    let prev_range = unwrap_match!(prev_ty, HardwareType::Int(range) => range);
+                            SignalContent::Hardware(prev_value) => {
+                                // not yet compile, intersect ranges
+                                let prev_ty = prev_value.ty_hw(ctx, signal, span)?;
+                                let prev_range = unwrap_match!(prev_ty, HardwareType::Int(range) => range);
 
-                                    let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
-                                    let new_range = try_inner!(
-                                        ClosedNonEmptyMultiRange::try_from(new_range)
-                                            .map_err(|_: RangeEmpty| ImplicationContradiction)
-                                    );
+                                let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
+                                let new_range = try_inner!(
+                                    ClosedNonEmptyMultiRange::try_from(new_range)
+                                        .map_err(|_: RangeEmpty| ImplicationContradiction)
+                                );
 
-                                    let new_content = SignalContent::Hardware(SignalContentHardware {
-                                        version: prev_value.version,
-                                        implied_int_range: Some(new_range),
-                                    });
-                                    signals.insert(signal, new_content);
-                                }
+                                let new_content = SignalContent::Hardware(SignalContentHardware {
+                                    version: prev_value.version,
+                                    implied_int_range: Some(new_range),
+                                });
+                                self.first_common_mut().signals.insert(signal, new_content);
                             }
                         }
                     }
                 }
-                SignalOrVariable::Variable(var) => {
-                    let prev_content = match variables.get(&var.index).and_then(|slot| slot.content.as_ref()) {
-                        Some(c) => c,
-                        None => self.var_get_content(Spanned::new(span, var))?,
-                    };
+            }
+            SignalOrVariable::Variable(var) => {
+                let prev_content = self.var_get_content(Spanned::new(span, var))?;
 
-                    // we don't need to track implications for error cases
-                    let prev_value = match prev_content {
-                        VariableContent::Assigned(prev_value) => prev_value,
-                        VariableContent::NotFullyAssigned(_) | VariableContent::Error(_) => continue,
-                    };
+                // we don't need to track implications for error cases
+                let prev_value = match prev_content {
+                    VariableContent::Assigned(prev_value) => prev_value,
+                    VariableContent::NotFullyAssigned(_) | VariableContent::Error(_) => return Ok(Ok(())),
+                };
 
-                    // only apply implications to the latest version
-                    match &prev_value.inner {
-                        VariableValue::Simple(_) => {}
-                        VariableValue::Compound(_) => {}
-                        VariableValue::Hardware(prev_value) => {
-                            if prev_value.version != index {
-                                continue;
-                            }
+                // only apply implications to the latest version
+                match &prev_value.inner {
+                    VariableValue::Simple(_) => {}
+                    VariableValue::Compound(_) => {}
+                    VariableValue::Hardware(prev_value) => {
+                        if prev_value.version != index {
+                            return Ok(Ok(()));
                         }
                     }
+                }
 
-                    match kind {
-                        ImplicationKind::BoolEq(impl_value) => {
-                            if let Value::Simple(SimpleCompileValue::Bool(prev_value)) = prev_value.inner {
+                match kind {
+                    ImplicationKind::BoolEq(impl_value) => {
+                        if let Value::Simple(SimpleCompileValue::Bool(prev_value)) = prev_value.inner {
+                            // already compile, just check
+                            if prev_value != impl_value {
+                                return Ok(Err(ImplicationContradiction));
+                            }
+                        } else {
+                            // not yet compile, remember value
+                            let new_content = VariableContent::Assigned(Spanned::new(
+                                prev_value.span,
+                                Value::Simple(SimpleCompileValue::Bool(impl_value)),
+                            ));
+                            let new_slot = VariableSlotOption {
+                                info: None,
+                                content: Some(new_content),
+                            };
+                            self.first_common_mut().variables.insert(var.index, new_slot);
+                        }
+                    }
+                    ImplicationKind::IntIn(impl_range) => {
+                        match &prev_value.inner {
+                            VariableValue::Simple(SimpleCompileValue::Int(prev_value)) => {
                                 // already compile, just check
-                                if prev_value != impl_value {
+                                if !impl_range.contains(prev_value) {
                                     return Ok(Err(ImplicationContradiction));
                                 }
-                            } else {
-                                // not yet compile, remember value
+                            }
+                            VariableValue::Hardware(prev_value_hw) => {
+                                let prev_range =
+                                    unwrap_match!(prev_value_hw.ty_hw(), HardwareType::Int(range) => range);
+
+                                let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
+                                let new_range = try_inner!(
+                                    ClosedNonEmptyMultiRange::try_from(new_range)
+                                        .map_err(|_: RangeEmpty| ImplicationContradiction)
+                                );
+
+                                let new_value = VariableValueHardware {
+                                    value_raw: prev_value_hw.value_raw.clone(),
+                                    version: prev_value_hw.version,
+                                    implied_int_range: Some(new_range),
+                                };
                                 let new_content = VariableContent::Assigned(Spanned::new(
                                     prev_value.span,
-                                    Value::Simple(SimpleCompileValue::Bool(impl_value)),
+                                    VariableValue::Hardware(new_value),
                                 ));
                                 let new_slot = VariableSlotOption {
                                     info: None,
                                     content: Some(new_content),
                                 };
-                                variables.insert(var.index, new_slot);
+                                self.first_common_mut().variables.insert(var.index, new_slot);
                             }
-                        }
-                        ImplicationKind::IntIn(impl_range) => {
-                            match &prev_value.inner {
-                                VariableValue::Simple(SimpleCompileValue::Int(prev_value)) => {
-                                    // already compile, just check
-                                    if !impl_range.contains(prev_value) {
-                                        return Ok(Err(ImplicationContradiction));
-                                    }
-                                }
-                                VariableValue::Hardware(prev_value_hw) => {
-                                    let prev_range =
-                                        unwrap_match!(prev_value_hw.ty_hw(), HardwareType::Int(range) => range);
-
-                                    let new_range = ClosedMultiRange::from(prev_range).intersect(&impl_range);
-                                    let new_range = try_inner!(
-                                        ClosedNonEmptyMultiRange::try_from(new_range)
-                                            .map_err(|_: RangeEmpty| ImplicationContradiction)
-                                    );
-
-                                    let new_value = VariableValueHardware {
-                                        value_raw: prev_value_hw.value_raw.clone(),
-                                        version: prev_value_hw.version,
-                                        implied_int_range: Some(new_range),
-                                    };
-                                    let new_content = VariableContent::Assigned(Spanned::new(
-                                        prev_value.span,
-                                        VariableValue::Hardware(new_value),
-                                    ));
-                                    let new_slot = VariableSlotOption {
-                                        info: None,
-                                        content: Some(new_content),
-                                    };
-                                    variables.insert(var.index, new_slot);
-                                }
-                                _ => unreachable!("trying to imply int range for non-int var"),
-                            }
+                            _ => unreachable!("trying to imply int range for non-int var"),
                         }
                     }
                 }
             }
         }
 
-        let root = self.root;
-        let slf = unsafe { lifetime_cast::hardware_mut(self) };
-        Ok(Ok(FlowHardwareBranch {
-            root,
-            parent: slf,
-            cond_domain,
-            common: FlowHardwareCommon {
-                variables,
-                signals,
-                statements: vec![],
-            },
-        }))
+        Ok(Ok(()))
     }
 
     pub fn new_child_scoped(&mut self) -> FlowHardware<'_> {

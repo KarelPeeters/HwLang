@@ -12,11 +12,12 @@ pub fn assert(cond: bool, msg: str = "") {
     }
 }
 
-// TODO think of a better name, maybe `assert_and_assume`?
-// TODO actually implement this
-pub fn assert_assume(cond: bool, msg: str = DEFAULT_ASSERT_MSG) {
-    assert(false, "TODO what should this look like?");
-//    __builtin("fn", "assume", cond, msg);
+// TODO maybe this should always be the behavior of assert?
+pub fn assert_assume(cond: bool, msg: str = "") {
+    if (!cond) {
+        __builtin("fn", "assert_fail", msg);
+    }
+    __builtin("fn", "assume", cond);
 }
 
 // TODO parse "clock" as type here?

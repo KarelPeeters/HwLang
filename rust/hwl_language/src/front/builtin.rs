@@ -3,7 +3,7 @@ use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::ValueDomain;
 use crate::front::expression::NamedOrValue;
-use crate::front::flow::{Flow, FlowKind};
+use crate::front::flow::{Flow, FlowKind, ImplicationContradiction};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::signal::{Signal, SignalOrVariable};
@@ -238,6 +238,47 @@ impl CompileItemContext<'_, '_> {
                         Ok(Value::unit())
                     }
                 }
+            }
+            ("fn", "assume", &[cond]) => {
+                let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond.value)?;
+
+                let reason_bool = TypeContainsReason::Internal(expr_span);
+                let cond = check_type_is_bool(diags, elab, reason_bool, cond)?;
+
+                // check constant cases
+                let cond = match cond {
+                    MaybeCompile::Compile(cond) => {
+                        return if !cond {
+                            // should have been caught by the preceding assert
+                            Err(diags.report_internal_error(expr_span, "assuming false condition"))
+                        } else {
+                            // maybe emit a warning?
+                            Ok(Value::unit())
+                        };
+                    }
+                    MaybeCompile::Hardware(cond) => cond,
+                };
+
+                // check hardware flow
+                let flow = match flow.kind_mut() {
+                    FlowKind::Compile(_) => {
+                        // assuming does nothing at compile time
+                        return Ok(Value::unit());
+                    }
+                    FlowKind::Hardware(flow) => flow,
+                };
+
+                // add implications
+                for implication in cond.implications.if_true {
+                    match flow.add_implication(self, expr_span, implication)? {
+                        Ok(()) => {}
+                        Err(ImplicationContradiction) => {
+                            return Err(diags.report_simple("contraction due to assume", expr_span, "assumption here"));
+                        }
+                    }
+                }
+
+                Ok(Value::unit())
             }
 
             // casting
