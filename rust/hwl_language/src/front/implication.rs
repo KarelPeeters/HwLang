@@ -1,7 +1,11 @@
+use crate::front::compile::CompileRefs;
+use crate::front::diagnostic::DiagResult;
+use crate::front::domain::ValueDomain;
 use crate::front::flow::ValueVersion;
 use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value};
-use crate::mid::ir::IrExpression;
+use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value, ValueCommon};
+use crate::mid::ir::{IrExpression, IrLargeArena};
+use crate::syntax::pos::Span;
 use crate::util::big_int::BigInt;
 use crate::util::range_multi::MultiRange;
 use std::fmt::Debug;
@@ -45,9 +49,9 @@ pub struct HardwareValueWithVersion<V = ValueVersion, T = HardwareType, E = IrEx
 }
 
 #[derive(Debug, Clone)]
-pub struct HardwareValueWithImplications<T = HardwareType, E = IrExpression> {
+pub struct HardwareValueWithImplications<T = HardwareType, E = IrExpression, V = Option<ValueVersion>> {
     pub value: HardwareValue<T, E>,
-    pub version: Option<ValueVersion>,
+    pub version: V,
     pub implications: BoolImplications,
 }
 
@@ -61,6 +65,17 @@ impl<V> HardwareValueWithVersion<V> {
 }
 
 impl BoolImplications {
+    pub const NONE: Self = BoolImplications {
+        if_true: vec![],
+        if_false: vec![],
+    };
+
+    pub fn add_bool_self_implications(&mut self, version: ValueVersion) {
+        self.if_true.push(Implication::new_bool(version, true));
+        self.if_false.push(Implication::new_bool(version, false));
+    }
+
+    // TODO remove this
     pub fn new(version: Option<ValueVersion>) -> Self {
         let mut result = BoolImplications {
             if_true: vec![],
@@ -117,38 +132,39 @@ impl<S, C, T> ValueWithImplications<S, C, T> {
     }
 }
 
-impl<T> HardwareValueWithImplications<T> {
-    pub fn simple(value: HardwareValue<T>) -> Self {
+impl<T, E> HardwareValueWithImplications<T, E> {
+    pub fn simple(value: HardwareValue<T, E>) -> Self {
         Self {
             value,
             version: None,
-            implications: BoolImplications::new(None),
+            implications: BoolImplications::NONE,
         }
     }
 
-    pub fn simple_version(value: HardwareValueWithVersion<ValueVersion, T>) -> Self {
+    pub fn simple_version(value: HardwareValueWithVersion<ValueVersion, T, E>) -> Self {
+        // TODO do this when the type is actually bool?
         Self {
             value: value.value,
             version: Some(value.version),
             implications: BoolImplications::new(Some(value.version)),
         }
     }
+}
 
-    pub fn map_type<U>(self, f: impl FnOnce(T) -> U) -> HardwareValueWithImplications<U> {
+impl<T, E, V> HardwareValueWithImplications<T, E, V> {
+    pub fn map_type<U>(self, f: impl FnOnce(T) -> U) -> HardwareValueWithImplications<U, E, V> {
         HardwareValueWithImplications {
             value: self.value.map_type(f),
             version: self.version,
             implications: self.implications,
         }
     }
-}
 
-impl Typed for ValueWithImplications {
-    fn ty(&self) -> Type {
-        match self {
-            Value::Simple(v) => v.ty(),
-            Value::Compound(v) => v.ty(),
-            Value::Hardware(v) => v.value.ty(),
+    pub fn map_version<F: FnOnce(V) -> U, U>(self, f: F) -> HardwareValueWithImplications<T, E, U> {
+        HardwareValueWithImplications {
+            value: self.value,
+            version: f(self.version),
+            implications: self.implications,
         }
     }
 }
@@ -156,5 +172,43 @@ impl Typed for ValueWithImplications {
 impl<V, E> Typed for HardwareValueWithVersion<V, HardwareType, E> {
     fn ty(&self) -> Type {
         self.value.ty.as_type()
+    }
+}
+
+impl<E> Typed for HardwareValueWithImplications<HardwareType, E> {
+    fn ty(&self) -> Type {
+        self.value.ty.as_type()
+    }
+}
+
+impl<V> ValueCommon for HardwareValueWithVersion<V, HardwareType, IrExpression> {
+    fn domain(&self) -> ValueDomain {
+        self.value.domain()
+    }
+
+    fn as_ir_expression_unchecked(
+        &self,
+        refs: CompileRefs,
+        large: &mut IrLargeArena,
+        span: Span,
+        ty: &HardwareType,
+    ) -> DiagResult<IrExpression> {
+        self.value.as_ir_expression_unchecked(refs, large, span, ty)
+    }
+}
+
+impl ValueCommon for HardwareValueWithImplications<HardwareType, IrExpression> {
+    fn domain(&self) -> ValueDomain {
+        self.value.domain()
+    }
+
+    fn as_ir_expression_unchecked(
+        &self,
+        refs: CompileRefs,
+        large: &mut IrLargeArena,
+        span: Span,
+        ty: &HardwareType,
+    ) -> DiagResult<IrExpression> {
+        self.value.as_ir_expression_unchecked(refs, large, span, ty)
     }
 }

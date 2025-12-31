@@ -14,7 +14,7 @@ use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
+    CompileCompoundValue, CompileValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
@@ -262,7 +262,7 @@ enum CompileBranchMatched {
 #[derive(Debug)]
 struct HardwareBranchMatched {
     cond: Option<IrExpression>,
-    declare: Option<BranchDeclare<HardwareValue>>,
+    declare: Option<BranchDeclare<HardwareValueWithImplications>>,
     implications: Vec<Implication>,
 }
 
@@ -439,7 +439,7 @@ impl CompileItemContext<'_, '_> {
                 // eval init
                 let init = ty.as_ref_ok().and_then(|ty| {
                     let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                    init.map(|init| self.eval_expression(scope, flow, init_expected_ty, init))
+                    init.map(|init| self.eval_expression_with_implications(scope, flow, init_expected_ty, init))
                         .transpose()
                 });
 
@@ -521,7 +521,7 @@ impl CompileItemContext<'_, '_> {
                 let type_unit = Type::unit();
                 let expected_ty = entry.return_type.map_or(&type_unit, |ty| ty.inner);
                 let value = value
-                    .map(|value| self.eval_expression(scope, flow, expected_ty, value))
+                    .map(|value| self.eval_expression_with_implications(scope, flow, expected_ty, value))
                     .transpose()?;
 
                 check_function_return_type_and_set_value(self.refs, flow, entry, stmt_span, span_return, value)?;
@@ -880,11 +880,11 @@ impl CompileItemContext<'_, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
 
         let target_version = target.inner.version;
-        let target_value = target.inner.value;
-        let target_domain = Spanned::new(target.span, target_value.domain);
+        let target_value = target.inner;
+        let target_domain = Spanned::new(target.span, target_value.value.domain);
 
         // TODO extract function
-        let mut coverage_remaining = match &target_value.ty {
+        let mut coverage_remaining = match &target_value.value.ty {
             HardwareType::Bool => MatchCoverage::Bool {
                 rem_false: true,
                 rem_true: true,
@@ -904,7 +904,7 @@ impl CompileItemContext<'_, '_> {
                     target.span,
                     format!(
                         "hardware matching for target type {}",
-                        target_value.ty.value_string(elab)
+                        target_value.value.ty.value_string(elab)
                     ),
                 ));
             }
@@ -948,7 +948,7 @@ impl CompileItemContext<'_, '_> {
                         diags,
                         elab,
                         TypeContainsReason::MatchPattern(value.span),
-                        &target_value.ty.as_type(),
+                        &target_value.value.ty.as_type(),
                         value.as_ref(),
                     )?;
 
@@ -960,13 +960,16 @@ impl CompileItemContext<'_, '_> {
                             //  Or do the implications already cover that?
                             if value {
                                 *rem_true = false;
-                                (target_value.expr.clone(), target.inner.implications.if_true.clone())
+                                (
+                                    target_value.value.expr.clone(),
+                                    target_value.implications.if_true.clone(),
+                                )
                             } else {
                                 *rem_false = false;
                                 let cond = self
                                     .large
-                                    .push_expr(IrExpressionLarge::BoolNot(target_value.expr.clone()));
-                                (cond, target.inner.implications.if_false.clone())
+                                    .push_expr(IrExpressionLarge::BoolNot(target_value.value.expr.clone()));
+                                (cond, target_value.implications.if_false.clone())
                             }
                         }
                         MatchCoverage::Int { rem_range } => {
@@ -976,7 +979,7 @@ impl CompileItemContext<'_, '_> {
 
                             let cond = self.large.push_expr(IrExpressionLarge::IntCompare(
                                 IrIntCompareOp::Eq,
-                                target_value.expr.clone(),
+                                target_value.value.expr.clone(),
                                 IrExpression::Int(value.clone()),
                             ));
 
@@ -1005,7 +1008,8 @@ impl CompileItemContext<'_, '_> {
                         let range_multi = MultiRange::from(range.inner.clone());
                         *rem_range = rem_range.subtract(&range_multi);
 
-                        let cond = build_ir_int_in_range(&mut self.large, &target_value.expr, range.inner.clone());
+                        let cond =
+                            build_ir_int_in_range(&mut self.large, &target_value.value.expr, range.inner.clone());
 
                         let implications = if let Some(target_version) = target_version {
                             vec![Implication::new_int(
@@ -1026,7 +1030,7 @@ impl CompileItemContext<'_, '_> {
                         let diag = Diagnostic::new("range match pattern with non-integer target type")
                             .add_info(
                                 target.span,
-                                format!("target has type {}", target_value.ty.value_string(elab)),
+                                format!("target has type {}", target_value.value.ty.value_string(elab)),
                             )
                             .add_error(range.span, "integer range match pattern used here")
                             .finish();
@@ -1046,12 +1050,19 @@ impl CompileItemContext<'_, '_> {
                         let enum_info = elab.enum_info(target_ty.inner());
                         let enum_info_hw = enum_info.hw.as_ref().unwrap();
 
-                        let cond =
-                            enum_info_hw.check_tag_matches(&mut self.large, target_value.expr.clone(), variant_index);
-                        let payload_hw = enum_info_hw.extract_payload(&mut self.large, &target_value, variant_index);
+                        let cond = enum_info_hw.check_tag_matches(
+                            &mut self.large,
+                            target_value.value.expr.clone(),
+                            variant_index,
+                        );
+                        let payload_hw =
+                            enum_info_hw.extract_payload(&mut self.large, &target_value.value, variant_index);
                         let declare = match (payload_id, payload_hw) {
                             (None, None) => None,
-                            (Some(id), Some(value)) => Some(BranchDeclare { id, value }),
+                            (Some(payload_id), Some(payload_value)) => Some(BranchDeclare {
+                                id: payload_id,
+                                value: HardwareValueWithImplications::simple(payload_value),
+                            }),
                             (None, Some(_)) | (Some(_), None) => {
                                 return Err(diags.report_internal_error(branch_pattern_span, "payload mismatch"));
                             }
@@ -1067,7 +1078,7 @@ impl CompileItemContext<'_, '_> {
                         let diag = Diagnostic::new("enum variant match pattern with non-enum target type")
                             .add_info(
                                 target.span,
-                                format!("target has type {}", target_value.ty.value_string(elab)),
+                                format!("target has type {}", target_value.value.ty.value_string(elab)),
                             )
                             .add_error(branch_pattern_span, "enum variant match pattern used here")
                             .finish();
@@ -1119,7 +1130,7 @@ impl CompileItemContext<'_, '_> {
         // TODO move to separate function
         let span_end = Span::empty_at(pos_end);
         let title_non_exhaustive = "hardware match statement is not exhaustive";
-        let msg_target_type = format!("target has type {}", target_value.ty.value_string(elab));
+        let msg_target_type = format!("target has type {}", target_value.value.ty.value_string(elab));
         match coverage_remaining {
             MatchCoverage::Bool { rem_false, rem_true } => {
                 let values_not_covered = match (rem_false, rem_true) {
@@ -1303,7 +1314,12 @@ impl CompileItemContext<'_, '_> {
             }
 
             // set index and elaborate body
-            flow.var_set(slf.refs, index_var, span_keyword, Ok(index_value))?;
+            flow.var_set(
+                slf.refs,
+                index_var,
+                span_keyword,
+                Ok(ValueWithImplications::simple(index_value)),
+            )?;
             slf.elaborate_block(&scope_index, flow, stack, body)
         })
     }

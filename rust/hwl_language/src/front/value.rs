@@ -42,6 +42,7 @@ pub enum SimpleCompileValue {
     InterfaceView(ElaboratedInterfaceView),
 }
 
+// TODO allow storing versions and implications in the inner values?
 #[derive(Debug, Clone)]
 pub enum MixedCompoundValue {
     String(Arc<MixedString>),
@@ -113,7 +114,7 @@ pub enum MaybeUndefined<T> {
 #[derive(Debug, Copy, Clone)]
 pub struct NotCompile;
 
-pub trait ValueCommon {
+pub trait ValueCommon: Typed {
     /// Convert this value to a hardware value with the exact type `ty`.
     ///
     /// This fails if the value cannot be represented as a hardware value of the given type.
@@ -125,6 +126,10 @@ pub trait ValueCommon {
         span: Span,
         ty: HardwareType,
     ) -> DiagResult<HardwareValue> {
+        if cfg!(debug_assertions) {
+            debug_assert!(ty.as_type().contains_type(&self.ty()));
+        }
+
         // TODO avoid walking the hierarchy twice?
         let domain = self.domain();
         let expr = self.as_ir_expression_unchecked(refs, large, span, &ty)?;

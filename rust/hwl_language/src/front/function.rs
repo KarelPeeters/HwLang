@@ -6,6 +6,7 @@ use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAdda
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
 use crate::front::flow::{Flow, FlowCompile};
+use crate::front::implication::ValueWithImplications;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
     UniqueDeclaration,
@@ -113,7 +114,7 @@ pub struct CapturedScope {
 pub struct ParamArgMacher<'a> {
     // constant initial values
     refs: CompileRefs<'a, 'a>,
-    args: &'a Args<Option<Spanned<&'a str>>, Spanned<Value>>,
+    args: &'a Args<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>,
     arg_name_to_index: IndexMap<&'a str, usize>,
     positional_count: usize,
     params_span: Span,
@@ -138,7 +139,7 @@ impl<'a> ParamArgMacher<'a> {
     fn new(
         refs: CompileRefs<'a, 'a>,
         params_span: Span,
-        args: &'a Args<Option<Spanned<&'a str>>, Spanned<Value>>,
+        args: &'a Args<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>,
         args_must_be_compile: bool,
         args_must_be_named: NamedRule,
     ) -> DiagResult<Self> {
@@ -231,8 +232,8 @@ impl<'a> ParamArgMacher<'a> {
         &mut self,
         id: Identifier,
         ty: Spanned<&Type>,
-        default: Option<Spanned<Value>>,
-    ) -> DiagResult<Spanned<Value>> {
+        default: Option<Spanned<ValueWithImplications>>,
+    ) -> DiagResult<Spanned<ValueWithImplications>> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -342,7 +343,7 @@ impl CompileItemContext<'_, '_> {
         span_target: Span,
         span_call: Span,
         function: &FunctionValue,
-        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
@@ -443,7 +444,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         span_call: Span,
         elab: ElaboratedStruct,
-        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
     ) -> DiagResult<Value> {
         let _ = span_call;
         let &ElaboratedStructInfo {
@@ -459,7 +460,7 @@ impl CompileItemContext<'_, '_> {
         let mut field_values = vec![];
         for &(field_id, ref field_ty) in fields.values() {
             if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
-                field_values.push(v.inner);
+                field_values.push(v.inner.into_value());
             }
         }
         matcher.finish()?;
@@ -476,7 +477,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         elab: ElaboratedEnum,
         variant_index: usize,
-        args: &Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: &Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
     ) -> DiagResult<Value> {
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
@@ -488,13 +489,16 @@ impl CompileItemContext<'_, '_> {
             .expect("enum new only exists for variants with payloads");
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
-        let payload = matcher.resolve_param(variant_id, payload_ty.as_ref(), None)?;
+        let payload = matcher
+            .resolve_param(variant_id, payload_ty.as_ref(), None)?
+            .inner
+            .into_value();
         matcher.finish()?;
 
         let result = EnumValue {
             ty: elab,
             variant: variant_index,
-            payload: Some(Box::new(payload.inner)),
+            payload: Some(Box::new(payload)),
         };
         Ok(Value::Compound(MixedCompoundValue::Enum(result)))
     }
@@ -503,7 +507,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         flow: &mut impl Flow,
         function: &UserFunctionValue,
-        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
     ) -> DiagResult<Value> {
         let UserFunctionValue {
             decl_span,
@@ -654,7 +658,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         span_target: Span,
         function: &FunctionBits,
-        args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
@@ -730,7 +734,7 @@ impl CompileItemContext<'_, '_> {
                     diags,
                     elab,
                     TypeContainsReason::Operator(span_call),
-                    value,
+                    value.map_inner(|v| v.into_value()),
                     Some(&width),
                 )?;
 
@@ -778,7 +782,7 @@ pub fn check_function_return_type_and_set_value(
     entry: &ReturnEntry,
     span_stmt: Span,
     span_keyword: Span,
-    value: Option<Spanned<Value>>,
+    value: Option<Spanned<ValueWithImplications>>,
 ) -> DiagResult {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;

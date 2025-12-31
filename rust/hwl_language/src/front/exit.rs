@@ -2,8 +2,8 @@ use crate::front::block::EarlyExitKind;
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
-use crate::front::flow::{Flow, FlowKind, ValueVersion, Variable, VariableId, VariableInfo};
-use crate::front::implication::{HardwareValueWithImplications, HardwareValueWithVersion};
+use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
+use crate::front::implication::HardwareValueWithImplications;
 use crate::front::types::{HardwareType, Type, TypeBool};
 use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
 use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
@@ -124,7 +124,7 @@ impl ExitFlag {
         large: &mut IrLargeArena,
         flow: &mut impl Flow,
         span: Span,
-    ) -> DiagResult<MaybeCompile<bool, HardwareValueWithVersion<ValueVersion, TypeBool>>> {
+    ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
         match flow.var_eval(refs, large, Spanned::new(span, self.var)) {
             Ok(value) => {
                 let value = match value {
@@ -135,10 +135,7 @@ impl ExitFlag {
                     Value::Compound(_) => panic!("unexpected compound value for exit flag"),
                     Value::Hardware(value) => {
                         assert_eq!(value.value.ty, HardwareType::Bool);
-                        MaybeCompile::Hardware(HardwareValueWithVersion {
-                            value: value.value.map_type(|_| TypeBool),
-                            version: value.version,
-                        })
+                        MaybeCompile::Hardware(value.map_type(|_| TypeBool))
                     }
                 };
                 Ok(value)
@@ -182,9 +179,7 @@ impl<'r> ExitStack<'r> {
         span: Span,
     ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
         let mut add_flag = |c: MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>, flag: &ExitFlag| {
-            let flag = flag
-                .get(refs, diags, large, flow, span)?
-                .map_hardware(HardwareValueWithImplications::simple_version);
+            let flag = flag.get(refs, diags, large, flow, span)?;
             Ok(eval_binary_bool_typed(large, IrBoolBinaryOp::Or, c, flag))
         };
 

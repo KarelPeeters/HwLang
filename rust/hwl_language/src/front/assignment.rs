@@ -4,12 +4,12 @@ use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
-use crate::front::implication::ValueWithImplications;
+use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, ValueCommon};
+use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
 use crate::syntax::ast::{Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -93,9 +93,9 @@ impl CompileItemContext<'_, '_> {
                     }
                 };
 
-                // apply steps to left, preserving version if possible
+                // apply steps to left, preserving implications if possible
                 let left_value = if target_steps.is_empty() {
-                    ValueWithImplications::simple_version(left_base_value)
+                    left_base_value
                 } else {
                     let left_base_value = left_base_value.into_value();
                     let left_value = target_steps.apply_to_value(
@@ -123,10 +123,6 @@ impl CompileItemContext<'_, '_> {
                 Spanned::new(stmt.span, source_value)
             }
         };
-
-        // discard implications
-        // TODO don't do that, actually store them inside the flow
-        let source_value = source_value.map_inner(ValueWithImplications::into_value);
 
         // store result
         match target_base.inner {
@@ -201,13 +197,9 @@ impl CompileItemContext<'_, '_> {
                 flow.push_ir_statement(Spanned::new(stmt.span, ir_stmt));
 
                 // report assignment to flow
-                let source_value_compile = CompileValue::try_from(&source_value.inner);
-                let extra_info = if target_steps.is_empty() {
-                    match source_value_compile {
-                        Ok(source_value_compile) => Some(MaybeCompile::Compile(source_value_compile)),
-                        Err(NotCompile) => Some(MaybeCompile::Hardware(source_value_hw.ty)),
-                    }
-                } else if let Ok(source_value_compile) = source_value_compile
+                let result_value = if target_steps.is_empty() {
+                    Some(source_value.inner)
+                } else if let Ok(source_value_compile) = CompileValue::try_from(&source_value.inner)
                     && let Some(target_base_value) = flow.signal_eval_if_compile(target_base)?
                     && let Ok(target_steps) = target_steps.try_as_compile()
                 {
@@ -217,11 +209,11 @@ impl CompileItemContext<'_, '_> {
                         op.span,
                         Spanned::new(source_value.span, source_value_compile),
                     )?;
-                    Some(MaybeCompile::Compile(result_value_compile))
+                    Some(ValueWithImplications::simple(Value::from(result_value_compile)))
                 } else {
                     None
                 };
-                flow.signal_report_assignment(target_base, extra_info);
+                flow.signal_report_assignment(target_base, result_value);
             }
             SignalOrVariable::Variable(target_base_var) => {
                 let target_base = Spanned::new(target_base.span, target_base_var);
@@ -358,11 +350,13 @@ impl CompileItemContext<'_, '_> {
                         flow.push_ir_statement(Spanned::new(stmt.span, ir_stmt));
 
                         // report the assignment to flow
+                        //   (this is a stepped assignment, so there are no implications)
                         let result_value = HardwareValue {
                             ty: target_base_ty_hw,
                             domain: result_domain,
                             expr: target_base_var_ir,
                         };
+                        let result_value = HardwareValueWithImplications::simple(result_value);
                         flow.var_set_without_copy(target_base_var, stmt.span, Ok(VarSetValue::Hardware(result_value)))?;
                     }
                 }

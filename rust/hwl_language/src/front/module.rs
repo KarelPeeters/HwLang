@@ -9,6 +9,7 @@ use crate::front::flow::{
     HardwareProcessKind, VariableId,
 };
 use crate::front::function::CapturedScope;
+use crate::front::implication::ValueWithImplications;
 use crate::front::interface::ElaboratedInterfacePortInfo;
 use crate::front::item::{
     ElaboratedInterface, ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration,
@@ -1287,7 +1288,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 index.span(),
                 VariableId::Id(index),
                 span_keyword,
-                Ok(index_value),
+                Ok(ValueWithImplications::simple(index_value)),
             )?;
             scope_body.maybe_declare(
                 diags,

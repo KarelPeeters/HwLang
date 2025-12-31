@@ -244,9 +244,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         }
                     },
                 };
-                return Ok(ValueInner::Value(
-                    result.map_hardware(HardwareValueWithImplications::simple_version),
-                ));
+                return Ok(ValueInner::Value(result));
             }
             ExpressionKind::IntLiteral(pattern) => {
                 // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
@@ -477,7 +475,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         index.span(),
                         VariableId::Id(index),
                         span_keyword,
-                        Ok(index_value),
+                        Ok(ValueWithImplications::simple(index_value)),
                     )?;
 
                     let scope_span = body.span().join(index.span());
@@ -722,7 +720,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .iter()
                     .map(|arg| {
                         // TODO pass an actual expected type in cases where we know it (eg. struct/enum construction)
-                        let arg_value = self.eval_expression(scope, flow, &Type::Any, arg.value)?;
+                        let arg_value = self.eval_expression_with_implications(scope, flow, &Type::Any, arg.value)?;
 
                         Ok(Arg {
                             span: arg.span,
@@ -971,7 +969,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.require_hardware(expr_span, "port access")?;
                 let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
-                return Ok(ValueInner::Value(ValueWithImplications::simple_version(port_eval)));
+                return Ok(ValueInner::Value(port_eval));
             }
             ValueInner::WireInterface(wire_interface) => {
                 let wire_interface_info = &self.wire_interfaces[wire_interface];
@@ -993,7 +991,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let flow = flow.require_hardware(expr_span, "wire access")?;
                 let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
-                return Ok(ValueInner::Value(ValueWithImplications::simple_version(wire_eval)));
+                return Ok(ValueInner::Value(wire_eval));
             }
             ValueInner::Value(base_eval) => base_eval,
         };
@@ -1879,7 +1877,7 @@ fn eval_int_ty_call(
     refs: CompileRefs,
     span_call: Span,
     target: Spanned<&MultiRange<BigInt>>,
-    args: Args<Option<Spanned<&str>>, Spanned<Value>>,
+    args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
 ) -> DiagResult<MultiRange<BigInt>> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
