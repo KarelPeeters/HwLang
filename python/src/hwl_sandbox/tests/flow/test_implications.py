@@ -194,27 +194,31 @@ def check_binary_cond(ty_a: str, ty_b: str, cond: str, ty_true_a: str, ty_false_
     ]
 
 
-def test_bool_implies_itself():
-    src = """
-    module top ports(p: in async bool) {
-        comb {
-            if (p) {
-                const { print("true"); }
-                if (p) {
-                    const { print("true.true"); }
-                } else {
-                    const { print("true.false"); }
-                }
-            } else {
-                const { print("false"); }
-                if (p) {
-                    const { print("false.true"); }
-                } else {
-                    const { print("false.false"); }
-                }
-            }
-        }
-    }
+@pytest.mark.parametrize("var", [False, True])
+def test_bool_implies_itself(var: bool):
+    t = "v" if var else "p"
+
+    src = f"""
+    module top ports(p: in async bool) {{
+        comb {{
+            val v = p;
+            if ({t}) {{
+                const {{ print("true"); }}
+                if ({t}) {{
+                    const {{ print("true.true"); }}
+                }} else {{
+                    const {{ print("true.false"); }}
+                }}
+            }} else {{
+                const {{ print("false"); }}
+                if ({t}) {{
+                    const {{ print("false.true"); }}
+                }} else {{
+                    const {{ print("false.false"); }}
+                }}
+            }}
+        }}
+    }}
     """
     c = compile_custom(src)
     with c.capture_prints() as cap:
@@ -407,3 +411,100 @@ def test_merge_implication_var_int_range_abs():
     with c.capture_prints() as cap:
         _ = c.resolve("top.top")
     assert cap.prints == ["int(0..5)\n"]
+
+
+def test_imply_assume():
+    src = """
+    module top ports(p: in async int(-4..4)) {
+        comb {
+            assert_assume(p >= 0);
+            const { print(type(p)); }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with c.capture_prints() as cap:
+        _ = c.resolve("top.top")
+    assert cap.prints == ["int(0..4)\n"]
+
+
+# TODO test cases where if an if statement in between that does not assign, one that does assign, ...
+# TODO test const value merging if both sides assign the same constant
+# TODO const value merging if one side assigns and the other implies the same constant
+
+def test_imply_assignment_breaks_connection():
+    """Test that assigning a new value to a variable breaks previous implications."""
+    src = """
+    module top ports(p: in async int(-4..4), q: in async int(-4..4)) {
+        comb {
+            var v = p;
+            if (v < 0) {
+                v = 0;
+            }
+            v = q;
+            val _: uint = v;
+        }
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        _ = c.resolve("top.top")
+
+
+def test_imply_var_changed_type():
+    """Test that assigning a variable a different type does not crash the compiler."""
+
+    def case(new: str):
+        src = f"""
+        module top ports(p_int: in async int(-4..4), p_bool: in async bool) {{
+            comb {{
+                var v = p_int;
+                val c = v >= 0;
+                v = {new};
+                if (c) {{
+                    const {{ print("true"); }}
+                }} else {{
+                    const {{ print("false"); }}
+                }}
+            }}
+        }}
+        """
+        c = compile_custom(src)
+        with c.capture_prints() as cap:
+            _ = c.resolve("top.top")
+        assert cap.prints == ["true\n", "false\n"]
+
+    case("p_bool")
+    case("true")
+    case("false")
+
+
+def test_var_remembers_implications():
+    src = """
+    module top ports(p: in async int(-4..4), q: in async int(-4..4)) {
+        comb {
+            val c = p >= 0;
+            if (c) {
+                val _: uint = p;
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_signal_remembers_implications():
+    src = """
+    module top ports(p: in async int(-4..4), q: in async int(-4..4)) {
+        wire c: bool;
+        comb {
+            c = p >= 0;
+            if (c) {
+                val _: uint = p;
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")

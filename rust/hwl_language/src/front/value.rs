@@ -533,6 +533,13 @@ impl<C, H> Value<SimpleCompileValue, C, H> {
         Value::Simple(SimpleCompileValue::Bool(v))
     }
 
+    pub fn new_bool_ref(v: bool) -> &'static Self {
+        match v {
+            true => &Value::Simple(SimpleCompileValue::Bool(true)),
+            false => &Value::Simple(SimpleCompileValue::Bool(false)),
+        }
+    }
+
     pub fn new_int(v: BigInt) -> Self {
         Value::Simple(SimpleCompileValue::Int(v))
     }
