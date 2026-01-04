@@ -32,7 +32,7 @@ pub struct ArgsBuild {
     #[arg(long, short = 'j')]
     pub thread_count: Option<NonZeroUsize>,
 
-    // debug
+    // debug options
     // TODO some of these have major effects and are not really debug options
     #[arg(long)]
     pub profile: bool,
@@ -63,8 +63,11 @@ pub struct ArgsFormat {
     #[arg(conflicts_with = "manifest")]
     pub path: Option<PathBuf>,
 
+    /// Verbose output, set to print some more information about the formatting process.
     #[arg(long, short)]
     pub verbose: bool,
+    /// Debug output file path. Set to get debug output of the internal formatting IRs and the final output.
+    /// When this is used, the source files are not modified.
     #[arg(long, short)]
     pub debug: Option<PathBuf>,
 }

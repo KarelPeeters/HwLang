@@ -147,13 +147,16 @@ pub fn main_fmt(args: ArgsFormat) -> ExitCode {
 
     // do something with the results
     if let Some(debug) = &debug {
+        // write to debug file,
+        //   don't actually change any files
         let io_result = std::fs::write(debug, debug_output).map_err(|e| e.with_path(debug));
         if let Err(e) = io_result {
             eprintln!("Failed to write debug file: {e:?}");
             return ExitCode::FAILURE;
         }
     } else if check {
-        // set exit code depending on whether any files would be changed
+        // set exit code depending on whether any files would be changed,
+        //   don't actually change any files
         if count_unchanged != files.len() {
             eprintln!("\nCheck failed, not all files are formatted correctly");
             return ExitCode::FAILURE;

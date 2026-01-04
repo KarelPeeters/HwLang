@@ -27,7 +27,9 @@ pub fn manifest_find_read_parse(
     let found = match manifest_find_read(manifest) {
         Ok(m) => m,
         Err(FindManifestError(msg)) => {
-            eprintln!("{msg}");
+            eprintln!(
+                "{msg}. Change the working directory or use `--manifest` to point to the right manifest location."
+            );
             return Err(ErrorExit);
         }
     };
