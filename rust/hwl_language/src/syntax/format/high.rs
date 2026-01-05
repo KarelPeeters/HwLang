@@ -2,6 +2,7 @@ use crate::syntax::format::common::swrite_indent;
 use crate::syntax::format::low::LNode;
 use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
+use crate::util::data::VecExt;
 use hwl_util::swriteln;
 use itertools::enumerate;
 
@@ -23,7 +24,17 @@ pub enum HNode {
     Dedent(Box<HNode>),
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
-    PreserveBlankLines,
+    PreserveBlankLines(PreserveKind),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PreserveKind {
+    /// Preserve all blank lines.
+    Always,
+    /// If there are any comments, preserve blank lines _after_ them. If there is no comment, do nothing.
+    AfterComment,
+    /// If there are any comments, preserve blank lines _before_ them. If there is no comment, do nothing.
+    BeforeComment,
 }
 
 #[derive(Debug)]
@@ -90,7 +101,9 @@ impl HNode {
                 swriteln!(f, "Group");
                 child.debug_str_impl(f, indent + 1);
             }
-            HNode::PreserveBlankLines => swriteln!(f, "PreserveBlankLines"),
+            &HNode::PreserveBlankLines(kind) => {
+                swriteln!(f, "PreserveBlankLines({kind:?})")
+            }
         }
     }
 }
@@ -138,6 +151,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     fn collect_comments(
         &mut self,
         prev_space: bool,
+        preserve_blank_before: bool,
         seq: &mut Vec<LNode<'s>>,
         mut filter: impl FnMut(SpanFull) -> bool,
     ) {
@@ -170,7 +184,8 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             // preserve newlines
             // TODO allow blanks before comments too?
             let len_before = seq.len();
-            if self.preserve_newlines(seq, true, !is_first_comment) {
+            if let Some(newline) = self.preserve_newlines(true, preserve_blank_before || !is_first_comment) {
+                seq.push(newline);
                 report_newline(len_before);
             }
 
@@ -210,7 +225,8 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         // preserve newlines between comments
         if !next_is_first_comment {
             let len_before = seq.len();
-            if self.preserve_newlines(seq, true, false) {
+            if let Some(newline) = self.preserve_newlines(true, false) {
+                seq.push(newline);
                 report_newline(len_before);
             }
         }
@@ -222,8 +238,8 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         }
     }
 
-    fn collect_comments_all(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
-        self.collect_comments(prev_space, seq, |_| true);
+    fn collect_comments_all(&mut self, prev_space: bool, preserve_blank_before: bool, seq: &mut Vec<LNode<'s>>) {
+        self.collect_comments(prev_space, preserve_blank_before, seq, |_| true);
     }
 
     fn collect_comments_on_prev_line_force(&mut self, prev_space: bool, seq: &mut Vec<LNode<'s>>) {
@@ -231,7 +247,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             .prev_token()
             .map(|prev_token| self.offsets.expand_pos(prev_token.span.end()));
 
-        self.collect_comments(prev_space, seq, |span| {
+        self.collect_comments(prev_space, false, seq, |span| {
             let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
             prev_end = Some(span.end);
             accept
@@ -267,7 +283,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         };
 
         if collect {
-            self.collect_comments(prev_space, seq, |span| {
+            self.collect_comments(prev_space, false, seq, |span| {
                 let accept = prev_end.is_none_or(|prev_end| span.start.line_0 == prev_end.line_0);
                 prev_end = Some(span.end);
                 accept
@@ -279,14 +295,16 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         let non_comment_start = self
             .find_next_non_comment_token()
             .map(|token| self.offsets.expand_pos(self.source_tokens[token.0].span.start()));
-        self.collect_comments(prev_space, seq, |span| match non_comment_start {
+        self.collect_comments(prev_space, false, seq, |span| match non_comment_start {
             Some(non_comment_start) => span.end.line_0 < non_comment_start.line_0,
             None => true,
         })
     }
 
-    fn preserve_newlines(&self, seq: &mut Vec<LNode<'s>>, allow_single: bool, allow_blank: bool) -> bool {
-        let mut any_newlines = false;
+    fn preserve_newlines(&self, allow_single: bool, allow_blank: bool) -> Option<LNode<'static>> {
+        if !allow_single && !allow_blank {
+            return None;
+        }
 
         if let Some(prev) = self.prev_token()
             && let Some(next) = self.peek_token()
@@ -297,20 +315,20 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let delta = next_start.line_0 - prev_end.line_0;
 
             if delta > 1 && allow_blank {
-                any_newlines = true;
-                seq.push(LNode::AlwaysBlankLine);
+                Some(LNode::AlwaysBlankLine)
             } else if delta > 0 && allow_single {
-                any_newlines = true;
-                seq.push(LNode::AlwaysNewline);
+                Some(LNode::AlwaysNewline)
+            } else {
+                None
             }
+        } else {
+            None
         }
-
-        any_newlines
     }
 
     fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let mut seq = vec![self.map(false, false, node)?];
-        self.collect_comments_all(false, &mut seq);
+        self.collect_comments_all(false, true, &mut seq);
         Ok(LNode::Sequence(seq))
     }
 
@@ -319,7 +337,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             HNode::Space => LNode::Space,
             &HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
-                self.collect_comments_all(prev_space, &mut seq);
+                self.collect_comments_all(prev_space, true, &mut seq);
 
                 let token_index = match self.pop_token() {
                     Some(index) => index,
@@ -349,7 +367,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 if let Some(token) = self.find_next_non_comment_token()
                     && self.source_tokens[token.0].ty == TT::Comma
                 {
-                    self.collect_comments_all(prev_space, &mut seq);
+                    self.collect_comments_all(prev_space, false, &mut seq);
                 }
 
                 // if there was a comma in the source, pop it and force the surrounding group to wrap
@@ -407,22 +425,35 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 force_wrap: false,
                 child: Box::new(self.map(prev_space, next_wrap_comma, inner)?),
             },
-            HNode::PreserveBlankLines => {
-                let mut seq_escaping = vec![];
+            &HNode::PreserveBlankLines(kind) => {
+                let newline_pre = self.preserve_newlines(false, true);
 
-                self.preserve_newlines(&mut seq_escaping, false, true);
+                let mut seq = vec![];
+                self.collect_comments_all(prev_space, false, &mut seq);
 
-                let len_before = seq_escaping.len();
-                self.collect_comments_all(prev_space, &mut seq_escaping);
+                let newline_post = self.preserve_newlines(false, true);
 
-                if seq_escaping.len() > len_before {
-                    self.preserve_newlines(&mut seq_escaping, false, true);
-                }
+                match kind {
+                    PreserveKind::Always => {
+                        seq.insert_iter(0, newline_pre);
+                        seq.extend(newline_post);
+                    }
+                    PreserveKind::AfterComment => {
+                        if !seq.is_empty() {
+                            seq.extend(newline_post);
+                        }
+                    }
+                    PreserveKind::BeforeComment => {
+                        if !seq.is_empty() {
+                            seq.insert_iter(0, newline_pre);
+                        }
+                    }
+                };
 
-                if seq_escaping.is_empty() {
+                if seq.is_empty() {
                     LNode::EMPTY
                 } else {
-                    LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq_escaping)))
+                    LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq)))
                 }
             }
         };
@@ -465,7 +496,7 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
         HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
         HNode::Group(inner) => node_starts_with_wrap_comma(inner),
-        HNode::PreserveBlankLines => None,
+        HNode::PreserveBlankLines(_kind) => None,
     }
 }
 

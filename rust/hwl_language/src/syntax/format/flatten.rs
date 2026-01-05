@@ -13,7 +13,7 @@ use crate::syntax::ast::{
     TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
     WireDeclarationKind,
 };
-use crate::syntax::format::high::HNode;
+use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
 use itertools::Either;
@@ -35,7 +35,7 @@ struct Context<'a> {
 impl Context<'_> {
     fn fmt_file_items(&self, items: &[Item]) -> HNode {
         // special case to deal with empty files
-        let mut nodes = vec![HNode::PreserveBlankLines];
+        let mut nodes = vec![HNode::PreserveBlankLines(PreserveKind::Always)];
 
         for item in items {
             let item_node = match item {
@@ -74,7 +74,7 @@ impl Context<'_> {
             };
             nodes.push(item_node);
 
-            nodes.push(HNode::PreserveBlankLines)
+            nodes.push(HNode::PreserveBlankLines(PreserveKind::Always))
         }
 
         HNode::Sequence(nodes)
@@ -160,6 +160,10 @@ impl Context<'_> {
             seq.push(HNode::ForceWrap);
         }
 
+        if !items.is_empty() {
+            seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+        }
+
         for (item, last) in items.iter().with_last() {
             match item {
                 ExtraItem::Inner(item) => {
@@ -183,9 +187,12 @@ impl Context<'_> {
             }
 
             if !last {
-                seq.push(HNode::PreserveBlankLines);
+                seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
+            } else {
+                seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
             }
         }
+
         HNode::Sequence(seq)
     }
 
@@ -384,14 +391,14 @@ impl Context<'_> {
 
             if !port_types.items.is_empty() && !views.is_empty() {
                 body_seq.push(HNode::AlwaysBlankLine);
-                body_seq.push(HNode::PreserveBlankLines);
+                body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
             }
 
             for (view, last) in views.iter().with_last() {
                 body_seq.push(self.fmt_interface_view_decl(view));
                 if !last {
                     body_seq.push(HNode::AlwaysNewline);
-                    body_seq.push(HNode::PreserveBlankLines);
+                    body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
                 }
             }
 
@@ -863,6 +870,11 @@ impl Context<'_> {
         } = stmt;
 
         let mut seq_branches = vec![];
+
+        if !branches.is_empty() {
+            seq_branches.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+        }
+
         for (branch, last) in branches.iter().with_last() {
             let MatchBranch { pattern, block } = branch;
 
@@ -904,8 +916,11 @@ impl Context<'_> {
             seq_branches.push(HNode::Space);
             seq_branches.push(f(block));
             seq_branches.push(HNode::AlwaysNewline);
+
             if !last {
-                seq_branches.push(HNode::PreserveBlankLines);
+                seq_branches.push(HNode::PreserveBlankLines(PreserveKind::Always));
+            } else {
+                seq_branches.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
             }
         }
 
@@ -1257,11 +1272,19 @@ impl Context<'_> {
 fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl Fn(&T) -> HNode) -> HNode {
     let mut seq = vec![];
 
+    if !statements.is_empty() || final_expression.is_some() {
+        seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+    }
+
     for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
+
         let last = last_stmt && final_expression.is_none();
+
         if !last {
-            seq.push(HNode::PreserveBlankLines);
+            seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
+        } else {
+            seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
         }
     }
 
@@ -1269,6 +1292,9 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
         seq.push(HNode::Space);
         seq.push(final_expression);
         seq.push(HNode::WrapNewline);
+
+        seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
+
         seq.push(HNode::Space);
     }
 
@@ -1287,7 +1313,7 @@ fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNod
         seq.push(comma_nodes(last));
         seq.push(HNode::WrapNewline);
         if !last {
-            seq.push(HNode::PreserveBlankLines);
+            seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
         }
     }
 
