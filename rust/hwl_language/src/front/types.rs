@@ -22,8 +22,7 @@ pub enum Type {
     Bool,
     String,
     Int(MultiRange<BigInt>),
-    // TODO empty tuples should be convertible to hardware
-    Tuple(Arc<Vec<Type>>),
+    Tuple(Option<Arc<Vec<Type>>>),
     // TODO add list type
     Array(Arc<Type>, BigUint),
     // TODO make user type covariant? or allow users to define variance?
@@ -141,11 +140,11 @@ pub struct NonHardwareType;
 
 impl Type {
     pub fn unit() -> Type {
-        Type::Tuple(Arc::new(vec![]))
+        Type::Tuple(Some(Arc::new(vec![])))
     }
 
     pub fn is_unit(&self) -> bool {
-        matches!(self, Type::Tuple(inner) if inner.is_empty())
+        matches!(self, Type::Tuple(Some(inner)) if inner.is_empty())
     }
 
     pub fn union_all(types: impl IntoIterator<Item = Type>) -> Type {
@@ -173,12 +172,15 @@ impl Type {
             (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
             (Type::Tuple(a), Type::Tuple(b)) => {
-                if a.len() == b.len() {
-                    Type::Tuple(Arc::new(
+                if let Some(a) = a
+                    && let Some(b) = b
+                    && a.len() == b.len()
+                {
+                    Type::Tuple(Some(Arc::new(
                         zip_eq(a.iter(), b.iter()).map(|(a, b)| a.union(b)).collect_vec(),
-                    ))
+                    )))
                 } else {
-                    Type::Any
+                    Type::Tuple(None)
                 }
             }
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
@@ -240,11 +242,14 @@ impl Type {
                 Ok(range) => Ok(HardwareType::Int(range)),
                 Err(_) => Err(NonHardwareType),
             },
-            Type::Tuple(inner) => inner
-                .iter()
-                .map(|ty| ty.as_hardware_type(elab))
-                .try_collect()
-                .map(|v| HardwareType::Tuple(Arc::new(v))),
+            Type::Tuple(inner) => match inner {
+                Some(inner) => inner
+                    .iter()
+                    .map(|ty| ty.as_hardware_type(elab))
+                    .try_collect()
+                    .map(|v| HardwareType::Tuple(Arc::new(v))),
+                None => Err(NonHardwareType),
+            },
             Type::Array(inner, len) => inner
                 .as_hardware_type(elab)
                 .map(|inner| HardwareType::Array(Arc::new(inner), len.clone())),
@@ -281,7 +286,9 @@ impl HardwareType {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(MultiRange::from(range.clone())),
-            HardwareType::Tuple(inner) => Type::Tuple(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())),
+            HardwareType::Tuple(inner) => {
+                Type::Tuple(Some(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())))
+            }
             HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
             HardwareType::Enum(elab) => Type::Enum(elab.inner()),

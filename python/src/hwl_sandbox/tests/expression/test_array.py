@@ -29,7 +29,7 @@ def test_array_literal_bool_const_2d(tmp_dir: Path):
 
 def test_array_literal_tuple(tmp_dir: Path):
     # Test array literals of compound types
-    e = compare_expression([], "[2](bool, uint(4))", "[(false, 0), (true, 1)]", tmp_dir)
+    e = compare_expression([], "[2]Tuple(bool, uint(4))", "[(false, 0), (true, 1)]", tmp_dir)
     e.eval_assert([], [(False, 0), (True, 1)])
 
 

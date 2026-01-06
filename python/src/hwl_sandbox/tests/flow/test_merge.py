@@ -28,7 +28,7 @@ def test_merge_tuple(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile(["bool"], "(bool, uint(1))", src, tmp_dir)
+    e = compare_compile(["bool"], "Tuple(bool, uint(1))", src, tmp_dir)
     e.eval_assert([True], (False, 1))
     e.eval_assert([False], (True, 0))
 

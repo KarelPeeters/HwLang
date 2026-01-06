@@ -10,12 +10,12 @@ use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrL
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{NonEmptyVec, VecExt};
+use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultNeverExt};
-use itertools::zip_eq;
+use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
@@ -47,7 +47,7 @@ pub enum SimpleCompileValue {
 pub enum MixedCompoundValue {
     String(Arc<MixedString>),
     Range(RangeValue),
-    Tuple(NonEmptyVec<Value>),
+    Tuple(Vec<Value>),
     Struct(StructValue<Value>),
     Enum(EnumValue<Box<Value>>),
 }
@@ -61,7 +61,7 @@ pub struct MixedString {
 pub enum CompileCompoundValue {
     String(Arc<String>),
     Range(Range<BigInt>),
-    Tuple(NonEmptyVec<CompileValue>),
+    Tuple(Vec<CompileValue>),
     Struct(StructValue<CompileValue>),
     Enum(EnumValue<Box<CompileValue>>),
 }
@@ -519,12 +519,6 @@ fn err_hw_type_mismatch(refs: CompileRefs, span: Span, value: &impl Typed, targe
 }
 
 impl<C, H> Value<SimpleCompileValue, C, H> {
-    pub fn unit() -> Self {
-        // Empty tuples are considered types, since (vacuously) all of their inner values are types.
-        //   `is_unit` can't be implemented here yet, hardware values can also be unit
-        Self::new_ty(Type::unit())
-    }
-
     pub fn new_ty(ty: Type) -> Self {
         Value::Simple(SimpleCompileValue::Type(ty))
     }
@@ -542,6 +536,12 @@ impl<C, H> Value<SimpleCompileValue, C, H> {
 
     pub fn new_int(v: BigInt) -> Self {
         Value::Simple(SimpleCompileValue::Int(v))
+    }
+}
+
+impl<S, C: From<CompileCompoundValue>, H> Value<S, C, H> {
+    pub fn unit() -> Self {
+        Value::Compound(C::from(CompileCompoundValue::Tuple(vec![])))
     }
 }
 
@@ -586,7 +586,7 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
             CompileCompoundValue::Range(v) => {
                 MixedCompoundValue::Range(RangeValue::Normal(v.map(MaybeCompile::Compile)))
             }
-            CompileCompoundValue::Tuple(v) => MixedCompoundValue::Tuple(v.map(Value::from)),
+            CompileCompoundValue::Tuple(v) => MixedCompoundValue::Tuple(v.into_iter().map(Value::from).collect_vec()),
             CompileCompoundValue::Struct(StructValue { ty, fields }) => {
                 let fields = fields.into_iter().map(Value::from).collect();
                 MixedCompoundValue::Struct(StructValue { ty, fields })
@@ -657,7 +657,7 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
                 }
             }
             MixedCompoundValue::Tuple(v) => {
-                let v = v.try_map_ref(|e| CompileValue::try_from(e))?;
+                let v = v.iter().map(CompileValue::try_from).try_collect_vec()?;
                 Ok(CompileCompoundValue::Tuple(v))
             }
             MixedCompoundValue::Struct(v) => {
@@ -728,7 +728,7 @@ impl Typed for MixedCompoundValue {
         match self {
             MixedCompoundValue::String(_) => Type::String,
             MixedCompoundValue::Range(_) => Type::Range,
-            MixedCompoundValue::Tuple(values) => Type::Tuple(Arc::new(values.iter().map(Value::ty).collect())),
+            MixedCompoundValue::Tuple(values) => Type::Tuple(Some(Arc::new(values.iter().map(Value::ty).collect()))),
             MixedCompoundValue::Struct(value) => Type::Struct(value.ty),
             MixedCompoundValue::Enum(value) => Type::Enum(value.ty),
         }
@@ -739,7 +739,7 @@ impl Typed for CompileCompoundValue {
         match self {
             CompileCompoundValue::String(_) => Type::String,
             CompileCompoundValue::Range(_) => Type::Range,
-            CompileCompoundValue::Tuple(values) => Type::Tuple(Arc::new(values.iter().map(Value::ty).collect())),
+            CompileCompoundValue::Tuple(values) => Type::Tuple(Some(Arc::new(values.iter().map(Value::ty).collect()))),
             CompileCompoundValue::Struct(value) => Type::Struct(value.ty),
             CompileCompoundValue::Enum(value) => Type::Enum(value.ty),
         }

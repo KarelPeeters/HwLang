@@ -31,7 +31,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{NonEmptyVec, VecExt, vec_concat};
+use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, HardwareProcessKind};
@@ -653,7 +653,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
                             inner[index].clone()
                         }
-                        ValueInner::Value(Value::Simple(SimpleCompileValue::Type(Type::Tuple(inner)))) => {
+                        ValueInner::Value(Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner))))) => {
                             let index = index_int
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
@@ -733,12 +733,18 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // check that the target is a function
                 let target_inner = match target.inner {
-                    Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
-                        // handle integer calls here
-                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, &range), args?)?;
-                        return Ok(ValueInner::Value(Value::new_ty(Type::Int(result))));
-                    }
                     Value::Simple(SimpleCompileValue::Function(f)) => f,
+
+                    // handle some special type calls
+                    Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
+                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, &range), args?)?;
+                        return Ok(ValueInner::Value(Value::new_ty(result)));
+                    }
+                    Value::Simple(SimpleCompileValue::Type(Type::Tuple(None))) => {
+                        let result = eval_tuple_ty_call(refs, args?)?;
+                        return Ok(ValueInner::Value(Value::new_ty(result)));
+                    }
+
                     _ => {
                         let e = diags.report_simple(
                             "call target must be function",
@@ -1232,12 +1238,14 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         values: &Vec<Expression>,
     ) -> DiagResult<Value> {
-        let expected_tys_inner = match expected_ty {
-            Type::Tuple(tys) if tys.len() == values.len() => Some(tys),
-            _ => None,
+        let expected_tys_inner = if let Type::Tuple(Some(tys)) = expected_ty
+            && tys.len() == values.len()
+        {
+            Some(tys)
+        } else {
+            None
         };
 
-        // evaluate
         let values = values
             .iter()
             .enumerate()
@@ -1247,22 +1255,7 @@ impl<'a> CompileItemContext<'a, '_> {
             })
             .try_collect_all_vec()?;
 
-        // combine into tuple
-        if values
-            .iter()
-            .all(|v| matches!(v, Value::Simple(SimpleCompileValue::Type(_))))
-        {
-            // all type -> type
-            let tys = values
-                .into_iter()
-                .map(|v| unwrap_match!(v, Value::Simple(SimpleCompileValue::Type(v)) => v))
-                .collect();
-            Ok(Value::new_ty(Type::Tuple(Arc::new(tys))))
-        } else {
-            // default to value
-            let values = NonEmptyVec::try_from(values).unwrap();
-            Ok(Value::Compound(MixedCompoundValue::Tuple(values)))
-        }
+        Ok(Value::Compound(MixedCompoundValue::Tuple(values)))
     }
 
     fn eval_expression_as_array_step(
@@ -1878,7 +1871,7 @@ fn eval_int_ty_call(
     span_call: Span,
     target: Spanned<&MultiRange<BigInt>>,
     args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
-) -> DiagResult<MultiRange<BigInt>> {
+) -> DiagResult<Type> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
     let args_span = args.span;
@@ -1961,7 +1954,7 @@ fn eval_int_ty_call(
                     end: Some(BigInt::from(BigUint::pow_2_to(&width))),
                 }
             };
-            return Ok(MultiRange::from(range));
+            return Ok(Type::Int(MultiRange::from(range)));
         }
     }
 
@@ -1998,7 +1991,42 @@ fn eval_int_ty_call(
         }
     }
 
-    Ok(result)
+    Ok(Type::Int(result))
+}
+
+fn eval_tuple_ty_call(
+    refs: CompileRefs,
+    args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+) -> DiagResult<Type> {
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
+    // check that args are unnamed and types
+    let args = args
+        .inner
+        .iter()
+        .map(|arg| {
+            let Arg { span: _, name, value } = arg;
+            if let Some(name) = name {
+                return Err(diags.report_simple(
+                    "expected unnamed arguments for tuple type",
+                    name.span,
+                    "got named arg here",
+                ));
+            }
+
+            match &value.inner {
+                Value::Simple(SimpleCompileValue::Type(ty)) => Ok(ty.clone()),
+                _ => Err(diags.report_simple(
+                    "expected type",
+                    value.span,
+                    format!("got value with type `{}` here", value.inner.ty().value_string(elab)),
+                )),
+            }
+        })
+        .try_collect_all_vec()?;
+
+    Ok(Type::Tuple(Some(Arc::new(args))))
 }
 
 pub enum ForIterator {

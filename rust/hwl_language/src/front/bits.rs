@@ -4,7 +4,6 @@ use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleC
 use crate::mid::ir::IrType;
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::data::{EmptyVec, NonEmptyVec};
 use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
 use crate::util::range_multi::AnyMultiRange;
@@ -214,10 +213,7 @@ impl HardwareType {
                     .iter()
                     .map(|inner| inner.value_from_bits_impl(refs, bits))
                     .try_collect_vec()?;
-                match NonEmptyVec::try_from(result) {
-                    Ok(result) => Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result))),
-                    Err(EmptyVec) => Ok(CompileValue::unit()),
-                }
+                Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result)))
             }
             HardwareType::Array(inner, len) => {
                 let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;
@@ -369,10 +365,7 @@ impl IrType {
                     .map(|inner| inner.value_from_bits_impl(bits))
                     .try_collect_vec()?;
 
-                match NonEmptyVec::try_from(result) {
-                    Ok(result) => Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result))),
-                    Err(EmptyVec) => Ok(CompileValue::unit()),
-                }
+                Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result)))
             }
             IrType::Array(inner, len) => {
                 let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;

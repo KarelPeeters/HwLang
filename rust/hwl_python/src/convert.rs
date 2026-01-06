@@ -2,7 +2,7 @@ use crate::{Compile, Function, Module, Range, Type, Value};
 use hwl_language::front::value::{CompileCompoundValue, SimpleCompileValue};
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::util::big_int::BigInt;
-use hwl_language::util::data::{EmptyVec, GrowVec, NonEmptyVec};
+use hwl_language::util::data::GrowVec;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::range_multi::MultiRange;
 use hwl_language::{
@@ -104,10 +104,7 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     }
     if let Ok(value) = value.downcast::<PyTuple>() {
         let items: Vec<_> = value.iter().map(|v| compile_value_from_py(&v)).try_collect()?;
-        return match NonEmptyVec::try_from(items) {
-            Ok(items) => Ok(CompileValue::Compound(CompileCompoundValue::Tuple(items))),
-            Err(EmptyVec) => Ok(CompileValue::unit()),
-        };
+        return Ok(CompileValue::Compound(CompileCompoundValue::Tuple(items)));
     }
     if let Ok(value) = value.downcast::<PyList>() {
         let items: Vec<_> = value.into_iter().map(|v| compile_value_from_py(&v)).try_collect()?;

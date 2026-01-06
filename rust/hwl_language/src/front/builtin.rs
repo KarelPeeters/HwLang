@@ -158,6 +158,7 @@ impl CompileItemContext<'_, '_> {
             ("type", "bool", &[]) => Ok(Value::new_ty(Type::Bool)),
             ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
             ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
+            ("type", "Tuple", &[]) => Ok(Value::new_ty(Type::Tuple(None))),
             ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(MultiRange::open()))),
 
             // print

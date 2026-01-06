@@ -503,12 +503,15 @@ impl Type {
             }
             Type::Tuple(inner) => {
                 let mut f = String::new();
-                swrite!(f, "(");
-                swrite!(f, "{}", inner.iter().map(|e| e.value_string(elab)).format(", "));
-                if inner.len() == 1 {
-                    swrite!(f, ",");
+                swrite!(f, "Tuple");
+                if let Some(inner) = inner {
+                    swrite!(f, "(");
+                    swrite!(f, "{}", inner.iter().map(|e| e.value_string(elab)).format(", "));
+                    if inner.len() == 1 {
+                        swrite!(f, ",");
+                    }
+                    swrite!(f, ")");
                 }
-                swrite!(f, ")");
                 f
             }
             Type::Array(inner, len) => {

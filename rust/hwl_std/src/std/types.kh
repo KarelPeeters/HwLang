@@ -9,6 +9,7 @@ pub type bool = __builtin("type", "bool");
 pub type str = __builtin("type", "str");
 
 pub type Range = __builtin("type", "Range");
+pub type Tuple = __builtin("type", "Tuple");
 
 // TODO what is the difference if anything between "type" and "const" for types?
 //const bool: type = __builtin("type", );
