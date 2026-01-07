@@ -265,3 +265,137 @@ fn preserve_blanks_match_cases() {
         assert_formats_to(&src, &expected);
     });
 }
+
+#[test]
+fn preserve_blanks_comma_list() {
+    exhaust(|ex| {
+        println!("Iteration {}", ex.iteration());
+
+        let mut src = String::new();
+        let mut expected = String::new();
+
+        let prefix = "const {\n    f(\n";
+        swrite!(src, "{}", prefix);
+        swrite!(expected, "{}", prefix);
+
+        for i in 0..ex.choose_range(1, 5) {
+            // maybe add blank before item
+            if ex.choose_bool() {
+                swriteln!(src);
+                if i > 0 {
+                    swriteln!(expected);
+                }
+            }
+
+            // indent
+            swrite!(src, "        ");
+            swrite!(expected, "        ");
+
+            // maybe make the item a comment
+            if ex.choose_bool() {
+                swrite!(src, "// ");
+                swrite!(expected, "// ");
+            }
+
+            // add the item
+            swriteln!(src, "arg,");
+            swriteln!(expected, "arg,");
+        }
+
+        // maybe add a final blank
+        if ex.choose_bool() {
+            swriteln!(src);
+        }
+
+        let suffix = "    );\n}\n";
+        swrite!(src, "{}", suffix);
+        swrite!(expected, "{}", suffix);
+
+        println!("Source:");
+        println!("{src}");
+        println!("Expected:");
+        println!("{expected}");
+
+        assert_formats_to(&src, &expected);
+    });
+}
+
+#[test]
+fn preserve_blanks_interface() {
+    exhaust(|ex| {
+        println!("Iteration {}", ex.iteration());
+
+        let mut src = String::new();
+        let mut expected = String::new();
+
+        let prefix = "interface Foo {\n";
+        swrite!(src, "{}", prefix);
+        swrite!(expected, "{}", prefix);
+
+        // ports
+        let port_count = ex.choose_range(1, 3);
+        for i in 0..port_count {
+            // maybe add blank before item
+            if ex.choose_bool() {
+                swriteln!(src);
+                if i > 0 {
+                    swriteln!(expected);
+                }
+            }
+
+            // indent
+            swrite!(src, "    ");
+            swrite!(expected, "    ");
+
+            // maybe make the item a comment
+            if ex.choose_bool() {
+                swrite!(src, "// ");
+                swrite!(expected, "// ");
+            }
+
+            // add the item
+            swriteln!(src, "x: bool,");
+            swriteln!(expected, "x: bool,");
+        }
+
+        // views
+        for i in 0..ex.choose_range(1, 3) {
+            // maybe add blank before item
+            if ex.choose_bool() {
+                swriteln!(src);
+                if i > 0 || port_count > 0 {
+                    swriteln!(expected);
+                }
+            }
+
+            // indent
+            swrite!(src, "    ");
+            swrite!(expected, "    ");
+
+            // maybe make the item a comment
+            if ex.choose_bool() {
+                swrite!(src, "// ");
+                swrite!(expected, "// ");
+            }
+
+            // add the item
+            swriteln!(src, "interface Bar {{}}");
+            swriteln!(expected, "interface Bar {{}}");
+        }
+
+        // maybe add a final blank
+        if ex.choose_bool() {
+            swriteln!(src);
+        }
+
+        swriteln!(src, "}}");
+        swriteln!(expected, "}}");
+
+        println!("Source:");
+        println!("{src}");
+        println!("Expected:");
+        println!("{expected}");
+
+        assert_formats_to(&src, &expected);
+    });
+}

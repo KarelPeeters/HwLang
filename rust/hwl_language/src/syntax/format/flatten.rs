@@ -144,13 +144,14 @@ impl Context<'_> {
         list: &ExtraList<T>,
         f: &impl Fn(&T) -> N,
     ) -> HNode {
-        surrounded_group_indent(surround, self.fmt_extra_list_inner(force_wrap, list, f))
+        surrounded_group_indent(surround, self.fmt_extra_list_inner(force_wrap, list, false, f))
     }
 
     fn fmt_extra_list_inner<T, N: Into<HNodeAndComma>>(
         &self,
         force_wrap: bool,
         list: &ExtraList<T>,
+        extra_trailing_items: bool,
         f: &impl Fn(&T) -> N,
     ) -> HNode {
         let ExtraList { span: _, items } = list;
@@ -160,7 +161,7 @@ impl Context<'_> {
             seq.push(HNode::ForceWrap);
         }
 
-        if !items.is_empty() {
+        if !items.is_empty() || extra_trailing_items {
             seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
         }
 
@@ -186,7 +187,7 @@ impl Context<'_> {
                 }
             }
 
-            if !last {
+            if !last || extra_trailing_items {
                 seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
             } else {
                 seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
@@ -385,20 +386,49 @@ impl Context<'_> {
 
         let body_node = {
             let mut body_seq = vec![];
-            body_seq.push(self.fmt_extra_list_inner(true, port_types, &|&(port_id, port_ty)| {
-                HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
-            }));
 
-            if !port_types.items.is_empty() && !views.is_empty() {
-                body_seq.push(HNode::AlwaysBlankLine);
-                body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-            }
+            match (!port_types.items.is_empty(), !views.is_empty()) {
+                (true, true) => {
+                    body_seq.push(
+                        self.fmt_extra_list_inner(true, port_types, true, &|&(port_id, port_ty)| {
+                            HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
+                        }),
+                    );
 
-            for (view, last) in views.iter().with_last() {
-                body_seq.push(self.fmt_interface_view_decl(view));
-                if !last {
                     body_seq.push(HNode::AlwaysNewline);
-                    body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
+
+                    for (view, last) in views.iter().with_last() {
+                        body_seq.push(self.fmt_interface_view_decl(view));
+
+                        if !last {
+                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
+                        } else {
+                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
+                        }
+                    }
+                }
+                (true, false) => {
+                    body_seq.push(
+                        self.fmt_extra_list_inner(true, port_types, false, &|&(port_id, port_ty)| {
+                            HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
+                        }),
+                    );
+                }
+                (false, true) => {
+                    body_seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+
+                    for (view, last) in views.iter().with_last() {
+                        body_seq.push(self.fmt_interface_view_decl(view));
+
+                        if !last {
+                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
+                        } else {
+                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
+                        }
+                    }
+                }
+                (false, false) => {
+                    // nothing to emit
                 }
             }
 
@@ -434,6 +464,7 @@ impl Context<'_> {
             self.fmt_maybe_id(view_id),
             HNode::Space,
             token_ports,
+            HNode::AlwaysNewline,
         ])
     }
 
@@ -1308,11 +1339,18 @@ fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
 fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNode) -> HNode {
     let mut seq = vec![];
 
+    if !items.is_empty() {
+        seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+    }
+
     for (item, last) in items.iter().with_last() {
         seq.push(f(item));
         seq.push(comma_nodes(last));
         seq.push(HNode::WrapNewline);
-        if !last {
+
+        if last {
+            seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
+        } else {
             seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
         }
     }
