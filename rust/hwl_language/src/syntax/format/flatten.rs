@@ -187,11 +187,7 @@ impl Context<'_> {
                 }
             }
 
-            if !last || extra_trailing_items {
-                seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-            } else {
-                seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-            }
+            seq.push(preserve_blank_lines_after_item(last && !extra_trailing_items));
         }
 
         HNode::Sequence(seq)
@@ -400,11 +396,7 @@ impl Context<'_> {
                     for (view, last) in views.iter().with_last() {
                         body_seq.push(self.fmt_interface_view_decl(view));
 
-                        if !last {
-                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-                        } else {
-                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-                        }
+                        body_seq.push(preserve_blank_lines_after_item(last));
                     }
                 }
                 (true, false) => {
@@ -419,12 +411,7 @@ impl Context<'_> {
 
                     for (view, last) in views.iter().with_last() {
                         body_seq.push(self.fmt_interface_view_decl(view));
-
-                        if !last {
-                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-                        } else {
-                            body_seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-                        }
+                        body_seq.push(preserve_blank_lines_after_item(last));
                     }
                 }
                 (false, false) => {
@@ -947,12 +934,7 @@ impl Context<'_> {
             seq_branches.push(HNode::Space);
             seq_branches.push(f(block));
             seq_branches.push(HNode::AlwaysNewline);
-
-            if !last {
-                seq_branches.push(HNode::PreserveBlankLines(PreserveKind::Always));
-            } else {
-                seq_branches.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-            }
+            seq_branches.push(preserve_blank_lines_after_item(last));
         }
 
         HNode::Sequence(vec![
@@ -1309,23 +1291,14 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
 
     for (stmt, last_stmt) in statements.iter().with_last() {
         seq.push(f(stmt));
-
-        let last = last_stmt && final_expression.is_none();
-
-        if !last {
-            seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-        } else {
-            seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-        }
+        seq.push(preserve_blank_lines_after_item(last_stmt && final_expression.is_none()));
     }
 
     if let Some(final_expression) = final_expression {
         seq.push(HNode::Space);
         seq.push(final_expression);
         seq.push(HNode::WrapNewline);
-
         seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-
         seq.push(HNode::Space);
     }
 
@@ -1347,15 +1320,18 @@ fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNod
         seq.push(f(item));
         seq.push(comma_nodes(last));
         seq.push(HNode::WrapNewline);
-
-        if last {
-            seq.push(HNode::PreserveBlankLines(PreserveKind::BeforeComment));
-        } else {
-            seq.push(HNode::PreserveBlankLines(PreserveKind::Always));
-        }
+        seq.push(preserve_blank_lines_after_item(last));
     }
 
     surrounded_group_indent(surround, HNode::Sequence(seq))
+}
+
+fn preserve_blank_lines_after_item(last: bool) -> HNode {
+    if !last {
+        HNode::PreserveBlankLines(PreserveKind::Always)
+    } else {
+        HNode::PreserveBlankLines(PreserveKind::BeforeComment)
+    }
 }
 
 fn comma_nodes(last: bool) -> HNode {
