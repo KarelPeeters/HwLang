@@ -2695,12 +2695,12 @@ fn array_literal_combine_values(
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
-    let first_non_compile_span = values
+    let first_non_compile = values
         .iter()
         .find(|v| CompileValue::try_from(&v.value().inner).is_err())
-        .map(|v| v.span());
+        .map(|v| v.value());
 
-    if let Some(first_non_compile_span) = first_non_compile_span {
+    if let Some(first_non_compile) = first_non_compile {
         // at least one non-compile, turn everything into IR
 
         // TODO better error when element type cannot be converted to hardware
@@ -2730,8 +2730,11 @@ fn array_literal_combine_values(
             let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
                 .add_error(expr_span, message)
                 .add_info(
-                    first_non_compile_span,
-                    "first non-compile value, which forces the entire array to be hardware",
+                    first_non_compile.span,
+                    format!(
+                        "first non-compile value with type `{}`",
+                        first_non_compile.inner.ty().value_string(elab)
+                    ),
                 )
                 .finish();
             diags.report(diag)
