@@ -48,4 +48,4 @@ def test_simple_module_instance(tmp_dir: Path):
     for v in [False, True, False, True]:
         parent_inst.ports.x.value = v
         parent_inst.step(1)
-        assert parent_inst.ports.x.value == v
+        assert parent_inst.ports.y.value == v
