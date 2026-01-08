@@ -492,7 +492,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     values.push(value);
                 }
 
-                array_literal_combine_values(refs, &mut self.large, expr.span, values)?
+                array_literal_combine_values(refs, flow, &mut self.large, expr.span, values)?
             }
 
             &ExpressionKind::UnaryOp(op, operand) => match op.inner {
@@ -1228,7 +1228,7 @@ impl<'a> CompileItemContext<'a, '_> {
             .try_collect_all_vec()?;
 
         // combine into compile or non-compile value
-        array_literal_combine_values(self.refs, &mut self.large, expr_span, values)
+        array_literal_combine_values(self.refs, flow, &mut self.large, expr_span, values)
     }
 
     fn eval_tuple_literal(
@@ -2687,6 +2687,7 @@ fn implications_eq(
 
 fn array_literal_combine_values(
     refs: CompileRefs,
+    flow: &mut impl Flow,
     large: &mut IrLargeArena,
     expr_span: Span,
     values: Vec<ArrayLiteralElement<Spanned<Value>>>,
@@ -2772,11 +2773,17 @@ fn array_literal_combine_values(
         }
 
         let result_expr = IrExpressionLarge::ArrayLiteral(ty_inner_hw.as_ir(refs), result_len.clone(), result_exprs);
-        Ok(Value::Hardware(HardwareValue {
+        let result_value = HardwareValue {
             ty: HardwareType::Array(ty_inner_hw, result_len),
             domain: result_domain,
             expr: large.push_expr(result_expr),
-        }))
+        };
+
+        // store result in variable to prevent large duplicate expressions
+        let flow = flow.require_hardware(expr_span, "array literal containing hardware values")?;
+        let result_value = flow.store_hardware_value_in_new_ir_variable(refs, expr_span, None, result_value);
+
+        Ok(Value::Hardware(result_value.map_expression(IrExpression::Variable)))
     } else {
         // all compile, create compile value
         let mut result = Vec::with_capacity(values.len());
