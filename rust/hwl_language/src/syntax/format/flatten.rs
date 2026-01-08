@@ -383,39 +383,22 @@ impl Context<'_> {
         let body_node = {
             let mut body_seq = vec![];
 
-            match (!port_types.items.is_empty(), !views.is_empty()) {
-                (true, true) => {
-                    body_seq.push(
-                        self.fmt_extra_list_inner(true, port_types, true, &|&(port_id, port_ty)| {
-                            HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
-                        }),
-                    );
+            body_seq.push(
+                self.fmt_extra_list_inner(true, port_types, !views.is_empty(), &|&(port_id, port_ty)| {
+                    HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
+                }),
+            );
 
+            if !views.is_empty() {
+                if !(port_types.items.is_empty()) {
                     body_seq.push(HNode::AlwaysNewline);
-
-                    for (view, last) in views.iter().with_last() {
-                        body_seq.push(self.fmt_interface_view_decl(view));
-
-                        body_seq.push(preserve_blank_lines_after_item(last));
-                    }
-                }
-                (true, false) => {
-                    body_seq.push(
-                        self.fmt_extra_list_inner(true, port_types, false, &|&(port_id, port_ty)| {
-                            HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))])
-                        }),
-                    );
-                }
-                (false, true) => {
+                } else {
                     body_seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
-
-                    for (view, last) in views.iter().with_last() {
-                        body_seq.push(self.fmt_interface_view_decl(view));
-                        body_seq.push(preserve_blank_lines_after_item(last));
-                    }
                 }
-                (false, false) => {
-                    // nothing to emit
+
+                for (view, last) in views.iter().with_last() {
+                    body_seq.push(self.fmt_interface_view_decl(view));
+                    body_seq.push(preserve_blank_lines_after_item(last));
                 }
             }
 
