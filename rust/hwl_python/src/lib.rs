@@ -3,7 +3,9 @@ use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
 use hwl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
 use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
-use hwl_language::back::wrap_verilator::{VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError};
+use hwl_language::back::wrap_verilator::{
+    SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
+};
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
@@ -170,6 +172,7 @@ create_exception!(hwl, SourceSetException, HwlException);
 create_exception!(hwl, ResolveException, HwlException);
 create_exception!(hwl, GenerateVerilogException, HwlException);
 create_exception!(hwl, VerilationException, HwlException);
+create_exception!(hwl, SimulationFinishedException, HwlException);
 
 #[pymethods]
 impl HwlException {
@@ -904,8 +907,12 @@ impl VerilatedInstance {
 
     fn step(&mut self, increment_time: u64) -> PyResult<()> {
         let instance = &mut self.instance;
-        instance.step(increment_time).map_err(map_verilator_error)?;
-        Ok(())
+        let finished = instance.step(increment_time).map_err(map_verilator_error)?;
+
+        match finished {
+            SimulationFinished::No => Ok(()),
+            SimulationFinished::Yes => Err(SimulationFinishedException::new_err("simulation has finished")),
+        }
     }
 
     fn save_trace(&mut self) {

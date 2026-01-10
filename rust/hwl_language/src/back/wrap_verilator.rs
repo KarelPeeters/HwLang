@@ -150,11 +150,27 @@ impl Drop for VerilatedInstance {
     }
 }
 
+// TODO include cause, eg. normal exit, assertion failed, ...
+#[must_use]
+pub enum SimulationFinished {
+    No,
+    Yes,
+}
+
 // TODO make this a general trait that can be implemented for different simulation backends
 impl VerilatedInstance {
-    pub fn step(&mut self, increment_time: u64) -> Result<(), VerilatorError> {
+    pub fn step(&mut self, increment_time: u64) -> Result<SimulationFinished, VerilatorError> {
         // TODO error if any port has never been set?
-        unsafe { check_result(self.lib.lib.step(self.instance, increment_time), "step") }
+        const RESULT_FINISH: u8 = 16;
+        unsafe {
+            let step_result = self.lib.lib.step(self.instance, increment_time);
+            if step_result == RESULT_FINISH {
+                Ok(SimulationFinished::Yes)
+            } else {
+                check_result(step_result, "step")?;
+                Ok(SimulationFinished::No)
+            }
+        }
     }
 
     pub fn save_trace(&mut self) {
