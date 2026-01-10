@@ -49,3 +49,28 @@ def test_simple_module_instance(tmp_dir: Path):
         parent_inst.ports.x.value = v
         parent_inst.step(1)
         assert parent_inst.ports.y.value == v
+
+
+def test_interface_access(tmp_dir: Path):
+    src = """
+    interface Foo {
+        x: bool,
+        interface input { x: in }
+        interface output { x: out }
+    }
+    module top ports(a: interface async Foo.input, b: interface async Foo.output) {
+        comb {
+            b.x = a.x;
+        }   
+    }
+    """
+    c = compile_custom(src)
+    top: hwl.Module = c.resolve("top.top")
+    print(top.as_verilog().source)
+    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir)
+    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+
+    for v in [False, True, False, True]:
+        top_inst.ports.a_x.value = v
+        top_inst.step(1)
+        assert top_inst.ports.b_x.value == v

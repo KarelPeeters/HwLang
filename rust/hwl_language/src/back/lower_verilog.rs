@@ -137,11 +137,11 @@ impl<'p> LoweredNameScope<'p> {
         // TODO avoid repeated allocations in this function
         //   * for each str, store the next (potentially) valid suffix
         //   * repeatedly truncate and re-add suffix, instead of creating new strings
-        check_identifier_valid(diags, Spanned { span, inner: string })?;
+        let string = make_identifier_valid(string);
 
-        if !force_index && !self.is_used(string) {
-            self.local_used.insert(string.to_owned());
-            return Ok(LoweredName(string.to_owned()));
+        if !force_index && !self.is_used(&string) {
+            self.local_used.insert(string.clone());
+            return Ok(LoweredName(string));
         }
 
         for i in 0u64.. {
@@ -204,6 +204,35 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult 
     }
 
     Ok(())
+}
+
+fn make_identifier_valid(id: &str) -> String {
+    if id.is_empty() {
+        return "_".to_owned();
+    }
+
+    let mut id_clean = String::with_capacity(1 + id.len());
+
+    for c in id.chars() {
+        // first character has stricter rules, prepend _ if needed
+        if id_clean.is_empty() {
+            if !(c.is_ascii_alphabetic() || c == '_') {
+                id_clean.push('_');
+            }
+        }
+
+        // other characters can be digits too
+        //   technically they can be $ too, but that's sketchy
+        let c_clean = if c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_' {
+            c
+        } else {
+            // TODO preserve uniqueness
+            '_'
+        };
+        id_clean.push(c_clean);
+    }
+
+    id_clean
 }
 
 #[derive(Debug, Copy, Clone)]

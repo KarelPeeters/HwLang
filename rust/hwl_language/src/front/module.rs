@@ -578,6 +578,7 @@ fn push_connector_interface(
         let mut declared_ports = vec![];
         let mut singles = vec![];
 
+        // TODO rework interface port names, to ensure unique but still readable names
         for (port_index, (_, port)) in enumerate(&interface.ports) {
             let id_str = id.str(source);
             let port_id_str = port.id.str(source);
