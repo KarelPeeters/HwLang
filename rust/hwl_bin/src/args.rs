@@ -74,7 +74,7 @@ pub struct ArgsFormat {
 
 const MANIFEST_DOC: &str = concat!(
     "Path to the project manifest file.",
-    "If not provided, the current directory and its parents will be searched for a file named `",
+    " If not provided, the current directory and its parents will be searched for a file named `",
     hwl_manifest_file_name_macro!(),
     "`.",
 );
