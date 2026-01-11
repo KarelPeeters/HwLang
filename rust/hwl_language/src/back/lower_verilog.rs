@@ -1636,7 +1636,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let adj_one = b_is_neg.select("1", "-1");
                 let adj = signs_differ.select(&format!("({b} + {adj_one})"), "0");
                 let a_adj = format!("({a} - {adj})");
-                format!("{a_adj} / {b};")
+                format!("{a_adj} / {b}")
             }
             OperatorDivMod::Mod => {
                 let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
