@@ -301,8 +301,11 @@ fn group_diagnostics(
     for diagnostic in diags {
         let (file, diag) = diagnostic_to_lsp(settings.position_encoding, source, file_to_uri, diagnostic)
             .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-        let uri = file_to_uri.get(&file).unwrap().clone();
-        grouped.entry(uri).or_default().push(diag);
+
+        // TODO better handle uri-less errors
+        if let Some(uri) = file_to_uri.get(&file) {
+            grouped.entry(uri.clone()).or_default().push(diag);
+        }
     }
     Ok(())
 }
@@ -336,13 +339,17 @@ fn diagnostic_to_lsp(
 
             let file = span.file;
             let file_info = &source[file];
-            related_information.push(DiagnosticRelatedInformation {
-                location: Location {
-                    uri: file_to_uri.get(&file).unwrap().clone(),
-                    range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, span),
-                },
-                message: format!("{}: {}", level_to_str(level), label),
-            });
+
+            // TODO better handle uri-less errors
+            if let Some(uri) = file_to_uri.get(&file) {
+                related_information.push(DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, span),
+                    },
+                    message: format!("{}: {}", level_to_str(level), label),
+                });
+            }
         }
     }
 
