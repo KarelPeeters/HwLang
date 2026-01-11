@@ -237,6 +237,7 @@ pub fn check_type_contains_type(
         Ok(())
     } else {
         // TODO simpler error message for very simply values, eg. ints, bools, short tuples/arrays
+        // TODO for assignments, error should point at the assignment operator, not the value
         let mut diag = Diagnostic::new("type mismatch");
         diag = reason.add_diag_info(elab, diag, target_ty);
         let diag = diag

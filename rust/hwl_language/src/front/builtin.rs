@@ -191,6 +191,8 @@ impl CompileItemContext<'_, '_> {
 
             // assert
             ("fn", "assert_fail", &[msg]) => {
+                // TODO for compile-time, include entire stack trace (handled by diagnostics)
+                //      for hardware, include the source location of the caller (enough levels up, maybe with a marker per function?)
                 let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
 
                 let reason_str = TypeContainsReason::Internal(expr_span);
