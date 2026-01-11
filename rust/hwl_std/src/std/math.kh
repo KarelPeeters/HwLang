@@ -19,6 +19,14 @@ pub fn max(x: int, y: int) -> int {
     return result;
 }
 
+pub fn abs(x: int) -> uint {
+    if (x >= 0) {
+        return x;
+    } else {
+        return -x;
+    }
+}
+
 pub fn gcd(a: natural, b: natural) -> natural {
     var a = a;
     var b = b;
