@@ -11,7 +11,7 @@ use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
-use hwl_language::front::print::CollectPrintHandler;
+use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::CompileValue as RustCompileValue;
@@ -441,7 +441,7 @@ impl Compile {
 
         // evaluate the item
         // TODO release GIL during evaluation
-        let print_handler = CollectPrintHandler::new();
+        let print_handler = slf_ref.start_collect_prints();
         let refs = CompileRefs {
             fixed: CompileFixed {
                 source,
@@ -450,7 +450,7 @@ impl Compile {
             },
             shared: state,
             diags: &diags,
-            print_handler: &print_handler,
+            print_handler: print_handler.handler(),
             should_stop: &|| false,
         };
 
@@ -464,7 +464,7 @@ impl Compile {
 
         drop(source_ref);
         drop(parsed_ref);
-        slf_ref.collect_prints(py, print_handler);
+        slf_ref.finish_collect_prints(py, print_handler);
 
         let value = value?;
         result_diags?;
@@ -492,10 +492,32 @@ impl Compile {
     }
 }
 
+struct PyPrintHandler {
+    collect_print_handler: Option<CollectPrintHandler>,
+}
+
+impl PyPrintHandler {
+    fn handler(&self) -> &(dyn PrintHandler + Sync) {
+        match &self.collect_print_handler {
+            None => &StdoutPrintHandler,
+            Some(handler) => handler,
+        }
+    }
+}
+
 impl Compile {
-    fn collect_prints(&mut self, py: Python, handler: CollectPrintHandler) {
+    fn start_collect_prints(&self) -> PyPrintHandler {
+        let collect_print_handler = self.capture_prints.as_ref().map(|_| CollectPrintHandler::new());
+        PyPrintHandler { collect_print_handler }
+    }
+
+    fn finish_collect_prints(&mut self, py: Python, handler: PyPrintHandler) {
+        let PyPrintHandler { collect_print_handler } = handler;
+
         if let Some(capture) = &self.capture_prints {
-            capture.borrow_mut(py).prints.extend(handler.finish());
+            if let Some(handler) = collect_print_handler {
+                capture.borrow_mut(py).prints.extend(handler.finish());
+            }
         }
     }
 }
@@ -639,6 +661,8 @@ impl Function {
         let returned = {
             // borrow self
             let compile_ref = &mut *self.compile.borrow_mut(py);
+            let print_handler = compile_ref.start_collect_prints();
+
             let state = &mut compile_ref.state;
             let parsed_ref = compile_ref.parsed.borrow(py);
             let parsed = &parsed_ref.parsed;
@@ -652,7 +676,6 @@ impl Function {
             let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
 
             // call function
-            let print_handler = CollectPrintHandler::new();
             let refs = CompileRefs {
                 fixed: CompileFixed {
                     source,
@@ -661,7 +684,7 @@ impl Function {
                 },
                 shared: state,
                 diags: &diags,
-                print_handler: &print_handler,
+                print_handler: print_handler.handler(),
                 should_stop: &|| false,
             };
 
@@ -685,7 +708,7 @@ impl Function {
 
             drop(source_ref);
             drop(parsed_ref);
-            compile_ref.collect_prints(py, print_handler);
+            compile_ref.finish_collect_prints(py, print_handler);
 
             let returned = returned?;
             result_diags?;
