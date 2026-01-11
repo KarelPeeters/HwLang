@@ -557,6 +557,7 @@ impl TokenCategory {
 
 // these have dedicated constants so we can refer to them in diagnostics
 pub const TOKEN_STR_BUILTIN: &str = "__builtin";
+pub const TOKEN_STR_BUILTIN_WITHOUT_UNDERSCORES: &str = "builtin";
 pub const TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN: &str = "unsafe_value_with_domain";
 
 // TODO rename tokens to match the literal string better

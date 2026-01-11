@@ -449,7 +449,7 @@ impl CompileItemContext<'_, '_> {
         let _ = span_call;
         let &ElaboratedStructInfo {
             unique: _,
-            name: _,
+            debug_info_name: _,
             span_body,
             ref fields,
             fields_hw: _,

@@ -1830,8 +1830,20 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 if value_interface.inner != connector_view.inner.interface {
                     let diag = Diagnostic::new("interface mismatch")
                         .add_error(value_expr.span, "got mismatching interface")
-                        .add_info(connector_view.span, "expected interface set here")
-                        .add_info(value_interface.span, "actual interface set here")
+                        .add_info(
+                            connector_view.span,
+                            format!(
+                                "expected interface `{}` set here",
+                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(elab)
+                            ),
+                        )
+                        .add_info(
+                            value_interface.span,
+                            format!(
+                                "actual interface `{}` set here",
+                                SimpleCompileValue::Interface(value_interface.inner).value_string(elab)
+                            ),
+                        )
                         .finish();
                     return Err(diags.report(diag));
                 }

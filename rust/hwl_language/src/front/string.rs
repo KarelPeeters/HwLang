@@ -1,7 +1,7 @@
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
-use crate::front::item::ElaborationArenas;
+use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
@@ -14,7 +14,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::token::{TOKEN_STR_BUILTIN, apply_string_literal_escapes};
+use crate::syntax::token::{TOKEN_STR_BUILTIN_WITHOUT_UNDERSCORES, apply_string_literal_escapes};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
@@ -100,7 +100,7 @@ impl StringBuilder {
                     let &StructValue { ty, ref fields } = value;
                     let ty_info = elab.struct_info(ty);
 
-                    self.push_str(&ty_info.name);
+                    self.push_str(&ty_info.debug_info_name);
                     self.push_str(".new(");
                     for ((field_name, field_value), last) in zip_eq(ty_info.fields.keys(), fields).with_last() {
                         self.push_str(field_name);
@@ -122,7 +122,7 @@ impl StringBuilder {
 
                     let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
-                    self.push_str(&ty_info.name);
+                    self.push_str(&ty_info.debug_info_name);
                     self.push_str(".");
                     self.push_str(variant_name);
                     if let Some(payload) = payload {
@@ -392,7 +392,7 @@ fn print_hardware_sub(
             let ty_info = elab.struct_info(ty.inner());
             let ty_fields_hw = ty_info.fields_hw.as_ref().unwrap();
 
-            builder.push_str(&ty_info.name);
+            builder.push_str(&ty_info.debug_info_name);
             builder.push_str(".new(");
             for (field_index, ((field_name, _), field_ty)) in enumerate(zip_eq(&ty_info.fields, ty_fields_hw)) {
                 let field_expr = large.push_expr(IrExpressionLarge::TupleIndex {
@@ -419,7 +419,7 @@ fn print_hardware_sub(
             let ty_info = elab.enum_info(ty.inner());
             let ty_info_hw = ty_info.hw.as_ref().unwrap();
 
-            builder.push_str(&ty_info.name);
+            builder.push_str(&ty_info.debug_info_name);
             builder.push_str(".");
             builder.print_and_clear(&mut block_parent);
 
@@ -471,11 +471,22 @@ impl SimpleCompileValue {
                 let content = v.iter().map(|e| e.value_string(elab)).format(", ");
                 format!("[{}]", content)
             }
-            // TODO include names
+            // TODO include names for function/module
+            // TODO include import path for debug names?
             SimpleCompileValue::Function(_) => "<function>".to_owned(),
             SimpleCompileValue::Module(_) => "<module>".to_owned(),
-            SimpleCompileValue::Interface(_) => "<interface>".to_owned(),
-            SimpleCompileValue::InterfaceView(_) => "<interface view>".to_owned(),
+            &SimpleCompileValue::Interface(v) => {
+                format!("<interface {}>", elab.interface_info(v).debug_info_name)
+            }
+            &SimpleCompileValue::InterfaceView(v) => {
+                let ElaboratedInterfaceView { interface, view_index } = v;
+                let info = elab.interface_info(interface);
+                let view_info = &info.views[view_index];
+                format!(
+                    "<interface view {}.{}>",
+                    info.debug_info_name, view_info.debug_info_name
+                )
+            }
         }
     }
 }
@@ -521,21 +532,19 @@ impl Type {
             Type::Array(inner, len) => {
                 format!("[{len}]{}", inner.value_string(elab))
             }
+            // TODO include import path for debug names?
             Type::Struct(ty) => {
-                let ty_info = elab.struct_info(*ty);
-                format!("<struct {}>", ty_info.name)
+                format!("<struct {}>", elab.struct_info(*ty).debug_info_name)
             }
             Type::Enum(ty) => {
-                let ty_info = elab.enum_info(*ty);
-                format!("<enum {}>", ty_info.name)
+                format!("<enum {}>", elab.enum_info(*ty).debug_info_name)
             }
-            Type::Range => "<range>".to_string(),
-            // TODO include names
-            Type::Function => "<function>".to_string(),
-            Type::Module => "<module>".to_string(),
-            Type::Interface => "<interface>".to_string(),
-            Type::InterfaceView => "<interface_view>".to_string(),
-            Type::Builtin => format!("<{TOKEN_STR_BUILTIN}>"),
+            Type::Range => "<type_range>".to_string(),
+            Type::Function => "<type_function>".to_string(),
+            Type::Module => "<type_module>".to_string(),
+            Type::Interface => "<type_interface>".to_string(),
+            Type::InterfaceView => "<type_interface_view>".to_string(),
+            Type::Builtin => format!("<type_{TOKEN_STR_BUILTIN_WITHOUT_UNDERSCORES}>"),
         }
     }
 }
@@ -578,7 +587,7 @@ impl CompileCompoundValue {
                 let ty_info = elab.struct_info(ty);
 
                 let mut f = String::new();
-                swrite!(f, "{}.new(", ty_info.name);
+                swrite!(f, "{}.new(", ty_info.debug_info_name);
                 for ((field_name, field_value), last) in zip_eq(ty_info.fields.keys(), fields).with_last() {
                     swrite!(f, "{}={}", field_name, field_value.value_string(elab));
                     if !last {
@@ -599,7 +608,7 @@ impl CompileCompoundValue {
                 let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
                 let mut f = String::new();
-                swrite!(f, "{}.{}", ty_info.name, variant_name);
+                swrite!(f, "{}.{}", ty_info.debug_info_name, variant_name);
                 if let Some(payload) = payload {
                     swrite!(f, "({})", payload.value_string(elab));
                 }

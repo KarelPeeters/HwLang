@@ -2,8 +2,10 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::front::flow::{FlowCompile, FlowRoot};
 use crate::front::function::CapturedScope;
+use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
 use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
+use crate::front::value::CompileValue;
 use crate::syntax::ast::{Identifier, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection};
 use crate::syntax::parsed::AstRefInterface;
 use crate::syntax::pos::{HasSpan, Spanned};
@@ -16,6 +18,7 @@ use indexmap::map::Entry;
 #[derive(Debug)]
 pub struct ElaboratedInterfaceInfo {
     pub id: MaybeIdentifier,
+    pub debug_info_name: String,
     pub ports: IndexMap<String, ElaboratedInterfacePortInfo>,
     pub views: IndexMap<String, ElaboratedInterfaceViewInfo>,
 }
@@ -67,6 +70,7 @@ pub struct ElaboratedInterfacePortInfo {
 #[derive(Debug)]
 pub struct ElaboratedInterfaceViewInfo {
     pub id: MaybeIdentifier,
+    pub debug_info_name: String,
     pub port_dirs: DiagResult<Vec<(Identifier, Spanned<PortDirection>)>>,
 }
 
@@ -75,6 +79,8 @@ impl CompileRefs<'_, '_> {
         self,
         ast_ref: AstRefInterface,
         scope_params: CapturedScope,
+        unique: UniqueDeclaration,
+        params: &Option<Vec<(Identifier, CompileValue)>>,
     ) -> DiagResult<ElaboratedInterfaceInfo> {
         let diags = self.diags;
         let source = self.fixed.source;
@@ -201,8 +207,10 @@ impl CompileRefs<'_, '_> {
                     .try_collect_all_vec()
             });
 
+            let debug_info_name = view_id.spanned_string(source).inner.unwrap_or_else(|| "_".to_owned());
             let view_eval = ElaboratedInterfaceViewInfo {
                 id: view_id,
+                debug_info_name,
                 port_dirs: port_dir_vec,
             };
             if let MaybeIdentifier::Identifier(view_id) = view_id {
@@ -229,8 +237,11 @@ impl CompileRefs<'_, '_> {
             }
         }
 
+        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
+
         Ok(ElaboratedInterfaceInfo {
             id: *interface_id,
+            debug_info_name,
             ports: port_map,
             views: view_map,
         })

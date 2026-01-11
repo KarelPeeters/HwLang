@@ -227,7 +227,7 @@ impl<T: Copy> HardwareChecked<T> {
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
     pub unique: UniqueDeclaration,
-    pub name: String,
+    pub debug_info_name: String,
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
     pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
@@ -241,7 +241,7 @@ pub struct NonHardwareStruct {
 #[derive(Debug)]
 pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
-    pub name: String,
+    pub debug_info_name: String,
     pub span_body: Span,
     pub variants: IndexMap<String, ElaboratedEnumVariantInfo>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
@@ -680,14 +680,16 @@ impl CompileItemContext<'_, '_> {
                 )))
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
+                // TODO pass the scope along, and make this more similar to struct elaboration in all aspects
+                //   (we'll need to do that once we allow modules/interfaces as common declarations anyway)
                 let item_params = ElaboratedItemParams { unique, params };
-                let scope_captured = CapturedScope::from_scope(scope_params, flow);
+                let scope_params = CapturedScope::from_scope(scope_params, flow);
 
                 let refs = self.refs;
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
                     item_params,
                     ElaboratedInterface,
-                    |_| refs.elaborate_interface_new(ast_ref, scope_captured),
+                    |item_params| refs.elaborate_interface_new(ast_ref, scope_params, unique, &item_params.params),
                 )?;
 
                 Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
@@ -775,10 +777,10 @@ impl CompileItemContext<'_, '_> {
             })
             .try_collect_vec();
 
-        let name = type_name_including_params(source, elab, unique, params);
+        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
         Ok(ElaboratedStructInfo {
             unique,
-            name,
+            debug_info_name,
             span_body,
             fields: fields_eval,
             fields_hw,
@@ -835,10 +837,10 @@ impl CompileItemContext<'_, '_> {
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
 
-        let name = type_name_including_params(source, elab, unique, params);
+        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
         Ok(ElaboratedEnumInfo {
             unique,
-            name,
+            debug_info_name,
             span_body,
             variants: variants_eval,
             hw,
@@ -846,7 +848,7 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn type_name_including_params(
+pub fn debug_info_name_including_params(
     source: &SourceDatabase,
     elab: &ElaborationArenas,
     unique: UniqueDeclaration,
