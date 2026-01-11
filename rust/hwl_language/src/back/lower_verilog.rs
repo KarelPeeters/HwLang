@@ -313,15 +313,23 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     }
 
     let mut module_name_scope = LoweredNameScope::default();
+    let signals_driven_by_instances = collect_signals_driven_by_instances(module_info);
 
     swrite!(f, "module {}(", module_name);
-    let port_name_map = lower_module_ports(diags, module_info, ports, &mut module_name_scope, &mut f)?;
+    let port_name_map = lower_module_ports(
+        diags,
+        &signals_driven_by_instances,
+        ports,
+        &mut module_name_scope,
+        &mut f,
+    )?;
     swriteln!(f, ");");
 
     let mut newline_module = NewlineGenerator::new();
     let (reg_name_map, wire_name_map) = lower_module_signals(
         diags,
         &mut module_name_scope,
+        &signals_driven_by_instances,
         registers,
         wires,
         &mut newline_module,
@@ -367,7 +375,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
 fn lower_module_ports(
     diags: &Diagnostics,
-    module: &IrModuleInfo,
+    signals_driven_by_child_instances: &IndexSet<IrWireOrPort>,
     ports: &Arena<IrPort, IrPortInfo>,
     module_name_scope: &mut LoweredNameScope,
     f: &mut String,
@@ -399,8 +407,16 @@ fn lower_module_ports(
             Err(ZeroWidth) => (false, Either::Right("[empty] ")),
         };
 
-        let _ = direction;
-        let dir_str = port_dir_str(module, port);
+        let dir_str = match direction {
+            PortDirection::Input => "input",
+            PortDirection::Output => {
+                if signals_driven_by_child_instances.contains(&IrWireOrPort::Port(port)) {
+                    "output"
+                } else {
+                    "output reg"
+                }
+            }
+        };
 
         if is_non_zero_width {
             last_actual_port_index = Some(port_index);
@@ -435,52 +451,39 @@ fn lower_module_ports(
     Ok(port_name_map)
 }
 
-// TODO correctly handle multiple partial drivers, eg. some processes and some instances
-fn port_dir_str(module: &IrModuleInfo, port: IrPort) -> &'static str {
-    let info = &module.ports[port];
+// TODO Handle signals partially driven by different drivers? Or will that not be supported?
+fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrWireOrPort> {
+    let mut signals = IndexSet::new();
 
-    match info.direction {
-        PortDirection::Input => "input",
-        PortDirection::Output => {
-            let any_matching_output_connection = |connections: &Vec<Spanned<IrPortConnection>>| {
-                for c in connections {
-                    match c.inner {
-                        IrPortConnection::Input(_) => {}
-                        IrPortConnection::Output(c) => {
-                            if c == Some(IrWireOrPort::Port(port)) {
-                                return true;
-                            }
-                        }
+    let mut visit_connections = |connections: &Vec<Spanned<IrPortConnection>>| {
+        for connection in connections {
+            match connection.inner {
+                IrPortConnection::Input(_) => {}
+                IrPortConnection::Output(signal) => {
+                    if let Some(signal) = signal {
+                        signals.insert(signal);
                     }
-                }
-                false
-            };
-
-            for child in &module.children {
-                let any_instance_connection = match &child.inner {
-                    IrModuleChild::ClockedProcess(_) => false,
-                    IrModuleChild::CombinatorialProcess(_) => false,
-                    IrModuleChild::ModuleInternalInstance(inst) => {
-                        any_matching_output_connection(&inst.port_connections)
-                    }
-                    IrModuleChild::ModuleExternalInstance(inst) => {
-                        any_matching_output_connection(&inst.port_connections)
-                    }
-                };
-
-                if any_instance_connection {
-                    return "output";
                 }
             }
+        }
+    };
 
-            "output reg"
+    for child in &module.children {
+        match &child.inner {
+            IrModuleChild::ClockedProcess(_) => {}
+            IrModuleChild::CombinatorialProcess(_) => {}
+            IrModuleChild::ModuleInternalInstance(inst) => visit_connections(&inst.port_connections),
+            IrModuleChild::ModuleExternalInstance(inst) => visit_connections(&inst.port_connections),
         }
     }
+
+    signals
 }
 
 fn lower_module_signals(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
+    signals_driven_by_child_instances: &IndexSet<IrWireOrPort>,
     registers: &Arena<IrRegister, IrRegisterInfo>,
     wires: &Arena<IrWire, IrWireInfo>,
     newline: &mut NewlineGenerator,
@@ -489,7 +492,8 @@ fn lower_module_signals(
     IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
     IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
 )> {
-    let mut lower_signal = |signal_kind,
+    let mut lower_signal = |verilog_kind,
+                            signal_kind,
                             ty,
                             debug_info_id: &Spanned<Option<String>>,
                             debug_info_ty: &String,
@@ -510,11 +514,11 @@ fn lower_module_signals(
         // figure out debug info
         let debug_name = debug_info_id.inner.unwrap_or("_");
 
-        // both regs and wires lower to verilog "regs", which are really just "signals that are written by processes"
+        // actually write the verilog
         newline.start_item(f);
         swriteln!(
             f,
-            "{I}reg {ty_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
+            "{I}{verilog_kind} {ty_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
         );
 
         Ok(Ok(name))
@@ -532,7 +536,16 @@ fn lower_module_signals(
             debug_info_domain,
         } = register_info;
 
-        let name = lower_signal("reg", ty, debug_info_id, debug_info_ty, debug_info_domain, newline, f)?;
+        let name = lower_signal(
+            "reg",
+            "reg",
+            ty,
+            debug_info_id,
+            debug_info_ty,
+            debug_info_domain,
+            newline,
+            f,
+        )?;
         reg_name_map.insert_first(register, name);
     }
 
@@ -544,7 +557,23 @@ fn lower_module_signals(
             debug_info_ty,
             debug_info_domain,
         } = &wire_info;
-        let name = lower_signal("wire", ty, debug_info_id, debug_info_ty, debug_info_domain, newline, f)?;
+
+        let verilog_kind = if signals_driven_by_child_instances.contains(&IrWireOrPort::Wire(wire)) {
+            "wire"
+        } else {
+            "reg"
+        };
+
+        let name = lower_signal(
+            verilog_kind,
+            "wire",
+            ty,
+            debug_info_id,
+            debug_info_ty,
+            debug_info_domain,
+            newline,
+            f,
+        )?;
         wire_name_map.insert_first(wire, name);
     }
 

@@ -51,6 +51,26 @@ def test_simple_module_instance(tmp_dir: Path):
         assert parent_inst.ports.y.value == v
 
 
+def test_wire_driven_by_child(tmp_dir: Path):
+    src = """
+    module parent ports(y: out const bool) {
+        wire w: bool;
+        instance child ports(y=w);
+        comb { y = w; }
+    }
+    module child ports(y: out const bool) { comb { y = true; } }
+    """
+
+    c = compile_custom(src)
+    parent: hwl.Module = c.resolve("top.parent")
+    print(parent.as_verilog().source)
+    parent_verilated: hwl.ModuleVerilated = parent.as_verilated(tmp_dir)
+    parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
+
+    parent_inst.step(1)
+    assert parent_inst.ports.y.value == True
+
+
 def test_interface_access(tmp_dir: Path):
     src = """
     interface Foo {
