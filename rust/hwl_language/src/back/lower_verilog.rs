@@ -6,7 +6,7 @@ use crate::mid::ir::{
     IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
     IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, ValueAccess, ir_modules_topological_sort,
+    IrVariables, IrWire, IrWireInfo, IrWireOrPort, ValueAccess, ir_modules_topological_sort,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -315,7 +315,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     let mut module_name_scope = LoweredNameScope::default();
 
     swrite!(f, "module {}(", module_name);
-    let port_name_map = lower_module_ports(diags, ports, &mut module_name_scope, &mut f)?;
+    let port_name_map = lower_module_ports(diags, module_info, ports, &mut module_name_scope, &mut f)?;
     swriteln!(f, ");");
 
     let mut newline_module = NewlineGenerator::new();
@@ -367,6 +367,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
 fn lower_module_ports(
     diags: &Diagnostics,
+    module: &IrModuleInfo,
     ports: &Arena<IrPort, IrPortInfo>,
     module_name_scope: &mut LoweredNameScope,
     f: &mut String,
@@ -397,10 +398,9 @@ fn lower_module_ports(
             Ok(port_ty) => (true, Either::Left(port_ty.prefix())),
             Err(ZeroWidth) => (false, Either::Right("[empty] ")),
         };
-        let dir_str = match direction {
-            PortDirection::Input => "input",
-            PortDirection::Output => "output reg",
-        };
+
+        let _ = direction;
+        let dir_str = port_dir_str(module, port);
 
         if is_non_zero_width {
             last_actual_port_index = Some(port_index);
@@ -433,6 +433,49 @@ fn lower_module_ports(
     }
 
     Ok(port_name_map)
+}
+
+// TODO correctly handle multiple partial drivers, eg. some processes and some instances
+fn port_dir_str(module: &IrModuleInfo, port: IrPort) -> &'static str {
+    let info = &module.ports[port];
+
+    match info.direction {
+        PortDirection::Input => "input",
+        PortDirection::Output => {
+            let any_matching_output_connection = |connections: &Vec<Spanned<IrPortConnection>>| {
+                for c in connections {
+                    match c.inner {
+                        IrPortConnection::Input(_) => {}
+                        IrPortConnection::Output(c) => {
+                            if c == Some(IrWireOrPort::Port(port)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            };
+
+            for child in &module.children {
+                let any_instance_connection = match &child.inner {
+                    IrModuleChild::ClockedProcess(_) => false,
+                    IrModuleChild::CombinatorialProcess(_) => false,
+                    IrModuleChild::ModuleInternalInstance(inst) => {
+                        any_matching_output_connection(&inst.port_connections)
+                    }
+                    IrModuleChild::ModuleExternalInstance(inst) => {
+                        any_matching_output_connection(&inst.port_connections)
+                    }
+                };
+
+                if any_instance_connection {
+                    return "output";
+                }
+            }
+
+            "output reg"
+        }
+    }
 }
 
 fn lower_module_signals(
