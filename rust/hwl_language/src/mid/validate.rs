@@ -10,7 +10,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::range::ClosedNonEmptyRange;
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::IndexSet;
 use itertools::zip_eq;
 
@@ -202,8 +202,15 @@ impl IrBlock {
                     let index_ty = IrExpression::Variable(index).ty(module, locals);
                     let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
 
-                    if !index_range.contains_range(range.as_ref()) {
-                        let msg = format!("IR for loop range mismatch: variable {index_range:?} but loop {range:?}");
+                    // variable range must contain loop range including the end to simplify backend codegen
+                    let range_inc = ClosedRange {
+                        start: &range.start,
+                        end: &(&range.end + 1u8),
+                    };
+                    if !index_range.contains_range(range_inc) {
+                        let msg = format!(
+                            "IR for loop variable must contain loop range including end: variable {index_range:?} but loop {range:?}"
+                        );
                         return Err(diags.report_internal_error(stmt.span, msg));
                     }
 

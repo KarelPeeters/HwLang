@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import hwl
 
 from hwl_sandbox.common.util import compile_custom
@@ -64,3 +66,24 @@ def test_print_hardware():
     """)
     f: hwl.Module = c.resolve("top.f")
     print(f.as_verilog())
+
+
+def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
+    # Check that the generated IR for loop does not become an infinite loop
+    src = """
+        module f ports(clk: in clock, x: in sync(clk) [4]bool) {
+        clocked(clk) {
+            print(x);
+        }
+    }
+    """
+    c = compile_custom(src)
+    f: hwl.Module = c.resolve("top.f")
+    print(f.as_verilog())
+    inst = f.as_verilated(tmp_dir).instance()
+
+    inst.ports.x.value = [False, True, False, True]
+    inst.ports.clk.value = False
+    inst.step(1)
+    inst.ports.clk.value = True
+    inst.step(1)
