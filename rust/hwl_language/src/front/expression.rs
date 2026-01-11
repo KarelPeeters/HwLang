@@ -1139,6 +1139,8 @@ impl<'a> CompileItemContext<'a, '_> {
             } else {
                 // TODO check if there is any possible variant for this index string,
                 //   otherwise we'll get confusing and delayed error messages
+                // TODO this is indeed confusing, eg. print(Option.None) is a function,
+                //   this gets especially confusing when merging into a hardware value
                 let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.to_owned()));
                 Ok(ValueInner::Value(Value::Simple(SimpleCompileValue::Function(func))))
             };
