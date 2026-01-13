@@ -1,4 +1,3 @@
-// TODO get multiple returns working in hardware
 pub fn min(x: int, y: int) -> int {
     val result;
     if (x < y) {
@@ -48,4 +47,8 @@ pub fn clog(base: natural, n: uint) -> uint {
 
 pub fn clog2(n: uint) -> uint {
     return clog(2, n);
+}
+
+pub fn ceil_div(a: int, b: natural) -> uint {
+    return (a + b - 1) / b;
 }
