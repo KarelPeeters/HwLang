@@ -252,6 +252,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
                     slf.scope_declare(&mut scope, Conditional::Yes, final_id.into())
                 };
+                self.visitor.report_range(item.entry.span, None);
                 match &item.entry.inner {
                     ImportFinalKind::Single(entry) => {
                         visit_entry(self, entry)?;
@@ -316,6 +317,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 let mut scope_ports = scope_params.new_child();
+                self.visitor.report_range(ports.span, None);
                 self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |slf, scope_ports, port| {
                     slf.visit_port_item(scope_ports, port)
                 })?;
@@ -342,6 +344,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 let mut scope_ports = scope_params.new_child();
+                self.visitor.report_range(ports.span, None);
                 self.visit_extra_list(&mut scope_ports, &ports.inner, &mut |slf, scope_ports, port| {
                     slf.visit_port_item(scope_ports, port)
                 })?;
@@ -369,6 +372,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     &mut scope_body,
                     port_types,
                     &mut |slf, scope_body, &(port_name, port_ty)| {
+                        slf.visitor.report_range(port_name.span.join(port_ty.span), None);
                         slf.visit_expression(scope_body, port_ty)?;
                         slf.scope_declare(scope_body, Conditional::No, port_name.into())?;
                         ControlFlow::Continue(())
@@ -387,7 +391,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_extra_list(
                         &mut scope_body,
                         port_dirs,
-                        &mut |slf, scope_body, &(port_name, _port_dir)| {
+                        &mut |slf, scope_body, &(port_name, port_dir)| {
+                            slf.visitor.report_range(port_name.span.join(port_dir.span), None);
                             slf.visit_id_usage(scope_body, port_name.into())
                         },
                     )?;
@@ -470,6 +475,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 
     fn visit_domain_sync(&mut self, scope: &DeclScope, domain: SyncDomain<Expression>) -> ControlFlow<V::Break> {
+        self.visitor.report_range(domain.span(), None);
+
         let SyncDomain { clock, reset } = domain;
         self.visit_expression(scope, clock)?;
         if let Some(reset) = reset {
@@ -792,7 +799,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 for branch in branches {
                     let MatchBranch { pattern, block } = branch;
 
-                    self.visitor.report_range(pattern.span.join(block.span), None);
+                    self.visitor.report_range(branch.span(), None);
+                    self.visitor.report_range(pattern.span, None);
 
                     let mut scope_inner = scope.new_child();
                     match &pattern.inner {
@@ -978,6 +986,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     } = decl;
 
                     if let Some(sync) = sync {
+                        self.visitor.report_range(sync.span, None);
                         self.visit_domain_sync(scope, sync.inner)?;
                     }
                     self.visit_expression(scope, ty)?;
@@ -1053,6 +1062,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         }
 
         for stmt in statements {
+            self.visitor.report_range(stmt.span, None);
+
             match &stmt.inner {
                 ModuleStatementKind::Block(block) => {
                     self.visit_block_module(scope, block)?;
@@ -1070,13 +1081,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 ModuleStatementKind::ClockedBlock(stmt) => {
                     let &ClockedBlock {
                         span_keyword: _,
-                        span_domain: _,
+                        span_domain,
                         clock,
                         reset,
                         ref block,
                     } = stmt;
+                    self.visitor.report_range(span_domain, None);
                     self.visit_expression(scope, clock)?;
                     if let Some(reset) = reset {
+                        self.visitor.report_range(reset.span, None);
                         let ClockedBlockReset { kind: _, signal } = reset.inner;
                         self.visit_expression(scope, signal)?;
                     }
@@ -1092,6 +1105,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                     self.visit_expression(scope, module)?;
 
+                    self.visitor.report_range(port_connections.span, None);
                     for conn in &port_connections.inner {
                         self.visitor.report_range(conn.span, None);
                         let &PortConnection { id, expr } = &conn.inner;
@@ -1234,28 +1248,31 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, right)?;
             }
             &ExpressionKind::ArrayType {
-                span_brackets: _,
+                span_brackets,
                 ref lengths,
                 inner_ty,
             } => {
+                self.visitor.report_range(span_brackets, None);
                 for &len in lengths {
                     self.visit_array_literal_element(scope, len)?;
                 }
                 self.visit_expression(scope, inner_ty)?;
             }
             &ExpressionKind::ArrayIndex {
-                span_brackets: _,
+                span_brackets,
                 base,
                 ref indices,
             } => {
                 self.visit_expression(scope, base)?;
+                self.visitor.report_range(span_brackets, None);
                 for &index in indices {
                     self.visit_array_literal_element(scope, index)?;
                 }
             }
-            &ExpressionKind::DotIndex(base, _) => {
+            &ExpressionKind::DotIndex(base, index) => {
                 // TODO try resolving index, needs type info
                 self.visit_expression(scope, base)?;
+                self.visitor.report_range(index.span(), None);
             }
             &ExpressionKind::Call(target, ref args) => {
                 self.visit_expression(scope, target)?;
@@ -1274,15 +1291,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, value)?;
                 self.visit_domain(scope, domain)?;
             }
-            ExpressionKind::RegisterDelay(expr) => {
+            ExpressionKind::RegisterDelay(delay) => {
                 let &RegisterDelay {
                     span_keyword: _,
                     value,
                     init,
-                } = expr;
-
+                } = delay;
                 self.visitor.report_range(value.span.join(init.span), None);
-
                 self.visit_expression(scope, value)?;
                 self.visit_expression(scope, init)?;
             }

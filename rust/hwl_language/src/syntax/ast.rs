@@ -1271,6 +1271,25 @@ impl<B: HasSpan> HasSpan for Block<B> {
     }
 }
 
+impl<B: HasSpan> HasSpan for SyncDomain<B> {
+    fn span(&self) -> Span {
+        let SyncDomain { clock, reset } = self;
+        match reset {
+            Some(reset) => clock.span().join(reset.span()),
+            None => clock.span(),
+        }
+    }
+}
+
+impl HasSpan for DotIndexKind {
+    fn span(&self) -> Span {
+        match self {
+            DotIndexKind::Id(id) => id.span,
+            &DotIndexKind::Int { span } => span,
+        }
+    }
+}
+
 impl From<Identifier> for GeneralIdentifier {
     fn from(value: Identifier) -> Self {
         GeneralIdentifier::Simple(value)
