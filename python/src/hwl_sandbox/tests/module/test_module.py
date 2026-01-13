@@ -94,3 +94,24 @@ def test_interface_access(tmp_dir: Path):
         top_inst.ports.a_x.value = v
         top_inst.step(1)
         assert top_inst.ports.b_x.value == v
+
+
+def test_instantiate_external_module(tmp_dir: Path):
+    src = """
+    external module external_module(W: natural) ports(x: in async uint(W), y: out async uint(W+1))
+    module top ports(x: in async uint(4), y: out async uint(5)) {
+        instance external_module(W=4) ports(x, y);
+    }
+    """
+    c = compile_custom(src)
+    top: hwl.Module = c.resolve("top.top")
+    print(top.as_verilog().source)
+
+    extra_verilog_files = [Path(__file__).parent / "external.v"]
+    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
+    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+
+    for v in [0, 1, 2, 15]:
+        top_inst.ports.x.value = v
+        top_inst.step(1)
+        assert top_inst.ports.y.value == v + 1

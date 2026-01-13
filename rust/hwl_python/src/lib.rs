@@ -762,7 +762,16 @@ impl Module {
         })
     }
 
-    fn as_verilated(&self, build_dir: PathBuf, py: Python) -> PyResult<ModuleVerilated> {
+    #[pyo3(signature=(build_dir,*,extra_verilog_files=None))]
+    fn as_verilated(
+        &self,
+        py: Python,
+        build_dir: PathBuf,
+        extra_verilog_files: Option<Vec<PathBuf>>,
+    ) -> PyResult<ModuleVerilated> {
+        // handle args
+        let extra_verilog_files = extra_verilog_files.unwrap_or_default();
+
         // check build_dir
         let build_dir = build_dir.as_path();
         if !build_dir.exists() {
@@ -824,6 +833,7 @@ impl Module {
                     .arg(&top_module_name)
                     .arg("--prefix")
                     .arg(&top_class_name)
+                    .args(extra_verilog_files)
                     .arg(name_verilog)
                     .arg(name_cpp),
                 build_dir,
