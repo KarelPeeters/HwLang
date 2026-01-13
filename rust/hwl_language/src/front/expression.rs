@@ -945,6 +945,8 @@ impl<'a> CompileItemContext<'a, '_> {
         index: Identifier,
     ) -> DiagResult<ValueInner> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
+        // TODO add array.len, type.int_start, type.int_end, type.int_ranges
+
         let refs = self.refs;
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
