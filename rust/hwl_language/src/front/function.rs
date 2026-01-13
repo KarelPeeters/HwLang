@@ -4,8 +4,8 @@ use crate::front::check::{TypeContainsReason, check_type_contains_value, check_t
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
+use crate::front::flow::Flow;
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
-use crate::front::flow::{Flow, FlowCompile};
 use crate::front::implication::ValueWithImplications;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
@@ -404,38 +404,6 @@ impl CompileItemContext<'_, '_> {
                 _ => Err(err_infer_mismatch("enum", unique.id().span())),
             },
         }
-    }
-
-    pub fn call_function_compile(
-        &mut self,
-        flow: &mut FlowCompile,
-        expected_ty: &Type,
-        span_target: Span,
-        span_call: Span,
-        function: &FunctionValue,
-        args: Args<Option<Spanned<&str>>, Spanned<CompileValue>>,
-    ) -> DiagResult<CompileValue> {
-        let args = Args {
-            span: args.span,
-            inner: args
-                .inner
-                .into_iter()
-                .map(|arg| Arg {
-                    span: arg.span,
-                    name: arg.name,
-                    value: arg.value.map_inner(Value::from),
-                })
-                .collect_vec(),
-        };
-
-        let result = self.call_function(flow, expected_ty, span_target, span_call, function, args)?;
-
-        CompileValue::try_from(&result).map_err(|_: NotCompile| {
-            self.refs.diags.report_internal_error(
-                span_call,
-                "calling a function with compile-time args should return a compile-time value, got hardware value",
-            )
-        })
     }
 
     // TODO ensure the expected type for fields is correctly propagated to the args

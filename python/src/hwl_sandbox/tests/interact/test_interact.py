@@ -62,3 +62,10 @@ def test_capture_prints():
 
     assert result == 6
     assert capture.prints == ["hello\n", "world\n"]
+
+
+def test_call_type():
+    c = compile_custom("")
+    uint = c.resolve("std.types.uint")
+    assert str(uint) == "uint"
+    assert str(uint(8)) == "int(0..256)"

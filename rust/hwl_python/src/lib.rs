@@ -10,11 +10,12 @@ use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
+use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
-use hwl_language::front::value::CompileValue as RustCompileValue;
+use hwl_language::front::value::{CompileValue as RustCompileValue, CompileValue, NotCompile, SimpleCompileValue};
 use hwl_language::mid::cleanup::cleanup_module;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
@@ -562,6 +563,17 @@ impl CapturePrintsContext {
 
 #[pymethods]
 impl Type {
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__(
+        &self,
+        py: Python,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let target = CompileValue::new_ty(self.ty.clone());
+        call_impl(py, &self.compile, &target, args, kwargs)
+    }
+
     fn __str__(&self, py: Python) -> String {
         let elab = &self.compile.borrow(py).state.elaboration_arenas;
         self.ty.value_string(elab)
@@ -647,7 +659,6 @@ impl NonEmptyRange {
 impl Function {
     // TODO implement this on more/all values, not just functions and modules
     //   (eg. struct/enum constructors, int type construction, ...)
-    //   just follow exactly what expression eval does, ideally share most code with it
     #[pyo3(signature = (*args, **kwargs))]
     fn __call__(
         &self,
@@ -655,68 +666,90 @@ impl Function {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        // TODO release GIL during evaluation
-        let diags = Diagnostics::new();
+        let target = CompileValue::Simple(SimpleCompileValue::Function(self.function_value.clone()));
+        call_impl(py, &self.compile, &target, args, kwargs)
+    }
+}
 
-        let returned = {
-            // borrow self
-            let compile_ref = &mut *self.compile.borrow_mut(py);
-            let print_handler = compile_ref.start_collect_prints();
+fn call_impl(
+    py: Python,
+    compile: &Py<Compile>,
+    target: &CompileValue,
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    // TODO release GIL during evaluation
+    let diags = Diagnostics::new();
 
-            let state = &mut compile_ref.state;
-            let parsed_ref = compile_ref.parsed.borrow(py);
-            let parsed = &parsed_ref.parsed;
-            let source_ref = parsed_ref.source.borrow(py);
-            let source = &source_ref.source;
-            let hierarchy = &source_ref.hierarchy;
-            let dummy_span = source_ref.dummy_span;
+    // TODO get rid of this nesting
+    let returned = {
+        // borrow self
+        let compile_ref = &mut *compile.borrow_mut(py);
+        let print_handler = compile_ref.start_collect_prints();
 
-            // convert args
-            let arg_key_buffer = GrowVec::new();
-            let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
+        let state = &mut compile_ref.state;
+        let parsed_ref = compile_ref.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let hierarchy = &source_ref.hierarchy;
+        let dummy_span = source_ref.dummy_span;
 
-            // call function
-            let refs = CompileRefs {
-                fixed: CompileFixed {
-                    source,
-                    hierarchy,
-                    parsed,
-                },
-                shared: state,
-                diags: &diags,
-                print_handler: print_handler.handler(),
-                should_stop: &|| false,
-            };
+        // convert args
+        let arg_key_buffer = GrowVec::new();
+        let args = convert_python_args_and_kwargs_to_args(
+            args,
+            kwargs,
+            dummy_span,
+            &arg_key_buffer,
+            ValueWithImplications::from,
+        )?;
 
-            let mut item_ctx = CompileItemContext::new_empty(refs, None);
-            let flow_root = FlowRoot::new(&diags);
-            let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
-
-            // call the function and run any elaboration that is needed
-            let returned = item_ctx.call_function_compile(
-                &mut flow,
-                &RustType::Any,
-                dummy_span,
-                dummy_span,
-                &self.function_value,
-                args,
-            );
-            refs.run_elaboration_loop();
-
-            let returned = map_diag_error(py, &diags, source, returned);
-            let result_diags = check_diags(py, source, &diags);
-
-            drop(source_ref);
-            drop(parsed_ref);
-            compile_ref.finish_collect_prints(py, print_handler);
-
-            let returned = returned?;
-            result_diags?;
-            returned
+        // prepare context
+        let refs = CompileRefs {
+            fixed: CompileFixed {
+                source,
+                hierarchy,
+                parsed,
+            },
+            shared: state,
+            diags: &diags,
+            print_handler: print_handler.handler(),
+            should_stop: &|| false,
         };
 
-        compile_value_to_py(py, &self.compile, &returned)
-    }
+        let mut item_ctx = CompileItemContext::new_empty(refs, None);
+        let flow_root = FlowRoot::new(&diags);
+        let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
+
+        // call the function and run any elaboration that is needed
+        let returned = item_ctx.eval_call(
+            &mut flow,
+            &RustType::Any,
+            dummy_span,
+            Spanned::new(dummy_span, target),
+            Ok(args),
+        );
+        refs.run_elaboration_loop();
+
+        // extract return value
+        let returned = returned.and_then(|returned| {
+            CompileValue::try_from(&returned).map_err(|_: NotCompile| {
+                diags.report_internal_error(dummy_span, "compile-time call return non-compile value")
+            })
+        });
+        let returned = map_diag_error(py, &diags, source, returned)?;
+
+        // finish up
+        check_diags(py, source, &diags)?;
+        drop(source_ref);
+        drop(parsed_ref);
+        compile_ref.finish_collect_prints(py, print_handler);
+
+        returned
+    };
+
+    compile_value_to_py(py, compile, &returned)
 }
 
 #[pymethods]

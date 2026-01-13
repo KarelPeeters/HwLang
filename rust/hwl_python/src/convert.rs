@@ -87,12 +87,27 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
 
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
+    // unwrap our own python wrappers
     if let Ok(value) = value.extract::<PyRef<Value>>() {
         return Ok(value.value.clone());
     }
     if let Ok(value) = value.extract::<PyRef<Type>>() {
         return Ok(CompileValue::new_ty(value.ty.clone()));
     }
+    if let Ok(value) = value.extract::<PyRef<Range>>() {
+        return Ok(CompileValue::Compound(CompileCompoundValue::Range(value.range.clone())));
+    }
+    if let Ok(module) = value.extract::<PyRef<Module>>() {
+        return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));
+    }
+    if let Ok(value) = value.extract::<PyRef<Function>>() {
+        // TODO avoid clone?
+        return Ok(CompileValue::Simple(SimpleCompileValue::Function(
+            value.function_value.clone(),
+        )));
+    }
+
+    // convert some python values with obvious equivalents
     if let Ok(value) = value.extract::<bool>() {
         return Ok(CompileValue::new_bool(value));
     }
@@ -109,18 +124,6 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     if let Ok(value) = value.downcast::<PyList>() {
         let items: Vec<_> = value.into_iter().map(|v| compile_value_from_py(&v)).try_collect()?;
         return Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(items))));
-    }
-    if let Ok(value) = value.extract::<PyRef<Range>>() {
-        return Ok(CompileValue::Compound(CompileCompoundValue::Range(value.range.clone())));
-    }
-    if let Ok(module) = value.extract::<PyRef<Module>>() {
-        return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));
-    }
-    if let Ok(value) = value.extract::<PyRef<Function>>() {
-        // TODO avoid clone?
-        return Ok(CompileValue::Simple(SimpleCompileValue::Function(
-            value.function_value.clone(),
-        )));
     }
 
     // convert some python types with obvious equivalents
@@ -142,18 +145,19 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     )))
 }
 
-pub fn convert_python_args_and_kwargs_to_args<'k>(
+pub fn convert_python_args_and_kwargs_to_args<'k, V>(
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
     key_buffer: &'k GrowVec<String>,
-) -> PyResult<Args<Option<Spanned<&'k str>>, Spanned<CompileValue>>> {
+    mut f: impl FnMut(CompileValue) -> V,
+) -> PyResult<Args<Option<Spanned<&'k str>>, Spanned<V>>> {
     let mut args_inner = vec![];
     for value in args {
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: Spanned::new(dummy_span, compile_value_from_py(&value)?),
+            value: Spanned::new(dummy_span, f(compile_value_from_py(&value)?)),
         });
     }
     if let Some(kwargs) = kwargs {
@@ -162,7 +166,7 @@ pub fn convert_python_args_and_kwargs_to_args<'k>(
             args_inner.push(Arg {
                 span: dummy_span,
                 name: Some(Spanned::new(dummy_span, name.as_str())),
-                value: Spanned::new(dummy_span, compile_value_from_py(&value)?),
+                value: Spanned::new(dummy_span, f(compile_value_from_py(&value)?)),
             });
         }
     }

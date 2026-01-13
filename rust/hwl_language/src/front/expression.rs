@@ -731,39 +731,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .try_collect_all_vec();
                 let args = args_eval.map(|inner| Args { span: args.span, inner });
 
-                // check that the target is a function
-                let target_inner = match target.inner {
-                    Value::Simple(SimpleCompileValue::Function(f)) => f,
-
-                    // handle some special type calls
-                    Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
-                        let result = eval_int_ty_call(refs, expr.span, Spanned::new(target.span, &range), args?)?;
-                        return Ok(ValueInner::Value(Value::new_ty(result)));
-                    }
-                    Value::Simple(SimpleCompileValue::Type(Type::Tuple(None))) => {
-                        let result = eval_tuple_ty_call(refs, args?)?;
-                        return Ok(ValueInner::Value(Value::new_ty(result)));
-                    }
-
-                    _ => {
-                        let e = diags.report_simple(
-                            "call target must be function",
-                            expr.span,
-                            format!("got value with type `{}`", target.inner.ty().value_string(elab)),
-                        );
-                        return Err(e);
-                    }
-                };
-
-                let args = args?;
-
-                // actually do the call
-                // TODO should we do the recursion marker here or inside of the call function?
-                let entry = StackEntry::FunctionCall(expr.span);
-                self.recurse(entry, |s| {
-                    s.call_function(flow, expected_ty, target.span, expr.span, &target_inner, args)
-                })
-                .flatten_err()?
+                self.eval_call(flow, expected_ty, expr.span, target.as_ref(), args)?
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 // evaluate value and domain
@@ -933,6 +901,48 @@ impl<'a> CompileItemContext<'a, '_> {
         };
 
         Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
+    }
+
+    pub fn eval_call(
+        &mut self,
+        flow: &mut impl Flow,
+        expected_ty: &Type,
+        expr_span: Span,
+        target: Spanned<&CompileValue>,
+        args: DiagResult<Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>>,
+    ) -> DiagResult<Value> {
+        let refs = self.refs;
+        let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
+
+        match target.inner {
+            Value::Simple(SimpleCompileValue::Function(target_function)) => {
+                // normal function call
+                // TODO should we do the recursion marker here or inside of the call function?
+                let entry = StackEntry::FunctionCall(expr_span);
+                self.recurse(entry, |s| {
+                    s.call_function(flow, expected_ty, target.span, expr_span, target_function, args?)
+                })
+                .flatten_err()
+            }
+
+            // handle some special type calls
+            Value::Simple(SimpleCompileValue::Type(Type::Int(range))) => {
+                let result = eval_int_ty_call(refs, expr_span, Spanned::new(target.span, range), args?)?;
+                Ok(Value::new_ty(result))
+            }
+            Value::Simple(SimpleCompileValue::Type(Type::Tuple(None))) => {
+                let result = eval_tuple_ty_call(refs, args?)?;
+                Ok(Value::new_ty(result))
+            }
+
+            // not a valid call target
+            _ => Err(diags.report_simple(
+                "call target must be function",
+                expr_span,
+                format!("got value with type `{}`", target.inner.ty().value_string(elab)),
+            )),
+        }
     }
 
     fn eval_dot_id_index(
