@@ -482,6 +482,8 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
 
                     for entry in entries {
                         let &ast::ImportEntry { span: _, id, as_ } = entry;
+
+                        // TODO suggest alternatives, like for parent imports
                         let source_value = source_scope
                             .and_then(|source_scope| source_scope.find(diags, id.spanned_str(source)))
                             .map(|found| found.value);
