@@ -1352,9 +1352,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                 Some(end) => match end {
                                     MaybeCompile::Compile(end) => {
                                         Some(BigUint::try_from(&end - &start).map_err(|_| {
-                                            diags.report_internal_error(
+                                            diags.report_simple(
+                                                "array slice end out of bounds",
                                                 index_span,
-                                                format!("slice range cannot be decreasing, got `{start}..{end}`"),
+                                                format!("slice end cannot be negative, got {end}"),
                                             )
                                         })?)
                                     }

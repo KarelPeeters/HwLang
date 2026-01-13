@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import hwl
 import pytest
 
 from hwl_sandbox.common.compare import compare_expression, compare_compile
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_array_literal_empty_const(tmp_dir: Path):
@@ -108,6 +110,56 @@ def test_array_slice_real_empty_start_hw(tmp_dir: Path):
 def test_array_slice_int_const_range(tmp_dir: Path):
     e = compare_expression(["[4]int(8)"], "[2]int(8)", "a0[1..3]", tmp_dir)
     e.eval_assert([[4, 5, 6, 7]], [5, 6])
+
+
+def test_array_slice_int_const_open_start(tmp_dir: Path):
+    e = compare_expression(["[4]int(8)"], "[3]int(8)", "a0[..3]", tmp_dir)
+    e.eval_assert([[4, 5, 6, 7]], [4, 5, 6])
+
+
+def test_array_slice_int_const_open_end(tmp_dir: Path):
+    e = compare_expression(["[4]int(8)"], "[3]int(8)", "a0[1..]", tmp_dir)
+    e.eval_assert([[4, 5, 6, 7]], [5, 6, 7])
+
+
+def test_array_slice_int_const_open_both(tmp_dir: Path):
+    e = compare_expression(["[4]int(8)"], "[4]int(8)", "a0[..]", tmp_dir)
+    e.eval_assert([[4, 5, 6, 7]], [4, 5, 6, 7])
+
+
+def test_array_slice_errors(tmp_dir: Path):
+    f = compile_custom("fn f(x: [3]uint, y: any) -> any { return x[y]; }").resolve("top.f")
+
+    # single index
+    f([1, 2, 3], 1)
+    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+        f([1, 2, 3], -1)
+    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+        f([1, 2, 3], 4)
+
+    # closed slice
+    f([1, 2, 3], hwl.Range(1, 3))
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        f([1, 2, 3], hwl.Range(-1, 3))
+    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+        f([1, 2, 3], hwl.Range(1, 5))
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        f([1, 2, 3], hwl.Range(-1, 5))
+
+    # (half-)open slice
+    f([1, 2, 3], hwl.Range(None, None))
+    f([1, 2, 3], hwl.Range(None, 3))
+    f([1, 2, 3], hwl.Range(1, 3))
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        f([1, 2, 3], hwl.Range(-1, None))
+    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+        f([1, 2, 3], hwl.Range(None, 5))
+
+    # extra cursed cases
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        f([1, 2, 3], hwl.Range(5, None))
+    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+        f([1, 2, 3], hwl.Range(None, -1))
 
 
 @pytest.mark.parametrize("slice_len", range(4 + 1))
