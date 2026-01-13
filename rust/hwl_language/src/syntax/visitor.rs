@@ -530,7 +530,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         }
                         // TODO why the weird scoping here?
                         self.visit_extra_list(&mut scope_params, fields, &mut |slf, _scope, field| {
-                            let &StructField { span: _, id: _, ty } = field;
+                            let &StructField { span, id: _, ty } = field;
+                            slf.visitor.report_range(span, None);
                             slf.visit_expression(scope_parent, ty)?;
                             ControlFlow::Continue(())
                         })?;
@@ -659,11 +660,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
         let mut visit_pair = |slf: &mut Self, pair: &IfCondBlockPair<I>| {
             let &IfCondBlockPair {
-                span: _,
+                span,
                 span_if: _,
                 cond,
                 ref block,
             } = pair;
+
+            slf.visitor.report_range(span, None);
 
             slf.visit_expression(scope, cond)?;
             f(slf, scope, block)?;
@@ -788,6 +791,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 for branch in branches {
                     let MatchBranch { pattern, block } = branch;
+
+                    self.visitor.report_range(pattern.span.join(block.span), None);
 
                     let mut scope_inner = scope.new_child();
                     match &pattern.inner {
@@ -1088,6 +1093,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_expression(scope, module)?;
 
                     for conn in &port_connections.inner {
+                        self.visitor.report_range(conn.span, None);
                         let &PortConnection { id, expr } = &conn.inner;
                         // TODO try resolving port name, needs type info
                         let _ = id;
