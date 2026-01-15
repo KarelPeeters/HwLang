@@ -1282,6 +1282,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
 
         // special case range with length, it can have a hardware start index
+        // TODO cleanup, this special case is probably no longer necessary
         let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
             op_span,
             start,
@@ -2717,8 +2718,6 @@ fn array_literal_combine_values(
 
     if let Some(first_non_compile) = first_non_compile {
         // at least one non-compile, turn everything into IR
-
-        // TODO better error when element type cannot be converted to hardware
         let ty_inner = values
             .iter()
             .map(|v| match v {
@@ -2737,6 +2736,9 @@ fn array_literal_combine_values(
             })
             .try_fold(Type::Undefined, |a, t| Ok(a.union(&t?)))?;
 
+        // TODO improve error message:
+        //   * if mix of types that cases result type any, report pair
+        //   * if any element non-hardware, report that element
         let ty_inner_hw = ty_inner.as_hardware_type(elab).map_err(|_| {
             let message = format!(
                 "hardware array literal has inner type `{}` which is not representable in hardware",

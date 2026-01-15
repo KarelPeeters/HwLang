@@ -202,6 +202,10 @@ impl DiagnosticException {
     }
 }
 
+// TODO module level constants for common types, eg. bool, int, uint, ...
+//   maybe we can even all of std as a module object? careful about mixing compile contexts though
+// TODO add assertions to wrapper types to avoid mixing contexts, those probably hit arena check assertions now
+// TODO call Python::check_signals to handle ctrl+C during potentially long running operations
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_file, m)?)?;

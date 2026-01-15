@@ -43,6 +43,7 @@ pub struct LoweredVerilog {
 // TODO avoid a bunch of string allocations
 // TODO should we always shadow output ports with intermediate signals so we can read back from them,
 //   even in old verilog versions?
+// TODO profile why this is so slow and fix that
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     modules: &IrModules,
@@ -1531,6 +1532,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         //    * div/mod by power of 2 -> bit slice
         //    * div by constant -> https://llvm.org/doxygen/structllvm_1_1SignedDivisionByConstantInfo.html#details
         //    * pow of two -> shift
+        //    * >, >=, ... -> ==, != if possible due to known ranges
         match op {
             IrIntArithmeticOp::Add => {
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "+", left, right)

@@ -268,6 +268,7 @@ ModuleStatementKind: ModuleStatementKind = {
     },
 }
 
+// TODO make this an extra list
 InstancePortConnections: Vec<Spanned<PortConnection>> = {
     "(" <Separated<Spanned<PortConnection>,",">> ")"
 }
@@ -319,6 +320,7 @@ BlockStatementKind: BlockStatementKind = {
         => BlockStatementKind::Match(<>),
     ForStatement<BlockStatement>
         => BlockStatementKind::For(<>),
+    // TODO don't require parentheses?
     <span_keyword:Span<"while">> "(" <cond:Expr> ")" <body:Block<BlockStatement>>
         => BlockStatementKind::While(WhileStatement { span_keyword, cond, body }),
     // control flow terminators
@@ -328,6 +330,7 @@ BlockStatementKind: BlockStatementKind = {
     <span:Span<"continue">> ";" => BlockStatementKind::Continue { span },
 }
 
+// TODO don't require parentheses?
 IfStatement<B>: IfStatement<B> = {
     <start:@L> <span_if:Span<"if">> "(" <cond:Expr> ")" <then_block:B> <end_if:@R>
     <else_ifs:ElseIfPair<B>*>
@@ -353,6 +356,7 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 }
 
 // TODO don't require parentheses?
+// TODO make the branches an extra list?
 MatchStatement<B>: MatchStatement<B> = {
     "match" "(" <target:Expr> ")" "{" <branches:MatchBranch<B>*> <pos_end:@L> "}"
         => MatchStatement { target, branches, pos_end: loc.pos(pos_end) },
@@ -381,6 +385,7 @@ MaybeValId: MaybeIdentifier = {
 }
 
 ForStatement<S>: ForStatement<S> = {
+    // TODO don't require parentheses?
     <span_keyword:Span<"for">> "(" <index:MaybeId> <index_ty: (":" <ExprNoIn>)?> "in" <iter:ExprNoIn> ")" <body:Block<S>>
         => ForStatement { span_keyword, index, index_ty, iter, body },
 }
@@ -517,7 +522,7 @@ ExtraItem<I, E, has_e>: ExtraItem<I> = {
     
     // control flow
     IfStatement<ExtraBlock<I, E, has_e>> => ExtraItem::If(<>),
-    // TODO add match statement
+    // TODO add match, for, maybe even while?
 }
 
 WireDeclarationKind: WireDeclarationKind = {
@@ -557,6 +562,7 @@ AsyncOrSyncDomain: DomainKind<Expression> = {
    <SyncDomain> => DomainKind::Sync(<>),
 }
 
+// TODO make this more consistent with processes, "sync(clk, async rst)"
 SyncDomain: SyncDomain<Expression> = {
     "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ","? ")" => SyncDomain { clock, reset },
 }
@@ -833,6 +839,7 @@ GeneralId: GeneralIdentifier = {
     Spanned<GeneralIdFromString> => GeneralIdentifier::FromString(<>.span, <>.inner),
 }
 
+// TODO find better syntax for this and use it in more places
 GeneralIdFromString: Expression = {
     "id_from_str" "(" <Expr> ","? ")",
 }
@@ -866,10 +873,6 @@ AssignOpInner: Option<AssignBinaryOp> = {
 }
 
 // utilities
-GroupedList<P>: Spanned<Vec<P>> = {
-    <start:@L> "(" <inner: Separated<P,",">> ")" <end:@R> => Spanned { inner, span: loc.span(start, end) },
-}
-
 Separated<T, S>: Vec<T> = {
     <v:(<T> S)*> <e:T?> => {
         let mut v = v;

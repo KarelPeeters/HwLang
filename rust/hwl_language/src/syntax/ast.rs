@@ -745,6 +745,7 @@ impl<T, E> ArrayLiteralElement<Result<T, E>> {
     }
 }
 
+// TODO allow multiple sequential for loops
 #[derive(Debug, Clone)]
 pub struct ArrayComprehension {
     pub body: ArrayLiteralElement<Expression>,
@@ -844,6 +845,7 @@ pub fn build_binary_op(
     )
 }
 
+// TODO add ceil_div operator `+/`?
 #[derive(Debug, Copy, Clone)]
 pub enum BinaryOp {
     Add,

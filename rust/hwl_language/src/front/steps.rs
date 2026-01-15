@@ -615,6 +615,7 @@ pub fn check_range_slice(
     };
 
     // check start
+    // TODO check start and end at once and report a single unified diagnostic
     let ClosedNonEmptyRange {
         start: slice_start_start,
         end: slice_start_end,
