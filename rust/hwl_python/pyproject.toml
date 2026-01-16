@@ -1,0 +1,11 @@
+[project]
+name = "hwl"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["maturin>=1.11"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
