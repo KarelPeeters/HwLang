@@ -131,13 +131,13 @@ existing RTL languages, prefixed by _SV_ or _VHDL_.
     * The compiler parses all the source files in the project at once, and then resolves all imports between files as
       needed. This also completely eliminates any name collision issues.
     * There is a full module hierarchy, allowing code to be organized nicely.
-  * Developers are free to choose th order of items in a file, the compiler does not simply read files top-down.
-      * _SV_ doesn't have a library or import system at all, the user is responsible for compiling all files in the
-        right
-        order, and names always resolve to the last definition with a matching name.
-      * _VHDL_ does a little better, allowing code to organized in libraries. This is still much weaker than a full
-        module
-        system through, and the user is till responsible for compiling all files in the right order.
+    * Developers are free to choose th order of items in a file, the compiler does not simply read files top-down.
+        * _SV_ doesn't have a library or import system at all, the user is responsible for compiling all files in the
+          right
+          order, and names always resolve to the last definition with a matching name.
+        * _VHDL_ does a little better, allowing code to organized in libraries. This is still much weaker than a full
+          module
+          system through, and the user is till responsible for compiling all files in the right order.
 
 ### Modern compiler features
 
@@ -148,7 +148,7 @@ immediately.
 * Modern error messages
     * If anything is wrong in the RTL, the compiler emits very clear error messages. EDA tools set the bar ver low here,
       we can do better.
-  * ![Example domain crossing error message](docs/error.png)
+    * ![Example domain crossing error message](docs/error.png)
 
 
 * The compiler comes with a built-in [LSP](https://microsoft.github.io/language-server-protocol/) server. This allows
@@ -228,6 +228,8 @@ and semantics to those of the host language.
 * [MyHDL](https://www.myhdl.org/): Uses Python as a host syntax, but compiles the AST into hardware from scratch.
 * [Chisel](https://www.chisel-lang.org/): Uses Scala as a host language to build hardware graphs.
 * [migen](https://github.com/m-labs/migen): Uses python as a host language to build hardware graphs.
+* [ROHD](https://intel.github.io/rohd-website/): Uses Dart as a host language to build hardware graphs.
+* [Hardcaml](https://github.com/janestreet/hardcaml): Uses OCaml as a host language to build hardware graphs.
 
 Other projects are building a standalone RTL language, more similar to the approach taken by this project:
 
