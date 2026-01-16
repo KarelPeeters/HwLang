@@ -50,23 +50,22 @@ jobs:
     name: Python build and test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
-      - uses: veryl-lang/setup-verilator@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install verilator
+        uses: veryl-lang/setup-verilator@v1
         with:
           version: "5.040"
-      - name: Create venv
-        run: python -m venv python/venv
-      - name: Install pip requirements
-        run: source python/venv/bin/activate && pip install -r python/requirements.txt
-      - name: Install hwl_python
-        run: source python/venv/bin/activate && cd rust/hwl_python && maturin develop
-      - name: Install hwl_sandbox
-        run: source python/venv/bin/activate && cd python && pip install -e .
+
+      - name: Sync dependencies
+        run: (cd python && uv sync)
+
       - name: Run pytest
-        run: source python/venv/bin/activate && cd python/src/hwl_sandbox && pytest -n auto
+        run: (cd python && uv run pytest -n auto)
 
   webdemo-build:
     name: Webdemo build

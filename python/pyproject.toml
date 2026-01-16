@@ -1,7 +1,20 @@
 [project]
 name = "hwl_sandbox"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<=3.13"
+dependencies = [
+    "hwl",
+    "pytest>=9.0.2",
+    "pytest-xdist>=3.8.0",
+    "z3-solver>=4.15.4.0",
+]
+
+[tool.uv.sources]
+hwl = { path = "../rust/hwl_python/", editable = true }
+
+[tool.pytest.ini_options]
+addopts = "--tb=short --import-mode=importlib"
+testpaths = ["src/hwl_sandbox/tests"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
