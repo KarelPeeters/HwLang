@@ -4,8 +4,8 @@ use crate::support::PosNotOnIdentifier;
 use crate::support::find_definition::find_definition;
 use crate::util::encode::{lsp_to_pos, spans_to_lsp_locations};
 use crate::util::uri::uri_to_path;
-use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::syntax::{FileContentRecovery, parse_file_content_with_recovery};
 use lsp_types::request::GotoDefinition;
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, TextDocumentIdentifier, TextDocumentPositionParams};
 
@@ -31,14 +31,17 @@ impl RequestHandler<GotoDefinition> for ServerState {
         let offsets = &source[file].offsets;
 
         // parse source to ast
-        let ast = match parse_file_content(file, src) {
+        let FileContentRecovery {
+            recovered_content,
+            errors: _,
+        } = match parse_file_content_with_recovery(file, src) {
             Ok(ast) => ast,
             Err(_) => return Ok(None),
         };
 
         // find declarations
         let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
-        let result = match find_definition(&source, &ast, pos) {
+        let result = match find_definition(&source, &recovered_content, pos) {
             Ok(spans) => {
                 let spans_lsp = spans_to_lsp_locations(self.settings.position_encoding, &uri, offsets, src, spans);
                 Some(GotoDefinitionResponse::Array(spans_lsp))

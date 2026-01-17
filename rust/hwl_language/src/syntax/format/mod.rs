@@ -30,13 +30,13 @@
 
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
 use crate::syntax::ast::FileContent;
-use crate::syntax::format::flatten::ast_to_node;
+use crate::syntax::format::flatten::{EncounteredParseError, ast_to_node};
 use crate::syntax::format::high::{HNode, lower_nodes};
 use crate::syntax::format::low::{LNode, LNodeSimple, StringsStats, node_to_string};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
-use crate::syntax::{parse_error_to_diagnostic, parse_file_content};
+use crate::syntax::{parse_error_to_diagnostic, parse_file_content_without_recovery};
 
 mod common;
 mod flatten;
@@ -105,11 +105,12 @@ pub fn format_file<'s>(
     let old_offsets = &old_info.offsets;
     let old_tokens =
         tokenize(file, old_content, false).map_err(|e| FormatError::Syntax(diags.report(e.to_diagnostic())))?;
-    let old_ast = parse_file_content(file, old_content)
+    let old_ast = parse_file_content_without_recovery(file, old_content)
         .map_err(|e| FormatError::Syntax(diags.report(parse_error_to_diagnostic(e))))?;
 
     // flatten the ast to high-level nodes
-    let node_high = ast_to_node(&old_ast);
+    let node_high = ast_to_node(&old_ast)
+        .unwrap_or_else(|_: EncounteredParseError| unreachable!("we already flattened errors away"));
 
     // lower the high-level nodes to low-level nodes
     let node_low = lower_nodes(old_content, old_offsets, &old_tokens, &node_high).map_err(|e| {
@@ -251,7 +252,7 @@ fn check_format_output_matches(
     }
 
     // check that parsing still works and yields at least plausible results
-    let new_ast = parse_file_content(dummy_file, new_content)
+    let new_ast = parse_file_content_without_recovery(dummy_file, new_content)
         .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-parse formatter output: {e:?}")))?;
 
     if new_ast.arena_expressions.len() != old_ast.arena_expressions.len() {

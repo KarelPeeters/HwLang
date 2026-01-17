@@ -1,6 +1,6 @@
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_usages::find_usages;
-use hwl_language::syntax::parse_file_content;
+use hwl_language::syntax::parse_file_content_without_recovery;
 use hwl_language::syntax::pos::{Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;
 use itertools::Itertools;
@@ -10,7 +10,7 @@ use std::ops::Range;
 fn test_usages(src: &str, pos: usize, expected: Result<&[Range<usize>], PosNotOnIdentifier>) {
     let mut source = SourceDatabase::new();
     let file = source.add_file("dummy".to_owned(), src.to_owned());
-    let ast = parse_file_content(file, src).unwrap();
+    let ast = parse_file_content_without_recovery(file, src).unwrap();
 
     let pos = Pos { file, byte: pos };
     let actual_spans = find_usages(&source, &ast, pos);

@@ -173,6 +173,9 @@ impl<'a> CompileItemContext<'a, '_> {
         let elab = &refs.shared.elaboration_arenas;
 
         let result_simple = match refs.get_expr(expr) {
+            &ExpressionKind::ParseError(_) => {
+                return Err(diags.report_internal_error(expr.span, "cannot evaluate parse error"));
+            }
             ExpressionKind::Dummy => {
                 // if dummy expressions were allowed, the caller would have checked for them already
                 return Err(diags.report_simple(

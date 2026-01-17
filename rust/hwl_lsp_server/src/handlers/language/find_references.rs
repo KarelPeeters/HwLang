@@ -4,8 +4,8 @@ use crate::support::PosNotOnIdentifier;
 use crate::support::find_usages::find_usages;
 use crate::util::encode::{lsp_to_pos, spans_to_lsp_locations};
 use crate::util::uri::uri_to_path;
-use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::source::SourceDatabase;
+use hwl_language::syntax::{FileContentRecovery, parse_file_content_with_recovery};
 use lsp_types::request::References;
 use lsp_types::{Location, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
@@ -35,14 +35,17 @@ impl RequestHandler<References> for ServerState {
         let offsets = &source[file].offsets;
 
         // parse source to ast
-        let ast = match parse_file_content(file, src) {
+        let FileContentRecovery {
+            recovered_content,
+            errors: _,
+        } = match parse_file_content_with_recovery(file, src) {
             Ok(ast) => ast,
             Err(_) => return Ok(None),
         };
 
         // find usages
         let pos = lsp_to_pos(self.settings.position_encoding, offsets, src, file, position);
-        let result = match find_usages(&source, &ast, pos) {
+        let result = match find_usages(&source, &recovered_content, pos) {
             Ok(spans) => Some(spans_to_lsp_locations(
                 self.settings.position_encoding,
                 &uri,

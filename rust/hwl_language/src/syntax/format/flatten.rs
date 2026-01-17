@@ -17,23 +17,42 @@ use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
 use itertools::Either;
+use std::cell::Cell;
 
-pub fn ast_to_node(file: &FileContent) -> HNode {
+#[derive(Debug)]
+pub struct EncounteredParseError;
+
+pub fn ast_to_node(file: &FileContent) -> Result<HNode, EncounteredParseError> {
     let FileContent {
         span: _,
         items,
         arena_expressions,
     } = file;
-    let ctx = Context { arena_expressions };
-    ctx.fmt_file_items(items)
+
+    let mut ctx = Context {
+        arena_expressions,
+        any_error: Cell::new(false),
+    };
+    let result = ctx.fmt_file_items(items);
+
+    if ctx.any_error.get() {
+        Err(EncounteredParseError)
+    } else {
+        Ok(result)
+    }
 }
 
 struct Context<'a> {
     arena_expressions: &'a ArenaExpressions,
+    any_error: Cell<bool>,
 }
 
 impl Context<'_> {
-    fn fmt_file_items(&self, items: &[Item]) -> HNode {
+    fn report_error(&self) {
+        self.any_error.set(true);
+    }
+
+    fn fmt_file_items(&mut self, items: &[Item]) -> HNode {
         // special case to deal with empty files
         let mut nodes = vec![HNode::PreserveBlankLines(PreserveKind::Always)];
 
@@ -996,6 +1015,10 @@ impl Context<'_> {
 
     fn fmt_expr(&self, expr: Expression) -> HNode {
         match &self.arena_expressions[expr.inner] {
+            ExpressionKind::ParseError(_) => {
+                self.report_error();
+                HNode::EMPTY
+            }
             ExpressionKind::Dummy => token(TT::Underscore),
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),

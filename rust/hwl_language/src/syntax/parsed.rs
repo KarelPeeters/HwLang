@@ -2,7 +2,7 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content};
+use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content_without_recovery};
 use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
@@ -21,8 +21,8 @@ impl ParsedDatabase {
 
         for file in hierarchy.files() {
             let file_info = &source[file];
-            let ast =
-                parse_file_content(file, &file_info.content).map_err(|e| diags.report(parse_error_to_diagnostic(e)));
+            let ast = parse_file_content_without_recovery(file, &file_info.content)
+                .map_err(|e| diags.report(parse_error_to_diagnostic(e)));
             file_ast.insert_first(file, ast);
         }
 

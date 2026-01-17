@@ -1,4 +1,4 @@
-use crate::syntax::parse_file_content;
+use crate::syntax::parse_file_content_without_recovery;
 use crate::syntax::source::FileId;
 use hwl_util::io::{IoErrorWithPath, recurse_for_each_file};
 use std::path::Path;
@@ -6,7 +6,7 @@ use std::path::Path;
 fn test_parse(path: impl AsRef<Path>) {
     let src = std::fs::read_to_string(path).unwrap();
 
-    let result = parse_file_content(FileId::dummy(), &src);
+    let result = parse_file_content_without_recovery(FileId::dummy(), &src);
 
     match result {
         Ok(package) => {

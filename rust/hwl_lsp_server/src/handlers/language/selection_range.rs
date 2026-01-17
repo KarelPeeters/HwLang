@@ -2,10 +2,10 @@ use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestResult, ServerState};
 use crate::util::encode::{lsp_to_pos, span_to_lsp};
 use crate::util::uri::uri_to_path;
-use hwl_language::syntax::parse_file_content;
 use hwl_language::syntax::pos::{Pos, Span};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{FoldRangeKind, SyntaxVisitor, syntax_visit};
+use hwl_language::syntax::{FileContentRecovery, parse_file_content_with_recovery};
 use hwl_language::util::{Never, ResultNeverExt};
 use itertools::Itertools;
 use lsp_types::request::SelectionRangeRequest;
@@ -30,7 +30,10 @@ impl RequestHandler<SelectionRangeRequest> for ServerState {
         let offsets = &source[file].offsets;
 
         // parse source to ast
-        let ast = match parse_file_content(file, src) {
+        let FileContentRecovery {
+            recovered_content,
+            errors: _,
+        } = match parse_file_content_with_recovery(file, src) {
             Ok(ast) => ast,
             Err(_) => return Ok(None),
         };
@@ -48,7 +51,7 @@ impl RequestHandler<SelectionRangeRequest> for ServerState {
             })
             .collect_vec();
         let mut visitor = SelectionRangeVisitor { result_ranges };
-        syntax_visit(&source, &ast, &mut visitor).remove_never();
+        syntax_visit(&source, &recovered_content, &mut visitor).remove_never();
 
         // convert to lsp types
         let result = visitor

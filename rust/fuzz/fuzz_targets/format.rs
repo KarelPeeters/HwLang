@@ -3,7 +3,7 @@
 use hwl_language::front::diagnostic::{Diagnostics, diags_to_string};
 use hwl_language::syntax::format::FormatSettings;
 use hwl_language::syntax::format::format_file;
-use hwl_language::syntax::parse_file_content;
+use hwl_language::syntax::parse_file_content_without_recovery;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, tokenize};
 use libfuzzer_sys::fuzz_target;
@@ -24,7 +24,7 @@ fn target(data: &str) {
     }
     let mut source = SourceDatabase::new();
     let file = source.add_file("dummy.kh".to_owned(), data.to_owned());
-    if parse_file_content(file, &source[file].content).is_err() {
+    if parse_file_content_without_recovery(file, &source[file].content).is_err() {
         return;
     };
 

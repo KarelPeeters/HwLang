@@ -30,12 +30,18 @@ mod grammar_wrapper {
 
 pub type ParseError = lalrpop_util::ParseError<Pos, TokenType, TokenError>;
 
-/// Utility struct for the grammer file.
-pub struct LocationBuilder {
+/// Utility struct for the grammar file.
+pub struct ParseContext {
     file: FileId,
+    errors: Vec<ParseError>,
 }
 
-impl LocationBuilder {
+/// Token that proves that a parse error has been reported, intentionally not constructible outside this module.
+/// Similar to [crate::front::diagnostic::DiagError].
+#[derive(Debug, Copy, Clone)]
+pub struct ReportedParseError(());
+
+impl ParseContext {
     pub fn span(&self, start_byte: usize, end_byte: usize) -> Span {
         Span {
             file: self.file,
@@ -47,9 +53,43 @@ impl LocationBuilder {
     pub fn pos(&self, byte: usize) -> Pos {
         Pos { file: self.file, byte }
     }
+
+    pub fn push_error(
+        &mut self,
+        recovery: lalrpop_util::ErrorRecovery<usize, TokenType, TokenError>,
+    ) -> ReportedParseError {
+        // we don't need the dropped tokens for now, so we drop them here
+        let lalrpop_util::ErrorRecovery {
+            error,
+            dropped_tokens: _,
+        } = recovery;
+        self.errors.push(error.map_location(|x| self.pos(x)));
+        ReportedParseError(())
+    }
 }
 
-pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseError> {
+/// [FileContent], possibly with some recovered errors.
+pub struct FileContentRecovery {
+    pub recovered_content: FileContent,
+    pub errors: Vec<ParseError>,
+}
+
+pub fn parse_file_content_without_recovery(file: FileId, src: &str) -> Result<FileContent, ParseError> {
+    let content = parse_file_content_with_recovery(file, src)?;
+
+    let FileContentRecovery {
+        recovered_content,
+        errors,
+    } = content;
+
+    if let Some(err) = errors.into_iter().next() {
+        Err(err)
+    } else {
+        Ok(recovered_content)
+    }
+}
+
+pub fn parse_file_content_with_recovery(file: FileId, src: &str) -> Result<FileContentRecovery, ParseError> {
     // construct a tokenizer to match the format lalrpop is expecting
     let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
@@ -60,21 +100,26 @@ pub fn parse_file_content(file: FileId, src: &str) -> Result<FileContent, ParseE
         .map(|token| token.map(|token| (token.span.start_byte, token.ty, token.span.end_byte)));
 
     // utility converter to include the file in positions and spans
-    let location_builder = LocationBuilder { file };
+    let mut ctx = ParseContext {
+        file,
+        errors: Vec::new(),
+    };
 
     // actual parsing
-    // TODO create and pass arena
-    // TODO wrap in content
     let mut arena_expressions = Arena::new();
-    let result = grammar::FileItemsParser::new().parse(&location_builder, &mut arena_expressions, tokenizer);
+    let result = grammar::FileItemsParser::new().parse(&mut ctx, &mut arena_expressions, tokenizer);
 
     match result {
         Ok(file_items) => {
             let span_full = Span::new(file, 0, src.len());
-            Ok(FileContent {
+            let content = FileContent {
                 span: span_full,
                 items: file_items,
                 arena_expressions,
+            };
+            Ok(FileContentRecovery {
+                recovered_content: content,
+                errors: ctx.errors,
             })
         }
         Err(e) => Err(e.map_location(|byte| Pos { file, byte })),

@@ -1,3 +1,4 @@
+use crate::syntax::ReportedParseError;
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
@@ -635,6 +636,9 @@ pub type Expression = Spanned<ExpressionKindIndex>;
 
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
+    // Error recovery
+    ParseError(ReportedParseError),
+
     // Miscellaneous
     Dummy,
     Undefined,

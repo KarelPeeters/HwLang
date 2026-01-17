@@ -1,11 +1,10 @@
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::ast::*;
-use crate::syntax::LocationBuilder;
+use crate::syntax::ParseContext;
 use crate::syntax::token::{TokenType, TokenError};
 use crate::util::arena::Arena;
 
-// TODO move this boilerplate stuff to the bottom
-grammar(loc: &LocationBuilder, arena_expr: &mut Arena<ExpressionKindIndex, ExpressionKind>);
+grammar(ctx: &mut ParseContext, arena_expr: &mut Arena<ExpressionKindIndex, ExpressionKind>);
 
 extern {
     type Location = usize;
@@ -119,7 +118,7 @@ pub FileItems: Vec<Item> = {
 // items
 Item: Item = {
     <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
-        => Item::Import(ItemImport { parents, entry, span: loc.span(start, end) }),
+        => Item::Import(ItemImport { parents, entry, span: ctx.span(start, end) }),
 
     <decl:Spanned<CommonDeclaration<Vis>>>
         => Item::CommonDeclaration(decl),
@@ -131,14 +130,14 @@ Item: Item = {
         <ports:ModulePorts>
         <body:Block<ModuleStatement>>
     <end:@R> => {
-        Item::ModuleInternal(ItemDefModuleInternal { vis, id, params, ports, body, span: loc.span(start, end) })
+        Item::ModuleInternal(ItemDefModuleInternal { vis, id, params, ports, body, span: ctx.span(start, end) })
     },
     <start:@L>
         <vis:Vis> <span_ext:Span<"external">> "module" <id:Id>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
     <end:@R> => {
-        Item::ModuleExternal(ItemDefModuleExternal { vis, span_ext, id, params, ports, span: loc.span(start, end) })
+        Item::ModuleExternal(ItemDefModuleExternal { vis, span_ext, id, params, ports, span: ctx.span(start, end) })
     },
 
     <start:@L>
@@ -149,7 +148,7 @@ Item: Item = {
     <end:@R> => {
         let inter = ItemDefInterface {
             vis, id, params, port_types, views,
-            span_body: loc.span(start_body, end), span: loc.span(start, end)
+            span_body: ctx.span(start_body, end), span: ctx.span(start, end)
         };
         Item::Interface(inter)
     }
@@ -157,7 +156,7 @@ Item: Item = {
 
 InterfaceView: InterfaceView  = {
     <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
-        InterfaceView { id, port_dirs, span: loc.span(start, end) }
+        InterfaceView { id, port_dirs, span: ctx.span(start, end) }
     }
 }
 
@@ -176,37 +175,41 @@ ImportFinalKind: ImportFinalKind = {
 
 ImportEntry: ImportEntry = {
     <start:@L> <id:Id> <as_:("as" <MaybeId>)?> <end:@R>
-        => ImportEntry { id, as_, span: loc.span(start, end) },
+        => ImportEntry { id, as_, span: ctx.span(start, end) },
 }
 
 EnumVariant: EnumVariant = {
     <start:@L> <id:Id> <content:("(" <Expr> ")")?> <end:@R>
-        => EnumVariant { id, content, span: loc.span(start, end) },
+        => EnumVariant { id, content, span: ctx.span(start, end) },
 }
 
 StructField: StructField = {
     <start:@L> <id:Id> ":" <ty:Expr> <end:@R>
-        => StructField { id, ty, span: loc.span(start, end) },
+        => StructField { id, ty, span: ctx.span(start, end) },
 }
 
 Block<S>: Block<S> = {
     <start:@L> "{" <statements:S*> "}" <end:@R> => {
-        Block { statements, span: loc.span(start, end) }
+        Block { statements, span: ctx.span(start, end) }
     },
 }
 
 BlockSeparated<T, S>: Block<T> = {
     <start:@L> "{" <statements:Separated<T, S>> "}" <end:@R> => {
-        Block { statements, span: loc.span(start, end) }
+        Block { statements, span: ctx.span(start, end) }
     },
 }
 
 ModuleStatement: ModuleStatement = Spanned<ModuleStatementKind>;
 BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
-// TODO add scope block, just empty {} that shields registers etc from the top module scope
-// TODO add module-level if, for
 ModuleStatementKind: ModuleStatementKind = {
+    // error recovery
+//    ! => {
+//        ctx.push_error(<>);
+//        ModuleStatementKind::ParseError
+//    },
+
     // control flow
     Block<ModuleStatement> => ModuleStatementKind::Block(<>),
     IfStatement<Block<ModuleStatement>> => ModuleStatementKind::If(<>),
@@ -246,7 +249,7 @@ ModuleStatementKind: ModuleStatementKind = {
             reset,
             block,
             span_keyword,
-            span_domain: loc.span(start_domain, end_domain),
+            span_domain: ctx.span(start_domain, end_domain),
         };
         ModuleStatementKind::ClockedBlock(inner)
     },
@@ -259,7 +262,7 @@ ModuleStatementKind: ModuleStatementKind = {
         ";"
     <end:@R> => {
         let instance = ModuleInstance {
-            span_keyword: loc.span(start, instance_end),
+            span_keyword: ctx.span(start, instance_end),
             name,
             module,
             port_connections,
@@ -303,7 +306,7 @@ BlockStatementKind: BlockStatementKind = {
     <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
     // assignment
     <start:@L> <target:Expr> <op:AssignOp> <value:Expr> ";" <end:@R> => {
-        let assignment = Assignment { op, target, value, span: loc.span(start, end) };
+        let assignment = Assignment { op, target, value, span: ctx.span(start, end) };
         BlockStatementKind::Assignment(assignment)
     },
     // expression
@@ -336,9 +339,9 @@ IfStatement<B>: IfStatement<B> = {
     <else_ifs:ElseIfPair<B>*>
     <final_else:("else" <B>)?> <end:@R> => {
         IfStatement {
-            span: loc.span(start, end),
+            span: ctx.span(start, end),
             initial_if: IfCondBlockPair {
-                span: loc.span(start, end_if),
+                span: ctx.span(start, end_if),
                 span_if: span_if,
                 cond: cond,
                 block: then_block
@@ -352,14 +355,14 @@ IfStatement<B>: IfStatement<B> = {
 // TODO don't require parentheses?
 ElseIfPair<B>: IfCondBlockPair<B> = {
     <start:@L> "else" <span_if:Span<"if">> "(" <cond:Expr> ")" <block:B> <end:@R>
-        => IfCondBlockPair { cond, block, span: loc.span(start, end), span_if },
+        => IfCondBlockPair { cond, block, span: ctx.span(start, end), span_if },
 }
 
 // TODO don't require parentheses?
 // TODO make the branches an extra list?
 MatchStatement<B>: MatchStatement<B> = {
     "match" "(" <target:Expr> ")" "{" <branches:MatchBranch<B>*> <pos_end:@L> "}"
-        => MatchStatement { target, branches, pos_end: loc.pos(pos_end) },
+        => MatchStatement { target, branches, pos_end: ctx.pos(pos_end) },
 }
 
 MatchBranch<B>: MatchBranch<B> = {
@@ -399,22 +402,22 @@ CommonDeclaration<V>: CommonDeclaration<V> = {
 
 CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
     <start:@L> "type" <id:MaybeId> <params:Parameters?> "=" <body:Expr> ";" <end:@R>
-        => CommonDeclarationNamedKind::Type(TypeDeclaration { id, params, body, span: loc.span(start, end) }),
+        => CommonDeclarationNamedKind::Type(TypeDeclaration { id, params, body, span: ctx.span(start, end) }),
 
     <start:@L> "const" <id:MaybeId> <ty:(":" <Expr>)?> "=" <value:Expr> ";" <end:@R>
-        => CommonDeclarationNamedKind::Const(ConstDeclaration { id, ty, value, span: loc.span(start, end) }),
+        => CommonDeclarationNamedKind::Const(ConstDeclaration { id, ty, value, span: ctx.span(start, end) }),
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
         <start_body:@L> "{" <fields: ExtraList<StructField>> "}"
     <end:@R>
-        => CommonDeclarationNamedKind::Struct(StructDeclaration { id, params, fields, span: loc.span(start, end), span_body: loc.span(start_body, end) }),
+        => CommonDeclarationNamedKind::Struct(StructDeclaration { id, params, fields, span: ctx.span(start, end), span_body: ctx.span(start_body, end) }),
 
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
         "{" <variants: ExtraList<EnumVariant>> "}"
     <end:@R>
-        => CommonDeclarationNamedKind::Enum(EnumDeclaration { id, params, variants, span: loc.span(start, end) }),
+        => CommonDeclarationNamedKind::Enum(EnumDeclaration { id, params, variants, span: ctx.span(start, end) }),
 
     // We only allow tightly-bounding expressions in the return type to avoid (formal) ambiguity.
     // TODO allow specifying "const" before function params to make error messages nicer
@@ -423,12 +426,12 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
         <ret_ty:("->" <ExprNoBlock>)?>
         <body:Block<BlockStatement>>
     <end:@R>
-        => CommonDeclarationNamedKind::Function(FunctionDeclaration { id, params, ret_ty, body, span: loc.span(start, end) }),
+        => CommonDeclarationNamedKind::Function(FunctionDeclaration { id, params, ret_ty, body, span: ctx.span(start, end) }),
 }
 
 VariableDeclaration: VariableDeclaration = {
     <start:@L> <mutable:VariableMutable> <id:MaybeId> <ty: (":"<Expr>)?> <init: ("="<Expr>)?> ";" <end:@R> => {
-        VariableDeclaration { mutable, id, ty, init, span: loc.span(start, end) }
+        VariableDeclaration { mutable, id, ty, init, span: ctx.span(start, end) }
     },
 }
 
@@ -440,33 +443,33 @@ VariableMutable: bool = {
 // parameters
 Parameters: Parameters = {
     <start:@L> "(" <items:ExtraList<Parameter>> ")" <end:@R>
-        => Parameters { items, span: loc.span(start, end) },
+        => Parameters { items, span: ctx.span(start, end) },
 }
 
 Parameter: Parameter = {
     <start:@L> <id:Id> ":" <ty:Expr> <default:("=" <Expr>)?> <end:@R>
-        => Parameter { id, ty, default, span: loc.span(start, end) },
+        => Parameter { id, ty, default, span: ctx.span(start, end) },
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
     <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
-        => Spanned { inner: ports, span: loc.span(start_ports, end_ports) },
+        => Spanned { inner: ports, span: ctx.span(start_ports, end_ports) },
 }
 
 ModulePortItemPort: ModulePortItem = {
     <start:@L> <id:Id> ":" <kind:ModulePortSingleKind> <end:@R>
-        => ModulePortItem::Single(ModulePortSingle { id, kind, span: loc.span(start, end) }),
+        => ModulePortItem::Single(ModulePortSingle { id, kind, span: ctx.span(start, end) }),
 }
 
 ModulePortItemBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
     <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock, (), "false">> <end:@R>
-        => ModulePortItem::Block(ModulePortBlock { domain, ports, span: loc.span(start, end) }),
+        => ModulePortItem::Block(ModulePortBlock { domain, ports, span: ctx.span(start, end) }),
 }
 
 ModulePortInBlock: ModulePortInBlock = {
     <start:@L> <id:Id> ":" <kind:ModulePortInBlockKind> <end:@R>
-        => ModulePortInBlock { id, kind, span: loc.span(start, end) },
+        => ModulePortInBlock { id, kind, span: ctx.span(start, end) },
 }
 
 ModulePortSingleKind: ModulePortSingleKind = {
@@ -720,11 +723,11 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
     <start_brackets:@L> "[" <lengths:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
     <inner_ty:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
         if allow_array_type == "true"
-        => ExpressionKind::ArrayType { span_brackets: loc.span(start_brackets, end_brackets), lengths, inner_ty },
+        => ExpressionKind::ArrayType { span_brackets: ctx.span(start_brackets, end_brackets), lengths, inner_ty },
     // array index
     <base:SpannedPushArena<ExprLevelArrayImpl<allow_block, "false", "false">>>
     <start_brackets:@L> "[" <indices:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
-        => ExpressionKind::ArrayIndex { span_brackets: loc.span(start_brackets, end_brackets), base, indices },
+        => ExpressionKind::ArrayIndex { span_brackets: ctx.span(start_brackets, end_brackets), base, indices },
 
     // array literal
     "[" <Separated<ArrayLiteralElement,",">> "]"
@@ -774,12 +777,12 @@ DotIndexKind: DotIndexKind = {
 // TODO allow "if" here
 Args: Args = {
     <start:@L> <inner:Separated<Arg,",">> <end:@L> =>
-        Args { inner, span: loc.span(start, end) },
+        Args { inner, span: ctx.span(start, end) },
 }
 
 Arg: Arg = {
     <start:@L> <name:(<Id> "=")?> <value:Expr> <end:@L> =>
-        Arg { name, value, span: loc.span(start, end) },
+        Arg { name, value, span: ctx.span(start, end) },
 }
 
 ArrayLiteralElement: ArrayLiteralElement<Expression> = {
@@ -789,10 +792,13 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
 }
 
 StructLiteralField: StructLiteralField = {
-    <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: loc.span(start, end) },
+    <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: ctx.span(start, end) },
 }
 
 ExprLevelAtomic<allow_block>: ExpressionKind = {
+    // error recovery
+    ! => ExpressionKind::ParseError(ctx.push_error(<>)),
+
     // parentheses grouping
     "(" <expr:Expr> ")" => ExpressionKind::Wrapped(expr),
     // block expression
@@ -826,7 +832,7 @@ StringPiece: StringPiece<Span, Expression> = {
 
 //Path: Path = {
 //    <start:@L> <steps: Spanned<(<Id> ".")*>> <id: Id> <end:@R>
-//        => Path { span: loc.span(start, end), steps, id }
+//        => Path { span: ctx.span(start, end), steps, id }
 //}
 
 // terminals
@@ -903,10 +909,10 @@ BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
 
 #[inline]
 Spanned<T>: Spanned<T> = {
-    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: loc.span(start, end) },
+    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: ctx.span(start, end) },
 }
 
 #[inline]
 Span<T>: Span = {
-    <start:@L> <inner:T> <end:@R> => loc.span(start, end),
+    <start:@L> <inner:T> <end:@R> => ctx.span(start, end),
 }

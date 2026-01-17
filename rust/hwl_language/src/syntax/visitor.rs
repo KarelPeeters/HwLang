@@ -1146,6 +1146,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         self.visitor.report_range(expr.span, None);
 
         match &self.arena_expressions[expr.inner] {
+            &ExpressionKind::ParseError(_) => {
+                // do nothing
+            }
             &ExpressionKind::Wrapped(inner) => {
                 self.visit_expression(scope, inner)?;
             }
