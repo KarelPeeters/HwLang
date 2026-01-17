@@ -43,7 +43,6 @@ pub struct LoweredVerilog {
 // TODO avoid a bunch of string allocations
 // TODO should we always shadow output ports with intermediate signals so we can read back from them,
 //   even in old verilog versions?
-// TODO profile why this is so slow and fix that
 pub fn lower_to_verilog(
     diags: &Diagnostics,
     modules: &IrModules,
@@ -93,6 +92,8 @@ struct LoweredModule {
 struct LoweredNameScope<'p> {
     parent: Option<&'p LoweredNameScope<'p>>,
     local_used: IndexSet<String>,
+    // track the next suffix to try for each base string to avoid O(n**2) behavior
+    next_suffix_to_try: IndexMap<String, u64>,
 }
 
 impl<'p> LoweredNameScope<'p> {
@@ -100,6 +101,7 @@ impl<'p> LoweredNameScope<'p> {
         Self {
             parent: None,
             local_used: used,
+            next_suffix_to_try: IndexMap::new(),
         }
     }
 
@@ -107,6 +109,7 @@ impl<'p> LoweredNameScope<'p> {
         Self {
             parent: Some(self),
             local_used: IndexSet::new(),
+            next_suffix_to_try: IndexMap::new(),
         }
     }
 
@@ -132,30 +135,39 @@ impl<'p> LoweredNameScope<'p> {
         &mut self,
         diags: &Diagnostics,
         span: Span,
-        string: &str,
+        string_raw: &str,
         force_index: bool,
     ) -> DiagResult<LoweredName> {
-        // TODO avoid repeated allocations in this function
-        //   * for each str, store the next (potentially) valid suffix
-        //   * repeatedly truncate and re-add suffix, instead of creating new strings
-        let string = make_identifier_valid(string);
+        let string_valid = make_identifier_valid(string_raw);
 
-        if !force_index && !self.is_used(&string) {
-            self.local_used.insert(string.clone());
-            return Ok(LoweredName(string));
+        if !force_index && !self.is_used(&string_valid) {
+            self.local_used.insert(string_valid.clone());
+            return Ok(LoweredName(string_valid));
         }
 
-        for i in 0u64.. {
-            let suffixed = format!("{string}_{i}");
-            if !self.is_used(&suffixed) {
-                self.local_used.insert(suffixed.clone());
-                return Ok(LoweredName(suffixed));
+        let start_suffix = self.next_suffix_to_try.get(&string_valid).copied().unwrap_or(0);
+
+        let valid_len = string_valid.len();
+        let mut buffer = string_valid;
+        buffer.push('_');
+
+        for i in start_suffix.. {
+            swrite!(buffer, "{i}");
+
+            if !self.is_used(&buffer) {
+                let prefix = buffer[..valid_len].to_owned();
+                self.next_suffix_to_try.insert(prefix, i + 1);
+
+                self.local_used.insert(buffer.clone());
+                return Ok(LoweredName(buffer));
             }
+
+            buffer.truncate(valid_len + 1);
         }
 
         throw!(diags.report_internal_error(
             span,
-            format!("failed to generate unique lowered identifier for `{string}`")
+            format!("failed to generate unique lowered identifier for `{string_raw}`")
         ))
     }
 
