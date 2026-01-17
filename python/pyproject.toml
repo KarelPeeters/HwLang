@@ -13,6 +13,9 @@ dependencies = [
 [tool.uv.sources]
 hwl = { path = "../rust/hwl_python/", editable = true }
 
+[tool.uv]
+config-settings = { build-args = '--profile=dev' }
+
 [tool.pytest.ini_options]
 addopts = "--tb=short --import-mode=importlib"
 testpaths = ["src/hwl_sandbox/tests"]
