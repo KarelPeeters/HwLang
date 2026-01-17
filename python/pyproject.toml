@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<=3.13"
 dependencies = [
     "hwl",
+    "maturin>=1.11",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
     "z3-solver>=4.15.4.0",
