@@ -34,31 +34,6 @@ pub struct IrDatabase {
 
 pub type IrModules = Arena<IrModule, IrModuleInfo>;
 
-// TODO check for circular instantiations
-pub fn ir_modules_topological_sort(modules: &IrModules, top: IrModule) -> Vec<IrModule> {
-    let mut seen = IndexSet::new();
-    let mut todo = vec![top];
-
-    while let Some(module) = todo.pop() {
-        if !seen.insert(module) {
-            continue;
-        }
-
-        for child in &modules[module].children {
-            match &child.inner {
-                IrModuleChild::ModuleInternalInstance(inst) => {
-                    todo.push(inst.module);
-                }
-                IrModuleChild::ModuleExternalInstance(_)
-                | IrModuleChild::ClockedProcess(_)
-                | IrModuleChild::CombinatorialProcess(_) => {}
-            }
-        }
-    }
-
-    seen.into_iter().rev().collect_vec()
-}
-
 /// Variant of [Type] that can only represent types that are valid in hardware.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {

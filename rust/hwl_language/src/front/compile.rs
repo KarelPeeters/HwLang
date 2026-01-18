@@ -10,6 +10,7 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, SimpleCompileValue, Value};
+use crate::mid::graph::ir_modules_check_no_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
@@ -42,6 +43,7 @@ const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 //   * type-checking-only generic instantiations of modules
 //   * type-check all modules without generics automatically
 //   * type-check modules with generics partially
+// TODO make this flexible enough to serve as the driver for the python API
 pub fn compile(
     diags: &Diagnostics,
     source: &SourceDatabase,
@@ -761,10 +763,12 @@ fn finish_ir_database_impl(
     work_queue: &SharedQueue<WorkItem>,
     ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
+    // check that work queue is empty
     if work_queue.pop().is_some() {
         return Err(diags.report_error_internal(dummy_span, "not all work items have been processed"));
     }
 
+    // check that all modules have been elaborated
     let PartialIrDatabase {
         external_modules,
         ir_modules,
@@ -774,6 +778,9 @@ fn finish_ir_database_impl(
         Some(Err(e)) => Err(e),
         None => Err(diags.report_error_internal(dummy_span, "not all modules were elaborated")),
     })?;
+
+    // check that there are no cycles
+    ir_modules_check_no_cycles(diags, &ir_modules)?;
 
     Ok(PartialIrDatabase {
         ir_modules,

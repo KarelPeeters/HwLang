@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import hwl
+import pytest
 
 from hwl_sandbox.common.util import compile_custom
 
@@ -115,3 +116,30 @@ def test_instantiate_external_module(tmp_dir: Path):
         top_inst.ports.x.value = v
         top_inst.step(1)
         assert top_inst.ports.y.value == v + 1
+
+
+def test_cyclic_instantiation_almost():
+    src = """
+    module foo(n: uint) ports(x: in async bool, y: out async bool) {
+        if (n == 0) {
+            comb { y = x; }
+        } else {
+            instance foo(n-1) ports(x, y);
+        }
+    }
+    """
+    c = compile_custom(src)
+    foo: hwl.Module = c.resolve("top.foo")(4)
+    print(foo.as_verilog().source)
+
+
+def test_cyclic_instantiation_real():
+    src = """
+    module foo ports(x: in async bool, y: out async bool) { instance bar ports(x, y); }
+    module bar ports(x: in async bool, y: out async bool) { instance foo ports(x, y); }
+    """
+    c = compile_custom(src)
+
+    with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
+        foo: hwl.Module = c.resolve("top.foo")
+        print(foo.as_verilog().source)

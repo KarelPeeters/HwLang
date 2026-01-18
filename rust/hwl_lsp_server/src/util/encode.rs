@@ -41,7 +41,7 @@ pub fn lsp_to_pos(
                 .encode_utf16()
                 .take(character as usize)
                 .map(|c| {
-                    let char = char::decode_utf16(std::iter::once(c)).single().unwrap().unwrap();
+                    let char = char::decode_utf16([c]).single().unwrap().unwrap();
                     char.len_utf8()
                 })
                 .sum()

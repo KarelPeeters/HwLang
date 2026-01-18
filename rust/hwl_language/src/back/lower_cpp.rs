@@ -1,12 +1,13 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
+use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
     IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort, ir_modules_topological_sort,
+    IrWireOrPort,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -37,7 +38,7 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModu
     swriteln!(f, "#include <iostream>");
     swriteln!(f);
 
-    for (i, module) in enumerate(ir_modules_topological_sort(modules, top_module)) {
+    for (i, module) in enumerate(ir_modules_topological_sort(modules, [top_module])) {
         if i != 0 {
             swriteln!(f);
         }

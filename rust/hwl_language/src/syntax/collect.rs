@@ -109,10 +109,7 @@ pub fn collect_source_files_from_tree(
         let Some(file_stem) = path_file.file_stem() else {
             return Ok(());
         };
-        let all_steps = chain(
-            relative_steps.iter().map(OsString::as_os_str),
-            std::iter::once(file_stem),
-        );
+        let all_steps = chain(relative_steps.iter().map(OsString::as_os_str), [file_stem]);
 
         // convert steps to strings
         let mut relative_steps_str = vec![];

@@ -1,12 +1,13 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
+use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
     IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, IrWireOrPort, ValueAccess, ir_modules_topological_sort,
+    IrVariables, IrWire, IrWireInfo, IrWireOrPort, ValueAccess,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -57,7 +58,7 @@ pub fn lower_to_verilog(
         result_source: vec![],
     };
 
-    let modules = ir_modules_topological_sort(modules, top_module);
+    let modules = ir_modules_topological_sort(modules, [top_module]);
     for module in modules {
         let result = lower_module(&mut ctx, module)?;
         ctx.module_map.insert_first(module, result);
