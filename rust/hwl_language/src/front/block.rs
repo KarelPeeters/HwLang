@@ -32,7 +32,7 @@ use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use crate::util::{ResultExt, result_pair};
-use itertools::{Either, Itertools, enumerate, zip_eq};
+use itertools::{Either, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1224,66 +1224,28 @@ impl CompileItemContext<'_, '_> {
         }
 
         // check coverage
-        // TODO move to separate function
-        let span_end = Span::empty_at(pos_end);
-        let title_non_exhaustive = "hardware match statement is not exhaustive";
-        let msg_target_type = format!("target has type {}", target_value.value.ty.value_string(elab));
-        match coverage_remaining {
-            MatchCoverage::Bool { rem_false, rem_true } => {
-                let values_not_covered = match (rem_false, rem_true) {
-                    (false, false) => None,
-                    (true, false) => Some("[false]"),
-                    (false, true) => Some("[true]"),
-                    (true, true) => Some("[false, true]"),
-                };
-                if let Some(values_not_covered) = values_not_covered {
-                    let diag = DiagnosticError::new(
-                        title_non_exhaustive,
-                        span_end,
-                        format!("values not covered: {}", values_not_covered),
-                    )
-                    .add_info(target.span, msg_target_type)
-                    .report(diags);
-                    return Err(diag);
-                }
-            }
-            MatchCoverage::Int { rem_range } => {
-                if !rem_range.is_empty() {
-                    let diag = DiagnosticError::new(
-                        title_non_exhaustive,
-                        span_end,
-                        format!("ranges not covered: {rem_range}"),
-                    )
-                    .add_info(target.span, msg_target_type)
-                    .report(diags);
-                    return Err(diag);
-                }
-            }
-            MatchCoverage::Enum {
-                target_ty,
-                rem_variants,
-            } => {
-                if rem_variants.iter().any(|&x| x) {
-                    let enum_info = elab.enum_info(target_ty.inner());
-                    let variants_not_covered = enum_info
-                        .variants
-                        .iter()
-                        .enumerate()
-                        .filter(|&(i, _)| rem_variants[i])
-                        .map(|(_, (name, _))| format!(".{name}"))
-                        .join(", ");
+        if coverage_remaining.any() {
+            let mut diag = DiagnosticError::new(
+                "hardware match statement must be exhaustive",
+                Span::empty_at(pos_end),
+                format!("patterns not covered: {}", coverage_remaining.as_diagnostic_string()),
+            )
+            .add_info(
+                target.span,
+                format!("target type {}", target_value.value.ty.value_string(elab)),
+            );
 
-                    let diag = DiagnosticError::new(
-                        title_non_exhaustive,
-                        span_end,
-                        format!("variants not covered: [{}]", variants_not_covered),
-                    )
-                    .add_info(target.span, msg_target_type)
-                    .add_info(enum_info.unique.id().span(), "enum declared here")
-                    .report(diags);
-                    return Err(diag);
-                }
+            if let MatchCoverage::Enum { target_ty, .. } = &coverage_remaining {
+                let enum_info = elab.enum_info(target_ty.inner());
+                diag = diag.add_info(enum_info.unique.id().span(), "enum declared here");
             }
+
+            let diag = diag.add_footer(
+                FooterKind::Hint,
+                "either add extra branches, or add a wildcard branch to ignore all remaining patterns: `_ => {}`",
+            );
+
+            return Err(diag.report(diags));
         }
 
         // join things
