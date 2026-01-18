@@ -143,7 +143,7 @@ impl IrModuleInfo {
 
                     if !external_modules.contains(module_name) {
                         let msg = format!("IR external module `{module_name}` not found in external modules");
-                        return Err(diags.report_internal_error(child.span, msg));
+                        return Err(diags.report_error_internal(child.span, msg));
                     }
 
                     // TODO ideally we could access the generic and port types here,
@@ -152,7 +152,7 @@ impl IrModuleInfo {
                     let _ = port_connections;
 
                     if port_names.len() != port_connections.len() {
-                        return Err(diags.report_internal_error(child.span, "IR port length mismatch"));
+                        return Err(diags.report_error_internal(child.span, "IR port length mismatch"));
                     }
                 }
             }
@@ -211,7 +211,7 @@ impl IrBlock {
                         let msg = format!(
                             "IR for loop variable must contain loop range including end: variable {index_range:?} but loop {range:?}"
                         );
-                        return Err(diags.report_internal_error(stmt.span, msg));
+                        return Err(diags.report_error_internal(stmt.span, msg));
                     }
 
                     block.validate(diags, module, locals)?;
@@ -307,12 +307,12 @@ impl IrExpression {
                     }
                     if &actual_len != len {
                         let msg = format!("IR array literal length mismatch: expected {len} but got {actual_len}");
-                        return Err(diags.report_internal_error(span, msg));
+                        return Err(diags.report_error_internal(span, msg));
                     }
                 }
                 IrExpressionLarge::ToBits(ty, expr) => {
                     if ty != &expr.ty(module, locals) {
-                        return Err(diags.report_internal_error(span, "IR ToBits type mismatch"));
+                        return Err(diags.report_error_internal(span, "IR ToBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::FromBits(ty, expr) => {
@@ -322,7 +322,7 @@ impl IrExpression {
                     {
                         return Ok(());
                     }
-                    return Err(diags.report_internal_error(span, "IR FromInt width mismatch"));
+                    return Err(diags.report_error_internal(span, "IR FromInt width mismatch"));
                 }
                 // TODO expand
                 _ => {}
@@ -338,7 +338,7 @@ impl IrExpression {
 fn check_type_match(diags: &Diagnostics, span: Span, expected: &IrType, actual: &IrType) -> DiagResult {
     if expected != actual {
         let msg = format!("IR type mismatch: expected {expected:?}, got {actual:?}");
-        return Err(diags.report_internal_error(span, msg));
+        return Err(diags.report_error_internal(span, msg));
     }
     Ok(())
 }
@@ -352,7 +352,7 @@ fn check_type_is_int<'t>(
         IrType::Int(range) => Ok(range),
         _ => {
             let msg = format!("IR type mismatch: expected int, got {actual:?}");
-            Err(diags.report_internal_error(span, msg))
+            Err(diags.report_error_internal(span, msg))
         }
     }
 }
@@ -360,7 +360,7 @@ fn check_type_is_int<'t>(
 fn check_dir_match(diags: &Diagnostics, span: Span, expected: PortDirection, actual: PortDirection) -> DiagResult {
     if expected != actual {
         let msg = format!("IR port direction mismatch: expected {expected:?}, got {actual:?}");
-        return Err(diags.report_internal_error(span, msg));
+        return Err(diags.report_error_internal(span, msg));
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
@@ -11,7 +11,6 @@ use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection,
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
-use annotate_snippets::Level;
 use derive_more::From;
 
 new_index_type!(pub Port);
@@ -330,15 +329,17 @@ fn get_inferred<'s, T>(
         Ok(Some(ref inferred)) => Ok(inferred),
         Err(e) => Err(e),
         Ok(None) => {
-            let diag = Diagnostic::new(format!("{kind} {inferred} is not yet known"))
-                .add_error(
-                    use_span,
-                    format!("{kind} used here before {inferred} could be inferred"),
-                )
-                .add_info(decl_span, format!("declared here without {inferred}"))
-                .footer(Level::Help, format!("explicitly add a {inferred} to the declaration"))
-                .finish();
-            let e = diags.report(diag);
+            let e = DiagnosticError::new(
+                format!("{kind} {inferred} is not yet known"),
+                use_span,
+                format!("{kind} used here before {inferred} could be inferred"),
+            )
+            .add_info(decl_span, format!("declared here without {inferred}"))
+            .add_footer(
+                FooterKind::Hint,
+                format!("explicitly add a {inferred} to the declaration"),
+            )
+            .report(diags);
             *slot = Err(e);
             Err(e)
         }
@@ -419,7 +420,7 @@ impl Signal {
                     let reg_domain = reg_info.suggest_domain(Spanned::new(suggest_domain.span, suggest_domain_inner));
                     Ok(reg_domain.map_inner(ValueDomain::Sync))
                 } else {
-                    Err(diags.report_internal_error(suggest_domain.span, "suggesting non-sync domain for register"))
+                    Err(diags.report_error_internal(suggest_domain.span, "suggesting non-sync domain for register"))
                 }
             }
         }

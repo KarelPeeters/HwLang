@@ -1,11 +1,10 @@
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{DiagnosticError, FooterKind};
 use crate::syntax::ast::FileContent;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
 use crate::util::arena::Arena;
 use crate::util::iter::IterExt;
-use annotate_snippets::Level;
 use grammar_wrapper::grammar;
 use itertools::enumerate;
 use pos::Pos;
@@ -126,39 +125,35 @@ pub fn parse_file_content_with_recovery(file: FileId, src: &str) -> Result<FileC
     }
 }
 
-pub fn parse_error_to_diagnostic(error: ParseError) -> Diagnostic {
+pub fn parse_error_to_diagnostic(error: ParseError) -> DiagnosticError {
     match error {
         ParseError::InvalidToken { location } => {
             let span = Span::empty_at(location);
-            Diagnostic::new("invalid token")
-                .add_error(span, "invalid token")
-                .finish()
+            DiagnosticError::new("invalid token", span, "invalid token")
         }
         ParseError::UnrecognizedEof { location, expected } => {
             let span = Span::empty_at(location);
 
-            Diagnostic::new("unexpected eof")
-                .add_error(span, "invalid token")
-                .footer(Level::Info, format_expected(&expected))
-                .finish()
+            DiagnosticError::new("unexpected eof", span, "invalid token")
+                .add_footer(FooterKind::Info, format_expected(&expected))
         }
         ParseError::UnrecognizedToken { token, expected } => {
             let (start, ty, end) = token;
             let span = Span::new(start.file, start.byte, end.byte);
 
             // TODO use token string instead of name for keywords and symbols
-            Diagnostic::new("unexpected token")
-                .add_error(span, format!("unexpected token {}", ty.diagnostic_string()))
-                .footer(Level::Info, format_expected(&expected))
-                .finish()
+            DiagnosticError::new(
+                "unexpected token",
+                span,
+                format!("unexpected token {}", ty.diagnostic_string()),
+            )
+            .add_footer(FooterKind::Info, format_expected(&expected))
         }
         ParseError::ExtraToken { token } => {
             let (start, _, end) = token;
             let span = Span::new(start.file, start.byte, end.byte);
 
-            Diagnostic::new("unexpected extra token")
-                .add_error(span, "extra token")
-                .finish()
+            DiagnosticError::new("unexpected extra token", span, "extra token")
         }
         ParseError::User { error } => error.to_diagnostic(),
     }

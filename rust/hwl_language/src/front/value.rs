@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::item::{
@@ -198,7 +198,7 @@ impl ValueCommon for SimpleCompileValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
+        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
 
         match self {
             SimpleCompileValue::Type(_) => Err(err_type()),
@@ -289,7 +289,7 @@ impl ValueCommon for MixedCompoundValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
+        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
 
         match self {
             MixedCompoundValue::String(_) => Err(err_type()),
@@ -411,7 +411,7 @@ impl ValueCommon for HardwareValue {
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || refs.diags.report(err_hw_type_mismatch(refs, span, self, ty));
+        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
 
         if &self.ty == ty {
             return Ok(self.expr.clone());
@@ -508,14 +508,19 @@ impl ValueCommon for HardwareValue {
     }
 }
 
-fn err_hw_type_mismatch(refs: CompileRefs, span: Span, value: &impl Typed, target_ty: &HardwareType) -> Diagnostic {
+fn internal_err_hw_type_mismatch(
+    refs: CompileRefs,
+    span: Span,
+    value: &impl Typed,
+    target_ty: &HardwareType,
+) -> DiagnosticError {
     let elab = &refs.shared.elaboration_arenas;
-    let msg = format!(
+    let title = format!(
         "wrong type when converting value with type {} to hardware value with type {}",
         value.ty().value_string(elab),
         target_ty.value_string(elab)
     );
-    Diagnostic::new_internal_error(msg).add_error(span, "here").finish()
+    DiagnosticError::new_internal_compiler_error(title, span)
 }
 
 impl<C, H> Value<SimpleCompileValue, C, H> {

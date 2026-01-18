@@ -436,7 +436,7 @@ impl Compile {
         let item = match found.value {
             ScopedEntry::Item(ast_ref_item) => ast_ref_item,
             ScopedEntry::Named(_) => {
-                let e = diags.report_internal_error(
+                let e = diags.report_error_internal(
                     found.defining_span,
                     "file scope should only contain items, not named/value",
                 );
@@ -739,7 +739,7 @@ fn call_impl(
         // extract return value
         let returned = returned.and_then(|returned| {
             CompileValue::try_from(&returned).map_err(|_: NotCompile| {
-                diags.report_internal_error(dummy_span, "compile-time call return non-compile value")
+                diags.report_error_internal(dummy_span, "compile-time call return non-compile value")
             })
         });
         let returned = map_diag_error(py, &diags, source, returned)?;

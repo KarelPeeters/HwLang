@@ -1,5 +1,5 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
@@ -77,7 +77,7 @@ impl ArraySteps<ArrayStep> {
         let steps = steps.expect("any is not a hardware type, so we cannot have encountered it");
 
         let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
-            diags.report_internal_error(
+            diags.report_error_internal(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
             )
@@ -123,7 +123,7 @@ impl ArraySteps<ArrayStep> {
             let (ty_array_inner, ty_array_len) = match &curr_ty.inner {
                 Type::Array(ty_inner, len) => (&**ty_inner, len),
                 Type::Any if pass_any => return Ok((Type::Any, Err(EncounteredAny))),
-                _ => return Err(diags.report(diag_expected_array(refs, curr_ty.as_ref(), step.span))),
+                _ => return Err(err_expected_array(refs, curr_ty.as_ref(), step.span).report(diags)),
             };
             let ty_array_len = Spanned::new(curr_ty.span, ty_array_len);
 
@@ -238,28 +238,26 @@ impl ArraySteps<ArrayStep> {
                         }
                     }
                     _ => {
-                        return Err(diags.report(diag_expected_array(
-                            refs,
-                            Spanned::new(curr.span, &curr_inner.ty()),
-                            step.span,
-                        )));
+                        return Err(
+                            err_expected_array(refs, Spanned::new(curr.span, &curr_inner.ty()), step.span)
+                                .report(diags),
+                        );
                     }
                 },
                 (step_inner, curr_inner) => {
                     // convert curr to hardware
                     let ty = curr_inner.ty();
                     let ty = ty.as_hardware_type(elab).map_err(|_| {
-                        let diag = Diagnostic::new("hardware array indexing target needs to have hardware type")
-                            .add_error(
-                                curr.span,
-                                format!(
-                                    "this array target needs to have a hardware type, has type `{}`",
-                                    ty.value_string(elab)
-                                ),
-                            )
-                            .add_info(step.span, "for this hardware array access operation")
-                            .finish();
-                        diags.report(diag)
+                        DiagnosticError::new(
+                            "hardware array indexing target needs to have hardware type",
+                            curr.span,
+                            format!(
+                                "this array target needs to have a hardware type, has type `{}`",
+                                ty.value_string(elab)
+                            ),
+                        )
+                        .add_info(step.span, "for this hardware array access operation")
+                        .report(diags)
                     })?;
                     let curr_inner = curr_inner.as_hardware_value_unchecked(refs, large, curr.span, ty.clone())?;
                     let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
@@ -267,11 +265,10 @@ impl ArraySteps<ArrayStep> {
                             (curr_array_inner_ty, curr_array_len)
                         }
                         _ => {
-                            return Err(diags.report(diag_expected_array(
-                                refs,
-                                Spanned::new(curr.span, &ty.as_type()),
-                                step.span,
-                            )));
+                            return Err(
+                                err_expected_array(refs, Spanned::new(curr.span, &ty.as_type()), step.span)
+                                    .report(diags),
+                            );
                         }
                     };
                     let curr_array_len = Spanned::new(curr.span, curr_array_len);
@@ -395,7 +392,7 @@ impl ArraySteps<&ArrayStepCompile> {
         let result = self_mapped.apply_to_value(refs, large, value.map_inner(Value::from))?;
 
         CompileValue::try_from(&result).map_err(|_: NotCompile| {
-            diags.report_internal_error(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")
+            diags.report_error_internal(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")
         })
     }
 }
@@ -437,12 +434,14 @@ fn set_compile_value_impl(
                     match value.inner {
                         CompileValue::Simple(SimpleCompileValue::Array(value_inner)) => {
                             if value_inner.len() != target_len {
-                                let diag = Diagnostic::new("slice assignment length mismatch")
-                                    .add_error(assign_op_span, "length mismatch on this assignment")
-                                    .add_info(target.span, format!("target slice has length {target_len}"))
-                                    .add_info(value.span, format!("source array has length {}", value_inner.len()))
-                                    .finish();
-                                return Err(diags.report(diag));
+                                return Err(DiagnosticError::new(
+                                    "slice assignment length mismatch",
+                                    assign_op_span,
+                                    "length mismatch on this assignment",
+                                )
+                                .add_info(target.span, format!("target slice has length {target_len}"))
+                                .add_info(value.span, format!("source array has length {}", value_inner.len()))
+                                .report(diags));
                             }
                             let target_slice = &mut target_array[target_start..target_start + target_len];
 
@@ -462,18 +461,20 @@ fn set_compile_value_impl(
                             CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array)))
                         }
                         _ => {
-                            let diag = Diagnostic::new("expected array value for slice assignment")
-                                .add_error(assign_op_span, "value assigned to slice here")
-                                .add_info(
-                                    value.span,
-                                    format!(
-                                        "non-array value with type `{}` here",
-                                        value.inner.ty().value_string(elab)
-                                    ),
-                                )
-                                .add_info(target.span, "target is a slice assignment")
-                                .finish();
-                            return Err(diags.report(diag));
+                            return Err(DiagnosticError::new(
+                                "expected array value for slice assignment",
+                                assign_op_span,
+                                "value assigned to slice here",
+                            )
+                            .add_info(
+                                value.span,
+                                format!(
+                                    "non-array value with type `{}` here",
+                                    value.inner.ty().value_string(elab)
+                                ),
+                            )
+                            .add_info(target.span, "target is a slice assignment")
+                            .report(diags));
                         }
                     }
                 }
@@ -492,17 +493,19 @@ fn set_compile_value_impl(
                 (Arc::unwrap_or_clone(target_inner), 0, len)
             }
             _ => {
-                let diag = Diagnostic::new("expected array value for array access")
-                    .add_info(
-                        target.span,
-                        format!(
-                            "non-array value with type `{}` here",
-                            target_inner.ty().value_string(elab)
-                        ),
-                    )
-                    .add_error(step.span, "this array access needs an array")
-                    .finish();
-                return Err(diags.report(diag));
+                return Err(DiagnosticError::new(
+                    "expected array value for array access",
+                    step.span,
+                    "this array access needs an array",
+                )
+                .add_info(
+                    target.span,
+                    format!(
+                        "non-array value with type `{}` here",
+                        target_inner.ty().value_string(elab)
+                    ),
+                )
+                .report(diags));
             }
         },
         SetCompileTarget::Slice { array, start, len } => (array, start, len),
@@ -567,14 +570,16 @@ pub fn check_range_index(
             format!("with range `{}`", index.inner)
         };
 
-        let diag = Diagnostic::new("array index out of bounds")
-            .add_error(index.span, format!("index {index_str} is out of bounds"))
-            .add_info(
-                array_len.span,
-                format!("for this array with length `{}`", array_len.inner),
-            )
-            .finish();
-        Err(diags.report(diag))
+        Err(DiagnosticError::new(
+            "array index out of bounds",
+            index.span,
+            format!("index {index_str} is out of bounds"),
+        )
+        .add_info(
+            array_len.span,
+            format!("for this array with length `{}`", array_len.inner),
+        )
+        .report(diags))
     }
 }
 
@@ -595,7 +600,7 @@ pub fn check_range_slice(
     array_len: Spanned<&BigUint>,
 ) -> DiagResult<BigUint> {
     if slice_start.inner.as_single().is_none() && slice_len.is_none() {
-        return Err(diags.report_internal_error(
+        return Err(diags.report_error_internal(
             slice_start.span,
             "start with non-single range and no length doesn't make sense",
         ));
@@ -622,17 +627,16 @@ pub fn check_range_slice(
     } = slice_start.inner.enclosing_range();
 
     if !(&BigInt::ZERO <= slice_start_start && slice_start_end - 1 <= BigInt::from(array_len.inner.clone())) {
-        let diag = Diagnostic::new("array slice start out of bounds")
-            .add_error(
-                slice_start.span,
-                format!("slice start of `{}` is out out of bounds", slice_str()),
-            )
-            .add_info(
-                array_len.span,
-                format!("for this array with length `{}`", array_len.inner),
-            )
-            .finish();
-        return Err(diags.report(diag));
+        return Err(DiagnosticError::new(
+            "array slice start out of bounds",
+            slice_start.span,
+            format!("slice start of `{}` is out out of bounds", slice_str()),
+        )
+        .add_info(
+            array_len.span,
+            format!("for this array with length `{}`", array_len.inner),
+        )
+        .report(diags));
     }
 
     // check start + len if length is provided
@@ -642,17 +646,16 @@ pub fn check_range_slice(
 
         #[allow(clippy::nonminimal_bool)]
         if !(slice_end_max - 1 <= BigInt::from(array_len.inner.clone())) {
-            let diag = Diagnostic::new("array slice end out of bounds")
-                .add_error(
-                    slice_len.span,
-                    format!("slice end of `{}` is out out of bounds", slice_str()),
-                )
-                .add_info(
-                    array_len.span,
-                    format!("for this array with length `{}`", array_len.inner),
-                )
-                .finish();
-            return Err(diags.report(diag));
+            return Err(DiagnosticError::new(
+                "array slice end out of bounds",
+                slice_len.span,
+                format!("slice end of `{}` is out out of bounds", slice_str()),
+            )
+            .add_info(
+                array_len.span,
+                format!("for this array with length `{}`", array_len.inner),
+            )
+            .report(diags));
         }
 
         Ok(slice_len.inner.clone())
@@ -687,15 +690,17 @@ pub fn check_range_slice_compile(
     Ok(SliceInfo { start, len })
 }
 
-pub fn diag_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> Diagnostic {
-    Diagnostic::new("array indexing on non-array type")
-        .add_error(step_span, "array indexing operation here")
-        .add_info(
-            ty.span,
-            format!(
-                "on non-array value with type `{}` here",
-                ty.inner.value_string(&refs.shared.elaboration_arenas)
-            ),
-        )
-        .finish()
+pub fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagnosticError {
+    DiagnosticError::new(
+        "array indexing on non-array type",
+        step_span,
+        "array indexing operation here",
+    )
+    .add_info(
+        ty.span,
+        format!(
+            "on non-array value with type `{}` here",
+            ty.inner.value_string(&refs.shared.elaboration_arenas)
+        ),
+    )
 }

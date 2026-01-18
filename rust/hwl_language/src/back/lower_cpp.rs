@@ -298,7 +298,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(f_step_all, "{I});");
             }
             IrModuleChild::ModuleExternalInstance(_) => {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "external modules are not supported in the C++ simulator",
                     child.span,
                     "external module instantiated here",
@@ -907,7 +907,7 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Strin
                 // TODO use smaller types when appropriate?
                 "int64_t".to_string()
             } else {
-                return Err(diags.report_todo(span, format!("simulator wide integer type: {range}")));
+                return Err(diags.report_error_todo(span, format!("simulator wide integer type: {range}")));
             }
         }
         IrType::Tuple(inner) => {

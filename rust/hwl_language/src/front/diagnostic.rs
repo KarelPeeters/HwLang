@@ -3,16 +3,12 @@
 
 use crate::syntax::pos::{DifferentFile, Span};
 use crate::syntax::source::SourceDatabase;
+use crate::util::data::NonEmptyVec;
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
-use std::cmp::{Ordering, min};
-
-// TODO give this a better name to clarify that this means that the compiler gave up on this
-//   and that the error has already been reported as a diagnostic.
-//   The current name is copied from the rust compiler:
-//
+use std::cmp::min;
 
 /// Indicates that an error was reported as a diagnostic.
 ///
@@ -29,6 +25,7 @@ use std::cmp::{Ordering, min};
 /// This concept is the same as
 /// [ErrorGuaranteed](https://rustc-dev-guide.rust-lang.org/diagnostics/error-guaranteed.html)
 /// from the rust compiler.
+#[must_use]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct DiagError(());
 
@@ -47,36 +44,23 @@ impl Diagnostics {
         }
     }
 
-    // TODO go through and try to avoid early-exits as much as possible
-    // TODO limit the number of diagnostics reported, eg. stop after 1k
-    // TODO turn this into diag.report(diags) so we can chain this
-    pub fn report(&self, diag: Diagnostic) -> DiagError {
+    pub fn push(&self, diag: Diagnostic) {
         self.diagnostics.borrow_mut().push(diag);
-        DiagError::promise_error_has_been_reported()
     }
 
-    // TODO only single string parameter, used for both title and label?
-    pub fn report_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagError {
-        self.report(Diagnostic::new_simple(title, span, label))
+    pub fn report_error_simple(&self, title: impl Into<String>, span: Span, label: impl Into<String>) -> DiagError {
+        DiagnosticError::new(title, span, label).report(self)
     }
 
     #[track_caller]
-    pub fn report_todo(&self, span: Span, feature: impl Into<String>) -> DiagError {
-        // TODO change arg order
-        self.report(Diagnostic::new_todo(feature).add_error(span, "used here").finish())
+    pub fn report_error_todo(&self, span: Span, feature: impl AsRef<str>) -> DiagError {
+        DiagnosticError::new_todo(feature, span).report(self)
     }
 
-    // TODO rename to "report_bug"
-    pub fn report_internal_error(&self, span: Span, reason: impl Into<String>) -> DiagError {
-        self.report(
-            Diagnostic::new_internal_error(reason)
-                .add_error(span, "caused here")
-                .finish(),
-        )
+    pub fn report_error_internal(&self, span: Span, reason: impl AsRef<str>) -> DiagError {
+        DiagnosticError::new_internal_compiler_error(reason, span).report(self)
     }
 
-    // TODO sort diagnostics by location, for a better user experience?
-    //   especially with the graph traversal stuff, the order can be very arbitrary
     pub fn finish(self) -> Vec<Diagnostic> {
         self.diagnostics.into_inner()
     }
@@ -94,34 +78,115 @@ impl DiagError {
     }
 }
 
-// TODO separate errors and warnings
-#[must_use]
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    pub level: DiagnosticLevel,
+    pub content: DiagnosticContent,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DiagnosticLevel {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum FooterKind {
+    Info,
+    Hint,
+}
+
+#[must_use]
+#[derive(Debug, Clone)]
+pub struct DiagnosticError {
+    content: DiagnosticContent,
+}
+
+#[must_use]
+#[derive(Debug, Clone)]
+pub struct DiagnosticWarning {
+    content: DiagnosticContent,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticContent {
     pub title: String,
-    // TODO use Spanned here
-    pub snippets: Vec<(Span, Vec<Annotation>)>,
-    pub footers: Vec<(Level, String)>,
+    pub messages: NonEmptyVec<(Span, String)>,
+    pub infos: Vec<(Span, String)>,
+    pub footers: Vec<(FooterKind, String)>,
     pub backtrace: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Annotation {
-    pub level: Level,
-    pub span: Span,
-    pub label: String,
+impl DiagnosticError {
+    pub fn new(title: impl Into<String>, span: Span, message: impl Into<String>) -> Self {
+        let content = DiagnosticContent::new(title, span, message);
+        Self { content }
+    }
+
+    pub fn new_multiple(title: impl Into<String>, messages: NonEmptyVec<(Span, String)>) -> Self {
+        let content = DiagnosticContent::new_multiple(title, messages);
+        Self { content }
+    }
+
+    pub fn new_todo(feature: impl AsRef<str>, span: Span) -> Self {
+        let message = format!("feature not yet implemented: {}", feature.as_ref());
+        Self::new(message, span, "used here")
+    }
+
+    #[track_caller]
+    pub fn new_internal_compiler_error(reason: impl AsRef<str>, span: Span) -> Self {
+        let message = format!("internal compiler error: {}", reason.as_ref());
+        let mut diag = Self::new(message, span, "triggered here");
+        diag.content.backtrace = Some(Backtrace::force_capture().to_string());
+        diag
+    }
+
+    pub fn add_info(mut self, span: Span, info: impl Into<String>) -> Self {
+        self.content.add_info(span, info.into());
+        self
+    }
+
+    pub fn add_footer(mut self, kind: FooterKind, message: impl Into<String>) -> Self {
+        self.content.add_footer(kind, message);
+        self
+    }
+
+    pub fn report(self, diagnostics: &Diagnostics) -> DiagError {
+        diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Error,
+            content: self.content,
+        });
+        DiagError::promise_error_has_been_reported()
+    }
 }
 
-#[must_use]
-pub struct DiagnosticBuilder {
-    diagnostic: Diagnostic,
-}
+impl DiagnosticWarning {
+    pub fn new(title: impl Into<String>, span: Span, message: impl Into<String>) -> Self {
+        let content = DiagnosticContent::new(title, span, message);
+        Self { content }
+    }
 
-#[must_use]
-pub struct DiagnosticSnippetBuilder {
-    diag: DiagnosticBuilder,
-    span: Span,
-    annotations: Vec<Annotation>,
+    pub fn new_multiple(title: impl Into<String>, messages: NonEmptyVec<(Span, String)>) -> Self {
+        let content = DiagnosticContent::new_multiple(title, messages);
+        Self { content }
+    }
+
+    pub fn add_info(mut self, span: Span, info: impl Into<String>) -> Self {
+        self.content.add_info(span, info.into());
+        self
+    }
+
+    pub fn add_footer(mut self, kind: FooterKind, message: impl Into<String>) -> Self {
+        self.content.add_footer(kind, message);
+        self
+    }
+
+    pub fn report(self, diagnostics: &Diagnostics) {
+        diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            content: self.content,
+        });
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -152,73 +217,90 @@ impl DiagnosticStringSettings {
     }
 }
 
-// TODO make it clear in which phase each diagnostic was reported: file loading, parsing, type checking, lowering
-// TODO clarify constructor naming: start_ for builders and new_ for complete?
-//   what is the point of complete constructors in the first place?
-// TODO ensure type-safe construction of diagnostics with at least one error, one warning, nothing yet, ...
-//   to avoid mistakes and downstream crashes
+#[derive(Debug, Clone, PartialEq)]
+struct Annotation {
+    level: Level,
+    span: Span,
+    label: String,
+}
+
 impl Diagnostic {
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(title: impl Into<String>) -> DiagnosticBuilder {
-        DiagnosticBuilder {
-            diagnostic: Diagnostic {
-                title: title.into(),
-                snippets: vec![],
-                footers: vec![],
-                backtrace: None,
-            },
-        }
-    }
-
-    /// Utility diagnostic constructor for features that are not yet implemented.
-    #[track_caller]
-    pub fn new_todo(feature: impl Into<String>) -> DiagnosticBuilder {
-        let message = format!("feature not yet implemented: '{}'", feature.into());
-        let mut diag = Diagnostic::new(&message);
-        diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
-        diag
-    }
-
-    // TODO move this to a more logical place?
-    /// Utility diagnostic constructor for a single error message with a single span.
-    pub fn new_simple(title: impl Into<String>, span: Span, label: impl Into<String>) -> Diagnostic {
-        Diagnostic::new(title).add_error(span, label).finish()
-    }
-
-    pub fn new_internal_error(reason: impl Into<String>) -> DiagnosticBuilder {
-        let mut diag = Diagnostic::new(format!("internal compiler error: '{}'", reason.into()));
-        diag.diagnostic.backtrace = Some(Backtrace::force_capture().to_string());
-        diag
-    }
-
-    pub fn main_annotation(&self) -> Option<&Annotation> {
-        // TODO make having at least a single annotation a type-system level requirement
-        let mut top_annotation: Option<&Annotation> = None;
-        for (_, annotations) in &self.snippets {
-            for annotation in annotations {
-                let is_better = match &top_annotation {
-                    None => true,
-                    // TODO better level comparison function
-                    Some(prev) => compare_level(annotation.level, prev.level).is_gt(),
-                };
-                if is_better {
-                    top_annotation = Some(annotation);
-                }
-            }
-        }
-        top_annotation
-    }
-
     pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
+        let Diagnostic { level, content } = self;
+        content.to_string(database, settings, level)
+    }
+
+    pub fn sort_key(&self) -> impl Ord + '_ {
+        // TODO expand until it contains all info, guaranteeing a single sort order
+        (self.content.messages.first().0, self.level)
+    }
+}
+
+impl DiagnosticContent {
+    fn new(title: impl Into<String>, span: Span, message: impl Into<String>) -> Self {
+        Self::new_multiple(title, NonEmptyVec::new_single((span, message.into())))
+    }
+
+    fn new_multiple(title: impl Into<String>, messages: NonEmptyVec<(Span, String)>) -> Self {
+        DiagnosticContent {
+            title: title.into(),
+            messages,
+            infos: vec![],
+            footers: vec![],
+            backtrace: None,
+        }
+    }
+
+    fn add_info(&mut self, span: Span, info: impl Into<String>) {
+        self.infos.push((span, info.into()));
+    }
+
+    fn add_footer(&mut self, kind: FooterKind, message: impl Into<String>) {
+        self.footers.push((kind, message.into()));
+    }
+
+    fn to_string(
+        self,
+        database: &SourceDatabase,
+        settings: DiagnosticStringSettings,
+        level: DiagnosticLevel,
+    ) -> String {
         let Self {
             title,
-            snippets,
+            messages,
+            infos,
             footers,
             backtrace,
         } = self;
 
-        // TODO sort to ensure that the first snippet is one with the highest level,
-        //   so it is always clickable
+        // convert to snippets
+        let snippets = {
+            let mut snippets = Vec::with_capacity(messages.len() + infos.len());
+
+            let top_level_mapped = match level {
+                DiagnosticLevel::Error => Level::Error,
+                DiagnosticLevel::Warning => Level::Warning,
+            };
+            for (top_span, top_message) in messages {
+                let top_annotation = Annotation {
+                    level: top_level_mapped,
+                    span: top_span,
+                    label: top_message,
+                };
+                snippets.push((top_span, vec![top_annotation]));
+            }
+
+            for (info_span, info_message) in infos {
+                let info_annotation = Annotation {
+                    level: Level::Info,
+                    span: info_span,
+                    label: info_message,
+                };
+                snippets.push((info_span, vec![info_annotation]));
+            }
+
+            snippets
+        };
 
         // combine snippets that are close together
         let snippets_merged = if let Some(snippet_merge_max_distance) = settings.snippet_merge_max_distance {
@@ -299,8 +381,12 @@ impl Diagnostic {
             message = message.snippet(snippet);
         }
 
-        for &(level, ref footer) in &footers {
-            message = message.footer(level.title(footer));
+        for (footer_kind, footer_message) in &footers {
+            let level_mapped = match footer_kind {
+                FooterKind::Info => Level::Info,
+                FooterKind::Hint => Level::Help,
+            };
+            message = message.footer(level_mapped.title(footer_message));
         }
 
         if let Some(backtrace) = &backtrace
@@ -319,95 +405,6 @@ impl Diagnostic {
         let render = renderer.render(message);
         render.to_string()
     }
-}
-
-impl DiagnosticBuilder {
-    pub fn snippet(self, span: Span) -> DiagnosticSnippetBuilder {
-        DiagnosticSnippetBuilder {
-            diag: self,
-            span,
-            annotations: vec![],
-        }
-    }
-
-    pub fn footer(mut self, level: Level, footer: impl Into<String>) -> Self {
-        self.diagnostic.footers.push((level, footer.into()));
-        self
-    }
-
-    pub fn finish(self) -> Diagnostic {
-        assert!(!self.diagnostic.snippets.is_empty());
-        self.diagnostic
-    }
-}
-
-impl DiagnosticAddable for DiagnosticBuilder {
-    fn add(self, level: Level, span: Span, label: impl Into<String>) -> Self {
-        self.snippet(span).add(level, span, label).finish()
-    }
-}
-
-impl DiagnosticSnippetBuilder {
-    pub fn finish(self) -> DiagnosticBuilder {
-        let Self {
-            diag: mut builder,
-            span,
-            annotations,
-        } = self;
-        assert!(
-            !annotations.is_empty(),
-            "DiagnosticSnippetBuilder without any annotations is not allowed"
-        );
-        builder.diagnostic.snippets.push((span, annotations));
-        builder
-    }
-}
-
-impl DiagnosticAddable for DiagnosticSnippetBuilder {
-    fn add(mut self, level: Level, span: Span, label: impl Into<String>) -> Self {
-        assert!(
-            self.span.contains_span(span),
-            "DiagnosticSnippetBuilder labels must fall within snippet span"
-        );
-        self.annotations.push(Annotation {
-            level,
-            span,
-            label: label.into(),
-        });
-        self
-    }
-}
-
-pub trait DiagnosticAddable: Sized {
-    fn add(self, level: Level, span: Span, label: impl Into<String>) -> Self;
-
-    fn add_error(self, span: Span, label: impl Into<String>) -> Self {
-        self.add(Level::Error, span, label)
-    }
-
-    fn add_error_maybe(self, span: Option<Span>, label: impl Into<String>) -> Self {
-        if let Some(span) = span {
-            self.add_error(span, label)
-        } else {
-            self
-        }
-    }
-
-    fn add_info(self, span: Span, label: impl Into<String>) -> Self {
-        self.add(Level::Info, span, label)
-    }
-
-    fn add_info_maybe(self, span: Option<Span>, label: impl Into<String>) -> Self {
-        if let Some(span) = span {
-            self.add_info(span, label)
-        } else {
-            self
-        }
-    }
-}
-
-pub fn compare_level(left: Level, right: Level) -> Ordering {
-    (left as u8).cmp(&(right as u8)).reverse()
 }
 
 pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> String {

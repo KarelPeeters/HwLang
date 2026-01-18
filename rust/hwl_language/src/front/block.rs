@@ -3,7 +3,7 @@ use crate::front::check::{
     check_type_is_range_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
@@ -160,7 +160,7 @@ impl BlockEnd {
     pub fn unwrap_normal(self, diags: &Diagnostics, span: Span) -> DiagResult {
         match self {
             BlockEnd::Normal => Ok(()),
-            _ => Err(diags.report_internal_error(span, "unexpected early exit")),
+            _ => Err(diags.report_error_internal(span, "unexpected early exit")),
         }
     }
 
@@ -350,7 +350,7 @@ impl CompileItemContext<'_, '_> {
             MaybeCompile::Compile(exit_cond) => {
                 if exit_cond {
                     return Err(diags
-                        .report_internal_error(span, "compile-time early exit condition should be handled elsewhere"));
+                        .report_error_internal(span, "compile-time early exit condition should be handled elsewhere"));
                 }
                 self.elaborate_block_statements_without_immediate_exit_check(scope, flow, stack, statements)?
             }
@@ -650,7 +650,7 @@ impl CompileItemContext<'_, '_> {
                 let flow = flow.require_hardware(stmt.span, "match on hardware target")?;
 
                 let target_ty = target_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
-                    diags.report_simple(
+                    diags.report_error_simple(
                         "failed to fully convert non-compile match target to hardware",
                         target.span,
                         format!("match target has non-hardware type {}", target_ty.value_string(elab)),
@@ -728,18 +728,24 @@ impl CompileItemContext<'_, '_> {
                     match (payload_id, &variant_info.payload_ty) {
                         (None, None) | (Some(_), Some(_)) => {}
                         (None, Some(variant_pyload_ty)) => {
-                            let diag = Diagnostic::new("enum variant payload mismatch")
-                                .add_info(variant_pyload_ty.span, "declared with a payload here")
-                                .add_error(pattern.span, "matched without a payload here")
-                                .finish();
-                            return Err(diags.report(diag));
+                            let diag = DiagnosticError::new(
+                                "enum variant payload mismatch",
+                                pattern.span,
+                                "matched without a payload here",
+                            )
+                            .add_info(variant_pyload_ty.span, "declared with a payload here")
+                            .report(diags);
+                            return Err(diag);
                         }
                         (Some(payload), None) => {
-                            let diag = Diagnostic::new("enum variant payload mismatch")
-                                .add_info(variant_info.id.span, "declared without a payload here")
-                                .add_error(payload.span(), "matched with a payload here")
-                                .finish();
-                            return Err(diags.report(diag));
+                            let diag = DiagnosticError::new(
+                                "enum variant payload mismatch",
+                                payload.span(),
+                                "matched with a payload here",
+                            )
+                            .add_info(variant_info.id.span, "declared without a payload here")
+                            .report(diags);
+                            return Err(diag);
                         }
                     }
 
@@ -748,11 +754,13 @@ impl CompileItemContext<'_, '_> {
                         payload_id,
                     })
                 } else {
-                    let diag = Diagnostic::new("enum match pattern with non-enum target type")
-                        .add_info(target_span, format!("target has type {}", target_ty.value_string(elab)))
-                        .add_error(pattern.span, "enum match pattern used here")
-                        .finish();
-                    Err(diags.report(diag))
+                    Err(DiagnosticError::new(
+                        "enum match pattern with non-enum target type",
+                        pattern.span,
+                        "enum match pattern used here",
+                    )
+                    .add_info(target_span, format!("target has type {}", target_ty.value_string(elab)))
+                    .report(diags))
                 }
             }
         }
@@ -812,7 +820,7 @@ impl CompileItemContext<'_, '_> {
                                 value: target_payload.as_ref().clone(),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
-                                return Err(diags.report_internal_error(pattern_span, "payload mismatch"));
+                                return Err(diags.report_error_internal(pattern_span, "payload mismatch"));
                             }
                         };
 
@@ -855,14 +863,16 @@ impl CompileItemContext<'_, '_> {
             }
         }
 
-        let diag = Diagnostic::new("match statement reached end without matching any branch")
-            .add_info(
-                target.span,
-                format!("target value `{}`", target.inner.value_string(elab)),
-            )
-            .add_error(Span::empty_at(pos_end), "did not match any branch")
-            .finish();
-        Err(diags.report(diag))
+        Err(DiagnosticError::new(
+            "match statement reached end without matching any branch",
+            Span::empty_at(pos_end),
+            "did not match any branch",
+        )
+        .add_info(
+            target.span,
+            format!("target value `{}`", target.inner.value_string(elab)),
+        )
+        .report(diags))
     }
 
     fn elaborate_match_statement_hardware(
@@ -900,7 +910,7 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             _ => {
-                return Err(diags.report_todo(
+                return Err(diags.report_error_todo(
                     target.span,
                     format!(
                         "hardware matching for target type {}",
@@ -991,7 +1001,7 @@ impl CompileItemContext<'_, '_> {
                             (cond, implications)
                         }
                         MatchCoverage::Enum { .. } => {
-                            return Err(diags.report_todo(branch_pattern_span, "matching enum value by equality"));
+                            return Err(diags.report_error_todo(branch_pattern_span, "matching enum value by equality"));
                         }
                     };
 
@@ -1027,14 +1037,17 @@ impl CompileItemContext<'_, '_> {
                         }
                     }
                     _ => {
-                        let diag = Diagnostic::new("range match pattern with non-integer target type")
-                            .add_info(
-                                target.span,
-                                format!("target has type {}", target_value.value.ty.value_string(elab)),
-                            )
-                            .add_error(range.span, "integer range match pattern used here")
-                            .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "range match pattern with non-integer target type",
+                            range.span,
+                            "integer range match pattern used here",
+                        )
+                        .add_info(
+                            target.span,
+                            format!("target has type {}", target_value.value.ty.value_string(elab)),
+                        )
+                        .report(diags);
+                        return Err(diag);
                     }
                 },
                 EvaluatedMatchPattern::IsEnumVariant {
@@ -1064,7 +1077,7 @@ impl CompileItemContext<'_, '_> {
                                 value: HardwareValueWithImplications::simple(payload_value),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
-                                return Err(diags.report_internal_error(branch_pattern_span, "payload mismatch"));
+                                return Err(diags.report_error_internal(branch_pattern_span, "payload mismatch"));
                             }
                         };
 
@@ -1075,14 +1088,17 @@ impl CompileItemContext<'_, '_> {
                         }
                     }
                     _ => {
-                        let diag = Diagnostic::new("enum variant match pattern with non-enum target type")
-                            .add_info(
-                                target.span,
-                                format!("target has type {}", target_value.value.ty.value_string(elab)),
-                            )
-                            .add_error(branch_pattern_span, "enum variant match pattern used here")
-                            .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "enum variant match pattern with non-enum target type",
+                            branch_pattern_span,
+                            "enum variant match pattern used here",
+                        )
+                        .add_info(
+                            target.span,
+                            format!("target has type {}", target_value.value.ty.value_string(elab)),
+                        )
+                        .report(diags);
+                        return Err(diag);
                     }
                 },
             };
@@ -1140,20 +1156,26 @@ impl CompileItemContext<'_, '_> {
                     (true, true) => Some("[false, true]"),
                 };
                 if let Some(values_not_covered) = values_not_covered {
-                    let diag = Diagnostic::new(title_non_exhaustive)
-                        .add_info(target.span, msg_target_type)
-                        .add_error(span_end, format!("values not covered: {}", values_not_covered))
-                        .finish();
-                    return Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        title_non_exhaustive,
+                        span_end,
+                        format!("values not covered: {}", values_not_covered),
+                    )
+                    .add_info(target.span, msg_target_type)
+                    .report(diags);
+                    return Err(diag);
                 }
             }
             MatchCoverage::Int { rem_range } => {
                 if !rem_range.is_empty() {
-                    let diag = Diagnostic::new(title_non_exhaustive)
-                        .add_info(target.span, msg_target_type)
-                        .add_error(span_end, format!("ranges not covered: {rem_range}"))
-                        .finish();
-                    return Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        title_non_exhaustive,
+                        span_end,
+                        format!("ranges not covered: {rem_range}"),
+                    )
+                    .add_info(target.span, msg_target_type)
+                    .report(diags);
+                    return Err(diag);
                 }
             }
             MatchCoverage::Enum {
@@ -1170,12 +1192,15 @@ impl CompileItemContext<'_, '_> {
                         .map(|(_, (name, _))| format!(".{name}"))
                         .join(", ");
 
-                    let diag = Diagnostic::new(title_non_exhaustive)
-                        .add_info(target.span, msg_target_type)
-                        .add_info(enum_info.unique.id().span(), "enum declared here")
-                        .add_error(span_end, format!("variants not covered: [{}]", variants_not_covered))
-                        .finish();
-                    return Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        title_non_exhaustive,
+                        span_end,
+                        format!("variants not covered: [{}]", variants_not_covered),
+                    )
+                    .add_info(target.span, msg_target_type)
+                    .add_info(enum_info.unique.id().span(), "enum declared here")
+                    .report(diags);
+                    return Err(diag);
                 }
             }
         }
@@ -1242,7 +1267,7 @@ impl CompileItemContext<'_, '_> {
                 let cond = match &cond.inner {
                     &CompileValue::Simple(SimpleCompileValue::Bool(b)) => b,
                     _ => throw!(
-                        diags.report_internal_error(cond.span, "expected bool, should have been checked already")
+                        diags.report_error_internal(cond.span, "expected bool, should have been checked already")
                     ),
                 };
 

@@ -5,7 +5,7 @@ use crate::front::check::{
     check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics, FooterKind};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
@@ -45,7 +45,6 @@ use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultDoubleExt, result_pair};
-use annotate_snippets::Level;
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -146,7 +145,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let value = self.eval_expression_inner(scope, flow, expected_ty, expr)?;
         match value {
             ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
-            ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_simple(
+            ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_error_simple(
                 "interface instance expression not allowed here",
                 expr.span,
                 "this expression evaluates to an interface instance",
@@ -174,11 +173,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let result_simple = match refs.get_expr(expr) {
             &ExpressionKind::ParseError(_) => {
-                return Err(diags.report_internal_error(expr.span, "cannot evaluate parse error"));
+                return Err(diags.report_error_internal(expr.span, "cannot evaluate parse error"));
             }
             ExpressionKind::Dummy => {
                 // if dummy expressions were allowed, the caller would have checked for them already
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "dummy expression not allowed in this context",
                     expr.span,
                     "dummy expression used here",
@@ -187,7 +186,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::Undefined => {
                 // TODO assert that we're in a hardware context, and then create an undefined hardware value
                 //   this avoids that everyone that handles compile-time values has to support undefined too
-                return Err(diags.report_todo(expr.span, "general undefined expression"));
+                return Err(diags.report_error_todo(expr.span, "general undefined expression"));
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
             ExpressionKind::TypeFunction => Value::new_ty(Type::Function),
@@ -257,19 +256,19 @@ impl<'a> CompileItemContext<'a, '_> {
                         let raw = source.span_str(span);
                         let clean = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&clean, 2)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
+                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
                     }
                     IntLiteral::Decimal { span } => {
                         let raw = source.span_str(span);
                         let clean = raw.replace('_', "");
                         BigUint::from_str_radix(&clean, 10)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
+                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
                     }
                     IntLiteral::Hexadecimal { span } => {
                         let raw = source.span_str(span);
                         let s_hex = raw[2..].replace('_', "");
                         BigUint::from_str_radix(&s_hex, 16)
-                            .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?
+                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
                     }
                 };
                 Value::new_int(BigInt::from(value))
@@ -312,12 +311,15 @@ impl<'a> CompileItemContext<'a, '_> {
                             if !(start_range.enclosing_range().end - 1 <= *end_range.enclosing_range().start) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_range, None);
-                                let diag = Diagnostic::new("range requires that start <= end")
-                                    .add_error(op_span, "range constructed here")
-                                    .add_info(start.span, msg_start)
-                                    .add_info(end.span, msg_end)
-                                    .finish();
-                                return Err(diags.report(diag));
+                                let diag = DiagnosticError::new(
+                                    "range requires that start <= end",
+                                    op_span,
+                                    "range constructed here",
+                                )
+                                .add_info(start.span, msg_start)
+                                .add_info(end.span, msg_end)
+                                .report(diags);
+                                return Err(diag);
                             }
                         }
 
@@ -347,12 +349,15 @@ impl<'a> CompileItemContext<'a, '_> {
                             if !(start_range.enclosing_range().end - 1 <= end_inc_range.enclosing_range().start + 1) {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_inc_range, None);
-                                let diag = Diagnostic::new("inclusive range requires that start <= end_inc + 1")
-                                    .add_error(op_span, "inclusive range constructed here")
-                                    .add_info(start.span, msg_start)
-                                    .add_info(end_inc.span, msg_end)
-                                    .finish();
-                                return Err(diags.report(diag));
+                                let diag = DiagnosticError::new(
+                                    "inclusive range requires that start <= end_inc + 1",
+                                    op_span,
+                                    "inclusive range constructed here",
+                                )
+                                .add_info(start.span, msg_start)
+                                .add_info(end_inc.span, msg_end)
+                                .report(diags);
+                                return Err(diag);
                             }
                         }
 
@@ -458,7 +463,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 //   there might be spread elements in the literal which expand to multiple values
                 let len_lower_bound = match iter_eval.len() {
                     None => {
-                        return Err(diags.report_simple(
+                        return Err(diags.report_error_simple(
                             "array comprehension over infinite iterator would never finish",
                             iter.span,
                             "this iterator is infinite",
@@ -573,11 +578,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 // evaluate index
                 let index = indices
                     .single_ref()
-                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional array indexing"))?;
+                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional array indexing"))?;
                 let index = match index {
                     &ArrayLiteralElement::Single(index) => index,
                     ArrayLiteralElement::Spread(_, _) => {
-                        return Err(diags.report_todo(index.span(), "multidimensional array indexing"));
+                        return Err(diags.report_error_todo(index.span(), "multidimensional array indexing"));
                     }
                 };
 
@@ -597,11 +602,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 // evaluate length
                 let length = lengths
                     .single_ref()
-                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional arrays"))?;
                 let length = match length {
                     &ArrayLiteralElement::Single(length) => length,
                     ArrayLiteralElement::Spread(_, _) => {
-                        return Err(diags.report_todo(length.span(), "multidimensional arrays"));
+                        return Err(diags.report_error_todo(length.span(), "multidimensional arrays"));
                     }
                 };
 
@@ -632,20 +637,24 @@ impl<'a> CompileItemContext<'a, '_> {
                     let index = source.span_str(index_span);
 
                     let index_int = BigUint::from_str_radix(index, 10)
-                        .map_err(|_| diags.report_internal_error(expr.span, "failed to parse int"))?;
+                        .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
                     let err_not_tuple = |ty: &str| {
-                        let diag = Diagnostic::new("indexing into non-tuple type")
-                            .add_error(index_span, "attempt to index into non-tuple type here")
-                            .add_info(base.span, format!("base has type `{ty}`"))
-                            .finish();
-                        diags.report(diag)
+                        DiagnosticError::new(
+                            "indexing into non-tuple type",
+                            index_span,
+                            "attempt to index into non-tuple type here",
+                        )
+                        .add_info(base.span, format!("base has type `{ty}`"))
+                        .report(diags)
                     };
                     let err_index_out_of_bounds = |len: usize| {
-                        let diag = Diagnostic::new("tuple index out of bounds")
-                            .add_error(index_span, format!("index `{index_int}` is out of bounds"))
-                            .add_info(base.span, format!("base is tuple with length `{len}`"))
-                            .finish();
-                        diags.report(diag)
+                        DiagnosticError::new(
+                            "tuple index out of bounds",
+                            index_span,
+                            format!("index `{index_int}` is out of bounds"),
+                        )
+                        .add_info(base.span, format!("base is tuple with length `{len}`"))
+                        .report(diags)
                     };
 
                     // TODO use common step logic once that supports tuple indexing
@@ -758,13 +767,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 let ty = match value.inner.ty().as_hardware_type(elab) {
                     Ok(ty) => ty,
                     Err(NonHardwareType) => {
-                        let diag = Diagnostic::new("value must be representable in hardware for domain cast")
-                            .add_error(
-                                value.span,
-                                format!("got non-hardware type `{}`", value.inner.ty().value_string(elab)),
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "value must be representable in hardware for domain cast",
+                            value.span,
+                            format!("got non-hardware type `{}`", value.inner.ty().value_string(elab)),
+                        )
+                        .report(diags);
+                        return Err(diag);
                     }
                 };
                 let value_expr = value
@@ -801,15 +810,14 @@ impl<'a> CompileItemContext<'a, '_> {
                 let init_ty = init.inner.ty();
                 let ty = value_ty.union(&init_ty);
                 let ty_hw = ty.as_hardware_type(elab).map_err(|_| {
-                    let diag = Diagnostic::new("register type must be representable in hardware")
-                        .add_error(
-                            span_keyword,
-                            format!("got non-hardware type `{}`", ty.value_string(elab)),
-                        )
-                        .add_info(value.span, format!("from combining `{}`", value_ty.value_string(elab)))
-                        .add_info(init.span, format!("from combining `{}`", init_ty.value_string(elab)))
-                        .finish();
-                    diags.report(diag)
+                    DiagnosticError::new(
+                        "register type must be representable in hardware",
+                        span_keyword,
+                        format!("got non-hardware type `{}`", ty.value_string(elab)),
+                    )
+                    .add_info(value.span, format!("from combining `{}`", value_ty.value_string(elab)))
+                    .add_info(init.span, format!("from combining `{}`", init_ty.value_string(elab)))
+                    .report(diags)
                 })?;
 
                 let flow = flow.require_hardware(expr.span, "register expression")?;
@@ -855,18 +863,20 @@ impl<'a> CompileItemContext<'a, '_> {
                             // we can't reset, but luckily we don't need to
                         }
                         MaybeUndefined::Defined(_) => {
-                            let diag = Diagnostic::new("registers without reset cannot have an initial value")
-                                .add_error(init.span, "attempt to create a register with init here")
-                                .add_info(
-                                    clocked_domain.span,
-                                    "the current clocked block is defined without reset here",
-                                )
-                                .footer(
-                                    Level::Help,
-                                    "either add an reset to the block or use `undef` as the the initial value",
-                                )
-                                .finish();
-                            let _ = diags.report(diag);
+                            let _ = DiagnosticError::new(
+                                "registers without reset cannot have an initial value",
+                                init.span,
+                                "attempt to create a register with init here",
+                            )
+                            .add_info(
+                                clocked_domain.span,
+                                "the current clocked block is defined without reset here",
+                            )
+                            .add_footer(
+                                FooterKind::Hint,
+                                "either add an reset to the block or use `undef` as the the initial value",
+                            )
+                            .report(diags);
                         }
                     },
                     ExtraRegisters::WithReset(extra_registers) => {
@@ -940,7 +950,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
 
             // not a valid call target
-            _ => Err(diags.report_simple(
+            _ => Err(diags.report_error_simple(
                 "call target must be function",
                 expr_span,
                 format!("got value with type `{}`", target.inner.ty().value_string(elab)),
@@ -979,12 +989,14 @@ impl<'a> CompileItemContext<'a, '_> {
                     .interface_info(port_interface_info.view.inner.interface);
 
                 let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
-                    let diag = Diagnostic::new(format!("port `{index_str}` not found on interface"))
-                        .add_error(index.span, "attempt to access port here")
-                        .add_info(port_interface_info.view.span, "port interface set here")
-                        .add_info(interface_info.id.span(), "interface declared here")
-                        .finish();
-                    diags.report(diag)
+                    DiagnosticError::new(
+                        format!("port `{index_str}` not found on interface"),
+                        index.span,
+                        "attempt to access port here",
+                    )
+                    .add_info(port_interface_info.view.span, "port interface set here")
+                    .add_info(interface_info.id.span(), "interface declared here")
+                    .report(diags)
                 })?;
                 let port = port_interface_info.ports[port_index];
 
@@ -1001,12 +1013,14 @@ impl<'a> CompileItemContext<'a, '_> {
                     .interface_info(wire_interface_info.interface.inner);
 
                 let wire_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
-                    let diag = Diagnostic::new(format!("port `{index_str}` not found on interface"))
-                        .add_error(index.span, "attempt to access port here")
-                        .add_info(wire_interface_info.interface.span, "wire interface set here")
-                        .add_info(interface_info.id.span(), "interface declared here")
-                        .finish();
-                    diags.report(diag)
+                    DiagnosticError::new(
+                        format!("port `{index_str}` not found on interface"),
+                        index.span,
+                        "attempt to access port here",
+                    )
+                    .add_info(wire_interface_info.interface.span, "wire interface set here")
+                    .add_info(interface_info.id.span(), "interface declared here")
+                    .report(diags)
                 })?;
                 let wire = wire_interface_info.wires[wire_index];
 
@@ -1054,22 +1068,21 @@ impl<'a> CompileItemContext<'a, '_> {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
 
                     if !ty_hw.every_bit_pattern_is_valid(refs) {
-                        let diag =
-                            Diagnostic::new("from_bits is only allowed for types where every bit pattern is valid")
-                                .add_error(
-                                    base.span,
-                                    format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
-                                )
-                                .footer(
-                                    Level::Help,
-                                    "consider using a target type where every bit pattern is valid",
-                                )
-                                .footer(
-                                    Level::Help,
-                                    "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
-                                )
-                                .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "from_bits is only allowed for types where every bit pattern is valid",
+                            base.span,
+                            format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
+                        )
+                        .add_footer(
+                            FooterKind::Hint,
+                            "consider using a target type where every bit pattern is valid",
+                        )
+                        .add_footer(
+                            FooterKind::Hint,
+                            "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
+                        )
+                        .report(diags);
+                        return Err(diag);
                     }
 
                     let func = FunctionBits {
@@ -1144,12 +1157,13 @@ impl<'a> CompileItemContext<'a, '_> {
                 if expected_info.unique == unique {
                     eval_enum(expected)
                 } else {
-                    Err(diags.report(error_unique_mismatch(
+                    Err(error_unique_mismatch(
                         "struct",
                         base.span,
                         expected_info.unique.id().span(),
                         unique.id().span(),
-                    )))
+                    )
+                    .report(diags))
                 }
             } else {
                 // TODO check if there is any possible variant for this index string,
@@ -1166,19 +1180,21 @@ impl<'a> CompileItemContext<'a, '_> {
         if let Type::Struct(base_ty_struct) = base_ty {
             let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
             let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
-                let diag = Diagnostic::new("field not found")
-                    .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
-                    .add_error(index.span, "attempt to access non-existing field here")
-                    .add_info(info.span_body, "struct fields declared here")
-                    .finish();
-                diags.report(diag)
+                DiagnosticError::new(
+                    "field not found",
+                    index.span,
+                    "attempt to access non-existing field here",
+                )
+                .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
+                .add_info(info.span_body, "struct fields declared here")
+                .report(diags)
             })?;
 
             let result = match base_eval {
-                Value::Simple(_) => return Err(diags.report_internal_error(expr_span, "expected struct value")),
+                Value::Simple(_) => return Err(diags.report_error_internal(expr_span, "expected struct value")),
                 Value::Compound(base_eval) => match base_eval {
                     MixedCompoundValue::Struct(base_eval) => base_eval.fields[field_index].clone(),
-                    _ => return Err(diags.report_internal_error(expr_span, "expected struct compile value")),
+                    _ => return Err(diags.report_error_internal(expr_span, "expected struct compile value")),
                 },
                 Value::Hardware(base_eval) => {
                     let base_eval = base_eval.value;
@@ -1197,7 +1213,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 expr: self.large.push_expr(expr),
                             })
                         }
-                        _ => return Err(diags.report_internal_error(expr_span, "expected struct hardware value")),
+                        _ => return Err(diags.report_error_internal(expr_span, "expected struct hardware value")),
                     }
                 }
             };
@@ -1206,11 +1222,14 @@ impl<'a> CompileItemContext<'a, '_> {
         }
 
         // fallthrough into error
-        let diag = Diagnostic::new("invalid dot index expression")
-            .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
-            .add_error(index.span, format!("no attribute found with with name `{index_str}`"))
-            .finish();
-        Err(diags.report(diag))
+        let diag = DiagnosticError::new(
+            "invalid dot index expression",
+            index.span,
+            format!("no attribute found with with name `{index_str}`"),
+        )
+        .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
+        .report(diags);
+        Err(diag)
     }
 
     fn eval_array_literal(
@@ -1323,16 +1342,19 @@ impl<'a> CompileItemContext<'a, '_> {
 
             let index_ty = index.inner.ty();
             let err_wrong_type = || {
-                let diag = Diagnostic::new("array index must be integer or range")
-                    .add_error(index.span, format!("got type `{}`", index_ty.value_string(elab)))
-                    .finish();
-                diags.report(diag)
+                diags.report_error_simple(
+                    "array index must be integer or range",
+                    index.span,
+                    format!("got type `{}`", index_ty.value_string(elab)),
+                )
             };
             let err_hardware_not_len = || {
-                let diag = Diagnostic::new("hardware slicing only supports `start+..length` ranges")
-                    .add_error(index.span, "got non-length slice")
-                    .finish();
-                diags.report(diag)
+                DiagnosticError::new(
+                    "hardware slicing only supports `start+..length` ranges",
+                    index.span,
+                    "got non-length slice",
+                )
+                .report(diags)
             };
 
             match index.inner {
@@ -1356,7 +1378,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 Some(end) => match end {
                                     MaybeCompile::Compile(end) => {
                                         Some(BigUint::try_from(&end - &start).map_err(|_| {
-                                            diags.report_simple(
+                                            diags.report_error_simple(
                                                 "array slice end out of bounds",
                                                 index_span,
                                                 format!("slice end cannot be negative, got {end}"),
@@ -1401,7 +1423,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let value = self.eval_expression(scope, &mut flow_inner, expected_ty, expr)?.inner;
 
         let value = CompileValue::try_from(&value).map_err(|_: NotCompile| {
-            self.refs.diags.report_simple(
+            self.refs.diags.report_error_simple(
                 format!("{} must be a compile-time value", reason.inner),
                 expr.span,
                 "got hardware value",
@@ -1439,7 +1461,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     span: expr.span,
                     inner: MaybeUndefined::Defined(value_eval),
                 }),
-                Err(NotCompile) => Err(diags.report_simple(
+                Err(NotCompile) => Err(diags.report_error_simple(
                     format!("{} must be a compile-time value", reason.inner),
                     expr.span,
                     "got hardware value",
@@ -1466,7 +1488,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 span: expr.span,
                 inner: ty,
             }),
-            value => Err(diags.report_simple(
+            value => Err(diags.report_error_simple(
                 "expected type, got value",
                 expr.span,
                 format!("got value with type `{}`", value.ty().value_string(elab)),
@@ -1486,7 +1508,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         let ty = self.eval_expression_as_ty(scope, flow, expr)?.inner;
         let ty_hw = ty.as_hardware_type(elab).map_err(|_| {
-            diags.report_simple(
+            diags.report_error_simple(
                 format!("{reason} type must be representable in hardware"),
                 expr.span,
                 format!("got type `{}`", ty.value_string(elab)),
@@ -1509,7 +1531,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // TODO include definition site (at least for named values)
         let build_err =
-            |actual: &str| diags.report_simple("expected assignment target", expr.span, format!("got {actual}"));
+            |actual: &str| diags.report_error_simple("expected assignment target", expr.span, format!("got {actual}"));
 
         let result = match *self.refs.get_expr(expr) {
             ExpressionKind::Id(id) => {
@@ -1549,11 +1571,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 // eval index
                 let index = indices
                     .single_ref()
-                    .ok_or_else(|| diags.report_todo(expr.span, "multidimensional arrays"))?;
+                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional arrays"))?;
                 let index = match index {
                     &ArrayLiteralElement::Single(index) => index,
                     ArrayLiteralElement::Spread(_, _) => {
-                        return Err(diags.report_todo(index.span(), "multidimensional arrays"));
+                        return Err(diags.report_error_todo(index.span(), "multidimensional arrays"));
                     }
                 };
 
@@ -1616,7 +1638,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                         AssignmentTarget::simple(Spanned::new(expr.span, wire.into()))
                                     }
                                     _ => {
-                                        return Err(diags.report_simple(
+                                        return Err(diags.report_error_simple(
                                             "dot index is only allowed on port/wire interfaces",
                                             base.span,
                                             "got other named value here",
@@ -1625,7 +1647,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 }
                             }
                             _ => {
-                                return Err(diags.report_simple(
+                                return Err(diags.report_error_simple(
                                     "dot index is only allowed on port/wire interfaces",
                                     base.span,
                                     "got other expression here",
@@ -1634,7 +1656,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         }
                     }
                     DotIndexKind::Int { span: _ } => {
-                        return Err(diags.report_todo(expr.span, "assignment target dot int index"))?;
+                        return Err(diags.report_error_todo(expr.span, "assignment target dot int index"))?;
                     }
                 }
             }
@@ -1655,7 +1677,7 @@ impl<'a> CompileItemContext<'a, '_> {
     ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
-            |actual: &str| diags.report_simple("expected domain signal", expr.span, format!("got `{actual}`"));
+            |actual: &str| diags.report_error_simple("expected domain signal", expr.span, format!("got `{actual}`"));
         self.try_eval_expression_as_domain_signal(scope, flow, expr, build_err)
             .map_err(|e| e.into_inner())
     }
@@ -1759,9 +1781,9 @@ impl<'a> CompileItemContext<'a, '_> {
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|signal| {
                     signal.try_map_inner(|signal| match signal {
                         Signal::Port(port) => Ok(port),
-                        Signal::Wire(_) => Err(diags.report_internal_error(domain.span, "expected port, got wire")),
+                        Signal::Wire(_) => Err(diags.report_error_internal(domain.span, "expected port, got wire")),
                         Signal::Register(_) => {
-                            Err(diags.report_internal_error(domain.span, "expected port, got register"))
+                            Err(diags.report_error_internal(domain.span, "expected port, got register"))
                         }
                     })
                 })?),
@@ -1791,7 +1813,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 ) -> Result<C, DiagError> {
                     match v {
                         MaybeCompile::Compile(v) => Ok(v),
-                        MaybeCompile::Hardware(_) => Err(diags.report_simple(
+                        MaybeCompile::Hardware(_) => Err(diags.report_error_simple(
                             "iterator range must be compile-time value",
                             iter_span,
                             "got hardware value here",
@@ -1811,7 +1833,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 start: None,
                                 end: end.clone(),
                             };
-                            diags.report_simple(
+                            diags.report_error_simple(
                                 "iterator range must have start value",
                                 iter_span,
                                 format!("got range `{}`", range),
@@ -1822,7 +1844,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                     RangeValue::HardwareStartLength { start, length: _ } => {
                         let _: HardwareInt = start;
-                        return Err(diags.report_simple(
+                        return Err(diags.report_error_simple(
                             "iterator range must be compile-time value",
                             iter_span,
                             "got hardware value here",
@@ -1847,7 +1869,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             }
             _ => {
-                throw!(diags.report_simple(
+                throw!(diags.report_error_simple(
                     "invalid for loop iterator type, must be range or array",
                     iter.span,
                     format!("iterator has type `{}`", iter.inner.ty().value_string(elab))
@@ -1876,7 +1898,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         match eval.inner {
             CompileValue::Simple(SimpleCompileValue::Module(elab)) => Ok(elab),
-            _ => Err(diags.report_internal_error(eval.span, "expected module, should have already been checked")),
+            _ => Err(diags.report_error_internal(eval.span, "expected module, should have already been checked")),
         }
     }
 }
@@ -1903,17 +1925,20 @@ fn eval_int_ty_call(
             end: None,
         }) => false,
         _ => {
-            let diag = Diagnostic::new("base type must be int or uint for int type constraining")
-                .add_error(span_call, "attempt to constrain int type here")
-                .add_info(
-                    target.span,
-                    format!(
-                        "base type `{}` here",
-                        Type::Int(target.inner.clone()).value_string(elab)
-                    ),
-                )
-                .finish();
-            return Err(diags.report(diag));
+            let diag = DiagnosticError::new(
+                "base type must be int or uint for int type constraining",
+                span_call,
+                "attempt to constrain int type here",
+            )
+            .add_info(
+                target.span,
+                format!(
+                    "base type `{}` here",
+                    Type::Int(target.inner.clone()).value_string(elab)
+                ),
+            )
+            .report(diags);
+            return Err(diag);
         }
     };
 
@@ -1924,7 +1949,7 @@ fn eval_int_ty_call(
         .map(|arg| {
             let Arg { span: _, name, value } = arg;
             if let Some(name) = name {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "expected unnamed arguments for int type",
                     name.span,
                     "got named arg here",
@@ -1932,7 +1957,7 @@ fn eval_int_ty_call(
             }
 
             let arg_value = CompileValue::try_from(&value.inner).map_err(|_: NotCompile| {
-                diags.report_simple(
+                diags.report_error_simple(
                     "expected compile-time argument for int type",
                     value.span,
                     "got hardware value here",
@@ -1946,7 +1971,7 @@ fn eval_int_ty_call(
     if let Some(arg) = args.single_ref() {
         if let CompileValue::Simple(SimpleCompileValue::Int(width)) = &arg.inner {
             let width = BigUint::try_from(width.clone()).map_err(|width| {
-                diags.report_simple(
+                diags.report_error_simple(
                     format!("the bitwidth of an integer type cannot be negative, got `{width}`"),
                     arg.span,
                     "got negative bitwidth here",
@@ -1955,7 +1980,7 @@ fn eval_int_ty_call(
 
             let range = if target_signed {
                 let width_m1 = BigUint::try_from(width - 1u8).map_err(|_| {
-                    diags.report_simple(
+                    diags.report_error_simple(
                         "zero-width signed integers are not allowed",
                         arg.span,
                         "got width zero here",
@@ -1983,13 +2008,13 @@ fn eval_int_ty_call(
         let arg_range = match arg.inner {
             CompileValue::Compound(CompileCompoundValue::Range(range)) => range,
             _ => {
-                let diag = Diagnostic::new("int type constraint must be a single int int or multiple int ranges")
-                    .add_error(
-                        arg.span,
-                        format!("got value with type `{}` here", arg.inner.ty().value_string(elab)),
-                    )
-                    .finish();
-                return Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "int type constraint must be a single int int or multiple int ranges",
+                    arg.span,
+                    format!("got value with type `{}` here", arg.inner.ty().value_string(elab)),
+                )
+                .report(diags);
+                return Err(diag);
             }
         };
         result = result.union(&MultiRange::from(arg_range));
@@ -2002,11 +2027,14 @@ fn eval_int_ty_call(
     };
     if let Some(enclosing_range) = result.enclosing_range() {
         if !target.inner.contains_range(enclosing_range) {
-            let diag = Diagnostic::new("int range must be a subrange of the base type")
-                .add_error(args_span, format!("new range `{result}` is not a subrange"))
-                .add_info(target.span, format!("base type {base_ty_name}"))
-                .finish();
-            return Err(diags.report(diag));
+            let diag = DiagnosticError::new(
+                "int range must be a subrange of the base type",
+                args_span,
+                format!("new range `{result}` is not a subrange"),
+            )
+            .add_info(target.span, format!("base type {base_ty_name}"))
+            .report(diags);
+            return Err(diag);
         }
     }
 
@@ -2027,7 +2055,7 @@ fn eval_tuple_ty_call(
         .map(|arg| {
             let Arg { span: _, name, value } = arg;
             if let Some(name) = name {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "expected unnamed arguments for tuple type",
                     name.span,
                     "got named arg here",
@@ -2036,7 +2064,7 @@ fn eval_tuple_ty_call(
 
             match &value.inner {
                 Value::Simple(SimpleCompileValue::Type(ty)) => Ok(ty.clone()),
-                _ => Err(diags.report_simple(
+                _ => Err(diags.report_error_simple(
                     "expected type",
                     value.span,
                     format!("got value with type `{}` here", value.inner.ty().value_string(elab)),
@@ -2212,7 +2240,7 @@ pub fn eval_binary_expression(
                     let right_inner = match right {
                         MaybeCompile::Compile(right_inner) => right_inner,
                         MaybeCompile::Hardware(_) => {
-                            return Err(diags.report_simple(
+                            return Err(diags.report_error_simple(
                                 "array repetition right hand side must be compile-time value",
                                 right_span,
                                 "got non-compile-time value here",
@@ -2220,14 +2248,14 @@ pub fn eval_binary_expression(
                         }
                     };
                     let right_inner = BigUint::try_from(right_inner).map_err(|right_inner| {
-                        diags.report_simple(
+                        diags.report_error_simple(
                             "array repetition right hand side cannot be negative",
                             right_span,
                             format!("got value `{right_inner}`"),
                         )
                     })?;
                     let right_inner = usize::try_from(right_inner).map_err(|right_inner| {
-                        diags.report_simple(
+                        diags.report_error_simple(
                             "array repetition right hand side too large",
                             right_span,
                             format!("got value `{right_inner}`"),
@@ -2263,7 +2291,7 @@ pub fn eval_binary_expression(
                             })
                         }
                         Value::Simple(_) | Value::Compound(_) => {
-                            return Err(diags.report_internal_error(
+                            return Err(diags.report_error_internal(
                                 left.span,
                                 "compile-time value with type array is not actually an array",
                             ));
@@ -2285,7 +2313,7 @@ pub fn eval_binary_expression(
                     }
                 }
                 _ => {
-                    return Err(diags.report_simple(
+                    return Err(diags.report_error_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
                         format!("got value with type `{}`", left.inner.ty().value_string(elab)),
@@ -2302,11 +2330,10 @@ pub fn eval_binary_expression(
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
                 let msg_right = message_range_or_single("right", &right_range, Some("which contains zero"));
-                let diag = Diagnostic::new("division by zero is not allowed")
-                    .add_error(right_span, msg_right)
+                let diag = DiagnosticError::new("division by zero is not allowed", right_span, msg_right)
                     .add_info(op.span, "for operator here")
-                    .finish();
-                return Err(diags.report(diag));
+                    .report(diags);
+                return Err(diag);
             }
 
             match pair_compile_int(left, right) {
@@ -2329,11 +2356,10 @@ pub fn eval_binary_expression(
             let right_range = right.range();
             if right_range.contains(&BigInt::ZERO) {
                 let msg_right = message_range_or_single("right", &right_range, Some("which contains zero"));
-                let diag = Diagnostic::new("modulo by zero is not allowed")
-                    .add_error(right_span, msg_right)
+                let diag = DiagnosticError::new("modulo by zero is not allowed", right_span, msg_right)
                     .add_info(op.span, "for operator here")
-                    .finish();
-                return Err(diags.report(diag));
+                    .report(diags);
+                return Err(diag);
             }
 
             match pair_compile_int(left, right) {
@@ -2360,11 +2386,10 @@ pub fn eval_binary_expression(
 
             // check exp >= 0
             if *exp_range.enclosing_range().start < zero {
-                let diag = Diagnostic::new("invalid power operation")
-                    .add_error(expr_span, "exponent must be non-negative")
+                let diag = DiagnosticError::new("invalid power operation", expr_span, "exponent must be non-negative")
                     .add_info(exp_span, message_range_or_single("exponent", &exp_range, None))
-                    .finish();
-                return Err(diags.report(diag));
+                    .report(diags);
+                return Err(diag);
             }
 
             // check not 0 ** 0
@@ -2372,18 +2397,21 @@ pub fn eval_binary_expression(
             if base_range.contains(&zero) && exp_range.contains(&zero) {
                 let msg_base = message_range_or_single("base", &base_range, Some("which contains zero"));
                 let msg_exp = message_range_or_single("exponent", &exp_range, Some("which contains zero"));
-                let diag = Diagnostic::new("invalid power operation `0 ** 0`")
-                    .add_error(expr_span, "base and exponent could both be zero")
-                    .add_info(base_span, msg_base)
-                    .add_info(exp_span, msg_exp)
-                    .finish();
-                return Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "invalid power operation `0 ** 0`",
+                    expr_span,
+                    "base and exponent could both be zero",
+                )
+                .add_info(base_span, msg_base)
+                .add_info(exp_span, msg_exp)
+                .report(diags);
+                return Err(diag);
             }
 
             match pair_compile_int(base, exp) {
                 MaybeCompile::Compile((base, exp)) => {
                     let exp = BigUint::try_from(exp)
-                        .map_err(|_| diags.report_internal_error(exp_span, "got negative exp"))?;
+                        .map_err(|_| diags.report_error_internal(exp_span, "got negative exp"))?;
                     Value::new_int(base.pow(&exp))
                 }
                 MaybeCompile::Hardware((base, exp)) => {
@@ -2412,7 +2440,7 @@ pub fn eval_binary_expression(
         // (int, range) or (T:Eq, array)
         // TODO share code with match "in" pattern
         // TODO for hardware ranges, also check if start <(=) end, otherwise this might have false positives
-        BinaryOp::In => return Err(diags.report_todo(expr_span, "binary op In")),
+        BinaryOp::In => return Err(diags.report_error_todo(expr_span, "binary op In")),
         // (bool, bool)
         // TODO support boolean arrays
         BinaryOp::BitAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
@@ -2420,8 +2448,8 @@ pub fn eval_binary_expression(
         BinaryOp::BitXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int),
         //   and maybe even negative shift amounts?
-        BinaryOp::Shl => return Err(diags.report_todo(expr_span, "binary op Shl")),
-        BinaryOp::Shr => return Err(diags.report_todo(expr_span, "binary op Shr")),
+        BinaryOp::Shl => return Err(diags.report_error_todo(expr_span, "binary op Shl")),
+        BinaryOp::Shr => return Err(diags.report_error_todo(expr_span, "binary op Shr")),
     };
 
     Ok(ValueWithImplications::simple(result_simple))
@@ -2729,7 +2757,7 @@ fn array_literal_combine_values(
                     let v_ty = v.inner.ty();
                     match v_ty {
                         Type::Array(ty_inner, _len) => Ok(Arc::unwrap_or_clone(ty_inner)),
-                        _ => Err(diags.report_simple(
+                        _ => Err(diags.report_error_simple(
                             "spread operator requires an array value",
                             v.span,
                             format!("got non-array type `{}`", v_ty.value_string(elab)),
@@ -2747,17 +2775,19 @@ fn array_literal_combine_values(
                 "hardware array literal has inner type `{}` which is not representable in hardware",
                 ty_inner.value_string(elab)
             );
-            let diag = Diagnostic::new("hardware array type needs to be representable in hardware")
-                .add_error(expr_span, message)
-                .add_info(
-                    first_non_compile.span,
-                    format!(
-                        "first non-compile value with type `{}`",
-                        first_non_compile.inner.ty().value_string(elab)
-                    ),
-                )
-                .finish();
-            diags.report(diag)
+            DiagnosticError::new(
+                "hardware array type needs to be representable in hardware",
+                expr_span,
+                message,
+            )
+            .add_info(
+                first_non_compile.span,
+                format!(
+                    "first non-compile value with type `{}`",
+                    first_non_compile.inner.ty().value_string(elab)
+                ),
+            )
+            .report(diags)
         })?;
         let ty_inner_hw = Arc::new(ty_inner_hw);
 
@@ -2821,7 +2851,7 @@ fn array_literal_combine_values(
                     let elem_inner_array = match elem_inner {
                         CompileValue::Simple(SimpleCompileValue::Array(elem_inner)) => elem_inner,
                         _ => {
-                            return Err(diags.report_internal_error(span_spread, "expected array value"));
+                            return Err(diags.report_error_internal(span_spread, "expected array value"));
                         }
                     };
                     result.extend(elem_inner_array.iter().cloned())

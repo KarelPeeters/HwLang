@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
 use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
@@ -17,14 +17,12 @@ use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::throw;
 use crate::util::arena::Arena;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{IndexMapExt, NonEmptyVec};
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
-use annotate_snippets::Level;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Itertools, enumerate, zip_eq};
+use itertools::{Itertools, zip_eq};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -34,8 +32,8 @@ use std::sync::Mutex;
 // TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
 //   it might also not matter, maybe every platform pre-commits stack space by now
 pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
-const MAX_STACK_ENTRIES: usize = 1024;
-const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 16;
+const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
+const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
 //   assert that result and diagnostics are the same
@@ -87,7 +85,7 @@ pub fn compile(
                     let info = shared.elaboration_arenas.module_internal_info(elab);
                     Ok((top_item, info.module_ir))
                 }
-                _ => Err(diags.report_internal_error(parsed[top_item].id.span(), "top items should be modules")),
+                _ => Err(diags.report_error_internal(parsed[top_item].id.span(), "top items should be modules")),
             }
         })
     };
@@ -131,9 +129,9 @@ pub fn compile(
                 let thread_diags = h.join().unwrap();
                 all_diags.extend(thread_diags.finish());
             }
-            all_diags.sort_by_key(|d| d.main_annotation().map(|a| a.span));
+            all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
             for d in all_diags {
-                diags.report(d);
+                diags.push(d);
             }
         });
     } else {
@@ -179,7 +177,7 @@ impl<'a> CompileRefs<'a, '_> {
         if (self.should_stop)() {
             Err(self
                 .diags
-                .report_simple("compilation interrupted", span, "while elaborating here"))
+                .report_error_simple("compilation interrupted", span, "while elaborating here"))
         } else {
             Ok(())
         }
@@ -299,13 +297,15 @@ pub enum StackEntry {
 }
 
 impl StackEntry {
-    pub fn into_span_message(self) -> (Span, &'static str) {
-        match self {
+    pub fn into_span_message(self, depth: usize) -> (Span, String) {
+        let (span, msg) = match self {
             StackEntry::ItemUsage(span) => (span, "item used here"),
-            StackEntry::ItemEvaluation(entry_span) => (entry_span, "item declared here"),
-            StackEntry::FunctionCall(entry_span) => (entry_span, "function call here"),
-            StackEntry::FunctionRun(entry_span) => (entry_span, "function declared here"),
-        }
+            StackEntry::ItemEvaluation(span) => (span, "item declared here"),
+            StackEntry::FunctionCall(span) => (span, "function call here"),
+            StackEntry::FunctionRun(span) => (span, "function declared here"),
+        };
+
+        (span, format!("[{depth}] {msg}"))
     }
 }
 
@@ -334,8 +334,8 @@ impl<'a, 's> CompileItemContext<'a, 's> {
     }
 
     pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> DiagResult<R> {
-        if self.call_stack.len() > MAX_STACK_ENTRIES {
-            return Err(self.refs.diags.report(stack_overflow_diagnostic(&self.call_stack)));
+        if self.call_stack.len() > STACK_OVERFLOW_STACK_LIMIT {
+            return Err(stack_overflow_diagnostic(&self.call_stack).report(self.refs.diags));
         }
 
         self.call_stack.push(entry);
@@ -359,7 +359,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
                 let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
                 ctx.eval_item_new(item)
             };
-            let f_cycle = |stack: Vec<&StackEntry>| s.refs.diags.report(cycle_diagnostic(stack));
+            let f_cycle = |stack: Vec<&StackEntry>| cycle_diagnostic(stack).report(s.refs.diags);
             s.refs
                 .shared
                 .item_values
@@ -371,56 +371,60 @@ impl<'a, 's> CompileItemContext<'a, 's> {
     }
 }
 
-fn cycle_diagnostic(mut stack: Vec<&StackEntry>) -> Diagnostic {
-    // sort the stack to keep error messages deterministic
+fn cycle_diagnostic(mut stack: Vec<&StackEntry>) -> DiagnosticError {
+    // rotate the stack to keep error messages deterministic
     assert!(!stack.is_empty());
     let min_index = stack
         .iter()
-        .position_min_by_key(|entry| {
-            let (span, _) = entry.into_span_message();
-            span
-        })
+        .position_min_by_key(|entry| entry.into_span_message(0).0)
         .unwrap();
     stack.rotate_left(min_index);
+    let stack = NonEmptyVec::try_from(stack).unwrap();
 
     // create the diagnostic
-    let mut diag = Diagnostic::new("encountered cyclic dependency");
-    for (entry_index, &entry) in enumerate(stack) {
-        let (span, label) = entry.into_span_message();
-        diag = diag.add_error(span, format!("[{entry_index}] {label}"));
-    }
-    diag.finish()
+    let mut next_index: usize = 0;
+    let messages = stack.map(|entry| {
+        let index = next_index;
+        next_index += 1;
+        entry.into_span_message(index)
+    });
+
+    DiagnosticError::new_multiple("encountered cyclic dependency", messages)
 }
 
-fn stack_overflow_diagnostic(stack: &Vec<StackEntry>) -> Diagnostic {
-    let mut diag = Diagnostic::new(format!("encountered stack overflow, stack depth {}", stack.len()));
+fn stack_overflow_diagnostic(stack: &Vec<StackEntry>) -> DiagnosticError {
+    assert!(!stack.is_empty());
 
-    let add_entry = |diag: DiagnosticBuilder, index: usize, entry: &StackEntry| {
-        let (span, label) = entry.into_span_message();
-        diag.add_error(span, format!("[{index}] {label}"))
+    let mut messages = vec![];
+
+    let skipped = if stack.len() <= 2 * STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
+        for depth in 0..stack.len() {
+            messages.push(stack[depth].into_span_message(depth));
+        }
+        None
+    } else {
+        for depth in 0..STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
+            messages.push(stack[depth].into_span_message(depth));
+        }
+        for depth in (stack.len() - STACK_OVERFLOW_ERROR_ENTRIES_SHOWN)..stack.len() {
+            messages.push(stack[depth].into_span_message(depth));
+        }
+        Some(stack.len() - 2 * STACK_OVERFLOW_ERROR_ENTRIES_SHOWN)
     };
 
-    if stack.len() <= 2 * STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
-        for (entry_index, entry) in enumerate(stack) {
-            diag = add_entry(diag, entry_index, entry);
-        }
-    } else {
-        for entry_index in 0..STACK_OVERFLOW_ERROR_ENTRIES_SHOWN {
-            diag = add_entry(diag, entry_index, &stack[entry_index]);
-        }
-        for entry_index in (stack.len() - STACK_OVERFLOW_ERROR_ENTRIES_SHOWN)..stack.len() {
-            diag = add_entry(diag, entry_index, &stack[entry_index]);
-        }
-        diag = diag.footer(
-            Level::Info,
-            format!(
-                "skipped showing {} stack entries in the middle",
-                stack.len() - STACK_OVERFLOW_ERROR_ENTRIES_SHOWN
-            ),
+    let mut diag = DiagnosticError::new_multiple(
+        format!("stack overflow, stack depth {}", stack.len()),
+        NonEmptyVec::try_from(messages).unwrap(),
+    );
+
+    if let Some(skipped) = skipped {
+        diag = diag.add_footer(
+            FooterKind::Info,
+            format!("skipped showing {} stack entries in the middle", skipped),
         )
     }
 
-    diag.finish()
+    diag
 }
 
 #[derive(Debug, Clone)]
@@ -494,15 +498,17 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                             match decl_info.vis {
                                 Visibility::Public { span: _ } => {}
                                 Visibility::Private => {
-                                    let err = Diagnostic::new(format!("cannot access identifier `{}`", id.str(source)))
-                                        .add_info(decl_info.id.span(), "identifier declared here")
-                                        .add_error(id.span, "not accessible here")
-                                        .footer(
-                                            Level::Info,
-                                            "private items cannot be accessed outside of the declaring file",
-                                        )
-                                        .finish();
-                                    diags.report(err);
+                                    let _ = DiagnosticError::new(
+                                        format!("cannot access identifier `{}`", id.str(source)),
+                                        id.span,
+                                        "not accessible here",
+                                    )
+                                    .add_info(decl_info.id.span(), "identifier declared here")
+                                    .add_footer(
+                                        FooterKind::Info,
+                                        "private items cannot be accessed outside of the declaring file",
+                                    )
+                                    .report(diags);
                                 }
                             }
                         }
@@ -589,20 +595,16 @@ fn resolve_import_path(
                 options.sort();
 
                 // TODO without trailing separator
-                let diag = Diagnostic::new("import not found")
-                    .snippet(path.span)
-                    .add_error(step.span, "failed step")
-                    .finish()
-                    .footer(Level::Info, format!("possible options: {options:?}"))
-                    .finish();
-                throw!(diags.report(diag));
+                return Err(DiagnosticError::new("import not found", step.span, "failed step")
+                    .add_footer(FooterKind::Hint, format!("possible options: {options:?}"))
+                    .report(diags));
             }
         };
     }
 
     curr_node
         .file
-        .ok_or_else(|| diags.report_simple("expected path to file", parents_span, "no file exists at this path"))
+        .ok_or_else(|| diags.report_error_simple("expected path to file", parents_span, "no file exists at this path"))
 }
 
 fn find_top_module(
@@ -620,7 +622,7 @@ fn find_top_module(
         .get("top")
         .and_then(|top_node| top_node.file)
         .ok_or_else(|| {
-            diags.report_simple(
+            diags.report_error_simple(
                 "no top file found, should be called `top` and be in the root directory of the project",
                 manifest_span,
                 "manifest should point to top file",
@@ -633,16 +635,18 @@ fn find_top_module(
         ScopedEntry::Item(item) => match &fixed.parsed[item] {
             ast::Item::ModuleInternal(module) => match &module.params {
                 None => Ok(AstRefModuleInternal::new_unchecked(item, module)),
-                Some(_) => {
-                    Err(diags.report_simple("`top` cannot have generic parameters", module.id.span(), "defined here"))
-                }
+                Some(_) => Err(diags.report_error_simple(
+                    "`top` cannot have generic parameters",
+                    module.id.span(),
+                    "defined here",
+                )),
             },
-            _ => Err(diags.report_simple("`top` should be a module", top_entry.defining_span, "defined here")),
+            _ => Err(diags.report_error_simple("`top` should be a module", top_entry.defining_span, "defined here")),
         },
         ScopedEntry::Named(_) => {
             // TODO include "got" string
             // TODO is this even ever possible? direct should only be inside of scopes
-            Err(diags.report_simple(
+            Err(diags.report_error_simple(
                 "top should be an item, got a named value",
                 top_entry.defining_span,
                 "defined here",
@@ -685,11 +689,17 @@ impl CompileShared {
         // check for duplicate external modules
         for (name, spans) in &external_modules {
             if spans.len() > 1 {
-                let mut diag = Diagnostic::new(format!("external module with name `{name}` declared twice"));
-                for &span in spans {
-                    diag = diag.add_error(span, "defined here");
-                }
-                diags.report(diag.finish());
+                let messages = spans
+                    .iter()
+                    .map(|&span| (span, "defined here".to_owned()))
+                    .collect_vec();
+                let messages = NonEmptyVec::try_from(messages).unwrap();
+
+                let _ = DiagnosticError::new_multiple(
+                    format!("external module with name `{name}` declared twice"),
+                    messages,
+                )
+                .report(diags);
             }
         }
         let external_modules = external_modules.into_keys().collect();
@@ -752,7 +762,7 @@ fn finish_ir_database_impl(
     ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
     if work_queue.pop().is_some() {
-        return Err(diags.report_internal_error(dummy_span, "not all work items have been processed"));
+        return Err(diags.report_error_internal(dummy_span, "not all work items have been processed"));
     }
 
     let PartialIrDatabase {
@@ -762,7 +772,7 @@ fn finish_ir_database_impl(
     let ir_modules = ir_modules.try_map_values(|_, v| match v {
         Some(Ok(v)) => Ok(v),
         Some(Err(e)) => Err(e),
-        None => Err(diags.report_internal_error(dummy_span, "not all modules were elaborated")),
+        None => Err(diags.report_error_internal(dummy_span, "not all modules were elaborated")),
     })?;
 
     Ok(PartialIrDatabase {

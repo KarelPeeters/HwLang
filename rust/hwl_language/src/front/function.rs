@@ -2,7 +2,7 @@ use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongT
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, FooterKind};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::Flow;
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
@@ -26,7 +26,6 @@ use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
 use crate::util::{ResultDoubleExt, ResultExt};
-use annotate_snippets::Level;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, enumerate};
@@ -152,27 +151,36 @@ impl<'a> ParamArgMacher<'a> {
         let mut any_err_args = Ok(());
         for (arg_index, arg) in enumerate(&args.inner) {
             if args_must_be_compile && CompileValue::try_from(&arg.value.inner).is_err() {
-                let diag = Diagnostic::new("call target only supports compile-time arguments")
-                    .add_info(params_span, "parameters defined here")
-                    .add_error(arg.value.span, "hardware value passed here")
-                    .finish();
-                any_err_args = Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "call target only supports compile-time arguments",
+                    arg.value.span,
+                    "hardware value passed here",
+                )
+                .add_info(params_span, "parameters defined here")
+                .report(diags);
+                any_err_args = Err(diag);
             }
 
             match (&arg.name, args_must_be_named) {
                 (None, NamedRule::OnlyNamed) => {
-                    let diag = Diagnostic::new("positional arguments are not allowed for this call target")
-                        .add_info(params_span, "parameters defined here")
-                        .add_error(arg.span, "positional argument passed here")
-                        .finish();
-                    any_err_args = Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        "positional arguments are not allowed for this call target",
+                        arg.span,
+                        "positional argument passed here",
+                    )
+                    .add_info(params_span, "parameters defined here")
+                    .report(diags);
+                    any_err_args = Err(diag);
                 }
                 (Some(_), NamedRule::OnlyPositional) => {
-                    let diag = Diagnostic::new("named arguments are not allowed for this call target")
-                        .add_info(params_span, "parameters defined here")
-                        .add_error(arg.span, "named argument passed here")
-                        .finish();
-                    any_err_args = Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        "named arguments are not allowed for this call target",
+                        arg.span,
+                        "named argument passed here",
+                    )
+                    .add_info(params_span, "parameters defined here")
+                    .report(diags);
+                    any_err_args = Err(diag);
                 }
 
                 (None, NamedRule::OnlyPositional) => {}
@@ -185,11 +193,10 @@ impl<'a> ParamArgMacher<'a> {
                     match arg_name_to_index.entry(id.inner) {
                         Entry::Occupied(entry) => {
                             let prev_index = *entry.get();
-                            let diag = Diagnostic::new("duplicate named parameter")
+                            let diag = DiagnosticError::new("duplicate named parameter", id.span, "passed again here")
                                 .add_info(args.inner[prev_index].span, "previously passed here")
-                                .add_error(id.span, "passed again here")
-                                .finish();
-                            any_err_args = Err(diags.report(diag));
+                                .report(diags);
+                            any_err_args = Err(diag);
                         }
                         Entry::Vacant(entry) => {
                             entry.insert(arg_index);
@@ -202,11 +209,14 @@ impl<'a> ParamArgMacher<'a> {
                 }
                 None => {
                     if let Some(first_named_span) = first_named_span {
-                        let diag = Diagnostic::new("positional arguments after named arguments are not allowed")
-                            .add_info(first_named_span, "first named argument here")
-                            .add_error(arg.span, "later positional argument here".to_string())
-                            .finish();
-                        any_err_args = Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "positional arguments after named arguments are not allowed",
+                            arg.span,
+                            "later positional argument here".to_string(),
+                        )
+                        .add_info(first_named_span, "first named argument here")
+                        .report(diags);
+                        any_err_args = Err(diag);
                     }
 
                     positional_count += 1;
@@ -243,11 +253,9 @@ impl<'a> ParamArgMacher<'a> {
         self.next_param_index += 1;
 
         if let Some(prev_span) = self.param_names.insert(id_str, id.span) {
-            let diag = Diagnostic::new("duplicate parameter name")
+            let e = DiagnosticError::new("duplicate parameter name", id.span, "defined again here")
                 .add_info(prev_span, "previously defined here")
-                .add_error(id.span, "defined again here")
-                .finish();
-            let e = diags.report(diag);
+                .report(diags);
             self.any_err = Err(e);
             return Err(e);
         }
@@ -261,13 +269,15 @@ impl<'a> ParamArgMacher<'a> {
 
             // check if there's also a named match to get better error messages
             if let Some(&other_arg_index) = self.arg_name_to_index.get(id_str) {
-                let diag = Diagnostic::new("argument matches positionally but is also passed as named")
-                    .add_info(id.span, "parameter defined here")
-                    .add_info(arg.span, "positional match here")
-                    .add_error(self.args.inner[other_arg_index].span, "named match here")
-                    .finish();
-                let err = diags.report(diag);
-                self.any_err = Err(err);
+                let e = DiagnosticError::new(
+                    "argument matches positionally but is also passed as named",
+                    self.args.inner[other_arg_index].span,
+                    "named match here",
+                )
+                .add_info(id.span, "parameter defined here")
+                .add_info(arg.span, "positional match here")
+                .report(diags);
+                self.any_err = Err(e);
                 self.arg_used[other_arg_index] = true;
             }
 
@@ -289,11 +299,13 @@ impl<'a> ParamArgMacher<'a> {
                         Ok(default)
                     } else {
                         // nothing matched, report error
-                        let diag = Diagnostic::new(format!("missing argument for parameter `{id_str}`"))
-                            .add_info(id.span, "parameter defined without default value here")
-                            .add_error(self.args.span, "missing argument here")
-                            .finish();
-                        let e = diags.report(diag);
+                        let e = DiagnosticError::new(
+                            format!("missing argument for parameter `{id_str}`"),
+                            self.args.span,
+                            "missing argument here",
+                        )
+                        .add_info(id.span, "parameter defined without default value here")
+                        .report(diags);
                         self.any_err = Err(e);
                         Err(e)
                     }
@@ -322,11 +334,14 @@ impl<'a> ParamArgMacher<'a> {
         let mut any_err_used = Ok(());
         for (i, arg_used) in enumerate(self.arg_used) {
             if !arg_used {
-                let diag = Diagnostic::new("argument did not match any param")
-                    .add_info(self.params_span, "parameters defined here")
-                    .add_error(self.args.inner[i].span, "argument passed here")
-                    .finish();
-                any_err_used = Err(diags.report(diag));
+                let e = DiagnosticError::new(
+                    "argument did not match any param",
+                    self.args.inner[i].span,
+                    "argument passed here",
+                )
+                .add_info(self.params_span, "parameters defined here")
+                .report(diags);
+                any_err_used = Err(e);
             }
         }
 
@@ -349,25 +364,29 @@ impl CompileItemContext<'_, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
 
         let err_infer_any = |kind: &str| {
-            let diag = Diagnostic::new(format!("cannot infer {kind} params"))
-                .add_info(span_call, "no expected type")
-                .add_error(span_target, format!("this {kind} has unbound generic parameters"))
-                .footer(
-                    Level::Help,
-                    "either set an expected type or use use the full type before calling new",
-                )
-                .finish();
-            self.refs.diags.report(diag)
+            DiagnosticError::new(
+                format!("cannot infer {kind} params"),
+                span_target,
+                format!("this {kind} has unbound generic parameters"),
+            )
+            .add_info(span_call, "no expected type")
+            .add_footer(
+                FooterKind::Hint,
+                "either set an expected type or use use the full type before calling new",
+            )
+            .report(self.refs.diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {
-            let diag = Diagnostic::new("mismatching expected type")
-                .add_info(
-                    span_call,
-                    format!("non-{kind} expected type {:?}", expected_ty.value_string(elab)),
-                )
-                .add_error(actual_span, format!("{kind} type set here"))
-                .finish();
-            self.refs.diags.report(diag)
+            DiagnosticError::new(
+                "mismatching expected type",
+                actual_span,
+                format!("{kind} type set here"),
+            )
+            .add_info(
+                span_call,
+                format!("non-{kind} expected type {:?}", expected_ty.value_string(elab)),
+            )
+            .report(self.refs.diags)
         };
 
         match function {
@@ -380,12 +399,13 @@ impl CompileItemContext<'_, '_> {
                     if expected_info.unique == func_unique {
                         self.call_struct_new(span_call, expected_elab, args)
                     } else {
-                        Err(diags.report(error_unique_mismatch(
+                        Err(error_unique_mismatch(
                             "struct",
                             span_target,
                             expected_info.unique.id().span(),
                             func_unique.id().span(),
-                        )))
+                        )
+                        .report(diags))
                     }
                 }
                 Type::Any => Err(err_infer_any("struct")),
@@ -636,7 +656,7 @@ impl CompileItemContext<'_, '_> {
         let value = match args.inner.single() {
             Ok(Arg { span: _, name, value }) => {
                 if let Some(name) = name {
-                    return Err(diags.report_simple(
+                    return Err(diags.report_error_simple(
                         "this function expects a single unnamed parameter",
                         name.span,
                         "got named argument here",
@@ -645,7 +665,7 @@ impl CompileItemContext<'_, '_> {
                 value
             }
             Err(_) => {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "this function expects a single parameter",
                     args.span,
                     "incorrect arguments here",
@@ -670,7 +690,7 @@ impl CompileItemContext<'_, '_> {
                 match CompileValue::try_from(&value.inner) {
                     Ok(value) => {
                         let bits = ty_hw.value_to_bits(self.refs, &value).map_err(|_: ToBitsWrongType| {
-                            diags.report_internal_error(span_call, "value_to_bits wrong type")
+                            diags.report_error_internal(span_call, "value_to_bits wrong type")
                         })?;
                         let bits_wrapped = bits.into_iter().map(CompileValue::new_bool).collect_vec();
                         Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(bits_wrapped))))
@@ -711,20 +731,22 @@ impl CompileItemContext<'_, '_> {
                         let result = ty_hw.value_from_bits(self.refs, &v).map_err(|e| match e {
                             Either::Left(FromBitsInvalidValue) => {
                                 if is_unsafe {
-                                    let diag = Diagnostic::new("invalid bit pattern for type")
-                                        .add_info(span_target, format!("target type `{}`", ty_hw.value_string(elab)))
-                                        .add_error(span_value, format!("got bits `{:?}`", v))
-                                        .finish();
-                                    diags.report(diag)
+                                    DiagnosticError::new(
+                                        "invalid bit pattern for type",
+                                        span_value,
+                                        format!("got bits `{:?}`", v),
+                                    )
+                                    .add_info(span_target, format!("target type `{}`", ty_hw.value_string(elab)))
+                                    .report(diags)
                                 } else {
-                                    diags.report_internal_error(
+                                    diags.report_error_internal(
                                         span_call,
                                         "value_from_bits invalid value but not unsafe",
                                     )
                                 }
                             }
                             Either::Right(FromBitsWrongLength) => {
-                                diags.report_internal_error(span_call, "value_from_bits wrong length")
+                                diags.report_error_internal(span_call, "value_from_bits wrong length")
                             }
                         })?;
                         Value::from(result)
@@ -773,21 +795,27 @@ pub fn check_function_return_type_and_set_value(
             result_ty?;
         }
         (Some(ty), None) => {
-            let diag = Diagnostic::new("missing return value in function with return type")
-                .add_error(span_keyword, "return without value here")
-                .add_info(
-                    ty.span,
-                    format!("function return type `{}` declared here", ty.inner.value_string(elab)),
-                )
-                .finish();
-            return Err(diags.report(diag));
+            let diag = DiagnosticError::new(
+                "missing return value in function with return type",
+                span_keyword,
+                "return without value here",
+            )
+            .add_info(
+                ty.span,
+                format!("function return type `{}` declared here", ty.inner.value_string(elab)),
+            )
+            .report(diags);
+            return Err(diag);
         }
         (None, Some(value)) => {
-            let diag = Diagnostic::new("return value in function without return type")
-                .add_error(value.span, "return value here")
-                .add_info(entry.span_function_decl, "function declared without return type here")
-                .finish();
-            return Err(diags.report(diag));
+            let diag = DiagnosticError::new(
+                "return value in function without return type",
+                value.span,
+                "return value here",
+            )
+            .add_info(entry.span_function_decl, "function declared without return type here")
+            .report(diags);
+            return Err(diag);
         }
     }
 
@@ -822,7 +850,7 @@ fn check_function_end(
         if let Some(var) = return_entry.return_var {
             // normal return, get the value
             flow.var_eval(refs, large, Spanned::new(body_span, var))
-                .map_err(|_: DiagError| diags.report_internal_error(body_span, "failed to evaluate return value"))?
+                .map_err(|_: DiagError| diags.report_error_internal(body_span, "failed to evaluate return value"))?
         } else {
             // normal return with unit return type, return unit
             Value::unit()
@@ -832,14 +860,17 @@ fn check_function_end(
         match return_entry.return_type {
             None => Value::unit(),
             Some(return_type) => {
-                let diag = Diagnostic::new("missing return in function")
-                    .add_error(Span::empty_at(body_span.end()), "end of function is reached here")
-                    .add_info(
-                        return_type.span,
-                        format!("return type `{}` declared here", return_type.inner.value_string(elab)),
-                    )
-                    .finish();
-                return Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "missing return in function",
+                    Span::empty_at(body_span.end()),
+                    "end of function is reached here",
+                )
+                .add_info(
+                    return_type.span,
+                    format!("return type `{}` declared here", return_type.inner.value_string(elab)),
+                )
+                .report(diags);
+                return Err(diag);
             }
         }
     };
@@ -1026,11 +1057,13 @@ impl Hash for FunctionValue {
     }
 }
 
-pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> Diagnostic {
+pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> DiagnosticError {
     // TODO include struct/enum name
-    Diagnostic::new(format!("{kind} expected type mismatch"))
-        .add_error(target_span, format!("actual {kind} type is set here"))
-        .add_info(expected_span, format!("expected {kind} type declared here"))
-        .add_info(actual_span, format!("actual {kind} type defined here"))
-        .finish()
+    DiagnosticError::new(
+        format!("{kind} expected type mismatch"),
+        target_span,
+        format!("actual {kind} type is set here"),
+    )
+    .add_info(expected_span, format!("expected {kind} type declared here"))
+    .add_info(actual_span, format!("actual {kind} type defined here"))
 }

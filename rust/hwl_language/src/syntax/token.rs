@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::DiagnosticError;
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
 use crate::util::iter::IterExt;
@@ -703,22 +703,20 @@ lazy_static! {
 }
 
 impl TokenError {
-    pub fn to_diagnostic(self) -> Diagnostic {
+    pub fn to_diagnostic(self) -> DiagnosticError {
         match self {
-            TokenError::InvalidToken { pos } => Diagnostic::new("tokenization error")
-                .add_error(Span::empty_at(pos), "invalid start of token")
-                .finish(),
-            TokenError::InvalidIntLiteral { span } => Diagnostic::new("invalid integer literal")
-                .add_error(span, "here")
-                .finish(),
-            TokenError::BlockCommentMissingEnd { start, eof } => Diagnostic::new("block comment missing end")
-                .add_info(Span::empty_at(start), "block comment started here")
-                .add_error(Span::empty_at(eof), "end of file reached")
-                .finish(),
-            TokenError::StringLiteralMissingEnd { start, eof } => Diagnostic::new("string literal missing end")
-                .add_info(Span::empty_at(start), "string literal started here")
-                .add_error(Span::empty_at(eof), "end of file reached")
-                .finish(),
+            TokenError::InvalidToken { pos } => {
+                DiagnosticError::new("tokenization error", Span::empty_at(pos), "invalid start of token")
+            }
+            TokenError::InvalidIntLiteral { span } => DiagnosticError::new("invalid integer literal", span, "here"),
+            TokenError::BlockCommentMissingEnd { start, eof } => {
+                DiagnosticError::new("block comment missing end", Span::empty_at(eof), "end of file reached")
+                    .add_info(Span::empty_at(start), "block comment started here")
+            }
+            TokenError::StringLiteralMissingEnd { start, eof } => {
+                DiagnosticError::new("string literal missing end", Span::empty_at(eof), "end of file reached")
+                    .add_info(Span::empty_at(start), "string literal started here")
+            }
         }
     }
 }

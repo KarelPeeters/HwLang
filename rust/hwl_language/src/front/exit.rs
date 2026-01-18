@@ -1,6 +1,6 @@
 use crate::front::block::EarlyExitKind;
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
 use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
 use crate::front::implication::HardwareValueWithImplications;
@@ -140,7 +140,7 @@ impl ExitFlag {
                 };
                 Ok(value)
             }
-            Err(_) => Err(diags.report_internal_error(span, "flag evaluation should never fail")),
+            Err(_) => Err(diags.report_error_internal(span, "flag evaluation should never fail")),
         }
     }
 }
@@ -211,17 +211,15 @@ impl<'r> ExitStack<'r> {
     pub fn return_info(&mut self, diags: &Diagnostics, span_return: Span) -> DiagResult<&mut ReturnEntry<'r>> {
         match &mut self.return_info {
             None => match self.inside_block_expression {
-                None => Err(diags.report_simple(
+                None => Err(diags.report_error_simple(
                     "return can only be used inside a function",
                     span_return,
                     "attempt to return here",
                 )),
                 Some(InsideBlockExpression(span_block)) => {
-                    let d = Diagnostic::new_todo("return inside block expression")
-                        .add_error(span_return, "attempt to return here")
+                    Err(DiagnosticError::new_todo("return inside block expression", span_return)
                         .add_info(span_block, "inside this block expression")
-                        .finish();
-                    Err(diags.report(d))
+                        .report(diags))
                 }
             },
             Some(entry) => Ok(entry),
@@ -242,17 +240,15 @@ impl<'r> ExitStack<'r> {
 
         self.innermost_loop_option()
             .ok_or_else(|| match inside_block_expression {
-                None => diags.report_simple(
+                None => diags.report_error_simple(
                     format!("{} can only be used inside a loop", reason),
                     span_reason,
                     format!("attempt to {} here", reason),
                 ),
                 Some(InsideBlockExpression(span_block)) => {
-                    let d = Diagnostic::new_todo(format!("{} inside block expression", reason))
-                        .add_error(span_reason, format!("attempt to {} here", reason))
+                    DiagnosticError::new_todo(format!("{} inside block expression", reason), span_reason)
                         .add_info(span_block, "inside this block expression")
-                        .finish();
-                    diags.report(d)
+                        .report(diags)
                 }
             })
     }

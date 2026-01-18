@@ -28,7 +28,7 @@
 //!
 //! The current [LNode]s and the low-level line breaking implementation are very similar to prettier.
 
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, Diagnostics};
 use crate::syntax::ast::FileContent;
 use crate::syntax::format::flatten::{EncounteredParseError, ast_to_node};
 use crate::syntax::format::high::{HNode, lower_nodes};
@@ -104,9 +104,9 @@ pub fn format_file<'s>(
     let old_content = &old_info.content;
     let old_offsets = &old_info.offsets;
     let old_tokens =
-        tokenize(file, old_content, false).map_err(|e| FormatError::Syntax(diags.report(e.to_diagnostic())))?;
+        tokenize(file, old_content, false).map_err(|e| FormatError::Syntax(e.to_diagnostic().report(diags)))?;
     let old_ast = parse_file_content_without_recovery(file, old_content)
-        .map_err(|e| FormatError::Syntax(diags.report(parse_error_to_diagnostic(e))))?;
+        .map_err(|e| FormatError::Syntax(parse_error_to_diagnostic(e).report(diags)))?;
 
     // flatten the ast to high-level nodes
     let node_high = ast_to_node(&old_ast)
@@ -125,7 +125,7 @@ pub fn format_file<'s>(
         };
         let expected_str = e.expected.diagnostic_string();
         let reason = format!("formatter token mismatch: source {msg_source} but formatter emitted `{expected_str}`");
-        FormatError::Internal(diags.report_internal_error(span, reason))
+        FormatError::Internal(diags.report_error_internal(span, reason))
     })?;
 
     // simplify
@@ -171,26 +171,24 @@ fn check_format_output_matches(
     // TODO don't allocate a full vector for tokens, just use the internal iterator
     let dummy_file = FileId::dummy();
     let new_tokens = tokenize(dummy_file, new_content, false)
-        .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-tokenize formatter output: {e:?}")))?;
+        .map_err(|e| diags.report_error_internal(old_span, format!("failed to re-tokenize formatter output: {e:?}")))?;
 
     // check that each old token has a matching new token (ignored removed or added commas)
     let mut new_tokens_iter = new_tokens.iter().peekable();
     for old_token in old_tokens {
+        let old_token_str = &old_content[old_token.span.range_bytes()];
         loop {
             let new_token = new_tokens_iter.peek();
             match new_token {
                 None => {
-                    let diag =
-                        Diagnostic::new_internal_error("formatting missing output token, reached end of new file")
-                            .add_error(
-                                old_token.span,
-                                format!("expected `{}`", old_token.ty.diagnostic_string()),
-                            )
-                            .finish();
-                    return Err(diags.report(diag));
+                    let msg = format!(
+                        "formatting missing output token, reached end of new file but expected `{}` `{}`",
+                        old_token.ty.diagnostic_string(),
+                        old_token_str
+                    );
+                    return Err(diags.report_error_internal(old_token.span, msg));
                 }
                 Some(new_token) => {
-                    let old_token_str = &old_content[old_token.span.range_bytes()];
                     let new_token_str = &new_content[new_token.span.range_bytes()];
                     if old_token.ty == new_token.ty {
                         if old_token_str == new_token_str {
@@ -198,14 +196,13 @@ fn check_format_output_matches(
                             new_tokens_iter.next().unwrap();
                             break;
                         } else {
-                            let reason = format!(
-                                "formatting output token content mismatch for token type `{}`, got `{new_token_str}`",
-                                old_token.ty.diagnostic_string()
+                            let msg = format!(
+                                "formatting output token content mismatch for `{}`, got `{}` but expected `{}`",
+                                new_token.ty.diagnostic_string(),
+                                new_token_str,
+                                old_token_str,
                             );
-                            let diag = Diagnostic::new_internal_error(reason)
-                                .add_error(old_token.span, format!("expected `{old_token_str}`"))
-                                .finish();
-                            return Err(diags.report(diag));
+                            return Err(diags.report_error_internal(old_token.span, msg));
                         }
                     } else if old_token.ty == TokenType::Comma {
                         // comma that was removed
@@ -216,17 +213,13 @@ fn check_format_output_matches(
                         continue;
                     } else {
                         let reason = format!(
-                            "formatting output token type mismatch, got `{}` with content `{}`",
+                            "formatting output token type mismatch, got `{}` with content `{}` but expected `{}` with content `{}`",
                             new_token.ty.diagnostic_string(),
-                            new_token_str
+                            new_token_str,
+                            old_token.ty.diagnostic_string(),
+                            old_token_str
                         );
-                        let diag = Diagnostic::new_internal_error(reason)
-                            .add_error(
-                                old_token.span,
-                                format!("expected `{}`", old_token.ty.diagnostic_string()),
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                        return Err(diags.report_error_internal(old_token.span, reason));
                     }
                 }
             }
@@ -240,23 +233,20 @@ fn check_format_output_matches(
         }
 
         let new_token_str = &new_content[new_token.span.range_bytes()];
-        let reason = format!(
-            "formatting added unexpected output token of type `{}` with content `{}`",
+        let message = format!(
+            "formatting output mismatch, added unexpected output token of type `{}` with content `{}` but expected end of file",
             new_token.ty.diagnostic_string(),
             new_token_str
         );
-        let diag = Diagnostic::new_internal_error(reason)
-            .add_error(Span::empty_at(old_span.end()), "old file ended here")
-            .finish();
-        return Err(diags.report(diag));
+        return Err(diags.report_error_internal(Span::empty_at(old_span.end()), message));
     }
 
     // check that parsing still works and yields at least plausible results
     let new_ast = parse_file_content_without_recovery(dummy_file, new_content)
-        .map_err(|e| diags.report_internal_error(old_span, format!("failed to re-parse formatter output: {e:?}")))?;
+        .map_err(|e| diags.report_error_internal(old_span, format!("failed to re-parse formatter output: {e:?}")))?;
 
     if new_ast.arena_expressions.len() != old_ast.arena_expressions.len() {
-        return Err(diags.report_internal_error(
+        return Err(diags.report_error_internal(
             old_span,
             format!(
                 "number of expressions changed during formatting, before: {}, after: {}",

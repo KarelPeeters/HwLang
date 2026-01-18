@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_is_bool, check_type_is_string, check_type_is_string_compile};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
 use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind, ImplicationContradiction};
@@ -38,7 +38,7 @@ impl CompileItemContext<'_, '_> {
         let arg = match args_inner.single_ref() {
             Some(&Arg { span: _, name, value }) => {
                 if let Some(name) = name {
-                    return Err(diags.report_simple(
+                    return Err(diags.report_error_simple(
                         "typeof only takes a single unnamed argument",
                         name.span,
                         "tried to pass named argument here",
@@ -48,7 +48,7 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             None => {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     "typeof only takes a single unnamed argument",
                     *args_span,
                     "incorrect number of arguments here",
@@ -58,7 +58,7 @@ impl CompileItemContext<'_, '_> {
 
         // eval id
         let &ExpressionKind::Id(id) = self.refs.get_expr(arg) else {
-            return Err(diags.report_simple(
+            return Err(diags.report_error_simple(
                 "typeof only works on identifiers, not general expressions",
                 arg.span,
                 "tried to pass non-identifier here",
@@ -89,7 +89,7 @@ impl CompileItemContext<'_, '_> {
                     Spanned::new(id.span, SignalOrVariable::Signal(Signal::Register(reg))),
                 )?,
                 NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
-                    return Err(diags.report_todo(expr_span, "typeof for interfaces"));
+                    return Err(diags.report_error_todo(expr_span, "typeof for interfaces"));
                 }
             },
         };
@@ -120,13 +120,13 @@ impl CompileItemContext<'_, '_> {
             } = arg;
             if let Some(name) = name {
                 let msg = format!("{TOKEN_STR_BUILTIN} does not support named arguments");
-                return Err(diags.report_internal_error(name.span, msg));
+                return Err(diags.report_error_internal(name.span, msg));
             }
         }
 
         // evaluate the first two arguments as string literals
         if args_inner.len() < 2 {
-            return Err(diags.report_internal_error(
+            return Err(diags.report_error_internal(
                 args.span,
                 format!("{TOKEN_STR_BUILTIN} requires at least two arguments"),
             ));
@@ -171,7 +171,7 @@ impl CompileItemContext<'_, '_> {
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
                         let msg = msg.try_as_compile().map_err(|_: NotCompile| {
-                            diags.report_internal_error(expr_span, "non-compile message in compile flow")
+                            diags.report_error_internal(expr_span, "non-compile message in compile flow")
                         })?;
                         self.refs.print_handler.print(&msg);
                     }
@@ -202,7 +202,7 @@ impl CompileItemContext<'_, '_> {
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
                         let msg = msg.try_as_compile().map_err(|_: NotCompile| {
-                            diags.report_internal_error(expr_span, "non-compile message in compile flow")
+                            diags.report_error_internal(expr_span, "non-compile message in compile flow")
                         })?;
 
                         let msg = if msg.is_empty() {
@@ -211,10 +211,7 @@ impl CompileItemContext<'_, '_> {
                             format!("{ASSERT_PREFIX}: `{}`", msg.as_str())
                         };
 
-                        let diag = Diagnostic::new(msg)
-                            .add_error(expr_span, "assertion failed here")
-                            .finish();
-                        Err(diags.report(diag))
+                        Err(DiagnosticError::new(msg, expr_span, "assertion failed here").report(diags))
                     }
                     FlowKind::Hardware(flow) => {
                         let mut msg = Arc::unwrap_or_clone(msg);
@@ -253,7 +250,7 @@ impl CompileItemContext<'_, '_> {
                     MaybeCompile::Compile(cond) => {
                         return if !cond {
                             // should have been caught by the preceding assert
-                            Err(diags.report_internal_error(expr_span, "assuming false condition"))
+                            Err(diags.report_error_internal(expr_span, "assuming false condition"))
                         } else {
                             // maybe emit a warning?
                             Ok(Value::unit())
@@ -276,7 +273,11 @@ impl CompileItemContext<'_, '_> {
                     match flow.add_implication(self, expr_span, implication)? {
                         Ok(()) => {}
                         Err(ImplicationContradiction) => {
-                            return Err(diags.report_simple("contraction due to assume", expr_span, "assumption here"));
+                            return Err(diags.report_error_simple(
+                                "contraction due to assume",
+                                expr_span,
+                                "assumption here",
+                            ));
                         }
                     }
                 }
@@ -304,7 +305,7 @@ impl CompileItemContext<'_, '_> {
                     expr,
                 }))
             }
-            _ => Err(diags.report_internal_error(expr_span, "invalid builtin arguments")),
+            _ => Err(diags.report_error_internal(expr_span, "invalid builtin arguments")),
         }
     }
 }

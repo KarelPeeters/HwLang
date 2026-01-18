@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{FailedCaptureReason, Variable};
 use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
 use crate::syntax::ast::MaybeIdentifier;
@@ -177,20 +177,23 @@ impl<'p> Scope<'p> {
                     DeclaredValue::Error(_) => return,
                     DeclaredValue::FailedCapture(_, _) => {
                         // TODO is this really not reachable in normal code?
-                        diags
-                            .report_internal_error(id.span, "declaring in scope that already has failed capture value");
+                        let _ = diags
+                            .report_error_internal(id.span, "declaring in scope that already has failed capture value");
                         return;
                     }
                 };
 
                 // report error
                 // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
-                let mut diag = Diagnostic::new(format!("identifier `{}` declared multiple times", id.inner));
+                let mut diag = DiagnosticError::new(
+                    format!("identifier `{}` declared multiple times", id.inner),
+                    id.span,
+                    "declared again here",
+                );
                 for span in &spans {
                     diag = diag.add_info(*span, "previously declared here");
                 }
-                let diag = diag.add_error(id.span, "declared again here").finish();
-                let err = diags.report(diag);
+                let err = diag.report(diags);
 
                 // insert error value into scope to avoid downstream errors
                 //   caused by only considering the first declared value
@@ -261,21 +264,21 @@ impl<'p> Scope<'p> {
 
                 // TODO add fuzzy-matched suggestions as info
                 // TODO simplify once we we always have a span, eg. from a top config file, commandline or python callsite
-                let mut diag = Diagnostic::new(format!("undeclared identifier `{id}`"));
-                if let Some(id_span) = id_span {
-                    diag = diag.add_error(id_span, "identifier not declared");
-                    diag = diag.add_info(
-                        Span::empty_at(initial_scope_span.start()),
-                        format!("searched in the scope starting here{info_parents}"),
-                    );
-                } else {
-                    diag = diag.add_error(
-                        Span::empty_at(initial_scope_span.start()),
-                        format!("searched in the scope starting here{info_parents}"),
-                    );
-                }
+                let title = format!("undeclared identifier `{id}`");
 
-                Err(diags.report(diag.finish()))
+                let diag = if let Some(id_span) = id_span {
+                    DiagnosticError::new(title, id_span, "identifier not declared").add_info(
+                        Span::empty_at(initial_scope_span.start()),
+                        format!("searched in the scope starting here{info_parents}"),
+                    )
+                } else {
+                    DiagnosticError::new(
+                        title,
+                        Span::empty_at(initial_scope_span.start()),
+                        format!("searched in the scope starting here{info_parents}"),
+                    )
+                };
+                Err(diag.report(diags))
             }
         }
     }
@@ -304,17 +307,19 @@ impl<'p> Scope<'p> {
                         };
 
                         let id_span = id_span.ok_or_else(|| {
-                            diags.report_internal_error(
+                            diags.report_error_internal(
                                 initial_scope_span,
                                 "tried to resolve span-less id in captured context",
                             )
                         })?;
 
-                        let diag = Diagnostic::new(format!("failed to capture identifier because {reason_str}"))
-                            .add_error(id_span, "used here")
-                            .add_info(span, "value declared here")
-                            .finish();
-                        return Err(diags.report(diag));
+                        return Err(DiagnosticError::new(
+                            format!("failed to capture identifier because {reason_str}"),
+                            id_span,
+                            "used here",
+                        )
+                        .add_info(span, "value declared here")
+                        .report(diags));
                     }
                 };
 

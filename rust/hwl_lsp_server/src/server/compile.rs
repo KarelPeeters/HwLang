@@ -4,10 +4,11 @@ use crate::server::vfs::{Vfs, VfsResult};
 use crate::util::encode::span_to_lsp;
 use crate::util::sender::SendErrorOr;
 use crate::util::uri::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
-use annotate_snippets::Level;
 use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
-use hwl_language::front::diagnostic::{Annotation, DiagResult, Diagnostic, Diagnostics};
+use hwl_language::front::diagnostic::{
+    DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
+};
 use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::collect::{add_source_files_to_tree, add_std_sources, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
@@ -17,13 +18,13 @@ use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME, HWL_MANIFEST_FILE_NAME};
 use hwl_util::io::recurse_for_each_file;
+use hwl_util::swrite;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Itertools, zip_eq};
+use itertools::{Itertools, enumerate, zip_eq};
 use lsp_types::{
     DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri, notification,
 };
 use std::ffi::OsStr;
-use std::fmt::Write;
 use std::path::PathBuf;
 
 struct ManifestCommon {
@@ -100,7 +101,7 @@ impl ServerState {
                 .try_collect()
                 .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
-            group_diagnostics(&mut grouped_diags, &self.settings, source, &file_to_uri, diags.finish())?;
+            add_grouped_diagnostic_to_lsp(&mut grouped_diags, &self.settings, source, &file_to_uri, diags.finish())?;
         }
 
         self.log(format!(
@@ -291,7 +292,7 @@ fn collect_partial_manifest(
     Ok(ManifestCollectedInner { manifest, hierarchy })
 }
 
-fn group_diagnostics(
+fn add_grouped_diagnostic_to_lsp(
     grouped: &mut IndexMap<Uri, Vec<lsp_types::Diagnostic>>,
     settings: &Settings,
     source: &SourceDatabase,
@@ -299,12 +300,12 @@ fn group_diagnostics(
     diags: Vec<Diagnostic>,
 ) -> Result<(), SendErrorOr<RequestError>> {
     for diagnostic in diags {
-        let (file, diag) = diagnostic_to_lsp(settings.position_encoding, source, file_to_uri, diagnostic)
+        let diags = diagnostic_to_lsp(settings.position_encoding, source, file_to_uri, diagnostic)
             .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
-
-        // TODO better handle uri-less errors
-        if let Some(uri) = file_to_uri.get(&file) {
-            grouped.entry(uri.clone()).or_default().push(diag);
+        for (file, diag) in diags {
+            if let Some(uri) = file_to_uri.get(&file) {
+                grouped.entry(uri.clone()).or_default().push(diag);
+            }
         }
     }
     Ok(())
@@ -315,92 +316,117 @@ fn diagnostic_to_lsp(
     source: &SourceDatabase,
     file_to_uri: &IndexMap<FileId, Uri>,
     diagnostic: Diagnostic,
-) -> VfsResult<(FileId, lsp_types::Diagnostic)> {
-    let Diagnostic {
+) -> VfsResult<Vec<(FileId, lsp_types::Diagnostic)>> {
+    // TODO check client diagnostic capabilities
+    // TODO better handle uri-less errors, eg. for std
+
+    let Diagnostic { level, content } = diagnostic;
+    let DiagnosticContent {
         title,
-        snippets,
+        messages,
+        infos,
         footers,
-        backtrace,
-    } = &diagnostic;
+        backtrace: _,
+    } = content;
 
-    // don't show backtrace in LSP, it's not intended for end-users
-    let _ = backtrace;
-    let top_annotation = diagnostic.main_annotation().unwrap();
+    // LSP does not allow us to express "a single diagnostic with multiple top-level spans",
+    //   so instead we turn multiple top-level messages into multiple separate diagnostics, with duplicated content.
+    let mut diags = vec![];
 
-    // do the actual conversion
-    // TODO check client capabilities
-    let mut related_information = vec![];
-    for (_, annotations) in snippets {
-        for annotation in annotations {
-            if annotation == top_annotation {
+    for (curr_i, &(curr_top_span, ref curr_top_message)) in enumerate(&messages) {
+        let mut related_information = vec![];
+
+        // add other top-level messages as related information
+        for (other_i, &(other_top_span, ref other_top_message)) in enumerate(&messages) {
+            if curr_i == other_i {
                 continue;
             }
-            let &Annotation { level, span, ref label } = annotation;
 
-            let file = span.file;
+            let file = other_top_span.file;
             let file_info = &source[file];
 
-            // TODO better handle uri-less errors
             if let Some(uri) = file_to_uri.get(&file) {
                 related_information.push(DiagnosticRelatedInformation {
                     location: Location {
                         uri: uri.clone(),
-                        range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, span),
+                        range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, other_top_span),
                     },
-                    message: format!("{}: {}", level_to_str(level), label),
+                    message: format!("{}: {}", level_to_str(level), other_top_message),
                 });
             }
         }
+
+        // add infos as related information
+        for &(info_span, ref info_message) in &infos {
+            let file = info_span.file;
+            let file_info = &source[file];
+
+            if let Some(uri) = file_to_uri.get(&file) {
+                related_information.push(DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_lsp(encoding, &file_info.offsets, &file_info.content, info_span),
+                    },
+                    message: format!("{}: {}", level_to_str(level), info_message),
+                });
+            }
+        }
+
+        // combine current top-level message and footers into lsp message
+        let curr_file = curr_top_span.file;
+        let curr_file_info = &source[curr_file];
+
+        let mut lsp_message = format!("{}\n{}", title, curr_top_message);
+        for &(footer_kind, ref footer_message) in &footers {
+            swrite!(
+                lsp_message,
+                "\n{}: {}",
+                footer_kind_to_string(footer_kind),
+                footer_message
+            );
+        }
+
+        let diag = lsp_types::Diagnostic {
+            range: span_to_lsp(
+                encoding,
+                &curr_file_info.offsets,
+                &curr_file_info.content,
+                curr_top_span,
+            ),
+            severity: Some(level_to_severity(level)),
+            code: None,
+            code_description: None,
+            source: Some(HWL_LSP_NAME.to_owned()),
+            message: lsp_message,
+            related_information: Some(related_information),
+            // TODO set tags once we support those
+            tags: None,
+            // TODO data for auto-fixes
+            data: None,
+        };
+        diags.push((curr_file, diag));
     }
 
-    let top_file = top_annotation.span.file;
-    let top_file_info = &source[top_file];
-
-    let mut top_message = format!("{}\n{}", title, top_annotation.label);
-    for &(footer_level, ref footer_message) in footers {
-        write!(&mut top_message, "\n{}: {}", level_to_str(footer_level), footer_message).unwrap();
-    }
-
-    let diag = lsp_types::Diagnostic {
-        range: span_to_lsp(
-            encoding,
-            &top_file_info.offsets,
-            &top_file_info.content,
-            top_annotation.span,
-        ),
-        severity: Some(level_to_severity(top_annotation.level)),
-        code: None,
-        code_description: None,
-        source: Some(HWL_LSP_NAME.to_owned()),
-        message: top_message,
-        related_information: Some(related_information),
-        // TODO set tags once we support those
-        tags: None,
-        // TODO data for auto-fixes
-        data: None,
-    };
-
-    // return
-    // TODO maybe get the path name from the source map?
-    Ok((top_file, diag))
+    Ok(diags)
 }
 
-fn level_to_severity(level: Level) -> DiagnosticSeverity {
+fn level_to_severity(level: DiagnosticLevel) -> DiagnosticSeverity {
     match level {
-        Level::Error => DiagnosticSeverity::ERROR,
-        Level::Warning => DiagnosticSeverity::WARNING,
-        Level::Info => DiagnosticSeverity::INFORMATION,
-        Level::Note => DiagnosticSeverity::INFORMATION,
-        Level::Help => DiagnosticSeverity::HINT,
+        DiagnosticLevel::Error => DiagnosticSeverity::ERROR,
+        DiagnosticLevel::Warning => DiagnosticSeverity::WARNING,
     }
 }
 
-fn level_to_str(level: Level) -> &'static str {
+fn level_to_str(level: DiagnosticLevel) -> &'static str {
     match level {
-        Level::Error => "error",
-        Level::Warning => "warning",
-        Level::Info => "info",
-        Level::Note => "note",
-        Level::Help => "help",
+        DiagnosticLevel::Error => "error",
+        DiagnosticLevel::Warning => "warning",
+    }
+}
+
+fn footer_kind_to_string(kind: FooterKind) -> &'static str {
+    match kind {
+        FooterKind::Info => "info",
+        FooterKind::Hint => "hint",
     }
 }

@@ -37,7 +37,7 @@ impl Manifest {
                 None => source.full_span(file),
                 Some(span) => Span::new(file, span.start, span.end),
             };
-            diags.report_simple(
+            diags.report_error_simple(
                 format!("failed to parse manifest: {:?}", e.message()),
                 span,
                 "while parsing manifest here",

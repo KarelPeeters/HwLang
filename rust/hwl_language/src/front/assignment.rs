@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, FooterKind};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
@@ -13,7 +13,6 @@ use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
 use crate::syntax::ast::{Assignment, SyncDomain};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use annotate_snippets::Level;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {
@@ -177,7 +176,7 @@ impl CompileItemContext<'_, '_> {
                     .ty()
                     .as_hardware_type(elab)
                     .map_err(|_: NonHardwareType| {
-                        diags.report_internal_error(stmt.span, "source type subtype not somehow non-hardware")
+                        diags.report_error_internal(stmt.span, "source type subtype not somehow non-hardware")
                     })?;
                 let source_value_hw = source_value.inner.as_hardware_value_unchecked(
                     refs,
@@ -221,11 +220,13 @@ impl CompileItemContext<'_, '_> {
                 // check mutable or first assignment
                 let var_info = flow.var_info(target_base)?;
                 if !(var_info.mutable || (target_steps.is_empty() && flow.var_is_not_yet_assigned(target_base)?)) {
-                    let diag = Diagnostic::new("cannot assign to immutable variable")
-                        .add_error(target_base.span, "variable assigned to here")
-                        .add_info(var_info.span_decl, "variable declared as immutable here")
-                        .finish();
-                    return Err(diags.report(diag));
+                    return Err(DiagnosticError::new(
+                        "cannot assign to immutable variable",
+                        target_base.span,
+                        "variable assigned to here",
+                    )
+                    .add_info(var_info.span_decl, "variable declared as immutable here")
+                    .report(diags));
                 }
 
                 // check type
@@ -277,18 +278,17 @@ impl CompileItemContext<'_, '_> {
                                 .inner
                                 .as_hardware_type(elab)
                                 .map_err(|_: NonHardwareType| {
-                                    let diag = Diagnostic::new("failed to determine hardware type for variable")
-                                        .add_error(
-                                            target_base.span,
-                                            format!(
-                                                "type `{}` is not representable in hardware",
-                                                target_base_ty.inner.value_string(elab)
-                                            ),
-                                        )
-                                        .add_info(target_base_ty.span, target_base_ty_origin)
-                                        .add_info(op.span, "necessary because of this hardware partial assignment")
-                                        .finish();
-                                    diags.report(diag)
+                                    DiagnosticError::new(
+                                        "failed to determine hardware type for variable",
+                                        target_base.span,
+                                        format!(
+                                            "type `{}` is not representable in hardware",
+                                            target_base_ty.inner.value_string(elab)
+                                        ),
+                                    )
+                                    .add_info(target_base_ty.span, target_base_ty_origin)
+                                    .add_info(op.span, "necessary because of this hardware partial assignment")
+                                    .report(diags)
                                 })?;
 
                         // convert target value to hardware
@@ -388,15 +388,17 @@ impl CompileItemContext<'_, '_> {
                     }
                     Signal::Register(reg) => {
                         let reg_info = &self.registers[reg];
-                        let diag = Diagnostic::new("registers must be driven by a clocked block")
-                            .add_error(target_base_signal.span, "driven incorrectly here")
-                            .add_info(reg_info.id.span(), "register declared here")
-                            .footer(
-                                Level::Help,
-                                "drive the register from a clocked block or turn it into a wire",
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                        return Err(DiagnosticError::new(
+                            "registers must be driven by a clocked block",
+                            target_base_signal.span,
+                            "driven incorrectly here",
+                        )
+                        .add_info(reg_info.id.span(), "register declared here")
+                        .add_footer(
+                            FooterKind::Hint,
+                            "drive the register from a clocked block or turn it into a wire",
+                        )
+                        .report(diags));
                     }
                 }
 
@@ -414,27 +416,31 @@ impl CompileItemContext<'_, '_> {
                     }
                     Signal::Port(port) => {
                         let port_info = &self.ports[port];
-                        let diag = Diagnostic::new("ports cannot be driven by a clocked block")
-                            .add_error(target_base_signal.span, "driven incorrectly here")
-                            .add_info(port_info.span, "port declared here")
-                            .footer(
-                                Level::Help,
-                                "mark the port as a register or drive it from a combinatorial block or connection",
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                        return Err(DiagnosticError::new(
+                            "ports cannot be driven by a clocked block",
+                            target_base_signal.span,
+                            "driven incorrectly here",
+                        )
+                        .add_info(port_info.span, "port declared here")
+                        .add_footer(
+                            FooterKind::Hint,
+                            "mark the port as a register or drive it from a combinatorial block or connection",
+                        )
+                        .report(diags));
                     }
                     Signal::Wire(wire) => {
                         let wire_info = &self.wires[wire];
-                        let diag = Diagnostic::new("wires cannot be driven by a clocked block")
-                            .add_error(target_base_signal.span, "driven incorrectly here")
-                            .add_info(wire_info.decl_span(), "wire declared here")
-                            .footer(
-                                Level::Help,
-                                "change the wire to a register or drive it from a combinatorial block or connection",
-                            )
-                            .finish();
-                        return Err(diags.report(diag));
+                        return Err(DiagnosticError::new(
+                            "wires cannot be driven by a clocked block",
+                            target_base_signal.span,
+                            "driven incorrectly here",
+                        )
+                        .add_info(wire_info.decl_span(), "wire declared here")
+                        .add_footer(
+                            FooterKind::Hint,
+                            "change the wire to a register or drive it from a combinatorial block or connection",
+                        )
+                        .report(diags));
                     }
                 }
 
@@ -444,18 +450,22 @@ impl CompileItemContext<'_, '_> {
                 span_keyword: _,
                 span_init,
             } => {
-                let diag = Diagnostic::new("assigning to signals is only allowed in processes")
-                    .add_error(target_base_signal.span, "assigning to signal here")
-                    .add_info(*span_init, "the current context is a wire expression")
-                    .finish();
-                return Err(diags.report(diag));
+                return Err(DiagnosticError::new(
+                    "assigning to signals is only allowed in processes",
+                    target_base_signal.span,
+                    "assigning to signal here",
+                )
+                .add_info(*span_init, "the current context is a wire expression")
+                .report(diags));
             }
             HardwareProcessKind::InstancePortConnection { span_connection } => {
-                let diag = Diagnostic::new("assigning to signals is only allowed in processes")
-                    .add_error(target_base_signal.span, "assigning to signal here")
-                    .add_info(*span_connection, "the current context is an instance connection")
-                    .finish();
-                return Err(diags.report(diag));
+                return Err(DiagnosticError::new(
+                    "assigning to signals is only allowed in processes",
+                    target_base_signal.span,
+                    "assigning to signal here",
+                )
+                .add_info(*span_connection, "the current context is an instance connection")
+                .report(diags));
             }
         };
         Ok(block_kind)

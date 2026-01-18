@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagError, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagnosticError, Diagnostics};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::str_is_valid_identifier;
@@ -39,7 +39,7 @@ impl SourceHierarchy {
     ) -> Result<(), DiagError> {
         // check file not yet added
         if !self.files.insert(file) {
-            return Err(diags.report_simple(
+            return Err(diags.report_error_simple(
                 format!("File `{}` already exists in hierarchy", source[file].debug_info_path),
                 span,
                 "file added here",
@@ -49,7 +49,7 @@ impl SourceHierarchy {
         // check that steps are valid identifiers
         for step in steps {
             if !str_is_valid_identifier(step) {
-                return Err(diags.report_simple(
+                return Err(diags.report_error_simple(
                     format!("Invalid identifier `{step}` in hierarchy steps"),
                     span,
                     "file added here",
@@ -70,20 +70,16 @@ impl SourceHierarchy {
                         }
                         Some(prev_file) => {
                             // TODO separate spans
-                            let diag = Diagnostic::new(format!(
-                                "file with hierarchy steps `{}` already exists",
-                                steps.join(".")
-                            ))
+                            Err(DiagnosticError::new(
+                                format!("file with hierarchy steps `{}` already exists", steps.join(".")),
+                                span,
+                                format!("file with path `{}` added here", source[file].debug_info_path),
+                            )
                             .add_info(
                                 span,
                                 format!("file with path `{}` added here", source[prev_file].debug_info_path),
                             )
-                            .add_error(
-                                span,
-                                format!("file with path `{}` added here", source[file].debug_info_path),
-                            )
-                            .finish();
-                            Err(diags.report(diag))
+                            .report(diags))
                         }
                     };
                 }

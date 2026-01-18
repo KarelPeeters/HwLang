@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
@@ -270,11 +270,13 @@ pub struct HardwareEnumInfo {
 impl ElaboratedEnumInfo {
     pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
         self.variants.get_index_of(variant.inner).ok_or_else(|| {
-            let diag = Diagnostic::new(format!("variant `{}` not found on enum", variant.inner))
-                .add_error(variant.span, "attempt to access variant here")
-                .add_info(self.span_body, "enum variants declared here")
-                .finish();
-            diags.report(diag)
+            DiagnosticError::new(
+                format!("variant `{}` not found on enum", variant.inner),
+                variant.span,
+                "attempt to access variant here",
+            )
+            .add_info(self.span_body, "enum variants declared here")
+            .report(diags)
         })
     }
 }
@@ -290,7 +292,7 @@ impl CompileItemContext<'_, '_> {
         match item_ast {
             Item::Import(item_inner) => {
                 let reason = "import items should have been resolved in a separate pass already";
-                Err(diags.report_internal_error(item_inner.span, reason))
+                Err(diags.report_error_internal(item_inner.span, reason))
             }
             Item::CommonDeclaration(decl) => {
                 let flow_root = FlowRoot::new(diags);
@@ -637,7 +639,7 @@ impl CompileItemContext<'_, '_> {
                                             }
                                             CompileValue::Simple(SimpleCompileValue::Int(value)) => value.clone(),
                                             _ => {
-                                                return Err(diags.report_todo(
+                                                return Err(diags.report_error_todo(
                                                     ast.params.as_ref().map_or(ast.span, |p| p.span),
                                                     "external module generic parameters that are not bool or int",
                                                 ));
@@ -750,11 +752,10 @@ impl CompileItemContext<'_, '_> {
                     entry.insert((id, ty));
                 }
                 Entry::Occupied(entry) => {
-                    let diag = Diagnostic::new("duplicate struct field name")
+                    let e = DiagnosticError::new("duplicate struct field name", id.span, "declared again here")
                         .add_info(entry.get().0.span, "previously declared here")
-                        .add_error(id.span, "declared again here")
-                        .finish();
-                    any_field_err = Err(diags.report(diag));
+                        .report(diags);
+                    any_field_err = Err(e);
                 }
             }
 
@@ -818,11 +819,10 @@ impl CompileItemContext<'_, '_> {
                     entry.insert(variant_info);
                 }
                 Entry::Occupied(entry) => {
-                    let diag = Diagnostic::new("duplicate enum variant name")
+                    let e = DiagnosticError::new("duplicate enum variant name", id.span, "declared again here")
                         .add_info(entry.get().id.span, "previously declared here")
-                        .add_error(id.span, "declared again here")
-                        .finish();
-                    any_variant_err = Err(diags.report(diag));
+                        .report(diags);
+                    any_variant_err = Err(e);
                 }
             }
 
@@ -909,7 +909,7 @@ fn try_enum_as_hardware(
         .max()
         .unwrap_or(BigUint::ZERO);
     let max_content_size = usize::try_from(max_content_size)
-        .map_err(|size| diags.report_simple("enum size too large", span_body, format!("got size {size}")))?;
+        .map_err(|size| diags.report_error_simple("enum size too large", span_body, format!("got size {size}")))?;
 
     // wrap
     let tag_range = ClosedNonEmptyRange {

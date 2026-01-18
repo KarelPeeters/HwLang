@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{FlowCompile, FlowRoot};
 use crate::front::function::CapturedScope;
 use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
@@ -31,13 +31,13 @@ impl ElaboratedInterfaceInfo {
         index: Identifier,
     ) -> DiagResult<(usize, &ElaboratedInterfacePortInfo)> {
         match self.ports.get_index_of(index.str(source)) {
-            None => {
-                let diag = Diagnostic::new("dot index does not match any interface port")
-                    .add_error(index.span, "this identifier should match a port")
-                    .add_info(self.id.span(), "interface declared here")
-                    .finish();
-                Err(diags.report(diag))
-            }
+            None => Err(DiagnosticError::new(
+                "dot index does not match any interface port",
+                index.span,
+                "this identifier should match a port",
+            )
+            .add_info(self.id.span(), "interface declared here")
+            .report(diags)),
             Some(index) => Ok((index, &self.ports[index])),
         }
     }
@@ -49,13 +49,13 @@ impl ElaboratedInterfaceInfo {
         index: Identifier,
     ) -> DiagResult<(usize, &ElaboratedInterfaceViewInfo)> {
         match self.views.get_index_of(index.str(source)) {
-            None => {
-                let diag = Diagnostic::new("dot index does not match any interface view")
-                    .add_error(index.span, "this identifier should match a view")
-                    .add_info(self.id.span(), "interface declared here")
-                    .finish();
-                Err(diags.report(diag))
-            }
+            None => Err(DiagnosticError::new(
+                "dot index does not match any interface view",
+                index.span,
+                "this identifier should match a view",
+            )
+            .add_info(self.id.span(), "interface declared here")
+            .report(diags)),
             Some(index) => Ok((index, &self.views[index])),
         }
     }
@@ -114,7 +114,7 @@ impl CompileRefs<'_, '_> {
                 let ty_eval = ctx.eval_expression_as_ty(scope_params, flow, ty).and_then(|ty| {
                     match ty.inner.as_hardware_type(elab) {
                         Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
-                        Err(_) => Err(diags.report_simple(
+                        Err(_) => Err(diags.report_error_simple(
                             "interface ports must have hardware types",
                             ty.span,
                             format!("got non-hardware type `{}`", ty.inner.value_string(elab)),
@@ -125,11 +125,10 @@ impl CompileRefs<'_, '_> {
                 match port_map.entry(port_id.str(source).to_owned()) {
                     Entry::Occupied(mut entry) => {
                         let prev: &mut ElaboratedInterfacePortInfo = entry.get_mut();
-                        let diag = Diagnostic::new("port declared twice")
+                        let e = DiagnosticError::new("port declared twice", port_id.span, "redeclared here")
                             .add_info(prev.id.span, "previously declared here")
-                            .add_error(port_id.span, "redeclared here")
-                            .finish();
-                        prev.ty = Err(diags.report(diag));
+                            .report(diags);
+                        prev.ty = Err(e);
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(ElaboratedInterfacePortInfo {
@@ -165,17 +164,17 @@ impl CompileRefs<'_, '_> {
                         let slot = &mut port_dir_vec[port_index];
                         if let Some(prev) = &*slot {
                             if let Ok((prev_id, _)) = prev {
-                                let diag = Diagnostic::new("port direction set twice")
-                                    .add_info(prev_id.span, "previously set here")
-                                    .add_error(port_id.span, "set again here")
-                                    .finish();
-                                *slot = Some(Err(diags.report(diag)));
+                                let e =
+                                    DiagnosticError::new("port direction set twice", port_id.span, "set again here")
+                                        .add_info(prev_id.span, "previously set here")
+                                        .report(diags);
+                                *slot = Some(Err(e));
                             }
                         } else {
                             *slot = Some(Ok((*port_id, *dir)));
                         }
                     } else {
-                        any_view_err = Err(diags.report_simple(
+                        any_view_err = Err(diags.report_error_simple(
                             "port not found in this interface",
                             port_id.span,
                             "attempt to set direction here",
@@ -193,14 +192,13 @@ impl CompileRefs<'_, '_> {
                     .map(|(port_index, dir)| {
                         dir.ok_or_else(|| {
                             let port_id = &port_map.get_index(port_index).unwrap().1.id;
-                            let diag = Diagnostic::new(format!("missing direction for port `{}`", port_id.str(source)))
-                                .add_info(port_id.span, "port declared here")
-                                .add_error(
-                                    interface_id.span(),
-                                    "this interface does not set a direction for this port",
-                                )
-                                .finish();
-                            diags.report(diag)
+                            DiagnosticError::new(
+                                format!("missing direction for port `{}`", port_id.str(source)),
+                                interface_id.span(),
+                                "this interface does not set a direction for this port",
+                            )
+                            .add_info(port_id.span, "port declared here")
+                            .report(diags)
                         })
                         .flatten_err()
                     })
@@ -215,20 +213,18 @@ impl CompileRefs<'_, '_> {
             };
             if let MaybeIdentifier::Identifier(view_id) = view_id {
                 if let Some(prev) = port_map.get(view_id.str(source)) {
-                    let diag = Diagnostic::new("view name conflicts with port name")
-                        .add_error(view_id.span, "view declared here")
-                        .add_info(prev.id.span, "port declared here")
-                        .finish();
-                    diags.report(diag);
+                    let _ =
+                        DiagnosticError::new("view name conflicts with port name", view_id.span, "view declared here")
+                            .add_info(prev.id.span, "port declared here")
+                            .report(diags);
                 }
 
                 match view_map.entry(view_id.str(source).to_owned()) {
                     Entry::Occupied(mut entry) => {
-                        let diag = Diagnostic::new("view name already declared")
+                        let e = DiagnosticError::new("view name already declared", view_id.span, "redeclared here")
                             .add_info(entry.get().id.span(), "previously declared here")
-                            .add_error(view_id.span, "redeclared here")
-                            .finish();
-                        entry.get_mut().port_dirs = Err(diags.report(diag));
+                            .report(diags);
+                        entry.get_mut().port_dirs = Err(e);
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(view_eval);

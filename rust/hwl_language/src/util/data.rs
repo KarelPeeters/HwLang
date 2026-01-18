@@ -154,6 +154,14 @@ pub struct NonEmptyVec<T> {
 pub struct EmptyVec;
 
 impl<T> NonEmptyVec<T> {
+    pub fn new_single(value: T) -> Self {
+        Self { inner: vec![value] }
+    }
+
+    pub fn first(&self) -> &T {
+        &self.inner[0]
+    }
+
     pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> NonEmptyVec<U> {
         self.try_map::<U, Never>(|v| Ok(f(v))).remove_never()
     }

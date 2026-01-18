@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationKind, ValueWithImplications,
@@ -331,7 +331,7 @@ pub trait Flow: FlowPrivate {
         self.var_info_option(var.inner.index).ok_or_else(|| {
             self.root()
                 .diags
-                .report_internal_error(var.span, "failed to find variable")
+                .report_error_internal(var.span, "failed to find variable")
         })
     }
 
@@ -779,7 +779,7 @@ impl FlowPrivate for FlowCompile<'_> {
         let value = if let VariableContent::Assigned(assigned) = &content
             && CompileValue::try_from(&assigned.inner).is_err()
         {
-            let e = diags.report_internal_error(
+            let e = diags.report_error_internal(
                 assignment_span,
                 "cannot assign hardware value to variable in compile context",
             );
@@ -796,12 +796,12 @@ impl FlowPrivate for FlowCompile<'_> {
             }
             curr = match &mut curr.parent {
                 FlowCompileKind::Root => {
-                    let e = diags.report_internal_error(assignment_span, "hit root before finding variable slot");
+                    let e = diags.report_error_internal(assignment_span, "hit root before finding variable slot");
                     return Err(e);
                 }
                 FlowCompileKind::IsolatedCompile(_) => {
                     let e = diags
-                        .report_internal_error(assignment_span, "hit isolated parent before finding variable slot");
+                        .report_error_internal(assignment_span, "hit isolated parent before finding variable slot");
                     return Err(e);
                 }
                 FlowCompileKind::ScopedCompile(parent) => parent,
@@ -826,7 +826,7 @@ impl FlowPrivate for FlowCompile<'_> {
             }
             curr = match &curr.parent {
                 FlowCompileKind::Root => {
-                    let e = diags.report_internal_error(var.span, "hit root before finding variable slot");
+                    let e = diags.report_error_internal(var.span, "hit root before finding variable slot");
                     return Ok(VariableContent::err_ref(e));
                 }
                 FlowCompileKind::IsolatedCompile(parent) => parent,
@@ -1053,14 +1053,16 @@ impl<'p> FlowCompile<'p> {
     }
 
     fn err_not_hardware(&self, span: Span, reason: &str) -> DiagError {
-        let diag = Diagnostic::new(format!("{reason} is only allowed in a hardware context"))
-            .add_error(span, format!("{reason} here"))
-            .add_info(
-                self.compile_span,
-                format!("context is compile-time because of this {}", self.compile_reason),
-            )
-            .finish();
-        self.root.diags.report(diag)
+        DiagnosticError::new(
+            format!("{reason} is only allowed in a hardware context"),
+            span,
+            format!("{reason} here"),
+        )
+        .add_info(
+            self.compile_span,
+            format!("context is compile-time because of this {}", self.compile_reason),
+        )
+        .report(self.root.diags)
     }
 }
 
@@ -1162,7 +1164,7 @@ impl<'p> FlowHardware<'p> {
                     }
                 },
                 VariableContent::NotFullyAssigned(_) => {
-                    return Err(diags.report_internal_error(span, "implication on not-fully-assigned variable"));
+                    return Err(diags.report_error_internal(span, "implication on not-fully-assigned variable"));
                 }
                 &VariableContent::Error(e) => return Err(e),
             },
@@ -1185,7 +1187,7 @@ impl<'p> FlowHardware<'p> {
                         }
                     }
                     Implied::IntRange(_) => {
-                        return Err(diags.report_internal_error(span, "combining bool and int implication"));
+                        return Err(diags.report_error_internal(span, "combining bool and int implication"));
                     }
                 },
             },
@@ -1193,14 +1195,14 @@ impl<'p> FlowHardware<'p> {
                 let prev_range = match prev_implied {
                     Some(prev_implied) => match prev_implied {
                         Implied::BoolConst(_) => {
-                            return Err(diags.report_internal_error(span, "combining bool and int implication"));
+                            return Err(diags.report_error_internal(span, "combining bool and int implication"));
                         }
                         Implied::IntRange(prev_range) => prev_range,
                     },
                     None => match current_ty {
                         HardwareType::Int(prev_range) => prev_range,
                         _ => {
-                            return Err(diags.report_internal_error(span, "combining int implication and non-int type"));
+                            return Err(diags.report_error_internal(span, "combining int implication and non-int type"));
                         }
                     },
                 };
@@ -1376,11 +1378,13 @@ impl<'p> FlowHardware<'p> {
         let diags = root_hw.root.diags;
 
         let report_err = |span_curr: Span, kind_curr: &str| {
-            let diag = Diagnostic::new(format!("{reason} is only allowed in a clocked block"))
-                .add_error(span, format!("{reason} used here"))
-                .add_info(span_curr, format!("currently inside this {kind_curr}"))
-                .finish();
-            diags.report(diag)
+            DiagnosticError::new(
+                format!("{reason} is only allowed in a clocked block"),
+                span,
+                format!("{reason} used here"),
+            )
+            .add_info(span_curr, format!("currently inside this {kind_curr}"))
+            .report(diags)
         };
 
         match &mut root_hw.process_kind {
@@ -1974,15 +1978,17 @@ fn merge_branch_variable(
 
             branch_ty.as_hardware_type(elab).map_err(|_| {
                 let ty_str = branch_ty.value_string(elab);
-                let diag = Diagnostic::new("merging if assignments needs hardware type")
-                    .add_info(var_info.span_decl, "for this variable")
-                    .add_info(
-                        branch_value.span,
-                        format!("value assigned here has type `{ty_str}` which cannot be represented in hardware"),
-                    )
-                    .add_error(span_merge, "merging happens here")
-                    .finish();
-                diags.report(diag)
+                DiagnosticError::new(
+                    "merging if assignments needs hardware type",
+                    span_merge,
+                    "merging happens here",
+                )
+                .add_info(var_info.span_decl, "for this variable")
+                .add_info(
+                    branch_value.span,
+                    format!("value assigned here has type `{ty_str}` which cannot be represented in hardware"),
+                )
+                .report(diags)
             })
         })
         .try_collect_all_vec()?;
@@ -1994,12 +2000,12 @@ fn merge_branch_variable(
     let ty = ty.as_hardware_type(elab).map_err(|_| {
         let ty_str = ty.value_string(elab);
 
-        let mut diag = Diagnostic::new("merging if assignments needs hardware type")
-            .add_info(var_info.span_decl, "for this variable")
-            .add_error(
-                span_merge,
-                format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
-            );
+        let mut diag = DiagnosticError::new(
+            "merging if assignments needs hardware type",
+            span_merge,
+            format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
+        )
+        .add_info(var_info.span_decl, "for this variable");
 
         for (branch, ty) in zip_eq(&*branches, branch_tys) {
             if let Some(branch_slot) = branch.common.variables.get(&var.index) {
@@ -2030,7 +2036,7 @@ fn merge_branch_variable(
                 }
             }
         }
-        diags.report(diag.finish())
+        diag.report(diags)
     })?;
 
     // create result variable
@@ -2357,20 +2363,18 @@ impl VariableNotFullyAssigned {
     pub fn report_diag(&self, diags: &Diagnostics, span: Span, var_info: &VariableInfo) -> DiagError {
         match self {
             VariableNotFullyAssigned::NotYetAssigned => {
-                let diag = Diagnostic::new("variable has not yet been assigned a value")
-                    .add_error(span, "variable used here")
+                DiagnosticError::new("variable has not yet been assigned a value", span, "variable used here")
                     .add_info(var_info.span_decl, "variable declared here")
-                    .finish();
-                diags.report(diag)
+                    .report(diags)
             }
-            VariableNotFullyAssigned::PartiallyAssigned => {
-                let diag = Diagnostic::new("variable has not yet been assigned a value in all preceding branches")
-                    .add_error(span, "variable used here")
-                    .add_info(var_info.span_decl, "variable declared here")
-                    .finish();
-                diags.report(diag)
-            }
-            VariableNotFullyAssigned::Undefined => diags.report_internal_error(span, "evaluating undefined variable"),
+            VariableNotFullyAssigned::PartiallyAssigned => DiagnosticError::new(
+                "variable has not yet been assigned a value in all preceding branches",
+                span,
+                "variable used here",
+            )
+            .add_info(var_info.span_decl, "variable declared here")
+            .report(diags),
+            VariableNotFullyAssigned::Undefined => diags.report_error_internal(span, "evaluating undefined variable"),
         }
     }
 }

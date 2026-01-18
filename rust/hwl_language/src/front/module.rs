@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::{NamedOrValue, ValueInner};
@@ -40,12 +40,11 @@ use crate::syntax::parsed::{AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{IndexMapExt, NonEmptyVec};
 use crate::util::iter::IterExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use crate::{new_index_type, throw};
-use annotate_snippets::Level;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, enumerate};
@@ -278,7 +277,7 @@ impl CompileRefs<'_, '_> {
                                         CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
                                             Ok(Spanned::new(view.span, inner))
                                         }
-                                        value => Err(diags.report_simple(
+                                        value => Err(diags.report_error_simple(
                                             "expected interface view",
                                             view.span,
                                             format!("got other value with type `{}`", value.ty().value_string(elab)),
@@ -351,7 +350,7 @@ impl CompileRefs<'_, '_> {
                                                 CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
                                                     Ok(Spanned::new(view.span, inner))
                                                 }
-                                                value => Err(diags.report_simple(
+                                                value => Err(diags.report_error_simple(
                                                     "expected interface view",
                                                     view.span,
                                                     format!(
@@ -649,13 +648,14 @@ fn claim_ir_name(
             Ok(())
         }
         Entry::Occupied(entry) => {
-            let diag = Diagnostic::new(format!(
-                "port with name `{name}` conflicts with earlier port with the same name"
-            ))
-            .add_error(span, "new port defined here")
+            let diag = DiagnosticError::new(
+                format!("port with name `{name}` conflicts with earlier port with the same name"),
+                span,
+                "new port defined here",
+            )
             .add_info(*entry.get(), "previous port defined here")
-            .finish();
-            Err(diags.report(diag))
+            .report(diags);
+            Err(diag)
         }
     }
 }
@@ -1393,11 +1393,10 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 }
                 Entry::Occupied(entry) => {
                     let (prev_connection, _) = entry.get();
-                    let diag = Diagnostic::new("duplicate connection")
+                    let diag = DiagnosticError::new("duplicate connection", connection.span, "connected again here")
                         .add_info(prev_connection.span, "previous connection here")
-                        .add_error(connection.span, "connected again here")
-                        .finish();
-                    return Err(diags.report(diag));
+                        .report(diags);
+                    return Err(diag);
                 }
             }
         }
@@ -1414,7 +1413,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 Some((connection, connection_used)) => {
                     if *connection_used {
                         // this should have already been caught during module header elaboration
-                        return Err(diags.report_internal_error(connection.span, "connection used twice"));
+                        return Err(diags.report_error_internal(connection.span, "connection used twice"));
                     }
                     *connection_used = true;
 
@@ -1435,11 +1434,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     }
                 }
                 None => {
-                    let diag = Diagnostic::new(format!("missing connection for port {connector_id_str}"))
-                        .add_error(Span::empty_at(port_connections.span.end()), "connections here")
-                        .add_info(connector_info.id.span, "port declared here")
-                        .finish();
-                    return Err(diags.report(diag));
+                    let diag = DiagnosticError::new(
+                        format!("missing connection for port {connector_id_str}"),
+                        Span::empty_at(port_connections.span.end()),
+                        "connections here",
+                    )
+                    .add_info(connector_info.id.span, "port declared here")
+                    .report(diags);
+                    return Err(diag);
                 }
             }
         }
@@ -1447,11 +1449,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let mut any_unused_err = Ok(());
         for (_, &(connection, used)) in id_to_connection_and_used.iter() {
             if !used {
-                let diag = Diagnostic::new("connection does not match any port")
-                    .add_error(connection.span, "invalid connection here")
-                    .add_info(def_ports_span, "ports declared here")
-                    .finish();
-                any_unused_err = Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "connection does not match any port",
+                    connection.span,
+                    "invalid connection here",
+                )
+                .add_info(def_ports_span, "ports declared here")
+                .report(diags);
+                any_unused_err = Err(diag);
             }
         }
         any_unused_err?;
@@ -1501,7 +1506,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         // double-check id match
         if connector_id.str(source) != connection_id.str(source) {
-            return Err(diags.report_internal_error(connection.span, "connection name mismatch"));
+            return Err(diags.report_error_internal(connection.span, "connection name mismatch"));
         }
 
         // replace signals that are earlier ports with their connected value
@@ -1512,25 +1517,25 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|raw_port| {
                     let mapped_port = match prev_single_to_signal.get(&raw_port.signal) {
                         None => throw!(
-                            diags.report_internal_error(connection.span, "failed to get signal for previous port")
+                            diags.report_error_internal(connection.span, "failed to get signal for previous port")
                         ),
                         Some(&ConnectionSignal::Dummy(dummy_span)) => {
-                            let diag = Diagnostic::new_todo(
+                            let diag = DiagnosticError::new_todo(
                                 "dummy port connections that are used in the domain of other ports",
+                                dummy_span,
                             )
-                            .add_error(dummy_span, "port connected to dummy here")
                             .add_info(domain_span, "port used in a domain here")
-                            .finish();
-                            throw!(diags.report(diag))
+                            .report(diags);
+                            return Err(diag);
                         }
                         Some(&ConnectionSignal::Expression(expr_span)) => {
-                            let diag = Diagnostic::new_todo(
+                            let diag = DiagnosticError::new_todo(
                                 "expression port connections that are used in the domain of other ports",
+                                expr_span,
                             )
-                            .add_error(expr_span, "port connected to expression here")
                             .add_info(domain_span, "port used in a domain here")
-                            .finish();
-                            throw!(diags.report(diag))
+                            .report(diags);
+                            return Err(diag);
                         }
                         Some(&ConnectionSignal::Signal(signal)) => Ok(signal),
                     }?;
@@ -1579,11 +1584,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     PortDirection::Input => {
                         // better dummy port error message
                         if let ExpressionKind::Dummy = self.ctx.refs.get_expr(value_expr) {
-                            let diag = Diagnostic::new("dummy connections are only allowed for output ports")
-                                .add_error(value_expr.span, "dummy connection used here")
-                                .add_info(direction.span, "port declared as input here")
-                                .finish();
-                            return Err(diags.report(diag));
+                            let diag = DiagnosticError::new(
+                                "dummy connections are only allowed for output ports",
+                                value_expr.span,
+                                "dummy connection used here",
+                            )
+                            .add_info(direction.span, "port declared as input here")
+                            .report(diags);
+                            return Err(diag);
                         }
 
                         // eval expr
@@ -1683,7 +1691,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     PortDirection::Output => {
                         // eval expr as dummy, wire or port
                         let build_error = || {
-                            diags.report_simple(
+                            diags.report_error_simple(
                                 "output port must be connected to wire or port",
                                 value_expr.span,
                                 "other value",
@@ -1818,18 +1826,20 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         (info.interface, wire_domain, wire_signals)
                     }
                     ValueInner::Value(_) => {
-                        let diag = Diagnostic::new("expected interface value")
-                            .add_error(value_expr.span, "got non-interface expression")
-                            .add_info(connector_id.span, "port defined as interface here")
-                            .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "expected interface value",
+                            value_expr.span,
+                            "got non-interface expression",
+                        )
+                        .add_info(connector_id.span, "port defined as interface here")
+                        .report(diags);
+                        return Err(diag);
                     }
                 };
 
                 // check interface match (including generics)
                 if value_interface.inner != connector_view.inner.interface {
-                    let diag = Diagnostic::new("interface mismatch")
-                        .add_error(value_expr.span, "got mismatching interface")
+                    let diag = DiagnosticError::new("interface mismatch", value_expr.span, "got mismatching interface")
                         .add_info(
                             connector_view.span,
                             format!(
@@ -1844,8 +1854,8 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 SimpleCompileValue::Interface(value_interface.inner).value_string(elab)
                             ),
                         )
-                        .finish();
-                    return Err(diags.report(diag));
+                        .report(diags);
+                    return Err(diag);
                 }
 
                 // check directions and build connections
@@ -1880,22 +1890,22 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     if let Some(value_dir) = value_dir
                         && connector_dir.inner != value_dir.inner
                     {
-                        let diag = Diagnostic::new(format!(
-                            "direction mismatch for interface port `{}`",
-                            interface_info.ports[port_index].id.str(source)
-                        ))
+                        let diag = DiagnosticError::new(
+                            format!(
+                                "direction mismatch for interface port `{}`",
+                                interface_info.ports[port_index].id.str(source)
+                            ),
+                            value_expr.span,
+                            format!("got direction {}", value_dir.inner.diagnostic_string()),
+                        )
                         .add_info(
                             connection_id.span,
                             format!("expected direction {}", connector_dir.inner.diagnostic_string()),
                         )
-                        .add_error(
-                            value_expr.span,
-                            format!("got direction {}", value_dir.inner.diagnostic_string()),
-                        )
                         .add_info(connector_dir.span, "expected direction set here")
                         .add_info(value_dir.span, "actual direction set here")
-                        .finish();
-                        return Err(diags.report(diag));
+                        .report(diags);
+                        return Err(diag);
                     }
                     let dir = connector_dir.inner;
 
@@ -1966,15 +1976,18 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             match wire_info {
                 WireInfo::Single(WireInfoSingle { id, domain, typed }) => {
                     if let Ok(None) = domain {
-                        any_err = Err(diags.report_simple(
+                        any_err = Err(diags.report_error_simple(
                             "could not infer domain for wire",
                             id.span(),
                             "wire declared here",
                         ));
                     }
                     if let Ok(None) = typed {
-                        any_err =
-                            Err(diags.report_simple("could not infer type for wire", id.span(), "wire declared here"));
+                        any_err = Err(diags.report_error_simple(
+                            "could not infer type for wire",
+                            id.span(),
+                            "wire declared here",
+                        ));
                     }
 
                     // fill in domain debug info
@@ -1999,7 +2012,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             } = info;
 
             if let Ok(None) = domain {
-                any_err = Err(diags.report_simple(
+                any_err = Err(diags.report_error_simple(
                     "could not infer type for wire interface",
                     id.span(),
                     "wire interface declared here",
@@ -2020,7 +2033,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             let RegisterInfo { id, domain, ty, ir } = derp;
 
             if let Ok(None) = domain {
-                any_err = Err(diags.report_simple(
+                any_err = Err(diags.report_error_simple(
                     "could not infer domain for register",
                     id.span(),
                     "register declared here",
@@ -2096,23 +2109,26 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let drivers = drivers.as_ref_ok()?;
 
         match drivers.len() {
-            0 => {
-                let diag = Diagnostic::new(format!("{kind} `{name}` has no driver"))
-                    .add_error(decl_span, "declared here")
-                    .finish();
-                Err(diags.report(diag))
-            }
+            0 => Err(
+                DiagnosticError::new(format!("{kind} `{name}` has no driver"), decl_span, "declared here")
+                    .report(diags),
+            ),
             1 => {
                 let (&driver, &first_span) = drivers.iter().single().unwrap();
                 Ok((driver, first_span))
             }
             _ => {
-                let mut diag = Diagnostic::new(format!("{kind} `{name}` has multiple drivers"));
-                for (_, &span) in drivers {
-                    diag = diag.add_error(span, "driven here");
-                }
-                let diag = diag.add_info(decl_span, "declared here").finish();
-                Err(diags.report(diag))
+                let messages = drivers
+                    .iter()
+                    .map(|(_, &span)| (span, "driven here".to_owned()))
+                    .collect_vec();
+                let messages = NonEmptyVec::try_from(messages).unwrap();
+
+                Err(
+                    DiagnosticError::new_multiple(format!("{kind} `{name}` has multiple drivers"), messages)
+                        .add_info(decl_span, "declared here")
+                        .report(diags),
+                )
             }
         }
     }
@@ -2232,11 +2248,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                         "value with type `{}` cannot be represented in hardware",
                                         value.inner.ty().value_string(elab)
                                     );
-                                    let diag = Diagnostic::new("cannot assign non-hardware value to wire")
-                                        .add_error(value.span, err_msg)
-                                        .add_info(assign_span, "assignment to wire here")
-                                        .finish();
-                                    Err(diags.report(diag))
+                                    let diag = DiagnosticError::new(
+                                        "cannot assign non-hardware value to wire",
+                                        value.span,
+                                        err_msg,
+                                    )
+                                    .add_info(assign_span, "assignment to wire here")
+                                    .report(diags);
+                                    Err(diag)
                                 }
                             },
                             Some(ty) => {
@@ -2316,14 +2335,17 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             Ok(Spanned::new(interface.span, interface_inner))
                         }
                         _ => {
-                            let diag = Diagnostic::new("expected interface value")
-                                .add_error(interface.span, "got non-interface expression")
-                                .add_info(
-                                    span_keyword,
-                                    "expected an interface because of this wire interface declaration",
-                                )
-                                .finish();
-                            Err(diags.report(diag))
+                            let diag = DiagnosticError::new(
+                                "expected interface value",
+                                interface.span,
+                                "got non-interface expression",
+                            )
+                            .add_info(
+                                span_keyword,
+                                "expected an interface because of this wire interface declaration",
+                            )
+                            .report(diags);
+                            Err(diag)
                         }
                     });
 
@@ -2473,7 +2495,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let id = id.spanned_str(source);
 
         if !is_root_block {
-            return Err(diags.report_simple(
+            return Err(diags.report_error_simple(
                 "register output markers are only allowed at the top level of a module",
                 decl_span,
                 "register output in child block",
@@ -2484,11 +2506,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let port = scope_body.find(diags, id).and_then(|port| match port.value {
             ScopedEntry::Named(NamedValue::Port(port)) => Ok(port),
             _ => {
-                let diag = Diagnostic::new("register port marker needs to be on a port")
-                    .add_error(id.span, "non-port value here")
-                    .add_info(port.defining_span, "declared here")
-                    .finish();
-                Err(diags.report(diag))
+                let diag = DiagnosticError::new(
+                    "register port marker needs to be on a port",
+                    id.span,
+                    "non-port value here",
+                )
+                .add_info(port.defining_span, "declared here")
+                .report(diags);
+                Err(diag)
             }
         });
         let port = port?;
@@ -2509,11 +2534,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let mut direction_err = Ok(());
         match port_info.direction.inner {
             PortDirection::Input => {
-                let diag = Diagnostic::new("only output ports can be marked as registers")
-                    .add_error(id.span, "port marked as register here")
-                    .add_info(port_info.direction.span, "port declared as input here")
-                    .finish();
-                direction_err = Err(diags.report(diag))
+                let diag = DiagnosticError::new(
+                    "only output ports can be marked as registers",
+                    id.span,
+                    "port marked as register here",
+                )
+                .add_info(port_info.direction.span, "port declared as input here")
+                .report(diags);
+                direction_err = Err(diag)
             }
             PortDirection::Output => {}
         }
@@ -2529,11 +2557,14 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let domain = match domain {
             Ok(domain) => domain,
             Err(actual) => {
-                let diag = Diagnostic::new("only synchronous ports can be marked as registers")
-                    .add_error(id.span, "port marked as register here")
-                    .add_info(port_info.domain.span, format!("port declared as {actual} here"))
-                    .finish();
-                return Err(diags.report(diag));
+                let diag = DiagnosticError::new(
+                    "only synchronous ports can be marked as registers",
+                    id.span,
+                    "port marked as register here",
+                )
+                .add_info(port_info.domain.span, format!("port declared as {actual} here"))
+                .report(diags);
+                return Err(diag);
             }
         };
 
@@ -2682,13 +2713,13 @@ impl Drivers {
 
             // wrong (this should have been checked during block elaboration already)
             (Signal::Port(_), DriverKind::ClockedBlock) => {
-                Err(diags.report_internal_error(target.span, "clocked block driving port"))
+                Err(diags.report_error_internal(target.span, "clocked block driving port"))
             }
             (Signal::Wire(_), DriverKind::ClockedBlock) => {
-                Err(diags.report_internal_error(target.span, "clocked block driving wire"))
+                Err(diags.report_error_internal(target.span, "clocked block driving wire"))
             }
             (Signal::Register(_), DriverKind::WiredConnection) => {
-                Err(diags.report_internal_error(target.span, "wired connection driving register"))
+                Err(diags.report_error_internal(target.span, "wired connection driving register"))
             }
         };
 
@@ -2701,7 +2732,7 @@ impl Drivers {
             target_span: Span,
         ) -> DiagResult {
             let inner = map.get_mut(&target).ok_or_else(|| {
-                diags.report_internal_error(target_span, "failed to record driver, target was not registered")
+                diags.report_error_internal(target_span, "failed to record driver, target was not registered")
             })?;
 
             match driver {
@@ -2740,7 +2771,7 @@ fn pull_register_init_into_process(
     let reg_info = &ctx.registers[reg];
 
     let reg_domain = reg_info.domain?.ok_or_else(|| {
-        diags.report_internal_error(reg_info.id.span(), "no inferred domain even though there are drivers")
+        diags.report_error_internal(reg_info.id.span(), "no inferred domain even though there are drivers")
     })?;
 
     if let Driver::ClockedBlock(stmt_index) = driver
@@ -2762,12 +2793,14 @@ fn pull_register_init_into_process(
                     Some(reset) => {
                         // check that the reset style matches
                         let reset_style_err = |block: &str, reg: &str| {
-                            let diag = Diagnostic::new("reset style mismatch")
-                                .add_error(driver_first_span, "block drives register here")
-                                .add_info(reset.kind.span, format!("block defined with {block} reset here"))
-                                .add_info(reg_domain.span, format!("register defined with {reg} reset here"))
-                                .finish();
-                            diags.report(diag)
+                            DiagnosticError::new(
+                                "reset style mismatch",
+                                driver_first_span,
+                                "block drives register here",
+                            )
+                            .add_info(reset.kind.span, format!("block defined with {block} reset here"))
+                            .add_info(reg_domain.span, format!("register defined with {reg} reset here"))
+                            .report(diags)
                         };
                         match (reset.kind.inner, reg_domain.inner.reset) {
                             (ResetKind::Async, Some(_)) => {}
@@ -2786,17 +2819,19 @@ fn pull_register_init_into_process(
                     None => {
                         // TODO actually, this is conceptually a bit weird:
                         //   why is reset a properly of the process, and not (only) the register?
-                        let diag =
-                            Diagnostic::new("clocked block without reset cannot drive register with reset value")
-                                .add_error(driver_first_span, "clocked block drives register here")
-                                .add_info(process.clock_signal.span, "clocked block declared without reset here")
-                                .add_info(init.span, "register reset value defined here")
-                                .footer(
-                                    Level::Help,
-                                    "either add an reset to the block or use `undef` as the the initial value",
-                                )
-                                .finish();
-                        return Err(diags.report(diag));
+                        let diag = DiagnosticError::new(
+                            "clocked block without reset cannot drive register with reset value",
+                            driver_first_span,
+                            "clocked block drives register here",
+                        )
+                        .add_info(process.clock_signal.span, "clocked block declared without reset here")
+                        .add_info(init.span, "register reset value defined here")
+                        .add_footer(
+                            FooterKind::Hint,
+                            "either add an reset to the block or use `undef` as the the initial value",
+                        )
+                        .report(diags);
+                        return Err(diag);
                     }
                 }
             }
@@ -2804,7 +2839,7 @@ fn pull_register_init_into_process(
         return Ok(());
     }
 
-    Err(diags.report_internal_error(
+    Err(diags.report_error_internal(
         reg_info.id.span(),
         "failure while pulling reset value into clocked process",
     ))

@@ -68,7 +68,8 @@ pub fn add_source_files_to_tree(
         let mut all_steps = steps.clone();
         all_steps.extend(relative_steps.iter().cloned());
 
-        let content = read(path).map_err(|e| diags.report_simple(e, manifest_span, "while reading here files here"))?;
+        let content =
+            read(path).map_err(|e| diags.report_error_simple(e, manifest_span, "while reading here files here"))?;
 
         let file = source.add_file(path.to_string_lossy().into_owned(), content);
         hierarchy.add_file(diags, source, manifest_span, &all_steps, file)?;
@@ -84,7 +85,7 @@ pub fn collect_source_files_from_tree(
     span: Span,
     entry_path: PathBuf,
 ) -> DiagResult<Vec<(Vec<String>, PathBuf)>> {
-    let report_error = |m: String| diags.report_simple(m, span, "while collecting source here");
+    let report_error = |m: String| diags.report_error_simple(m, span, "while collecting source here");
 
     let meta = std::fs::metadata(&entry_path).map_err(|e| report_error(io_error_message(e.with_path(&entry_path))))?;
     if meta.is_file() {

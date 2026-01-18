@@ -1,5 +1,5 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticAddable, DiagnosticBuilder, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::item::ElaborationArenas;
@@ -15,7 +15,6 @@ use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::MultiRange;
-use annotate_snippets::Level;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -79,20 +78,22 @@ impl CompileItemContext<'_, '_> {
         valid.map_err(|invalid_reason| {
             let target_str = target.inner.diagnostic_string(self);
             let source_str = source.inner.diagnostic_string(self);
-            let diag = Diagnostic::new(format!("invalid domain crossing: {invalid_reason}"))
-                .add_error(crossing_span, "invalid domain crossing here")
-                .add_info(target.span, format!("target domain is {target_str}"))
-                .add_info(source.span, format!("source domain is {source_str}"))
-                .footer(Level::Info, format!("crossing due to {required_reason}"))
-                .footer(
-                    Level::Help,
-                    format!(
-                        "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
-                        TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
-                    ),
-                )
-                .finish();
-            diags.report(diag)
+            DiagnosticError::new(
+                format!("invalid domain crossing: {invalid_reason}"),
+                crossing_span,
+                "invalid domain crossing here",
+            )
+            .add_info(target.span, format!("target domain is {target_str}"))
+            .add_info(source.span, format!("source domain is {source_str}"))
+            .add_footer(FooterKind::Info, format!("crossing due to {required_reason}"))
+            .add_footer(
+                FooterKind::Hint,
+                format!(
+                    "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
+                    TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
+                ),
+            )
+            .report(diags)
         })
     }
 }
@@ -137,12 +138,7 @@ pub enum TypeContainsReason {
 }
 
 impl TypeContainsReason {
-    pub fn add_diag_info(
-        self,
-        elab: &ElaborationArenas,
-        diag: DiagnosticBuilder,
-        target_ty: &Type,
-    ) -> DiagnosticBuilder {
+    pub fn add_diag_info(self, elab: &ElaborationArenas, diag: DiagnosticError, target_ty: &Type) -> DiagnosticError {
         let target_ty_str = target_ty.value_string(elab);
         match self {
             // TODO improve assignment error message
@@ -207,9 +203,10 @@ impl TypeContainsReason {
             TypeContainsReason::Parameter { param_ty } => {
                 diag.add_info(param_ty, format!("parameter requires type `{target_ty_str}`"))
             }
-            TypeContainsReason::Internal(span) => {
-                Diagnostic::new_internal_error("type check failed").add_error(span, "here")
-            }
+            TypeContainsReason::Internal(span) => DiagnosticError::new_internal_compiler_error(
+                "type check failed, should have been checked already",
+                span,
+            ),
         }
     }
 }
@@ -238,18 +235,16 @@ pub fn check_type_contains_type(
     } else {
         // TODO simpler error message for very simply values, eg. ints, bools, short tuples/arrays
         // TODO for assignments, error should point at the assignment operator, not the value
-        let mut diag = Diagnostic::new("type mismatch");
+        let mut diag = DiagnosticError::new(
+            "type mismatch",
+            value_ty.span,
+            format!(
+                "source value with type `{}` does not fit",
+                value_ty.inner.value_string(elab)
+            ),
+        );
         diag = reason.add_diag_info(elab, diag, target_ty);
-        let diag = diag
-            .add_error(
-                value_ty.span,
-                format!(
-                    "source value with type `{}` does not fit",
-                    value_ty.inner.value_string(elab)
-                ),
-            )
-            .finish();
-        Err(diags.report(diag))
+        Err(diag.report(diags))
     }
 }
 
@@ -261,7 +256,7 @@ pub fn check_type_is_int(
 ) -> DiagResult<MaybeCompile<BigInt, HardwareInt>> {
     check_type_contains_value(diags, elab, reason, &Type::Int(MultiRange::open()), value.as_ref())?;
 
-    let err = || diags.report_internal_error(value.span, "unexpected value kind for int type");
+    let err = || diags.report_error_internal(value.span, "unexpected value kind for int type");
     match value.inner {
         Value::Simple(v) => match v {
             SimpleCompileValue::Int(v) => Ok(MaybeCompile::Compile(v)),
@@ -291,7 +286,7 @@ pub fn check_type_is_uint(
     }));
     check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
 
-    let err = || diags.report_internal_error(value.span, "unexpected value kind for uint type");
+    let err = || diags.report_error_internal(value.span, "unexpected value kind for uint type");
     match value.inner {
         Value::Simple(v) => match v {
             SimpleCompileValue::Int(v) => Ok(MaybeCompile::Compile(BigUint::try_from(v).unwrap())),
@@ -324,7 +319,7 @@ pub fn check_type_is_int_hardware(
             domain: value.inner.domain,
             expr: value.inner.expr,
         }),
-        _ => Err(diags.report_internal_error(value.span, "expected int type")),
+        _ => Err(diags.report_error_internal(value.span, "expected int type")),
     }
 }
 
@@ -340,7 +335,7 @@ pub fn check_type_is_uint_compile(
     }));
     check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
 
-    let err = || diags.report_internal_error(value.span, "expected uint value");
+    let err = || diags.report_error_internal(value.span, "expected uint value");
     match value.inner {
         CompileValue::Simple(v) => match v {
             SimpleCompileValue::Int(v) => Ok(BigUint::try_from(v).unwrap()),
@@ -359,7 +354,7 @@ pub fn check_type_is_bool(
 ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
     check_type_contains_value(diags, elab, reason, &Type::Bool, value.as_ref())?;
 
-    let err = || diags.report_internal_error(value.span, "unexpected value kind for bool type");
+    let err = || diags.report_error_internal(value.span, "unexpected value kind for bool type");
     match value.inner {
         Value::Simple(v) => match v {
             SimpleCompileValue::Bool(v) => Ok(MaybeCompile::Compile(v)),
@@ -368,7 +363,7 @@ pub fn check_type_is_bool(
         Value::Compound(_) => Err(err()),
         Value::Hardware(v) => match v.value.ty {
             HardwareType::Bool => Ok(MaybeCompile::Hardware(v.map_type(|_| TypeBool))),
-            _ => Err(diags.report_internal_error(value.span, "expected bool type")),
+            _ => Err(diags.report_error_internal(value.span, "expected bool type")),
         },
     }
 }
@@ -381,7 +376,7 @@ pub fn check_type_is_bool_compile(
 ) -> DiagResult<bool> {
     check_type_contains_value(diags, elab, reason, &Type::Bool, value.as_ref())?;
 
-    let err = || diags.report_internal_error(value.span, "expected bool value");
+    let err = || diags.report_error_internal(value.span, "expected bool value");
     match value.inner {
         CompileValue::Simple(v) => match v {
             SimpleCompileValue::Bool(v) => Ok(v),
@@ -403,7 +398,7 @@ pub fn check_type_is_bool_array(
         && expected_len.is_none_or(|expected_len| expected_len == &ty_len)
         && let Type::Bool = *ty_inner
     {
-        let err = || diags.report_internal_error(value.span, "expected bool array");
+        let err = || diags.report_error_internal(value.span, "expected bool array");
         return match value.inner {
             Value::Simple(v) => match v {
                 SimpleCompileValue::Array(v) => {
@@ -434,13 +429,14 @@ pub fn check_type_is_bool_array(
         Some(expected_len) => Type::Array(Arc::new(Type::Bool), expected_len.clone()).value_string(elab),
     };
     let value_ty_str = value.inner.ty().value_string(elab);
-    let mut diag = Diagnostic::new("type mismatch").add_error(
+    let mut diag = DiagnosticError::new(
+        "type mismatch",
         value.span,
         format!("expected `{expected_ty_str}`, got type `{value_ty_str}`"),
     );
 
     diag = reason.add_diag_info(elab, diag, &Type::Array(Arc::new(Type::Bool), BigUint::ZERO));
-    Err(diags.report(diag.finish()))
+    Err(diag.report(diags))
 }
 
 pub fn check_type_is_string(
@@ -453,7 +449,7 @@ pub fn check_type_is_string(
 
     match value.inner {
         Value::Compound(MixedCompoundValue::String(v)) => Ok(v),
-        _ => Err(diags.report_internal_error(value.span, "expected string value")),
+        _ => Err(diags.report_error_internal(value.span, "expected string value")),
     }
 }
 
@@ -467,7 +463,7 @@ pub fn check_type_is_string_compile(
 
     match value.inner {
         Value::Compound(CompileCompoundValue::String(v)) => Ok(v),
-        _ => Err(diags.report_internal_error(value.span, "expected string value")),
+        _ => Err(diags.report_error_internal(value.span, "expected string value")),
     }
 }
 
@@ -478,10 +474,12 @@ pub fn check_hardware_type_for_bit_operation(
 ) -> DiagResult<HardwareType> {
     ty.inner.as_hardware_type(elab).map_err(|_| {
         let ty_str = ty.inner.value_string(elab);
-        let diag = Diagnostic::new("converting to/from bits is only possible for hardware types")
-            .add_error(ty.span, format!("actual type `{}`", ty_str))
-            .finish();
-        diags.report(diag)
+        DiagnosticError::new(
+            "converting to/from bits is only possible for hardware types",
+            ty.span,
+            format!("actual type `{}`", ty_str),
+        )
+        .report(diags)
     })
 }
 
@@ -496,7 +494,7 @@ pub fn check_type_is_range_compile(
     match value.inner {
         CompileValue::Compound(CompileCompoundValue::Range(range)) => Ok(range),
         CompileValue::Compound(_) | CompileValue::Simple(_) => {
-            Err(diags.report_internal_error(value.span, "expected range value"))
+            Err(diags.report_error_internal(value.span, "expected range value"))
         }
         CompileValue::Hardware(never) => never.unreachable(),
     }
