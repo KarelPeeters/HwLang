@@ -1896,11 +1896,11 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 interface_info.ports[port_index].id.str(source)
                             ),
                             value_expr.span,
-                            format!("got direction {}", value_dir.inner.diagnostic_string()),
+                            format!("got direction `{}`", value_dir.inner.diagnostic_string()),
                         )
                         .add_info(
                             connection_id.span,
-                            format!("expected direction {}", connector_dir.inner.diagnostic_string()),
+                            format!("expected direction `{}`", connector_dir.inner.diagnostic_string()),
                         )
                         .add_info(connector_dir.span, "expected direction set here")
                         .add_info(value_dir.span, "actual direction set here")

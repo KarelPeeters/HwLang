@@ -439,8 +439,8 @@ fn set_compile_value_impl(
                                     assign_op_span,
                                     "length mismatch on this assignment",
                                 )
-                                .add_info(target.span, format!("target slice has length {target_len}"))
-                                .add_info(value.span, format!("source array has length {}", value_inner.len()))
+                                .add_info(target.span, format!("target slice has length `{target_len}`"))
+                                .add_info(value.span, format!("source array has length `{}`", value_inner.len()))
                                 .report(diags));
                             }
                             let target_slice = &mut target_array[target_start..target_start + target_len];

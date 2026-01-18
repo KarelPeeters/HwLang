@@ -145,7 +145,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> DiagnosticError {
             DiagnosticError::new(
                 "unexpected token",
                 span,
-                format!("unexpected token {}", ty.diagnostic_string()),
+                format!("unexpected token `{}`", ty.diagnostic_string()),
             )
             .add_footer(FooterKind::Info, format_expected(&expected))
         }

@@ -653,7 +653,7 @@ impl CompileItemContext<'_, '_> {
                     diags.report_error_simple(
                         "failed to fully convert non-compile match target to hardware",
                         target.span,
-                        format!("match target has non-hardware type {}", target_ty.value_string(elab)),
+                        format!("match target has non-hardware type `{}`", target_ty.value_string(elab)),
                     )
                 })?;
 
@@ -759,7 +759,10 @@ impl CompileItemContext<'_, '_> {
                         pattern.span,
                         "enum match pattern used here",
                     )
-                    .add_info(target_span, format!("target has type {}", target_ty.value_string(elab)))
+                    .add_info(
+                        target_span,
+                        format!("target has type `{}`", target_ty.value_string(elab)),
+                    )
                     .report(diags))
                 }
             }
@@ -913,7 +916,7 @@ impl CompileItemContext<'_, '_> {
                 return Err(diags.report_error_todo(
                     target.span,
                     format!(
-                        "hardware matching for target type {}",
+                        "hardware matching for target type `{}`",
                         target_value.value.ty.value_string(elab)
                     ),
                 ));
@@ -927,14 +930,14 @@ impl CompileItemContext<'_, '_> {
         let warn_unreachable_branch =
             |span: Span, coverage_remaining: &MatchCoverage, branch_pattern: Option<String>| {
                 let message_branch = if let Some(branch_pattern) = branch_pattern {
-                    format!("this branch with pattern {branch_pattern} can never match")
+                    format!("this branch with pattern `{branch_pattern}` can never match")
                 } else {
                     "this branch can never match".to_owned()
                 };
 
                 let message_footer = if coverage_remaining.any() {
                     format!(
-                        "the remaining uncovered patterns are: {}",
+                        "the remaining uncovered patterns are: `{}`",
                         coverage_remaining.as_diagnostic_string()
                     )
                 } else {
@@ -1113,7 +1116,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type {}", target_value.value.ty.value_string(elab)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(elab)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -1176,7 +1179,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type {}", target_value.value.ty.value_string(elab)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(elab)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -1228,11 +1231,11 @@ impl CompileItemContext<'_, '_> {
             let mut diag = DiagnosticError::new(
                 "hardware match statement must be exhaustive",
                 Span::empty_at(pos_end),
-                format!("patterns not covered: {}", coverage_remaining.as_diagnostic_string()),
+                format!("patterns not covered: `{}`", coverage_remaining.as_diagnostic_string()),
             )
             .add_info(
                 target.span,
-                format!("target type {}", target_value.value.ty.value_string(elab)),
+                format!("target type `{}`", target_value.value.ty.value_string(elab)),
             );
 
             if let MatchCoverage::Enum { target_ty, .. } = &coverage_remaining {
