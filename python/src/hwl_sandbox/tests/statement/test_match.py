@@ -118,3 +118,21 @@ def test_match_fallthrough_hardware_enum():
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="not exhaustive"):
         c.resolve("top.foo_enum")
+
+
+def test_match_warn_unreachable():
+    # TODO setting to allow warnings without crashing?
+    src = """
+    module foo_enum ports(x: in async bool) {
+        comb {
+            match (x) {
+                true => {}
+                false => {}
+                _ => {}
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
+        c.resolve("top.foo_enum")

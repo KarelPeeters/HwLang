@@ -273,14 +273,15 @@ impl DiagnosticContent {
             backtrace,
         } = self;
 
+        let top_level_mapped = match level {
+            DiagnosticLevel::Error => Level::Error,
+            DiagnosticLevel::Warning => Level::Warning,
+        };
+
         // convert to snippets
         let snippets = {
             let mut snippets = Vec::with_capacity(messages.len() + infos.len());
 
-            let top_level_mapped = match level {
-                DiagnosticLevel::Error => Level::Error,
-                DiagnosticLevel::Warning => Level::Warning,
-            };
             for (top_span, top_message) in messages {
                 let top_annotation = Annotation {
                     level: top_level_mapped,
@@ -343,7 +344,7 @@ impl DiagnosticContent {
         };
 
         // create final message
-        let mut message = Level::Error.title(&title);
+        let mut message = top_level_mapped.title(&title);
 
         for &(span, ref annotations) in &snippets_merged {
             let file_info = &database[span.file];
@@ -397,7 +398,11 @@ impl DiagnosticContent {
 
         // format into string
         let renderer = if settings.ansi_color {
-            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightRed))))
+            let color = match level {
+                DiagnosticLevel::Error => AnsiColor::BrightRed,
+                DiagnosticLevel::Warning => AnsiColor::BrightYellow,
+            };
+            Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(color))))
         } else {
             Renderer::plain()
         };

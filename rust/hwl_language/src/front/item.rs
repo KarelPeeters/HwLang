@@ -250,6 +250,7 @@ pub struct ElaboratedEnumInfo {
 #[derive(Debug)]
 pub struct ElaboratedEnumVariantInfo {
     pub id: Identifier,
+    pub debug_info_id: String,
     pub payload_ty: Option<Spanned<Type>>,
 }
 
@@ -808,13 +809,19 @@ impl CompileItemContext<'_, '_> {
         let mut visit_variant = |s: &mut Self, scope: &mut Scope, flow: &mut FlowCompile, variant: &EnumVariant| {
             let &EnumVariant { span: _, id, content } = variant;
 
+            let id_string = id.str(source).to_owned();
+
             let payload_ty = content
                 .map(|content| s.eval_expression_as_ty(scope, flow, content))
                 .transpose()?;
 
-            let variant_info = ElaboratedEnumVariantInfo { id, payload_ty };
+            let variant_info = ElaboratedEnumVariantInfo {
+                id,
+                debug_info_id: id_string.clone(),
+                payload_ty,
+            };
 
-            match variants_eval.entry(id.str(source).to_owned()) {
+            match variants_eval.entry(id_string) {
                 Entry::Vacant(entry) => {
                     entry.insert(variant_info);
                 }

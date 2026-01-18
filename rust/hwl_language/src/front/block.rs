@@ -3,7 +3,7 @@ use crate::front::check::{
     check_type_is_range_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics, FooterKind};
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
@@ -924,6 +924,32 @@ impl CompileItemContext<'_, '_> {
         let mut all_contents = vec![];
         let mut all_ends = vec![];
 
+        let warn_unreachable_branch =
+            |span: Span, coverage_remaining: &MatchCoverage, branch_pattern: Option<String>| {
+                let message_branch = if let Some(branch_pattern) = branch_pattern {
+                    format!("this branch with pattern {branch_pattern} can never match")
+                } else {
+                    "this branch can never match".to_owned()
+                };
+
+                let message_footer = if coverage_remaining.any() {
+                    format!(
+                        "the remaining uncovered patterns are: {}",
+                        coverage_remaining.as_diagnostic_string()
+                    )
+                } else {
+                    "all possible patterns are already covered".to_owned()
+                };
+
+                DiagnosticWarning::new("unreachable match branch", span, message_branch)
+                    .add_info(
+                        target.span,
+                        format!("target type `{}`", target_value.value.ty.value_string(elab)),
+                    )
+                    .add_footer(FooterKind::Info, message_footer)
+                    .report(diags);
+            };
+
         // TODO emit warning if parts are already covered
         for (branch, branch_pattern) in zip_eq(branches, branch_patterns) {
             let MatchBranch {
@@ -935,7 +961,12 @@ impl CompileItemContext<'_, '_> {
             // TODO extract function
             let matched = match branch_pattern {
                 EvaluatedMatchPattern::Wildcard => {
+                    if !coverage_remaining.any() {
+                        warn_unreachable_branch(branch.pattern.span, &coverage_remaining, None);
+                        continue;
+                    }
                     coverage_remaining.clear();
+
                     HardwareBranchMatched {
                         cond: None,
                         declare: None,
@@ -943,7 +974,12 @@ impl CompileItemContext<'_, '_> {
                     }
                 }
                 EvaluatedMatchPattern::WildcardVal(id) => {
+                    if !coverage_remaining.any() {
+                        warn_unreachable_branch(branch.pattern.span, &coverage_remaining, None);
+                        continue;
+                    }
                     coverage_remaining.clear();
+
                     HardwareBranchMatched {
                         cond: None,
                         declare: Some(BranchDeclare {
@@ -969,13 +1005,31 @@ impl CompileItemContext<'_, '_> {
                             // TODO should we also imply that the bool itself is true/false? How does this work for ifs?
                             //  Or do the implications already cover that?
                             if value {
+                                if !*rem_true {
+                                    warn_unreachable_branch(
+                                        branch_pattern_span,
+                                        &coverage_remaining,
+                                        Some("true".to_owned()),
+                                    );
+                                    continue;
+                                }
                                 *rem_true = false;
+
                                 (
                                     target_value.value.expr.clone(),
                                     target_value.implications.if_true.clone(),
                                 )
                             } else {
+                                if !*rem_false {
+                                    warn_unreachable_branch(
+                                        branch_pattern_span,
+                                        &coverage_remaining,
+                                        Some("false".to_owned()),
+                                    );
+                                    continue;
+                                }
                                 *rem_false = false;
+
                                 let cond = self
                                     .large
                                     .push_expr(IrExpressionLarge::BoolNot(target_value.value.expr.clone()));
@@ -984,6 +1038,15 @@ impl CompileItemContext<'_, '_> {
                         }
                         MatchCoverage::Int { rem_range } => {
                             let value = unwrap_match!(value.inner, CompileValue::Simple(SimpleCompileValue::Int(value)) => value);
+
+                            if !rem_range.contains(&value) {
+                                warn_unreachable_branch(
+                                    branch_pattern_span,
+                                    &coverage_remaining,
+                                    Some(value.to_string()),
+                                );
+                                continue;
+                            }
                             let value_range = MultiRange::from(Range::single(value.clone()));
                             *rem_range = rem_range.subtract(&value_range);
 
@@ -1016,16 +1079,22 @@ impl CompileItemContext<'_, '_> {
                         // TODO warn if parts of range already covered
                         // TODO share code with ordinary comparisons?
                         let range_multi = MultiRange::from(range.inner.clone());
+
+                        if rem_range.intersect(&range_multi).is_empty() {
+                            warn_unreachable_branch(
+                                branch_pattern_span,
+                                &coverage_remaining,
+                                Some(format!("in {}", range.inner)),
+                            );
+                            continue;
+                        }
                         *rem_range = rem_range.subtract(&range_multi);
 
                         let cond =
                             build_ir_int_in_range(&mut self.large, &target_value.value.expr, range.inner.clone());
 
                         let implications = if let Some(target_version) = target_version {
-                            vec![Implication::new_int(
-                                target_version,
-                                MultiRange::from(range.inner.clone()),
-                            )]
+                            vec![Implication::new_int(target_version, range_multi)]
                         } else {
                             vec![]
                         };
@@ -1058,6 +1127,18 @@ impl CompileItemContext<'_, '_> {
                         target_ty,
                         rem_variants,
                     } => {
+                        if !rem_variants[variant_index] {
+                            let branch_pattern_string = format!(
+                                ".{}",
+                                elab.enum_info(target_ty.inner()).variants[variant_index].debug_info_id
+                            );
+                            warn_unreachable_branch(
+                                branch_pattern_span,
+                                &coverage_remaining,
+                                Some(branch_pattern_string),
+                            );
+                            continue;
+                        }
                         rem_variants[variant_index] = false;
 
                         let enum_info = elab.enum_info(target_ty.inner());
@@ -1566,6 +1647,44 @@ enum MatchCoverage {
 }
 
 impl MatchCoverage {
+    fn as_diagnostic_string(&self) -> String {
+        match self {
+            &MatchCoverage::Bool { rem_false, rem_true } => {
+                let mut parts = vec![];
+                if rem_false {
+                    parts.push("false".to_string());
+                }
+                if rem_true {
+                    parts.push("true".to_string());
+                }
+                format!("[{}]", parts.join(", "))
+            }
+            MatchCoverage::Int { rem_range } => format!("{}", rem_range),
+            MatchCoverage::Enum {
+                target_ty: _,
+                rem_variants,
+            } => {
+                let parts: Vec<String> = rem_variants
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &x)| if x { Some(format!(".{}", i)) } else { None })
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
+        }
+    }
+
+    fn any(&self) -> bool {
+        match self {
+            &MatchCoverage::Bool { rem_false, rem_true } => rem_false || rem_true,
+            MatchCoverage::Int { rem_range } => !rem_range.is_empty(),
+            MatchCoverage::Enum {
+                target_ty: _,
+                rem_variants,
+            } => rem_variants.iter().any(|&x| x),
+        }
+    }
+
     fn clear(&mut self) {
         match self {
             MatchCoverage::Bool { rem_false, rem_true } => {

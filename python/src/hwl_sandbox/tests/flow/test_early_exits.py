@@ -124,7 +124,6 @@ def test_match_return(tmp_dir: Path):
     match (a0) {
         0 => {}
         1 => { return 1; }
-        _ => {}
     }
     return 0;
     """

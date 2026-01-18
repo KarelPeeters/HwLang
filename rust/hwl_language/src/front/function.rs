@@ -470,6 +470,7 @@ impl CompileItemContext<'_, '_> {
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
             id: variant_id,
+            debug_info_id: _,
             ref payload_ty,
         } = &enum_info.variants[variant_index];
         let payload_ty = payload_ty
