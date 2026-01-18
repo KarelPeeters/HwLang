@@ -184,9 +184,24 @@ impl<'a> CompileItemContext<'a, '_> {
                 ));
             }
             ExpressionKind::Undefined => {
-                // TODO assert that we're in a hardware context, and then create an undefined hardware value
-                //   this avoids that everyone that handles compile-time values has to support undefined too
-                return Err(diags.report_error_todo(expr.span, "general undefined expression"));
+                flow.require_hardware(expr.span, "undefined expression")?;
+
+                let expected_ty_hw = expected_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
+                    diags.report_error_simple(
+                        "undefined expression requires hardware type",
+                        expr.span,
+                        format!("inferred type is `{}`", expected_ty.value_string(elab)),
+                    )
+                })?;
+
+                let expr = self
+                    .large
+                    .push_expr(IrExpressionLarge::Undefined(expected_ty_hw.as_ir(refs)));
+                Value::Hardware(HardwareValue {
+                    ty: expected_ty_hw,
+                    domain: ValueDomain::CompileTime,
+                    expr,
+                })
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
             ExpressionKind::TypeFunction => Value::new_ty(Type::Function),

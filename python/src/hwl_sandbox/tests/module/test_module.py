@@ -143,3 +143,15 @@ def test_cyclic_instantiation_real():
     with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
         foo: hwl.Module = c.resolve("top.foo")
         print(foo.as_verilog().source)
+
+
+def test_undef_expression():
+    src = """
+    module top ports() {
+        wire w: bool = undef;
+        comb {
+            val v: uint(8) = undef;
+        }
+    }
+    """
+    compile_custom(src).resolve("top.top")
