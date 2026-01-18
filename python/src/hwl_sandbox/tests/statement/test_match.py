@@ -96,13 +96,13 @@ def test_match_fallthrough_hardware_int():
         comb {
             match (x) {
                 0 => {}
-                in 1..=2 => {}  
-            }        
+                in 1..=2 => {}
+            }
         }
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="not exhaustive"):
+    with pytest.raises(hwl.DiagnosticException, match="must be exhaustive"):
         c.resolve("top.foo_int")
 
 
@@ -116,7 +116,7 @@ def test_match_fallthrough_hardware_enum():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="not exhaustive"):
+    with pytest.raises(hwl.DiagnosticException, match="must be exhaustive"):
         c.resolve("top.foo_enum")
 
 
