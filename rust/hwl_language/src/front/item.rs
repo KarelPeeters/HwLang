@@ -250,7 +250,7 @@ pub struct ElaboratedEnumInfo {
 #[derive(Debug)]
 pub struct ElaboratedEnumVariantInfo {
     pub id: Identifier,
-    pub debug_info_id: String,
+    pub debug_info_name: String,
     pub payload_ty: Option<Spanned<Type>>,
 }
 
@@ -817,7 +817,7 @@ impl CompileItemContext<'_, '_> {
 
             let variant_info = ElaboratedEnumVariantInfo {
                 id,
-                debug_info_id: id_string.clone(),
+                debug_info_name: id_string.clone(),
                 payload_ty,
             };
 

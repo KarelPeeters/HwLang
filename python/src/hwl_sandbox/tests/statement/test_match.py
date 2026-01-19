@@ -109,7 +109,7 @@ def test_match_fallthrough_hardware_int():
 def test_match_fallthrough_hardware_enum():
     src = """
     enum AB { A, B }
-    module foo_enum ports(x: in async AB) {
+    module top ports(x: in async AB) {
         comb {
             match (x) {}        
         }
@@ -117,13 +117,13 @@ def test_match_fallthrough_hardware_enum():
     """
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="must be exhaustive"):
-        c.resolve("top.foo_enum")
+        c.resolve("top.top")
 
 
 def test_match_warn_unreachable():
     # TODO setting to allow warnings without crashing?
     src = """
-    module foo_enum ports(x: in async bool) {
+    module top ports(x: in async bool) {
         comb {
             match (x) {
                 true => {}
@@ -135,4 +135,4 @@ def test_match_warn_unreachable():
     """
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
-        c.resolve("top.foo_enum")
+        c.resolve("top.top")

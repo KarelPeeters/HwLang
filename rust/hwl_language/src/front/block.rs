@@ -9,7 +9,7 @@ use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableI
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::{ElaboratedEnum, HardwareChecked};
+use crate::front::item::{ElaboratedEnum, ElaborationArenas, HardwareChecked};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
@@ -32,7 +32,7 @@ use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use crate::util::{ResultExt, result_pair};
-use itertools::{Either, enumerate, zip_eq};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -938,7 +938,7 @@ impl CompileItemContext<'_, '_> {
                 let message_footer = if coverage_remaining.any() {
                     format!(
                         "the remaining uncovered patterns are: `{}`",
-                        coverage_remaining.as_diagnostic_string()
+                        coverage_remaining.as_diagnostic_string(elab)
                     )
                 } else {
                     "all possible patterns are already covered".to_owned()
@@ -1133,7 +1133,7 @@ impl CompileItemContext<'_, '_> {
                         if !rem_variants[variant_index] {
                             let branch_pattern_string = format!(
                                 ".{}",
-                                elab.enum_info(target_ty.inner()).variants[variant_index].debug_info_id
+                                elab.enum_info(target_ty.inner()).variants[variant_index].debug_info_name
                             );
                             warn_unreachable_branch(
                                 branch_pattern_span,
@@ -1231,7 +1231,10 @@ impl CompileItemContext<'_, '_> {
             let mut diag = DiagnosticError::new(
                 "hardware match statement must be exhaustive",
                 Span::empty_at(pos_end),
-                format!("patterns not covered: `{}`", coverage_remaining.as_diagnostic_string()),
+                format!(
+                    "patterns not covered: `{}`",
+                    coverage_remaining.as_diagnostic_string(elab)
+                ),
             )
             .add_info(
                 target.span,
@@ -1612,29 +1615,38 @@ enum MatchCoverage {
 }
 
 impl MatchCoverage {
-    fn as_diagnostic_string(&self) -> String {
+    fn as_diagnostic_string(&self, elab: &ElaborationArenas) -> String {
         match self {
             &MatchCoverage::Bool { rem_false, rem_true } => {
                 let mut parts = vec![];
                 if rem_false {
-                    parts.push("false".to_string());
+                    parts.push(false);
                 }
                 if rem_true {
-                    parts.push("true".to_string());
+                    parts.push(true);
                 }
-                format!("[{}]", parts.join(", "))
+                format!("[{parts:?}]")
             }
-            MatchCoverage::Int { rem_range } => format!("{}", rem_range),
+            MatchCoverage::Int { rem_range } => rem_range.to_string(),
             MatchCoverage::Enum {
-                target_ty: _,
+                target_ty,
                 rem_variants,
             } => {
-                let parts: Vec<String> = rem_variants
+                let parts = rem_variants
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, &x)| if x { Some(format!(".{}", i)) } else { None })
-                    .collect();
-                format!("[{}]", parts.join(", "))
+                    .filter_map(|(i, &x)| {
+                        if x {
+                            Some(format!(
+                                ".{}",
+                                elab.enum_info(target_ty.inner()).variants[i].debug_info_name
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .join(", ");
+                format!("[{}]", parts)
             }
         }
     }
