@@ -724,26 +724,35 @@ impl CompileItemContext<'_, '_> {
                     let variant_str = variant.spanned_str(self.refs.fixed.source);
                     let variant_index = enum_info.find_variant(diags, variant_str)?;
                     let variant_info = &enum_info.variants[variant_index];
+                    let variant_name = &variant_info.debug_info_name;
 
                     match (payload_id, &variant_info.payload_ty) {
                         (None, None) | (Some(_), Some(_)) => {}
                         (None, Some(variant_pyload_ty)) => {
+                            let hint = format!(
+                                "add a payload to the pattern: `.{variant_name}(_)` or `.{variant_name}(val payload)`"
+                            );
                             let diag = DiagnosticError::new(
-                                "enum variant payload mismatch",
+                                "enum pattern payload mismatch",
                                 pattern.span,
-                                "matched without a payload here",
+                                "pattern without a payload here",
                             )
-                            .add_info(variant_pyload_ty.span, "declared with a payload here")
+                            .add_info(variant_pyload_ty.span, "variant declared with a payload here")
+                            .add_footer(FooterKind::Hint, hint)
                             .report(diags);
                             return Err(diag);
                         }
                         (Some(payload), None) => {
                             let diag = DiagnosticError::new(
-                                "enum variant payload mismatch",
+                                "enum pattern payload mismatch",
                                 payload.span(),
-                                "matched with a payload here",
+                                "pattern with a payload here",
                             )
-                            .add_info(variant_info.id.span, "declared without a payload here")
+                            .add_info(variant_info.id.span, "variant declared without a payload here")
+                            .add_footer(
+                                FooterKind::Hint,
+                                format!("remove the payload from the pattern: `.{variant_name}`"),
+                            )
                             .report(diags);
                             return Err(diag);
                         }
@@ -867,7 +876,7 @@ impl CompileItemContext<'_, '_> {
         }
 
         Err(DiagnosticError::new(
-            "match statement reached end without matching any branch",
+            "compile-time match statement reached end without matching any branch",
             Span::empty_at(pos_end),
             "did not match any branch",
         )
