@@ -7,28 +7,31 @@ set -ue
 # * https://github.com/taiki-e/cargo-llvm-cov
 
 # TODO separate cargo dir
+RUST_MANIFEST_PATH="$PWD/rust/Cargo.toml"
 
-(
-  cd rust
+# setup environment variables
+# shellcheck disable=SC1090
+source <(cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" show-env --export-prefix)
+export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
+export CARGO_INCREMENTAL=1
 
-  # enable coverage collection
-  # shellcheck disable=SC1090
-  source <(cargo llvm-cov show-env --export-prefix)
-  export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
-  export CARGO_INCREMENTAL=1
-
-  # remove old coverage data
-  cargo llvm-cov clean --workspace
-)
+# remove old coverage data
+cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" clean --workspace
 
 # run rust tests
-(cd rust; cargo test)
+(
+  cd rust &&
+  cargo test
+)
 
 # run python tests
-(cd rust/hwl_python; maturin dev --compression-method stored --uv)
-(cd python/src/hwl_sandbox; PYTEST_SKIP_RUST_BUILD=1 pytest -n auto || true)
+(
+  cd python &&
+  uv run maturin dev --compression-method stored -m ../rust/hwl_python/Cargo.toml &&
+  uv run pytest -n auto src/hwl_sandbox || true
+)
 
 # report coverage
 IGNORE_REGEX="^$PWD/rust/(hwl_lsp_server|hwl_bin|hwl_wasm)/src/"
-(cd rust && cargo llvm-cov report --html --ignore-filename-regex "$IGNORE_REGEX")
+cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" report --html --ignore-filename-regex "$IGNORE_REGEX"
 echo "Coverage report is available at file://$CARGO_LLVM_COV_TARGET_DIR/llvm-cov/html/index.html"
