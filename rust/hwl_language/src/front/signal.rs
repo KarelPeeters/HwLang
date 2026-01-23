@@ -1,5 +1,5 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
@@ -335,10 +335,7 @@ fn get_inferred<'s, T>(
                 format!("{kind} used here before {inferred} could be inferred"),
             )
             .add_info(decl_span, format!("declared here without {inferred}"))
-            .add_footer(
-                FooterKind::Hint,
-                format!("explicitly add a {inferred} to the declaration"),
-            )
+            .add_footer_hint(format!("explicitly add a {inferred} to the declaration"))
             .report(diags);
             *slot = Err(e);
             Err(e)

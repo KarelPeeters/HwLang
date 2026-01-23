@@ -146,8 +146,13 @@ impl DiagnosticError {
         self
     }
 
-    pub fn add_footer(mut self, kind: FooterKind, message: impl Into<String>) -> Self {
-        self.content.add_footer(kind, message);
+    pub fn add_footer_info(mut self, message: impl Into<String>) -> Self {
+        self.content.add_footer(FooterKind::Info, message);
+        self
+    }
+
+    pub fn add_footer_hint(mut self, message: impl Into<String>) -> Self {
+        self.content.add_footer(FooterKind::Hint, message);
         self
     }
 
@@ -176,8 +181,13 @@ impl DiagnosticWarning {
         self
     }
 
-    pub fn add_footer(mut self, kind: FooterKind, message: impl Into<String>) -> Self {
-        self.content.add_footer(kind, message);
+    pub fn add_footer_info(mut self, message: impl Into<String>) -> Self {
+        self.content.add_footer(FooterKind::Info, message);
+        self
+    }
+
+    pub fn add_footer_hint(mut self, message: impl Into<String>) -> Self {
+        self.content.add_footer(FooterKind::Hint, message);
         self
     }
 

@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::{NamedOrValue, ValueInner};
@@ -2826,10 +2826,7 @@ fn pull_register_init_into_process(
                         )
                         .add_info(process.clock_signal.span, "clocked block declared without reset here")
                         .add_info(init.span, "register reset value defined here")
-                        .add_footer(
-                            FooterKind::Hint,
-                            "either add an reset to the block or use `undef` as the the initial value",
-                        )
+                        .add_footer_hint("either add an reset to the block or use `undef` as the the initial value")
                         .report(diags);
                         return Err(diag);
                     }

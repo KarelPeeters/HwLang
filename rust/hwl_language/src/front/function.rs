@@ -2,7 +2,7 @@ use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongT
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, FooterKind};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::Flow;
 use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
@@ -370,10 +370,7 @@ impl CompileItemContext<'_, '_> {
                 format!("this {kind} has unbound generic parameters"),
             )
             .add_info(span_call, "no expected type")
-            .add_footer(
-                FooterKind::Hint,
-                "either set an expected type or use use the full type before calling new",
-            )
+            .add_footer_hint("either set an expected type or use use the full type before calling new")
             .report(self.refs.diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {

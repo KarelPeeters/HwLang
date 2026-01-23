@@ -1,5 +1,5 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::item::ElaborationArenas;
@@ -85,14 +85,11 @@ impl CompileItemContext<'_, '_> {
             )
             .add_info(target.span, format!("target domain is {target_str}"))
             .add_info(source.span, format!("source domain is {source_str}"))
-            .add_footer(FooterKind::Info, format!("crossing due to {required_reason}"))
-            .add_footer(
-                FooterKind::Hint,
-                format!(
-                    "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
-                    TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
-                ),
-            )
+            .add_footer_info(format!("crossing due to {required_reason}"))
+            .add_footer_hint(format!(
+                "to intentionally cross domains, use `{}` or `unsafe_bool_to_clock`",
+                TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN
+            ))
             .report(diags)
         })
     }

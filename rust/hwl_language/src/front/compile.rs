@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
@@ -420,10 +420,7 @@ fn stack_overflow_diagnostic(stack: &Vec<StackEntry>) -> DiagnosticError {
     );
 
     if let Some(skipped) = skipped {
-        diag = diag.add_footer(
-            FooterKind::Info,
-            format!("skipped showing {} stack entries in the middle", skipped),
-        )
+        diag = diag.add_footer_info(format!("skipped showing {} stack entries in the middle", skipped))
     }
 
     diag
@@ -506,10 +503,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                                         "not accessible here",
                                     )
                                     .add_info(decl_info.id.span(), "identifier declared here")
-                                    .add_footer(
-                                        FooterKind::Info,
-                                        "private items cannot be accessed outside of the declaring file",
-                                    )
+                                    .add_footer_info("private items cannot be accessed outside of the declaring file")
                                     .report(diags);
                                 }
                             }
@@ -598,7 +592,7 @@ fn resolve_import_path(
 
                 // TODO without trailing separator
                 return Err(DiagnosticError::new("import not found", step.span, "failed step")
-                    .add_footer(FooterKind::Hint, format!("possible options: {options:?}"))
+                    .add_footer_hint(format!("possible options: {options:?}"))
                     .report(diags));
             }
         };

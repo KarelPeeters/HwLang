@@ -5,7 +5,7 @@ use crate::front::check::{
     check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
 use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
@@ -887,10 +887,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 clocked_domain.span,
                                 "the current clocked block is defined without reset here",
                             )
-                            .add_footer(
-                                FooterKind::Hint,
-                                "either add an reset to the block or use `undef` as the the initial value",
-                            )
+                            .add_footer_hint("either add an reset to the block or use `undef` as the the initial value")
                             .report(diags);
                         }
                     },
@@ -1088,14 +1085,8 @@ impl<'a> CompileItemContext<'a, '_> {
                             base.span,
                             format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
                         )
-                        .add_footer(
-                            FooterKind::Hint,
-                            "consider using a target type where every bit pattern is valid",
-                        )
-                        .add_footer(
-                            FooterKind::Hint,
-                            "if you know the bits are valid for this type, use `from_bits_unsafe´ instead",
-                        )
+                        .add_footer_hint("consider using a target type where every bit pattern is valid")
+                        .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe´ instead")
                         .report(diags);
                         return Err(diag);
                     }
@@ -1511,7 +1502,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 );
 
                 if let ExpressionKind::TupleLiteral(_) = self.refs.get_expr(expr) {
-                    diag = diag.add_footer(FooterKind::Hint, "tuple types are written `Tuple(...)`, not `(...)`")
+                    diag = diag.add_footer_hint("tuple types are written `Tuple(...)`, not `(...)`")
                 }
 
                 Err(diag.report(diags))

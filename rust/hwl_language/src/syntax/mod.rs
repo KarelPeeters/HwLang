@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagnosticError, FooterKind};
+use crate::front::diagnostic::DiagnosticError;
 use crate::syntax::ast::FileContent;
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
@@ -134,8 +134,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> DiagnosticError {
         ParseError::UnrecognizedEof { location, expected } => {
             let span = Span::empty_at(location);
 
-            DiagnosticError::new("unexpected eof", span, "invalid token")
-                .add_footer(FooterKind::Info, format_expected(&expected))
+            DiagnosticError::new("unexpected eof", span, "invalid token").add_footer_info(format_expected(&expected))
         }
         ParseError::UnrecognizedToken { token, expected } => {
             let (start, ty, end) = token;
@@ -147,7 +146,7 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> DiagnosticError {
                 span,
                 format!("unexpected token `{}`", ty.diagnostic_string()),
             )
-            .add_footer(FooterKind::Info, format_expected(&expected))
+            .add_footer_info(format_expected(&expected))
         }
         ParseError::ExtraToken { token } => {
             let (start, _, end) = token;

@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
@@ -394,10 +394,7 @@ impl CompileItemContext<'_, '_> {
                             "driven incorrectly here",
                         )
                         .add_info(reg_info.id.span(), "register declared here")
-                        .add_footer(
-                            FooterKind::Hint,
-                            "drive the register from a clocked block or turn it into a wire",
-                        )
+                        .add_footer_hint("drive the register from a clocked block or turn it into a wire")
                         .report(diags));
                     }
                 }
@@ -422,8 +419,7 @@ impl CompileItemContext<'_, '_> {
                             "driven incorrectly here",
                         )
                         .add_info(port_info.span, "port declared here")
-                        .add_footer(
-                            FooterKind::Hint,
+                        .add_footer_hint(
                             "mark the port as a register or drive it from a combinatorial block or connection",
                         )
                         .report(diags));
@@ -436,8 +432,7 @@ impl CompileItemContext<'_, '_> {
                             "driven incorrectly here",
                         )
                         .add_info(wire_info.decl_span(), "wire declared here")
-                        .add_footer(
-                            FooterKind::Hint,
+                        .add_footer_hint(
                             "change the wire to a register or drive it from a combinatorial block or connection",
                         )
                         .report(diags));

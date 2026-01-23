@@ -3,7 +3,7 @@ use crate::front::check::{
     check_type_is_range_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics, FooterKind};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
@@ -738,7 +738,7 @@ impl CompileItemContext<'_, '_> {
                                 "pattern without a payload here",
                             )
                             .add_info(variant_pyload_ty.span, "variant declared with a payload here")
-                            .add_footer(FooterKind::Hint, hint)
+                            .add_footer_hint(hint)
                             .report(diags);
                             return Err(diag);
                         }
@@ -749,10 +749,7 @@ impl CompileItemContext<'_, '_> {
                                 "pattern with a payload here",
                             )
                             .add_info(variant_info.id.span, "variant declared without a payload here")
-                            .add_footer(
-                                FooterKind::Hint,
-                                format!("remove the payload from the pattern: `.{variant_name}`"),
-                            )
+                            .add_footer_hint(format!("remove the payload from the pattern: `.{variant_name}`"))
                             .report(diags);
                             return Err(diag);
                         }
@@ -958,7 +955,7 @@ impl CompileItemContext<'_, '_> {
                         target.span,
                         format!("target type `{}`", target_value.value.ty.value_string(elab)),
                     )
-                    .add_footer(FooterKind::Info, message_footer)
+                    .add_footer_info(message_footer)
                     .report(diags);
             };
 
@@ -1255,8 +1252,7 @@ impl CompileItemContext<'_, '_> {
                 diag = diag.add_info(enum_info.unique.id().span(), "enum declared here");
             }
 
-            let diag = diag.add_footer(
-                FooterKind::Hint,
+            let diag = diag.add_footer_hint(
                 "either add extra branches, or add a wildcard branch to ignore all remaining patterns: `_ => {}`",
             );
 
