@@ -1503,11 +1503,19 @@ impl<'a> CompileItemContext<'a, '_> {
                 span: expr.span,
                 inner: ty,
             }),
-            value => Err(diags.report_error_simple(
-                "expected type, got value",
-                expr.span,
-                format!("got value with type `{}`", value.ty().value_string(elab)),
-            )),
+            value => {
+                let mut diag = DiagnosticError::new(
+                    "expected type, got value",
+                    expr.span,
+                    format!("got value with type `{}`", value.ty().value_string(elab)),
+                );
+
+                if let ExpressionKind::TupleLiteral(_) = self.refs.get_expr(expr) {
+                    diag = diag.add_footer(FooterKind::Hint, "tuple types are written `Tuple(...)`, not `(...)`")
+                }
+
+                Err(diag.report(diags))
+            }
         }
     }
 
