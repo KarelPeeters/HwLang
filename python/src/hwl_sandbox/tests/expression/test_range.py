@@ -17,6 +17,9 @@ def test_range_compile():
     check_range_compile(2, "..=", 1, valid=True)
     check_range_compile(2, "..=", 0, valid=False)
 
+    check_range_compile(2, "+..", 0, valid=True)
+    check_range_compile(2, "+..", 1, valid=True)
+
 
 def test_range_hardware():
     check_range_hardware("0..3", "..", "4..6", valid=True)
@@ -33,7 +36,7 @@ def test_range_hardware():
 
 
 def check_range_compile(a: Optional[int], ty_range: str, b: Optional[int], valid: bool):
-    assert ty_range in ["..", "..=", "..+"]
+    assert ty_range in ["..", "..=", "+.."]
 
     src = f"""
     fn f() -> any {{
@@ -50,7 +53,7 @@ def check_range_compile(a: Optional[int], ty_range: str, b: Optional[int], valid
 
 
 def check_range_hardware(ty_a: Optional[str], ty_range: str, ty_b: Optional[str], valid: bool):
-    assert ty_range in ["..", "..=", "..+"]
+    assert ty_range in ["..", "..=", "+.."]
 
     src = f"""
     module foo ports(a: in async int({ty_a}), b: in async int({ty_b})) {{

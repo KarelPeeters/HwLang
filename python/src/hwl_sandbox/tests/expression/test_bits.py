@@ -77,3 +77,30 @@ def test_from_bits_unsafe_compile():
     assert f([False, True]) == 2
     with pytest.raises(hwl.DiagnosticException, match="invalid bit pattern"):
         f([True, True])
+
+
+def test_size_bits():
+    src = """
+    fn f(T: type) -> int { return T.size_bits; }
+    fn ty_array(N: uint, T: type) -> type { return [N]T; }  
+    struct Pair(A: type, B: type) { a: A, b: B } 
+    """
+    c = compile_custom(src)
+    f: hwl.Function = c.resolve("top.f")
+
+    c_uint = c.resolve("std.types.uint")
+    c_int = c.resolve("std.types.int")
+    c_tuple = c.resolve("std.types.Tuple")
+    c_array = c.resolve("top.ty_array")
+    c_pair = c.resolve("top.Pair")
+
+    assert f(bool) == 1
+    assert f(c_uint(0)) == 0
+    assert f(c_uint(4)) == 4
+    assert f(c_int(4)) == 4
+    assert f(c_array(0, bool)) == 0
+    assert f(c_array(4, c_uint(0))) == 0
+    assert f(c_array(4, c_uint(3))) == 12
+    assert f(c_pair(bool, c_uint(3))) == 4
+    assert f(c_tuple(bool, c_uint(3))) == 4
+    assert f(c_tuple()) == 0

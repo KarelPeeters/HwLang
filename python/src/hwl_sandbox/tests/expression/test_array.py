@@ -240,9 +240,33 @@ def test_array_assign_slice_twice(tmp_dir: Path):
         c[1 + i:1 + i + 2] = s
         e.eval_assert([v, i, s], c)
 
+
+def test_array_literal_spread(tmp_dir: Path):
+    expr = "[0, *a0, *a1, 0, a2]"
+
+    e = compare_expression(["[3]uint(8)", "[2]uint(8)", "uint(8)"], "[8]uint(8)", expr, tmp_dir)
+    e.eval_assert([[1, 2, 3], [4, 5], 6], [0, 1, 2, 3, 4, 5, 0, 6])
+
+
+def test_array_repeat_0(tmp_dir: Path):
+    e = compare_expression(["[2]uint(8)"], "[0]uint(8)", "a0 * 0", tmp_dir)
+    e.eval_assert([[1, 2]], [])
+
+
+def test_array_repeat_n(tmp_dir: Path):
+    e = compare_expression(["[2]uint(8)"], "[6]uint(8)", "a0 * 3", tmp_dir)
+    e.eval_assert([[1, 2]], [1, 2, 1, 2, 1, 2])
+
+
+def test_array_comprehension_index(tmp_dir: Path):
+    e = compare_expression(["[4]uint(8)"], "[4]uint(9)", "[a0[i] + 1 for i in 0..4]", tmp_dir)
+    e.eval_assert([[1, 2, 3, 4]], [2, 3, 4, 5])
+
+
+def test_array_comprehension_iter(tmp_dir: Path):
+    e = compare_expression(["[4]uint(8)"], "[4]uint(9)", "[x + 1 for x in a0]", tmp_dir)
+    e.eval_assert([[1, 2, 3, 4]], [2, 3, 4, 5])
+
 # TODO test array assignments
 # TODO test array slice copy from one array to another
-# TODO test array concat, including spread operator
-# TODO test array repeat
 # TODO test signal array slicing and assigning
-# TODO test and fix tuples

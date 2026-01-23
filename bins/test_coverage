@@ -6,7 +6,7 @@ set -ue
 # * https://github.com/cjermain/rust-python-coverage
 # * https://github.com/taiki-e/cargo-llvm-cov
 
-# TODO separate cargo dir
+# TODO why does this keep rebuilding? do we need a separate cargo dir?
 RUST_MANIFEST_PATH="$PWD/rust/Cargo.toml"
 
 # setup environment variables
@@ -33,5 +33,9 @@ cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" clean --workspace
 
 # report coverage
 IGNORE_REGEX="^$PWD/rust/(hwl_lsp_server|hwl_bin|hwl_wasm)/src/"
+
 cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" report --html --ignore-filename-regex "$IGNORE_REGEX"
+cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" report --text --ignore-filename-regex "$IGNORE_REGEX" \
+  > "$CARGO_LLVM_COV_TARGET_DIR"/llvm-cov/coverage.txt
+
 echo "Coverage report is available at file://$CARGO_LLVM_COV_TARGET_DIR/llvm-cov/html/index.html"

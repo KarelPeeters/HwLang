@@ -57,6 +57,18 @@ def test_large_port(tmp_dir: Path):
     e.eval_assert([2 ** 128 - 1, 0], 2 ** 128 - 1)
 
 
+def test_unary_neg(tmp_dir: Path):
+    e = compare_expression(["int(-4..16)"], "int(-15..5)", "-a0", tmp_dir)
+    for i in range(-4, 16):
+        e.eval_assert([i], -i)
+
+
+def test_unary_plus(tmp_dir: Path):
+    e = compare_expression(["int(-4..16)"], "int(-4..16)", "+a0", tmp_dir)
+    for i in range(-4, 16):
+        e.eval_assert([i], i)
+
+
 def assert_div_or_mod(e: CompiledCompare, op: str, a: int, b: int, c_div: int, c_mod: int):
     assert a // b == c_div
     assert a % b == c_mod
