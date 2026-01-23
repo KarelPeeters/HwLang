@@ -2826,7 +2826,7 @@ fn pull_register_init_into_process(
                         )
                         .add_info(process.clock_signal.span, "clocked block declared without reset here")
                         .add_info(init.span, "register reset value defined here")
-                        .add_footer_hint("either add an reset to the block or use `undef` as the the initial value")
+                        .add_footer_hint("either add a reset to the block or use `undef` as the initial value")
                         .report(diags);
                         return Err(diag);
                     }

@@ -887,7 +887,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 clocked_domain.span,
                                 "the current clocked block is defined without reset here",
                             )
-                            .add_footer_hint("either add an reset to the block or use `undef` as the the initial value")
+                            .add_footer_hint("either add a reset to the block or use `undef` as the initial value")
                             .report(diags);
                         }
                     },
@@ -1086,7 +1086,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
                         )
                         .add_footer_hint("consider using a target type where every bit pattern is valid")
-                        .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe´ instead")
+                        .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe` instead")
                         .report(diags);
                         return Err(diag);
                     }
@@ -1163,13 +1163,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 if expected_info.unique == unique {
                     eval_enum(expected)
                 } else {
-                    Err(error_unique_mismatch(
-                        "struct",
-                        base.span,
-                        expected_info.unique.id().span(),
-                        unique.id().span(),
+                    Err(
+                        error_unique_mismatch("enum", base.span, expected_info.unique.id().span(), unique.id().span())
+                            .report(diags),
                     )
-                    .report(diags))
                 }
             } else {
                 // TODO check if there is any possible variant for this index string,
@@ -1231,7 +1228,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let diag = DiagnosticError::new(
             "invalid dot index expression",
             index.span,
-            format!("no attribute found with with name `{index_str}`"),
+            format!("no attribute found with name `{index_str}`"),
         )
         .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
         .report(diags);

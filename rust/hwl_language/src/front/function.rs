@@ -370,7 +370,7 @@ impl CompileItemContext<'_, '_> {
                 format!("this {kind} has unbound generic parameters"),
             )
             .add_info(span_call, "no expected type")
-            .add_footer_hint("either set an expected type or use use the full type before calling new")
+            .add_footer_hint("either set an expected type or use the full type before calling new")
             .report(self.refs.diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {

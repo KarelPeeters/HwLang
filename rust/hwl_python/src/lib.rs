@@ -1083,7 +1083,7 @@ impl VerilatedPort {
 
     #[getter]
     fn r#type(&self, py: Python) -> Type {
-        // TODO this should return the the real original type,
+        // TODO this should return the real original type,
         //   more generally the entire verilator wrapper should be "real" type-based, instead of IrType-based
         let ty = self.map_port_info(py, |info| info.ty.clone());
         Type {

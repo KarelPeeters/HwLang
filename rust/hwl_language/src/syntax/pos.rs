@@ -203,7 +203,7 @@ pub struct LineOffsets {
 }
 
 // TODO get this more compact by using u32?
-//   we can even get rid of the the 2_char bit and store a single default per file plus a set of exceptions
+//   we can even get rid of the 2_char bit and store a single default per file plus a set of exceptions
 //   or maybe simpler, a separate bitset
 #[derive(Debug, Copy, Clone)]
 struct LineInfo(usize);

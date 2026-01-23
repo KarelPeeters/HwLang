@@ -26,7 +26,7 @@ pub enum LNodeImpl<'s, E> {
     /// Ensure there is a newline here. This forces any containing groups to wrap.
     /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
     AlwaysNewline,
-    /// Ensure there is a newline here, if the the containing group is wrapping.
+    /// Ensure there is a newline here, if the containing group is wrapping.
     /// Newlines are automatically deduplicated, use [LNode::AlwaysBlankLine] to force a full empty line.
     WrapNewline,
     /// Ensure there is a full blank like here (= two newlines).
