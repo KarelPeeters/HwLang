@@ -3,7 +3,7 @@ from pathlib import Path
 import hwl
 import pytest
 
-from hwl_sandbox.common.compare import compare_compile
+from hwl_sandbox.common.compare import compare_body
 from hwl_sandbox.common.util import compile_custom
 
 
@@ -27,7 +27,7 @@ def test_struct_simple_basics(tmp_dir: Path):
     return (v.y, v.x);
     """
 
-    e = compare_compile(["uint(8)", "bool"], "Tuple(bool, uint(8))", src, tmp_dir, prefix=prefix)
+    e = compare_body(["uint(8)", "bool"], "Tuple(bool, uint(8))", src, tmp_dir, prefix=prefix)
 
     e.eval_assert([0, False], (False, 0))
     e.eval_assert([5, False], (False, 5))
@@ -43,7 +43,7 @@ def test_struct_generic_basics(tmp_dir: Path):
     return (v.y, v.x);
     """
 
-    e = compare_compile(["uint(8)", "bool"], "Tuple(bool, uint(8))", src, tmp_dir, prefix=prefix)
+    e = compare_body(["uint(8)", "bool"], "Tuple(bool, uint(8))", src, tmp_dir, prefix=prefix)
 
     e.eval_assert([0, False], (False, 0))
     e.eval_assert([5, False], (False, 5))

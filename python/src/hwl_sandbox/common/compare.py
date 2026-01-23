@@ -80,8 +80,7 @@ def compare_get_type(ty_inputs: List[str], body: str, prefix: str) -> str:
     return capture.prints[0]
 
 
-# TODO rename to compare_body
-def compare_compile(
+def compare_body(
         ty_inputs: List[str],
         ty_res: str,
         body: str,
@@ -110,4 +109,4 @@ def compare_expression(
         ty_inputs: List[str], ty_res: str, expr: str, build_dir: Path, prefix: str = ""
 ) -> CompiledCompare:
     body = f"return {expr};"
-    return compare_compile(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=build_dir, prefix=prefix)
+    return compare_body(ty_inputs=ty_inputs, ty_res=ty_res, body=body, build_dir=build_dir, prefix=prefix)

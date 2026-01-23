@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from hwl_sandbox.common.compare import compare_compile
+from hwl_sandbox.common.compare import compare_body
 from hwl_sandbox.common.util import compile_custom
 
 
@@ -28,7 +28,7 @@ def test_merge_tuple(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile(["bool"], "Tuple(bool, uint(1))", src, tmp_dir)
+    e = compare_body(["bool"], "Tuple(bool, uint(1))", src, tmp_dir)
     e.eval_assert([True], (False, 1))
     e.eval_assert([False], (True, 0))
 
@@ -44,6 +44,6 @@ def test_merge_struct(tmp_dir: Path):
     }
     return result.x;
     """
-    e = compare_compile(["bool"], "bool", src, tmp_dir)
+    e = compare_body(["bool"], "bool", src, tmp_dir)
     e.eval_assert([True], False)
     e.eval_assert([False], True)

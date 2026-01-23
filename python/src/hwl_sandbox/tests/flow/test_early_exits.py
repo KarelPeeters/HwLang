@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from hwl_sandbox.common.compare import compare_compile
+from hwl_sandbox.common.compare import compare_body
 
 
 def test_simple_return(tmp_dir: Path):
     src = """
     return 2;
     """
-    e = compare_compile([], "int(0..8)", src, tmp_dir)
+    e = compare_body([], "int(0..8)", src, tmp_dir)
     e.eval_assert([], 2)
 
 
@@ -20,7 +20,7 @@ def test_break_compile(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile([], "int(0..8)", src, tmp_dir)
+    e = compare_body([], "int(0..8)", src, tmp_dir)
     e.eval_assert([], 4)
 
 
@@ -33,7 +33,7 @@ def test_break_hardware(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile(["int(-1..=8)"], "int(0..8)", src, tmp_dir)
+    e = compare_body(["int(-1..=8)"], "int(0..8)", src, tmp_dir)
     e.eval_assert([-1], 7)
     e.eval_assert([0], 0)
     e.eval_assert([4], 4)
@@ -49,7 +49,7 @@ def test_continue_hardware(tmp_dir: Path):
     }
     return result;
     """
-    e = compare_compile(["int(-1..=8)"], "int(0..=8)", src, tmp_dir)
+    e = compare_body(["int(-1..=8)"], "int(0..=8)", src, tmp_dir)
     e.eval_assert([-1], 8)
     e.eval_assert([0], 7)
     e.eval_assert([4], 7)
@@ -58,7 +58,7 @@ def test_continue_hardware(tmp_dir: Path):
 
 def test_return_select(tmp_dir: Path):
     src = "if (a0) { return 1; } else { return 2; }"
-    e = compare_compile(["bool"], "int(1..=2)", src, tmp_dir)
+    e = compare_body(["bool"], "int(1..=2)", src, tmp_dir)
     e.eval_assert([True], 1)
     e.eval_assert([False], 2)
 
@@ -70,7 +70,7 @@ def test_return_loop(tmp_dir: Path):
     }
     return 0;
     """
-    e = compare_compile(["bool"], "int(0..=4)", src, tmp_dir)
+    e = compare_body(["bool"], "int(0..=4)", src, tmp_dir)
     e.eval_assert([False], 0)
     e.eval_assert([True], 4)
 
@@ -86,7 +86,7 @@ def test_mix_all(tmp_dir: Path):
     }
     return count;
     """
-    e = compare_compile(
+    e = compare_body(
         ["int(-1..4)", "int(-1..4)", "int(-1..4)"],
         "int(-1..=4)",
         src,
@@ -112,7 +112,7 @@ def test_nested_loop_break(tmp_dir: Path):
     return count;
     """
     ar = "int(-1..4)"
-    e = compare_compile([ar, ar, ar], "int(0..=16)", src, tmp_dir)
+    e = compare_body([ar, ar, ar], "int(0..=16)", src, tmp_dir)
     e.eval_assert([-1, -1, -1], 12)
     e.eval_assert([2, -1, -1], 6)
     e.eval_assert([-1, 2, -1], 9)
@@ -127,6 +127,6 @@ def test_match_return(tmp_dir: Path):
     }
     return 0;
     """
-    e = compare_compile(["int(0..=1)"], "int(0..=1)", src, tmp_dir)
+    e = compare_body(["int(0..=1)"], "int(0..=1)", src, tmp_dir)
     e.eval_assert([0], 0)
     e.eval_assert([1], 1)

@@ -13,42 +13,42 @@ def test_add_pos(tmp_dir: Path):
     e.eval_assert([15, 31], 46)
 
 
-def test_negative_simple(tmp_dir: Path):
+def test_add_negative_simple(tmp_dir: Path):
     e = compare_expression(["int(-16..0)", "int(0..=1)"], "int(-16..=0)", "a0 + a1", tmp_dir)
     e.eval_assert([-16, 0], -16)
 
 
-def test_negative_complex(tmp_dir: Path):
+def test_add_negative_complex(tmp_dir: Path):
     e = compare_expression(["int(-902..-640)", "int(-129..-71)"], "int(-4096..=4096)", "a0 + a1", tmp_dir)
     e.eval_assert([-644, -91], -735)
 
 
-def test_negative_result_expanded(tmp_dir: Path):
+def test_add_negative_result_expanded(tmp_dir: Path):
     e = compare_expression(["int(-128..128)", "int(0..128)"], "int(-128..256)", "a0 + a1", tmp_dir)
     e.eval_assert([-1, 64], 64 - 1)
 
 
-def test_negative_result_positive(tmp_dir: Path):
+def test_add_negative_result_positive(tmp_dir: Path):
     e = compare_expression(["int(-128..128)", "int(128..256)"], "int(-4096..=4096)", "a0 + a1", tmp_dir)
     e.eval_assert([-1, 129], 128)
 
 
-def test_zero_width(tmp_dir: Path):
+def test_add_zero_width(tmp_dir: Path):
     e = compare_expression(["int(0..=0)", "int(0..16)"], "int(0..16)", "a0 + a1", tmp_dir)
     e.eval_assert([0, 8], 8)
 
 
-def test_constant_non_zero(tmp_dir: Path):
+def test_add_constant_non_zero(tmp_dir: Path):
     e = compare_expression(["int(5..=5)", "int(0..16)"], "int(5..21)", "a0 + a1", tmp_dir)
     e.eval_assert([5, 8], 13)
 
 
-def test_zero_width_outside_result_range(tmp_dir: Path):
+def test_add_zero_width_outside_result_range(tmp_dir: Path):
     e = compare_expression(["int(-1..0)", "int(0..1)"], "int(-8..8)", "a0 + a1", tmp_dir)
     e.eval_assert([-1, 0], -1)
 
 
-def test_large_port(tmp_dir: Path):
+def test_add_large_port(tmp_dir: Path):
     e = compare_expression(["int(0..2**128)", "int(0..=0)"], "int(0..2**128)", "a0 + a1", tmp_dir)
     e.eval_assert([0, 0], 0)
     e.eval_assert([2 ** 63 - 1, 0], 2 ** 63 - 1)

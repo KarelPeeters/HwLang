@@ -3,7 +3,7 @@ from pathlib import Path
 import hwl
 import pytest
 
-from hwl_sandbox.common.compare import compare_expression, compare_compile
+from hwl_sandbox.common.compare import compare_expression, compare_body
 from hwl_sandbox.common.util import compile_custom
 
 
@@ -191,7 +191,7 @@ def test_array_assign_bool(tmp_dir: Path):
     v[a1] = a2;
     return v;
     """
-    e = compare_compile(["[3]bool", "uint(0..3)", "bool"], "[3]bool", body, tmp_dir)
+    e = compare_body(["[3]bool", "uint(0..3)", "bool"], "[3]bool", body, tmp_dir)
     e.eval_assert([[False, False, False], 0, True], [True, False, False])
     e.eval_assert([[False, False, False], 1, True], [False, True, False])
     e.eval_assert([[False, False, False], 2, True], [False, False, True])
@@ -203,7 +203,7 @@ def test_array_assign_int(tmp_dir: Path):
     v[a1] = a2;
     return v;
     """
-    e = compare_compile(["[3]uint(8)", "uint(0..3)", "uint(8)"], "[3]uint(8)", body, tmp_dir)
+    e = compare_body(["[3]uint(8)", "uint(0..3)", "uint(8)"], "[3]uint(8)", body, tmp_dir)
     e.eval_assert([[2, 3, 4], 0, 5], [5, 3, 4])
     e.eval_assert([[2, 3, 4], 1, 5], [2, 5, 4])
     e.eval_assert([[2, 3, 4], 2, 5], [2, 3, 5])
@@ -215,7 +215,7 @@ def test_array_assign_slice(tmp_dir: Path):
     v[a1 +.. 2] = a2;
     return v;
     """
-    e = compare_compile(["[4]uint(8)", "uint(0..3)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
+    e = compare_body(["[4]uint(8)", "uint(0..3)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
 
     v = [2, 3, 4, 5]
     s = [6, 7]
@@ -231,7 +231,7 @@ def test_array_assign_slice_twice(tmp_dir: Path):
     v[1..][a1+..2] = a2;
     return v;
     """
-    e = compare_compile(["[4]uint(8)", "uint(0..2)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
+    e = compare_body(["[4]uint(8)", "uint(0..2)", "[2]uint(8)"], "[4]uint(8)", body, tmp_dir)
 
     v = [2, 3, 4, 5]
     s = [6, 7]

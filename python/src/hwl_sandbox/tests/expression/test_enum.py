@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from hwl_sandbox.common.compare import compare_compile
+from hwl_sandbox.common.compare import compare_body
 
 
 def test_enum_construction_and_match(tmp_dir: Path):
@@ -21,7 +21,7 @@ def test_enum_construction_and_match(tmp_dir: Path):
         .D(val v) => { return (3, !v); }
     }
     """
-    e = compare_compile(["uint(0..4)", "bool"], "Tuple(uint(0..4), bool)", body, tmp_dir, prefix=prefix)
+    e = compare_body(["uint(0..4)", "bool"], "Tuple(uint(0..4), bool)", body, tmp_dir, prefix=prefix)
     e.eval_assert([0, False], (0, False))
     e.eval_assert([0, True], (0, False))
     e.eval_assert([1, False], (1, True))

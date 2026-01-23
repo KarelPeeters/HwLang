@@ -9,7 +9,7 @@ from typing import Optional, List
 
 import hwl
 
-from hwl_sandbox.common.compare import compare_compile, compare_get_type
+from hwl_sandbox.common.compare import compare_body, compare_get_type
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
@@ -205,7 +205,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
     sampled_code = sample_code(rng)
 
     # generate and compile code
-    compiled = compare_compile(
+    compiled = compare_body(
         ty_inputs=sampled_code.input_tys,
         ty_res=sampled_code.res_ty,
         body=sampled_code.body,

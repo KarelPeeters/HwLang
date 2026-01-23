@@ -3,7 +3,7 @@ from pathlib import Path
 import hwl
 import pytest
 
-from hwl_sandbox.common.compare import compare_compile
+from hwl_sandbox.common.compare import compare_body
 from hwl_sandbox.common.util import compile_custom
 
 
@@ -14,7 +14,7 @@ def test_match_bool(tmp_dir: Path):
         true => { return 1; }
     }
     """
-    c = compare_compile(["bool"], "int(0..=1)", src, tmp_dir)
+    c = compare_body(["bool"], "int(0..=1)", src, tmp_dir)
 
     c.eval_assert([False], 0)
     c.eval_assert([True], 1)
@@ -31,7 +31,7 @@ def test_match_int(tmp_dir: Path):
         val other => { return -other; }
     }
     """
-    c = compare_compile(["int(0..8)"], "int(-8..=3)", src, tmp_dir)
+    c = compare_body(["int(0..8)"], "int(-8..=3)", src, tmp_dir)
 
     c.eval_assert([0], 0)
     c.eval_assert([1], 1)
@@ -64,7 +64,7 @@ def test_match_enum(tmp_dir: Path):
         _ => { return -5; }  
     }
     """
-    c = compare_compile(["int(0..=5)"], "int(-5..=0)", src, tmp_dir, prefix)
+    c = compare_body(["int(0..=5)"], "int(-5..=0)", src, tmp_dir, prefix)
 
     c.eval_assert([0], 0)
     c.eval_assert([1], -1)
