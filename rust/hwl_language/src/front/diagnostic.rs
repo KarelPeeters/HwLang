@@ -235,9 +235,9 @@ struct Annotation {
 }
 
 impl Diagnostic {
-    pub fn to_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
+    pub fn into_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
         let Diagnostic { level, content } = self;
-        content.to_string(database, settings, level)
+        content.into_string(database, settings, level)
     }
 
     pub fn sort_key(&self) -> impl Ord + '_ {
@@ -269,7 +269,7 @@ impl DiagnosticContent {
         self.footers.push((kind, message.into()));
     }
 
-    fn to_string(
+    fn into_string(
         self,
         database: &SourceDatabase,
         settings: DiagnosticStringSettings,
@@ -427,7 +427,7 @@ pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_col
 
     let mut s = String::new();
     for diag in diags {
-        s.push_str(&diag.to_string(source, settings));
+        s.push_str(&diag.into_string(source, settings));
         s.push('\n');
         s.push('\n');
     }
@@ -439,7 +439,7 @@ pub fn diags_to_string_vec(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi
 
     let mut s = vec![];
     for diag in diags {
-        s.push(diag.to_string(source, settings));
+        s.push(diag.into_string(source, settings));
     }
     s
 }
