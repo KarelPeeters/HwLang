@@ -1678,7 +1678,7 @@ impl MatchCoverage {
                 target_ty: _,
                 rem_variants,
             } => {
-                rem_variants.clear();
+                rem_variants.fill(false);
             }
         }
     }

@@ -136,3 +136,18 @@ def test_match_warn_unreachable():
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
         c.resolve("top.top")
+
+
+def test_match_enum_after_wildcard():
+    body = """
+    module top ports(x: in async Option(bool)) {
+        comb {
+            match (x) {
+                _ => {}
+                .Some(_) => {}
+            }
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
+        compile_custom(body).resolve("top.top")
