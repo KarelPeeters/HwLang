@@ -1630,7 +1630,7 @@ impl MatchCoverage {
                 if rem_true {
                     parts.push(true);
                 }
-                format!("[{parts:?}]")
+                format!("{parts:?}")
             }
             MatchCoverage::Int { rem_range } => rem_range.to_string(),
             MatchCoverage::Enum {
