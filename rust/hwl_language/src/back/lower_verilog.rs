@@ -251,6 +251,7 @@ fn make_identifier_valid(id: &str) -> String {
 
 #[derive(Debug, Copy, Clone)]
 struct ModuleNameMap<'n> {
+    dummy_name: &'n LoweredName,
     ports: &'n IndexMap<IrPort, Result<LoweredName, ZeroWidth>>,
     wires: &'n IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
     regs: &'n IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
@@ -347,11 +348,6 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         wires,
         &mut f,
     )?;
-    let module_names = ModuleNameMap {
-        ports: &port_name_map,
-        wires: &wire_name_map,
-        regs: &reg_name_map,
-    };
 
     // declare dummy signal, used to ensure combinatorial block sensitivity lists are never empty
     // TODO only declare when actually used?
@@ -363,14 +359,14 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     )?;
     swriteln!(f, "{I}wire {dummy_name} = 1'b0;");
 
-    lower_module_statements(
-        ctx,
-        module_info,
-        &mut module_name_scope,
-        &dummy_name,
-        module_names,
-        &mut f,
-    )?;
+    let module_names = ModuleNameMap {
+        dummy_name: &dummy_name,
+        ports: &port_name_map,
+        wires: &wire_name_map,
+        regs: &reg_name_map,
+    };
+
+    lower_module_statements(ctx, module_info, &mut module_name_scope, module_names, &mut f)?;
 
     swriteln!(f, "endmodule");
 
@@ -579,185 +575,35 @@ fn lower_module_statements(
     ctx: &mut LowerContext,
     module_info: &IrModuleInfo,
     module_name_scope: &mut LoweredNameScope,
-    dummy_name: &LoweredName,
     module_name_map: ModuleNameMap,
     f: &mut String,
 ) -> DiagResult {
     let diags = ctx.diags;
-    let large = &module_info.large;
 
     for (child_index, child) in enumerate(&module_info.children) {
         match &child.inner {
             IrModuleChild::CombinatorialProcess(process) => {
-                let IrCombinatorialProcess { locals, block } = process;
-
-                swriteln!(f, "{I}always @(*) begin: comb_{child_index}");
-                let indent = Indent::new(2);
-
-                let mut name_scope = module_name_scope.new_child();
-                let dummy_name_internal =
-                    name_scope.make_unique_str(diags, child.span, SENSITIVITY_DUMMY_NAME_VAR, false)?;
-                swriteln!(f, "{indent}reg {dummy_name_internal};");
-
-                let variables = declare_locals(diags, f, &mut name_scope, locals)?;
-
-                let temporaries = GrowVec::new();
-                let temporaries_offset = f.len();
-
-                swriteln!(f, "{indent}{dummy_name_internal} = {dummy_name};");
-
-                // combinatorial processes don't have register shadowing, they can't write to any
-                let process_name_map = ProcessNameMap {
-                    module_name_map,
-                    regs_shadowed: &IndexMap::default(),
-                    variables: &variables,
-                };
-                let mut ctx = LowerBlockContext {
-                    diags,
-                    large,
-                    module: module_info,
-                    locals,
-                    name_map: process_name_map,
-                    name_scope: &mut name_scope,
-                    temporaries: &temporaries,
-                    indent,
+                lower_combinatorial_process(
                     f,
-                };
-                ctx.lower_block(block)?;
-
-                declare_temporaries(f, temporaries_offset, temporaries);
-
-                swriteln!(f, "{I}end");
+                    diags,
+                    module_info,
+                    module_name_scope,
+                    module_name_map,
+                    child_index,
+                    child.span,
+                    process,
+                )?;
             }
             IrModuleChild::ClockedProcess(process) => {
-                let &IrClockedProcess {
-                    ref locals,
-                    clock_signal,
-                    ref clock_block,
-                    ref async_reset,
-                } = process;
-
-                // lower the edges
-                let clock_edge = lower_edge(diags, module_name_map, clock_signal)?;
-                let async_reset = async_reset
-                    .as_ref()
-                    .map(|info| {
-                        let reset_edge = lower_edge(diags, module_name_map, info.signal)?;
-                        Ok((reset_edge, info))
-                    })
-                    .transpose()?;
-
-                match &async_reset {
-                    Some((reset_edge, _)) => swriteln!(
-                        f,
-                        "{I}always @({} {}, {} {}) begin: clocked_{child_index}",
-                        clock_edge.edge,
-                        clock_edge.signal,
-                        reset_edge.edge,
-                        reset_edge.signal,
-                    ),
-                    None => swriteln!(
-                        f,
-                        "{I}always @({} {}) begin: clocked_{child_index}",
-                        clock_edge.edge,
-                        clock_edge.signal,
-                    ),
-                }
-
-                let mut name_scope = module_name_scope.new_child();
-
-                // declare locals and shadow registers
-                let shadow_regs = collect_shadow_signals(large, clock_block);
-
-                let variables = declare_locals(diags, f, &mut name_scope, locals)?;
-                let reg_name_map_shadowed =
-                    declare_shadow_registers(diags, f, &mut name_scope, &module_info.registers, &shadow_regs)?;
-
-                let temporaries = GrowVec::new();
-                let temporaries_offset = f.len();
-
-                // build new name map
-                let process_name_map = ProcessNameMap {
-                    module_name_map,
-                    regs_shadowed: &reg_name_map_shadowed,
-                    variables: &variables,
-                };
-
-                // async reset header if any
-                let indent_clocked = match &async_reset {
-                    None => Indent::new(2),
-                    Some((reset_edge, reset_info)) => {
-                        let IrAsyncResetInfo { signal: _, resets } = reset_info;
-
-                        swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.signal);
-                        let indent_inner = Indent::new(3);
-
-                        let mut ctx_reset = LowerBlockContext {
-                            diags,
-                            large,
-                            module: module_info,
-                            locals,
-                            name_map: process_name_map,
-                            name_scope: &mut name_scope,
-                            temporaries: &temporaries,
-                            indent: indent_inner,
-                            f,
-                        };
-
-                        for reset in resets {
-                            let &(reg, ref value) = &reset.inner;
-
-                            // use non-shadowed name
-                            let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
-                                Ok(reg_name) => reg_name,
-                                Err(ZeroWidth) => continue,
-                            };
-
-                            let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
-
-                            // use blocking assignment to match other register writes
-                            swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} <= {value};");
-                        }
-
-                        swriteln!(f, "{I}{I}end else begin");
-                        indent_inner
-                    }
-                };
-
-                // populate shadow registers
-                for (&reg, reg_name_shadow) in &reg_name_map_shadowed {
-                    if shadow_regs.contains(&reg) {
-                        let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
-                            Ok(orig_name) => orig_name,
-                            Err(ZeroWidth) => continue,
-                        };
-                        swriteln!(f, "{indent_clocked}{reg_name_shadow} = {reg_name_raw};");
-                    }
-                }
-
-                // lower body itself
-                let mut ctx = LowerBlockContext {
+                lower_clocked_process(
                     diags,
-                    large,
-                    module: module_info,
-                    locals,
-                    name_map: process_name_map,
-                    name_scope: &mut name_scope,
-                    temporaries: &temporaries,
-                    indent: indent_clocked,
                     f,
-                };
-                ctx.lower_block(clock_block)?;
-
-                // go back and insert temporary declarations at the start of the process
-                declare_temporaries(f, temporaries_offset, temporaries);
-
-                // reset tail
-                if async_reset.is_some() {
-                    swriteln!(f, "{I}{I}end");
-                }
-
-                swriteln!(f, "{I}end");
+                    module_info,
+                    module_name_scope,
+                    module_name_map,
+                    child_index,
+                    process,
+                )?;
             }
             IrModuleChild::ModuleInternalInstance(instance) => {
                 let IrModuleInternalInstance {
@@ -876,6 +722,203 @@ fn lower_port_connections<S: AsRef<str>>(
         swriteln!(f);
     }
     swriteln!(f, "{I});");
+    Ok(())
+}
+
+fn lower_combinatorial_process(
+    f: &mut String,
+    diags: &Diagnostics,
+    module_info: &IrModuleInfo,
+    module_name_scope: &mut LoweredNameScope,
+    module_name_map: ModuleNameMap,
+    child_index: usize,
+    span: Span,
+    process: &IrCombinatorialProcess,
+) -> DiagResult {
+    let IrCombinatorialProcess { locals, block } = process;
+
+    swriteln!(f, "{I}always @(*) begin: comb_{child_index}");
+    let indent = Indent::new(2);
+
+    let mut name_scope = module_name_scope.new_child();
+    let dummy_name_internal = name_scope.make_unique_str(diags, span, SENSITIVITY_DUMMY_NAME_VAR, false)?;
+    swriteln!(f, "{indent}reg {dummy_name_internal};");
+
+    let variables = declare_locals(diags, f, &mut name_scope, locals)?;
+
+    let temporaries = GrowVec::new();
+    let temporaries_offset = f.len();
+
+    swriteln!(
+        f,
+        "{indent}{dummy_name_internal} = {dummy_name};",
+        dummy_name = module_name_map.dummy_name
+    );
+
+    // combinatorial processes don't have register shadowing, they can't write to any
+    let process_name_map = ProcessNameMap {
+        module_name_map,
+        regs_shadowed: &IndexMap::default(),
+        variables: &variables,
+    };
+    let mut ctx = LowerBlockContext {
+        diags,
+        large: &module_info.large,
+        module: module_info,
+        locals,
+        name_map: process_name_map,
+        name_scope: &mut name_scope,
+        temporaries: &temporaries,
+        indent,
+        f,
+    };
+    ctx.lower_block(block)?;
+
+    declare_temporaries(f, temporaries_offset, temporaries);
+
+    swriteln!(f, "{I}end");
+
+    Ok(())
+}
+
+fn lower_clocked_process(
+    diags: &Diagnostics,
+    f: &mut String,
+    module_info: &IrModuleInfo,
+    module_name_scope: &LoweredNameScope,
+    module_name_map: ModuleNameMap,
+    child_index: usize,
+    process: &IrClockedProcess,
+) -> DiagResult {
+    let &IrClockedProcess {
+        ref locals,
+        clock_signal,
+        ref clock_block,
+        ref async_reset,
+    } = process;
+
+    // lower the edges
+    let clock_edge = lower_edge(diags, module_name_map, clock_signal)?;
+    let async_reset = async_reset
+        .as_ref()
+        .map(|info| {
+            let reset_edge = lower_edge(diags, module_name_map, info.signal)?;
+            Ok((reset_edge, info))
+        })
+        .transpose()?;
+
+    match &async_reset {
+        Some((reset_edge, _)) => swriteln!(
+            f,
+            "{I}always @({} {}, {} {}) begin: clocked_{child_index}",
+            clock_edge.edge,
+            clock_edge.signal,
+            reset_edge.edge,
+            reset_edge.signal,
+        ),
+        None => swriteln!(
+            f,
+            "{I}always @({} {}) begin: clocked_{child_index}",
+            clock_edge.edge,
+            clock_edge.signal,
+        ),
+    }
+
+    let mut name_scope = module_name_scope.new_child();
+
+    // declare locals and shadow registers
+    let shadow_regs = collect_shadow_signals(&module_info.large, clock_block);
+
+    let variables = declare_locals(diags, f, &mut name_scope, locals)?;
+    let reg_name_map_shadowed =
+        declare_shadow_registers(diags, f, &mut name_scope, &module_info.registers, &shadow_regs)?;
+
+    let temporaries = GrowVec::new();
+    let temporaries_offset = f.len();
+
+    // build new name map
+    let process_name_map = ProcessNameMap {
+        module_name_map,
+        regs_shadowed: &reg_name_map_shadowed,
+        variables: &variables,
+    };
+
+    // async reset header if any
+    let indent_clocked = match &async_reset {
+        None => Indent::new(2),
+        Some((reset_edge, reset_info)) => {
+            let IrAsyncResetInfo { signal: _, resets } = reset_info;
+
+            swriteln!(f, "{I}{I}if ({}{}) begin", reset_edge.if_prefix, reset_edge.signal);
+            let indent_inner = Indent::new(3);
+
+            let mut ctx_reset = LowerBlockContext {
+                diags,
+                large: &module_info.large,
+                module: module_info,
+                locals,
+                name_map: process_name_map,
+                name_scope: &mut name_scope,
+                temporaries: &temporaries,
+                indent: indent_inner,
+                f,
+            };
+
+            for reset in resets {
+                let &(reg, ref value) = &reset.inner;
+
+                // use non-shadowed name
+                let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
+                    Ok(reg_name) => reg_name,
+                    Err(ZeroWidth) => continue,
+                };
+
+                let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
+
+                // use blocking assignment to match other register writes
+                swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} <= {value};");
+            }
+
+            swriteln!(f, "{I}{I}end else begin");
+            indent_inner
+        }
+    };
+
+    // populate shadow registers
+    for (&reg, reg_name_shadow) in &reg_name_map_shadowed {
+        if shadow_regs.contains(&reg) {
+            let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
+                Ok(orig_name) => orig_name,
+                Err(ZeroWidth) => continue,
+            };
+            swriteln!(f, "{indent_clocked}{reg_name_shadow} = {reg_name_raw};");
+        }
+    }
+
+    // lower body itself
+    let mut ctx = LowerBlockContext {
+        diags,
+        large: &module_info.large,
+        module: module_info,
+        locals,
+        name_map: process_name_map,
+        name_scope: &mut name_scope,
+        temporaries: &temporaries,
+        indent: indent_clocked,
+        f,
+    };
+    ctx.lower_block(clock_block)?;
+
+    // go back and insert temporary declarations at the start of the process
+    declare_temporaries(f, temporaries_offset, temporaries);
+
+    // reset tail
+    if async_reset.is_some() {
+        swriteln!(f, "{I}{I}end");
+    }
+
+    swriteln!(f, "{I}end");
+
     Ok(())
 }
 
