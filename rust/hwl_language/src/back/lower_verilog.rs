@@ -739,7 +739,6 @@ fn lower_module_statements(
                             f,
                         };
 
-                        // Resets use non-blocking assignments to match other register updates
                         for reset in resets {
                             let &(reg, ref value) = &reset.inner;
 
@@ -750,6 +749,8 @@ fn lower_module_statements(
                             };
 
                             let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
+
+                            // use blocking assignment to match other register writes
                             swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} <= {value};");
                         }
 
