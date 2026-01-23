@@ -739,7 +739,7 @@ fn lower_module_statements(
                             f,
                         };
 
-                        // TODO should resets use blocking or non-blocking assignments?
+                        // Resets use non-blocking assignments to match other register updates
                         for reset in resets {
                             let &(reg, ref value) = &reset.inner;
 
@@ -750,7 +750,7 @@ fn lower_module_statements(
                             };
 
                             let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
-                            swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} = {value};");
+                            swriteln!(ctx_reset.f, "{indent_inner}{reg_name_raw} <= {value};");
                         }
 
                         swriteln!(f, "{I}{I}end else begin");
