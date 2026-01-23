@@ -410,7 +410,7 @@ impl DiagnosticContent {
         let renderer = if settings.ansi_color {
             let color = match level {
                 DiagnosticLevel::Error => AnsiColor::BrightRed,
-                DiagnosticLevel::Warning => AnsiColor::BrightYellow,
+                DiagnosticLevel::Warning => AnsiColor::Yellow,
             };
             Renderer::styled().emphasis(Style::new().bold().fg_color(Some(Color::Ansi(color))))
         } else {
