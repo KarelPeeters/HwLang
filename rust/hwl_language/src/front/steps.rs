@@ -520,7 +520,7 @@ fn set_compile_value_impl(
 
             let new_target = SetCompileTarget::Scalar(target_array[target_start + index].clone());
             let new_target = Spanned::new(new_span, new_target);
-            target_array[index] = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
+            target_array[target_start + index] = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
 
             Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array))))
         }

@@ -241,6 +241,22 @@ def test_array_assign_slice_twice(tmp_dir: Path):
         e.eval_assert([v, i, s], c)
 
 
+def test_array_assign_slice_index(tmp_dir: Path):
+    body = """
+    var v: [4]uint(8) = a0;
+    v[1..][a1] = a2;
+    return v;
+    """
+    e = compare_body(["[4]uint(8)", "uint(0..2)", "uint(8)"], "[4]uint(8)", body, tmp_dir)
+
+    v = [2, 3, 4, 5]
+    s = 6
+    for i in range(1 + 1):
+        c = list(v)
+        c[1 + i] = s
+        e.eval_assert([v, i, s], c)
+
+
 def test_array_literal_spread(tmp_dir: Path):
     expr = "[0, *a0, *a1, 0, a2]"
 
