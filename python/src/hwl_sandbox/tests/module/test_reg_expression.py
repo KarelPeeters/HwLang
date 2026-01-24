@@ -8,7 +8,7 @@ def test_reg_expression(tmp_dir: Path):
     module top ports(
         clk: in clock,
         rst: in async bool,
-        sync(clk, rst) {
+        sync(clk, async rst) {
             x: in int(8),
             y1: out int(8),
             y2: out int(8),

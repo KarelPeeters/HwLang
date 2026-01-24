@@ -5,7 +5,7 @@ pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         input: interface axi_stream([input_width]bool).input,
         output: interface axi_stream([output_width]bool).output,
     }
@@ -14,8 +14,8 @@ pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
     const buffer_size = input_width + output_width + min(input_width, output_width) - step;
     const shift_bits = clog2((buffer_size - input_width) / step + 1);
 
-    reg buffer: sync(clk, rst) [buffer_size]bool = undef;
-    reg level: sync(clk, rst) int(0..=(buffer_size / step)) = 0;
+    reg buffer: sync(clk, async rst) [buffer_size]bool = undef;
+    reg level: sync(clk, async rst) int(0..=(buffer_size / step)) = 0;
 
     comb {
         output.data = buffer[..output_width];

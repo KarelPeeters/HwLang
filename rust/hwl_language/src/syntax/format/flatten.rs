@@ -409,7 +409,7 @@ impl Context<'_> {
             );
 
             if !views.is_empty() {
-                if !(port_types.items.is_empty()) {
+                if !port_types.items.is_empty() {
                     body_seq.push(HNode::AlwaysNewline);
                 } else {
                     body_seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
@@ -1004,11 +1004,14 @@ impl Context<'_> {
             DomainKind::Async => token(TT::Async),
             DomainKind::Sync(domain) => {
                 let SyncDomain { clock, reset } = domain;
-                let args: &[Expression] = match reset {
-                    None => &[clock],
-                    Some(reset) => &[clock, reset],
+                let args: &[_] = match reset {
+                    None => &[Either::Left(clock)],
+                    Some(reset) => &[Either::Left(clock), Either::Right(reset)],
                 };
-                fmt_call(token(TT::Sync), args, |&expr| self.fmt_expr(expr))
+                fmt_call(token(TT::Sync), args, |&arg| match arg {
+                    Either::Left(clock) => self.fmt_expr(clock),
+                    Either::Right(reset) => HNode::Sequence(vec![token(TT::Async), HNode::Space, self.fmt_expr(reset)]),
+                })
             }
         }
     }

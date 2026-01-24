@@ -12,7 +12,7 @@ def generate_source(n: int):
 module passthrough_{i}(w: int) ports(
     clk: in clock,
     rst: in async bool,
-    sync(clk, rst) {{
+    sync(clk, async rst) {{
         select: in bool,
         data_a: in [w]bool,
         data_b: in [w]bool,

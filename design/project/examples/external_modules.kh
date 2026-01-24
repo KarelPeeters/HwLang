@@ -1,7 +1,7 @@
 pub external module ram_single_port_sync(W: uint, H: uint) ports(
     clk: in clock,
     rst: in async bool,
-    sync(clk, rst) {
+    sync(clk, async rst) {
         address: in int(0..H),
         write_data: in [W]bool,
         write_enable: in bool,

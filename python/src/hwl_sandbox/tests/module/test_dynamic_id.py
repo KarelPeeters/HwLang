@@ -10,7 +10,7 @@ def test_dynamic_id(tmp_dir: Path):
     module top ports(
         clk: in clock,
         rst: in async bool,
-        sync(clk, rst) {
+        sync(clk, async rst) {
             x: in int(8),
             y: out int(8),
         }

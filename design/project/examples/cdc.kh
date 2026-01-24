@@ -12,12 +12,12 @@ module cdc_sync_ff(N: int(2..) = 2) ports(
     in_data: in async bool,
     out_clk: in clock,
     out_rst: in async bool,
-    out_data: out sync(out_clk, out_rst) bool,
+    out_data: out sync(out_clk, async out_rst) bool,
 ) {
     reg buffer: [N]bool = [false] * N;
 
     clocked(out_clk, async out_rst) {
-        val in_data_domain = unsafe_value_with_domain(in_data, sync(out_clk, out_rst));
+        val in_data_domain = unsafe_value_with_domain(in_data, sync(out_clk, async out_rst));
         buffer = [*buffer[1..], in_data_domain];
     }
 
@@ -31,7 +31,7 @@ module cdc_sync_ff(N: int(2..) = 2) ports(
 module cdc_async_reset(N: int(2..) = 2) ports(
     in_reset: in async bool,
     out_clk: in clock,
-    out_reset: out sync(out_clk, in_reset) bool,
+    out_reset: out sync(out_clk, async in_reset) bool,
 ) {
     // TODO allow using expressions in ports
     wire w_true = true;
@@ -55,11 +55,11 @@ interface axi_stream(T: type) {
 module cdc_handshake(T: type, N: int(2..) = 2) ports(
     in_clk: in clock,
     in_rst: in async bool,
-    in_stream: interface sync(in_clk, in_rst) axi_stream(T).input,
+    in_stream: interface sync(in_clk, async in_rst) axi_stream(T).input,
 
     out_clk: in clock,
     out_rst: in async bool,
-    out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
+    out_stream: interface sync(out_clk, async out_rst) axi_stream(T).output,
 ) {
     // TODO actual implementation
     comb {
@@ -78,11 +78,11 @@ module cdc_handshake(T: type, N: int(2..) = 2) ports(
 module cdc_fifo(T: type, N: natural) ports(
     in_clk: in clock,
     in_rst: in async bool,
-    in_stream: interface sync(in_clk, in_rst) axi_stream(T).input,
+    in_stream: interface sync(in_clk, async in_rst) axi_stream(T).input,
 
     out_clk: in clock,
     out_rst: in async bool,
-    out_stream: interface sync(out_clk, out_rst) axi_stream(T).output,
+    out_stream: interface sync(out_clk, async out_rst) axi_stream(T).output,
 ) {
     // TODO actual implementation
     comb {

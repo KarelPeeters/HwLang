@@ -7,7 +7,7 @@ pub module convcode_encoder(length: natural, generator: Generator(length)) ports
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         input_data: in bool,
         input_valid: in bool,
 
@@ -16,7 +16,7 @@ pub module convcode_encoder(length: natural, generator: Generator(length)) ports
         output_valid: out bool,
     }
 ) {
-    reg delay_line: sync(clk, rst) [length - 1]bool = [false] * (length - 1);
+    reg delay_line: sync(clk, async rst) [length - 1]bool = [false] * (length - 1);
     reg out output_data_0 = false;
     reg out output_data_1 = false;
     reg out output_valid = false;
@@ -44,7 +44,7 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         input_data_0: in uint(analog_bits),
         input_data_1: in uint(analog_bits),
         input_valid: in bool,

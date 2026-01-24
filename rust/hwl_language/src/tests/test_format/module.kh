@@ -10,8 +10,8 @@ module module_ports ports(
     clk: in clock,
     rst: in async bool,
 
-    derp: in sync(clk, rst) bool,
-    derp: in sync(clk) bool,
+    derp: in sync(clk, async rst) bool,
+    derp: in sync(clk, async rst) bool,
 
     cst: in const bool,
 

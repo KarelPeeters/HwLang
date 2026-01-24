@@ -567,7 +567,7 @@ AsyncOrSyncDomain: DomainKind<Expression> = {
 
 // TODO make this more consistent with processes, "sync(clk, async rst)"
 SyncDomain: SyncDomain<Expression> = {
-    "sync" "(" <clock:Expr> <reset:("," <Expr>)?> ","? ")" => SyncDomain { clock, reset },
+    "sync" "(" <clock:Expr> <reset:("," "async" <Expr>)?> ","? ")" => SyncDomain { clock, reset },
 }
 
 // expressions

@@ -2,7 +2,7 @@ module top ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         x: in uint(8),
         y: out uint(8),
         z: out uint(8),
