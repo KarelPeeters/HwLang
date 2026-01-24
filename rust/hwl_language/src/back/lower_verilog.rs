@@ -1539,7 +1539,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let mut g = String::new();
                         swrite!(g, "({base}[{index}");
                         if element_size_bits != BigUint::ONE {
-                            swrite!(g, "* {element_size_bits}")
+                            swrite!(g, " * {element_size_bits}")
                         };
                         if len_bits != BigUint::ONE {
                             swrite!(g, " +: {len_bits}");
