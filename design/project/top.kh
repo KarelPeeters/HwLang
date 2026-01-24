@@ -1,13 +1,19 @@
-module top ports(x: in async Option(bool)) {
+module top ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, rst) {
+        x: in uint(8),
+        y: out uint(8),
+        z: out uint(8),
+    }
+) {
     comb {
-        match (x) {
-            .None => {
-                print("None");
-            }
-            .Some(val x) => {
-                print("Some({x})");
-            }
-            _ => {}
-        }
+        y = x;
+    }
+
+    reg out z = 0;
+    clocked(clk, async rst) {
+        z = x;
     }
 }
