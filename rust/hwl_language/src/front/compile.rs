@@ -536,7 +536,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     let mut prelude_imported_items: Vec<(String, DeclaredValueSingle)> = vec![];
     for std_file in ["types", "util", "math"] {
         let file = hierarchy
-            .root
+            .root_node()
             .children
             .get("std")
             .and_then(|n| n.children.get(std_file))
@@ -573,7 +573,7 @@ fn resolve_import_path(
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
     //   -> no it's not equivalent, things can also be private from the parent
-    let mut curr_node = &hierarchy.root;
+    let mut curr_node = hierarchy.root_node();
 
     // get the span without the trailing separator
     let parents_span = if path.inner.is_empty() {
@@ -613,7 +613,7 @@ fn find_top_module(
     //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
     let top_file = fixed
         .hierarchy
-        .root
+        .root_node()
         .children
         .get("top")
         .and_then(|top_node| top_node.file)

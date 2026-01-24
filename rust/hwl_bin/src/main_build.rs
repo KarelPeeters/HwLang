@@ -101,7 +101,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
                 print_node(&format!("{prefix}/{key}"), child);
             }
         }
-        print_node("  ", &hierarchy.root);
+        print_node("  ", hierarchy.root_node());
     }
 
     // run compilation

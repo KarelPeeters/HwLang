@@ -482,13 +482,19 @@ impl CompileRefs<'_, '_> {
             .try_collect_all_vec()?;
 
         let source = self.fixed.source;
+
+        let debug_info_location = match self.fixed.hierarchy.file_steps(def_id.span().file) {
+            None => "unknown".to_string(),
+            Some(steps) => steps.join(","),
+        };
+
         Ok(IrModuleInfo {
             ports: ctx.ir_ports,
             registers: ctx.ir_registers,
             wires: ctx.ir_wires,
             large: ctx_item.large,
             children: processes,
-            debug_info_file: source[def_id.span().file].debug_info_path.clone(),
+            debug_info_location,
             debug_info_id: def_id.spanned_string(source),
             debug_info_generic_args: debug_info_params,
         })

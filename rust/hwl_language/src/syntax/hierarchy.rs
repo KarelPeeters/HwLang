@@ -2,12 +2,12 @@ use crate::front::diagnostic::{DiagError, DiagnosticError, Diagnostics};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::str_is_valid_identifier;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 
 #[derive(Debug)]
 pub struct SourceHierarchy {
-    pub root: HierarchyNode,
-    files: IndexSet<FileId>,
+    root: HierarchyNode,
+    files: IndexMap<FileId, Vec<String>>,
 }
 
 // TODO cross-platform ordering guarantees?
@@ -21,12 +21,20 @@ impl SourceHierarchy {
     pub fn new() -> Self {
         SourceHierarchy {
             root: HierarchyNode::default(),
-            files: IndexSet::new(),
+            files: IndexMap::new(),
         }
     }
 
+    pub fn root_node(&self) -> &HierarchyNode {
+        &self.root
+    }
+
     pub fn files(&self) -> impl Iterator<Item = FileId> + '_ {
-        self.files.iter().copied()
+        self.files.keys().copied()
+    }
+
+    pub fn file_steps(&self, file: FileId) -> Option<&[String]> {
+        self.files.get(&file).map(|steps| steps.as_slice())
     }
 
     pub fn add_file(
@@ -38,7 +46,7 @@ impl SourceHierarchy {
         file: FileId,
     ) -> Result<(), DiagError> {
         // check file not yet added
-        if !self.files.insert(file) {
+        if self.files.contains_key(&file) {
             return Err(diags.report_error_simple(
                 format!("File `{}` already exists in hierarchy", source[file].debug_info_path),
                 span,
@@ -63,14 +71,14 @@ impl SourceHierarchy {
         loop {
             (curr_node, steps_left) = match steps_left.split_first() {
                 None => {
-                    return match curr_node.file {
+                    match curr_node.file {
                         None => {
                             curr_node.file = Some(file);
-                            Ok(())
+                            break;
                         }
                         Some(prev_file) => {
                             // TODO separate spans
-                            Err(DiagnosticError::new(
+                            return Err(DiagnosticError::new(
                                 format!("file with hierarchy steps `{}` already exists", steps.join(".")),
                                 span,
                                 format!("file with path `{}` added here", source[file].debug_info_path),
@@ -79,7 +87,7 @@ impl SourceHierarchy {
                                 span,
                                 format!("file with path `{}` added here", source[prev_file].debug_info_path),
                             )
-                            .report(diags))
+                            .report(diags));
                         }
                     };
                 }
@@ -89,5 +97,10 @@ impl SourceHierarchy {
                 }
             }
         }
+
+        // remember the file steps
+        self.files.insert(file, steps.to_vec());
+
+        Ok(())
     }
 }

@@ -415,7 +415,7 @@ impl Compile {
         let steps: Vec<&str> = path.split('.').collect_vec();
         let (item_name, steps) = steps.split_last().unwrap();
 
-        let mut curr_node = &hierarchy.root;
+        let mut curr_node = hierarchy.root_node();
         for (i_step, &step) in enumerate(steps) {
             curr_node = curr_node.children.get(step).ok_or_else(|| {
                 ResolveException::new_err(format!(

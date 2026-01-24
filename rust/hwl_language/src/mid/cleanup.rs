@@ -25,7 +25,7 @@ pub fn cleanup_module(ir: &mut IrModuleInfo) {
         wires: _,
         large,
         children,
-        debug_info_file: _,
+        debug_info_location: _,
         debug_info_id: _,
         debug_info_generic_args: _,
     } = ir;

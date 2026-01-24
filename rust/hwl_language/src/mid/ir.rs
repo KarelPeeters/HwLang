@@ -58,7 +58,7 @@ pub struct IrModuleInfo {
 
     pub children: Vec<Spanned<IrModuleChild>>,
 
-    pub debug_info_file: String,
+    pub debug_info_location: String,
     pub debug_info_id: Spanned<Option<String>>,
     pub debug_info_generic_args: Option<Vec<(String, String)>>,
 }

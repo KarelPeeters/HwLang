@@ -307,7 +307,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         registers,
         wires,
         children: _,
-        debug_info_file,
+        debug_info_location,
         debug_info_id,
         debug_info_generic_args,
     } = module_info;
@@ -318,7 +318,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
     // TODO don't use absolute paths here, they cause non-reproducible builds
     swriteln!(f, "// module {}", debug_info_id.inner.unwrap_or("_"));
-    swriteln!(f, "//   defined in \"{debug_info_file}\"",);
+    swriteln!(f, "//   defined in \"{debug_info_location}\"",);
 
     if let Some(generic_args) = debug_info_generic_args {
         swriteln!(f, "//   instantiated with generic arguments:");
