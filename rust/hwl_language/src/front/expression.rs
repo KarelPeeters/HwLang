@@ -625,19 +625,25 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 };
 
-                let ty_uint = Type::Int(MultiRange::from(Range {
-                    start: Some(BigInt::ZERO),
-                    end: None,
-                }));
-                let length = self.eval_expression_as_compile(
-                    scope,
-                    flow,
-                    &ty_uint,
-                    length,
-                    Spanned::new(expr.span, "array type length"),
-                )?;
-                let reason = TypeContainsReason::ArrayLen { span_len: length.span };
-                let length = check_type_is_uint_compile(diags, elab, reason, length)?;
+                let length = match refs.get_expr(length) {
+                    ExpressionKind::Dummy => None,
+                    _ => {
+                        let ty_uint = Type::Int(MultiRange::from(Range {
+                            start: Some(BigInt::ZERO),
+                            end: None,
+                        }));
+                        let length = self.eval_expression_as_compile(
+                            scope,
+                            flow,
+                            &ty_uint,
+                            length,
+                            Spanned::new(expr.span, "array type length"),
+                        )?;
+                        let reason = TypeContainsReason::ArrayLen { span_len: length.span };
+                        let length = check_type_is_uint_compile(diags, elab, reason, length)?;
+                        Some(length)
+                    }
+                };
 
                 // eval inner type and construct new array type
                 let inner_ty = self.eval_expression_as_ty(scope, flow, inner_ty)?;
@@ -1109,6 +1115,32 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 _ => {}
             }
+
+            // array type attributes
+            if let Type::Array(ty_inner, ty_len) = ty {
+                match index_str {
+                    "inner" => {
+                        let result = Value::new_ty((**ty_inner).clone());
+                        return Ok(ValueInner::Value(result));
+                    }
+                    "len" => {
+                        return if let Some(ty_len) = ty_len {
+                            let result = Value::new_int(BigInt::from(ty_len));
+                            Ok(ValueInner::Value(result))
+                        } else {
+                            let diag = DiagnosticError::new(
+                                "cannot get length of array type with unknown length",
+                                index.span,
+                                "trying to get length here",
+                            )
+                            .add_info(base.span, format!("array type is `{}`", ty.value_string(elab)))
+                            .report(diags);
+                            Err(diag)
+                        };
+                    }
+                    _ => {}
+                }
+            }
         }
 
         // struct new
@@ -1225,10 +1257,15 @@ impl<'a> CompileItemContext<'a, '_> {
         }
 
         // array length
-        if let Type::Array(_, len) = &base_ty
+        if let Type::Array(_, value_len) = &base_ty
             && index_str == "len"
         {
-            return Ok(ValueInner::Value(Value::new_int(BigInt::from(len))));
+            return if let Some(value_len) = value_len {
+                let result = Value::new_int(BigInt::from(value_len));
+                Ok(ValueInner::Value(result))
+            } else {
+                Err(diags.report_error_internal(expr_span, "value has type with unknown array length"))
+            };
         }
 
         // fallthrough into error
@@ -1263,9 +1300,7 @@ impl<'a> CompileItemContext<'a, '_> {
             .map(|v| {
                 let expected_ty_curr = match v {
                     ArrayLiteralElement::Single(_) => expected_ty_inner,
-                    ArrayLiteralElement::Spread(_, _) => {
-                        &Type::Array(Arc::new(expected_ty_inner.clone()), BigUint::ZERO)
-                    }
+                    ArrayLiteralElement::Spread(_, _) => &Type::Array(Arc::new(expected_ty_inner.clone()), None),
                 };
 
                 v.map_inner(|value_inner| self.eval_expression(scope, flow, expected_ty_curr, value_inner))
@@ -2254,6 +2289,8 @@ pub fn eval_binary_expression(
             let right = check_type_is_int(diags, elab, op_reason, right.map_inner(|e| e.into_value()));
             match left.inner.ty() {
                 Type::Array(left_ty_inner, left_len) => {
+                    let left_len = left_len.expect("array value has known length");
+
                     let right = right?;
                     let right_inner = match right {
                         MaybeCompile::Compile(right_inner) => right_inner,
@@ -2825,7 +2862,8 @@ fn array_literal_combine_values(
                     (BigUint::ONE, elem_domain, IrArrayLiteralElement::Single(elem_expr))
                 }
                 ArrayLiteralElement::Spread(_, elem_inner) => {
-                    let elem_len = unwrap_match!(elem_inner.inner.ty(), Type::Array(_, len) => len);
+                    let elem_len = unwrap_match!(elem_inner.inner.ty(), Type::Array(_, len) => len)
+                        .expect("array value has known length");
                     let elem_domain = elem_inner.inner.domain();
                     let elem_expr = elem_inner.inner.as_ir_expression_unchecked(
                         refs,

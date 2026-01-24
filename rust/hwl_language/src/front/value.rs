@@ -759,7 +759,7 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Array(values) => {
                 // TODO precompute this once? this can get slow for large arrays
                 let ty_inner = Type::union_all(values.iter().map(CompileValue::ty));
-                Type::Array(Arc::new(ty_inner), BigUint::from(values.len()))
+                Type::Array(Arc::new(ty_inner), Some(BigUint::from(values.len())))
             }
             SimpleCompileValue::Function(_) => Type::Function,
             SimpleCompileValue::Module(_) => Type::Module,

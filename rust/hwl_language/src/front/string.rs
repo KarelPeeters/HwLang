@@ -530,7 +530,11 @@ impl Type {
                 f
             }
             Type::Array(inner, len) => {
-                format!("[{len}]{}", inner.value_string(elab))
+                let inner_str = inner.value_string(elab);
+                match len {
+                    None => format!("[_]{inner_str}"),
+                    Some(len) => format!("[{len}]{inner_str}"),
+                }
             }
             // TODO include import path for debug names?
             Type::Struct(ty) => {

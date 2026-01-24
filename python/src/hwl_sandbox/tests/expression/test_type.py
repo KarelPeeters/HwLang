@@ -66,3 +66,26 @@ def test_type_function():
     """
     f: hwl.Function = compile_custom(src).resolve("top.f")
     assert isinstance(f(), hwl.Function)
+
+
+def test_type_array():
+    src = """
+    fn f(x: [_]bool) -> uint { return x.len; }
+    fn g(x: [2]bool) -> uint { return x.len; }
+    """
+    c = compile_custom(src)
+    f: hwl.Function = c.resolve("top.f")
+    g: hwl.Function = c.resolve("top.g")
+
+    assert f([]) == 0
+    assert f([True]) == 1
+    assert f([True, False]) == 2
+
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        assert f([0]) == 2
+
+    assert g([True, False]) == 2
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        assert g([True]) == 1
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        assert g([0, 1]) == 3

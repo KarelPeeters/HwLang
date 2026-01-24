@@ -721,7 +721,7 @@ impl CompileItemContext<'_, '_> {
                     elab,
                     TypeContainsReason::Operator(span_call),
                     value.map_inner(|v| v.into_value()),
-                    Some(&width),
+                    Some(width),
                 )?;
 
                 let result = match value {

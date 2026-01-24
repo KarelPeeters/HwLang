@@ -389,51 +389,39 @@ pub fn check_type_is_bool_array(
     elab: &ElaborationArenas,
     reason: TypeContainsReason,
     value: Spanned<Value>,
-    expected_len: Option<&BigUint>,
+    expected_len: Option<BigUint>,
 ) -> DiagResult<MaybeCompile<Vec<bool>, HardwareValue<BigUint>>> {
-    if let Type::Array(ty_inner, ty_len) = value.inner.ty()
-        && expected_len.is_none_or(|expected_len| expected_len == &ty_len)
-        && let Type::Bool = *ty_inner
-    {
-        let err = || diags.report_error_internal(value.span, "expected bool array");
-        return match value.inner {
-            Value::Simple(v) => match v {
-                SimpleCompileValue::Array(v) => {
-                    let result = v
-                        .iter()
-                        .map(|e| match e {
-                            &Value::Simple(SimpleCompileValue::Bool(b)) => Ok(b),
-                            _ => Err(err()),
-                        })
-                        .try_collect_vec()?;
-                    Ok(MaybeCompile::Compile(result))
-                }
-                _ => return Err(err()),
-            },
-            Value::Compound(_) => return Err(err()),
-            Value::Hardware(c) => Ok(MaybeCompile::Hardware(HardwareValue {
-                ty: ty_len,
+    let expected_ty = Type::Array(Arc::new(Type::Bool), expected_len);
+    check_type_contains_value(diags, elab, reason, &expected_ty, value.as_ref())?;
+
+    let err_internal = || diags.report_error_internal(value.span, "expected bool array");
+    match value.inner {
+        Value::Simple(v) => match v {
+            SimpleCompileValue::Array(v) => {
+                let result = v
+                    .iter()
+                    .map(|e| match e {
+                        &Value::Simple(SimpleCompileValue::Bool(b)) => Ok(b),
+                        _ => Err(err_internal()),
+                    })
+                    .try_collect_vec()?;
+                Ok(MaybeCompile::Compile(result))
+            }
+            _ => Err(err_internal()),
+        },
+        Value::Hardware(c) => {
+            let len = match c.ty {
+                HardwareType::Array(_, len) => len,
+                _ => return Err(err_internal()),
+            };
+            Ok(MaybeCompile::Hardware(HardwareValue {
+                ty: len,
                 domain: c.domain,
                 expr: c.expr,
-            })),
-        };
+            }))
+        }
+        Value::Compound(_) => Err(err_internal()),
     }
-
-    let expected_ty_str = match expected_len {
-        None => Type::Array(Arc::new(Type::Bool), BigUint::ZERO)
-            .value_string(elab)
-            .replace("0", "_"),
-        Some(expected_len) => Type::Array(Arc::new(Type::Bool), expected_len.clone()).value_string(elab),
-    };
-    let value_ty_str = value.inner.ty().value_string(elab);
-    let mut diag = DiagnosticError::new(
-        "type mismatch",
-        value.span,
-        format!("expected `{expected_ty_str}`, got type `{value_ty_str}`"),
-    );
-
-    diag = reason.add_diag_info(elab, diag, &Type::Array(Arc::new(Type::Bool), BigUint::ZERO));
-    Err(diag.report(diags))
 }
 
 pub fn check_type_is_string(

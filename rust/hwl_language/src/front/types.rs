@@ -23,8 +23,7 @@ pub enum Type {
     String,
     Int(MultiRange<BigInt>),
     Tuple(Option<Arc<Vec<Type>>>),
-    // TODO add list type
-    Array(Arc<Type>, BigUint),
+    Array(Arc<Type>, Option<BigUint>),
     // TODO make user type covariant? or allow users to define variance?
     Struct(ElaboratedStruct),
     Enum(ElaboratedEnum),
@@ -184,11 +183,11 @@ impl Type {
                 }
             }
             (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
+                let result_inner = a_inner.union(b_inner);
                 if a_len == b_len {
-                    Type::Array(Arc::new(a_inner.union(b_inner)), a_len.clone())
+                    Type::Array(Arc::new(result_inner), a_len.clone())
                 } else {
-                    // TODO into list once that exists?
-                    Type::Any
+                    Type::Array(Arc::new(result_inner), None)
                 }
             }
             (&Type::Struct(a_elab), &Type::Struct(b_elab)) => {
@@ -228,6 +227,7 @@ impl Type {
     }
 
     pub fn contains_type(&self, ty: &Type) -> bool {
+        // TODO optimize this?
         self == &self.union(ty)
     }
 
@@ -250,9 +250,12 @@ impl Type {
                     .map(|v| HardwareType::Tuple(Arc::new(v))),
                 None => Err(NonHardwareType),
             },
-            Type::Array(inner, len) => inner
-                .as_hardware_type(elab)
-                .map(|inner| HardwareType::Array(Arc::new(inner), len.clone())),
+            Type::Array(inner, len) => {
+                let len = len.as_ref().ok_or(NonHardwareType)?;
+                inner
+                    .as_hardware_type(elab)
+                    .map(|inner| HardwareType::Array(Arc::new(inner), len.clone()))
+            }
             &Type::Struct(ty_struct) => {
                 let info = elab.struct_info(ty_struct);
                 match info.fields_hw {
@@ -289,7 +292,7 @@ impl HardwareType {
             HardwareType::Tuple(inner) => {
                 Type::Tuple(Some(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())))
             }
-            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), len.clone()),
+            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), Some(len.clone())),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
             HardwareType::Enum(elab) => Type::Enum(elab.inner()),
         }
