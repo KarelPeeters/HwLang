@@ -283,6 +283,7 @@ def test_array_comprehension_iter(tmp_dir: Path):
     e = compare_expression(["[4]uint(8)"], "[4]uint(9)", "[x + 1 for x in a0]", tmp_dir)
     e.eval_assert([[1, 2, 3, 4]], [2, 3, 4, 5])
 
-# TODO test array assignments
-# TODO test array slice copy from one array to another
-# TODO test signal array slicing and assigning
+
+def test_array_len(tmp_dir: Path):
+    e = compare_expression(["[4]uint(8)"], "uint(8)", "a0.len", tmp_dir)
+    e.eval_assert([[1, 2, 3, 4]], 4)

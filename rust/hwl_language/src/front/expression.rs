@@ -1224,6 +1224,13 @@ impl<'a> CompileItemContext<'a, '_> {
             return Ok(ValueInner::Value(ValueWithImplications::simple(result)));
         }
 
+        // array length
+        if let Type::Array(_, len) = &base_ty
+            && index_str == "len"
+        {
+            return Ok(ValueInner::Value(Value::new_int(BigInt::from(len))));
+        }
+
         // fallthrough into error
         let diag = DiagnosticError::new(
             "invalid dot index expression",
