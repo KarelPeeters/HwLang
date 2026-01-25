@@ -12,6 +12,7 @@ enable_rust_backtraces()
 compile_rust_module()
 
 import hwl
+import time
 
 from hwl_sandbox.common.compare import compare_body, compare_get_type, compare_codegen
 
@@ -285,6 +286,8 @@ class Common:
     counter_next: int
     counter_max: Optional[int]
 
+    time_start: float
+
 
 def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_base: int):
     try:
@@ -297,6 +300,10 @@ def main_thread(common: Common, build_dir_base: Path, sample_count: int, seed_ba
                 common.counter_next += 1
 
             main_iteration(build_dir_base=build_dir_base, sample_count=sample_count, seed_base=seed_base, i=i)
+
+            with common.counter_lock:
+                tp = (i + 1) / (time.perf_counter() - common.time_start)
+                print(f"Finished fuzz iteration {i}, throughput {tp} iter/s")
     finally:
         common.stopped = True
 
@@ -321,6 +328,7 @@ def main():
         counter_lock=threading.Lock(),
         counter_next=start_iter,
         counter_max=(start_iter + max_iter_count) if max_iter_count is not None else None,
+        time_start=time.perf_counter(),
     )
     threads = [
         threading.Thread(target=main_thread, args=(common, build_dir_base, sample_count, seed,))
