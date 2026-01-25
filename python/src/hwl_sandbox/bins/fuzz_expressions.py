@@ -110,7 +110,7 @@ class SampleState:
         self.body = self.body[:body_len]
 
 
-def sample_value_inner(state: SampleState, rng, ty_int_not_bool: bool, depth: int) -> str:
+def try_sample_value(state: SampleState, rng, ty_int_not_bool: bool, depth: int) -> str:
     if depth > 8 or (depth > 0 and rng.random() < 0.5):
         # reuse an existing value (if possible)
         if rng.random() < .5:
@@ -183,7 +183,7 @@ def sample_value_inner(state: SampleState, rng, ty_int_not_bool: bool, depth: in
 def sample_value(state: SampleState, rng: random.Random, ty_int_not_bool: bool, depth: int) -> str:
     while True:
         checkpoint = state.checkpoint()
-        v = sample_value_inner(state, rng, ty_int_not_bool=ty_int_not_bool, depth=depth)
+        v = try_sample_value(state, rng, ty_int_not_bool=ty_int_not_bool, depth=depth)
 
         # check if the last sampled expression is actually valid
         body_test = state.body
@@ -214,7 +214,7 @@ def sample_value(state: SampleState, rng: random.Random, ty_int_not_bool: bool, 
     assert False, "unreachable"
 
 
-def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
+def sample_code(rng: random.Random) -> SampledCode:
     state = SampleState()
 
     # sample the final return value
@@ -224,8 +224,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
     # extract the return type
     ty_res_min = compare_get_type(ty_inputs=[ty for _, ty in state.inputs], body=state.body, prefix="")
 
-    # success, we've generated a valid expression
-    # parse return type and generate a random range that contains it
+    # generate a random output type that contains the actual output type
     if ty_res_min == "bool":
         res_ty = "bool"
     else:
@@ -236,16 +235,6 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
         res_ty = f"int({range_res.start}..{range_res.end})"
 
     return SampledCode(inputs=state.inputs, res_ty=res_ty, body=state.body)
-
-
-def sample_code(rng: random.Random) -> SampledCode:
-    iter_count = 0
-    while True:
-        iter_count += 1
-        code = try_sample_code(rng=rng)
-        if code is not None:
-            print(f"Found valid code after {iter_count} attempt(s)")
-            return code
 
 
 def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
@@ -319,7 +308,7 @@ def main():
     thread_count = 1
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
     # os.environ["OBJCACHE"] = "ccache"
-    max_iter_count = None
+    max_iter_count: Optional[int] = None
 
     # random seed
     seed = 42 + 3
@@ -331,7 +320,7 @@ def main():
         stopped=False,
         counter_lock=threading.Lock(),
         counter_next=start_iter,
-        counter_max=start_iter + max_iter_count if max_iter_count is not None else None,
+        counter_max=(start_iter + max_iter_count) if max_iter_count is not None else None,
     )
     threads = [
         threading.Thread(target=main_thread, args=(common, build_dir_base, sample_count, seed,))
@@ -341,8 +330,12 @@ def main():
     # start and wait for threads
     for t in threads:
         t.start()
-    for t in threads:
-        t.join()
+
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        common.stopped = True
 
 
 if __name__ == "__main__":
