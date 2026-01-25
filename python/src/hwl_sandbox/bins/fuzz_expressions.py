@@ -136,7 +136,7 @@ def sample_value_inner(state: SampleState, rng, ty_int_not_bool: bool, depth: in
     if ty_int_not_bool:
         # int result
         # TODO include power, unary minus
-        operators = ["+", "-", "*", "/", "%"]
+        operators = ["+", "-", "*", "/", "%", "<<", ">>"]
         operand_int_not_bool = True
     else:
         # bool result
@@ -161,6 +161,12 @@ def sample_value_inner(state: SampleState, rng, ty_int_not_bool: bool, depth: in
 
     # build expression
     expr = f"{operand_a} {operator} {operand_b}"
+
+    # constrain type to avoid size blowups
+    if operator in ["<<", ">>"]:
+        state.body += f"val _: int(0..1024) = {operand_b};\n"
+    if ty_int_not_bool:
+        state.body += f"val _: int(1024) = {expr};\n"
 
     # maybe store in variable
     if rng.random() < 0.8:
@@ -193,7 +199,8 @@ def sample_value(state: SampleState, rng: random.Random, ty_int_not_bool: bool, 
                 "division by zero is not allowed",
                 "modulo by zero is not allowed",
                 "invalid power operation",
-                "operator requires type `uint`"
+                "operator requires type `uint`",
+                "target requires type `int("
             ]
             if all(any(a in m for a in allowed_messages) for m in e.messages):
                 state.restore(checkpoint)
@@ -309,7 +316,7 @@ def main():
     # settings
     # TODO use multiprocessing, with ccache python itself becomes the bottleneck
     sample_count = 1024
-    thread_count = 16
+    thread_count = 1
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
     # os.environ["OBJCACHE"] = "ccache"
     max_iter_count = None
