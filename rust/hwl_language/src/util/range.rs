@@ -1,4 +1,4 @@
-use crate::util::big_int::{BigInt, BigUint};
+use crate::util::big_int::{AnyInt, BigInt, BigUint};
 use itertools::Either;
 use std::fmt::{Debug, Display, Formatter};
 
@@ -398,12 +398,9 @@ macro_rules! impl_open {
             }
         }
 
-        impl<T> $R<T>
-        where
-            for<'a> &'a T: std::ops::Add<u8, Output = T>,
-        {
+        impl<T: AnyInt> $R<T> {
             pub fn single(value: T) -> $R<T> {
-                let end = &value + 1u8;
+                let end = value.next();
                 $R {
                     start: Some(value),
                     end: Some(end),
@@ -448,12 +445,9 @@ macro_rules! impl_closed {
             }
         }
 
-        impl<T> $R<T>
-        where
-            for<'a> &'a T: std::ops::Add<u8, Output = T>,
-        {
+        impl<T: AnyInt> $R<T> {
             pub fn single(value: T) -> $R<T> {
-                let end = &value + 1u8;
+                let end = value.next();
                 $R { start: value, end }
             }
         }

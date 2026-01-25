@@ -30,7 +30,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
-use crate::util::big_int::{BigInt, BigUint};
+use crate::util::big_int::{AnyInt, BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
@@ -2209,24 +2209,44 @@ impl Iterator for ForIterator {
     }
 }
 
-fn pair_compile_int(
-    left: MaybeCompile<BigInt, HardwareInt>,
-    right: MaybeCompile<BigInt, HardwareInt>,
-) -> MaybeCompile<(BigInt, BigInt), (HardwareInt, HardwareInt)> {
+fn pair_compile_int<L: AnyInt, R: AnyInt>(
+    left: MaybeCompile<L, HardwareValue<ClosedNonEmptyMultiRange<L>>>,
+    right: MaybeCompile<R, HardwareValue<ClosedNonEmptyMultiRange<R>>>,
+) -> MaybeCompile<
+    (L, R),
+    (
+        HardwareValue<ClosedNonEmptyMultiRange<L>>,
+        HardwareValue<ClosedNonEmptyMultiRange<R>>,
+    ),
+> {
+    fn f<T: AnyInt>(x: T) -> HardwareValue<ClosedNonEmptyMultiRange<T>> {
+        HardwareValue {
+            ty: ClosedNonEmptyMultiRange::single(x.clone()),
+            domain: ValueDomain::Const,
+            expr: IrExpression::Int(x.into()),
+        }
+    }
+
+    pair_compile(left, right, |x: L| f(x), |x: R| f(x))
+}
+
+fn pair_compile<LC, LH, RC, RH>(
+    left: MaybeCompile<LC, LH>,
+    right: MaybeCompile<RC, RH>,
+    f_left: impl FnOnce(LC) -> LH,
+    f_right: impl FnOnce(RC) -> RH,
+) -> MaybeCompile<(LC, RC), (LH, RH)> {
     match (left, right) {
         (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => MaybeCompile::Compile((left, right)),
         (left, right) => {
-            let map = |x: MaybeCompile<BigInt, HardwareInt>| match x {
-                MaybeCompile::Compile(x) => HardwareInt {
-                    ty: ClosedNonEmptyMultiRange::single(x.clone()),
-                    domain: ValueDomain::Const,
-                    expr: IrExpression::Int(x),
-                },
-                MaybeCompile::Hardware(x) => x,
+            let left = match left {
+                MaybeCompile::Compile(left) => f_left(left),
+                MaybeCompile::Hardware(left) => left,
             };
-
-            let left = map(left);
-            let right = map(right);
+            let right = match right {
+                MaybeCompile::Compile(right) => f_right(right),
+                MaybeCompile::Hardware(right) => right,
+            };
             MaybeCompile::Hardware((left, right))
         }
     }
@@ -2479,6 +2499,59 @@ pub fn eval_binary_expression(
                 }
             }
         }
+
+        BinaryOp::Shl => {
+            let left = check_type_is_int(diags, elab, op_reason, left.map_inner(|e| e.into_value()));
+            let right = check_type_is_uint(diags, elab, op_reason, right.map_inner(|e| e.into_value()));
+
+            let left = left?;
+            let right = right?;
+
+            match pair_compile_int(left, right) {
+                MaybeCompile::Compile((left, right)) => {
+                    let factor = BigUint::pow_2_to(&right);
+                    Value::new_int(left * factor)
+                }
+                MaybeCompile::Hardware((left, right)) => {
+                    let factor_range =
+                        multi_range_binary_pow(&ClosedNonEmptyMultiRange::single(BigInt::TWO), &right.ty)
+                            .expect("non-zero expr");
+                    let result_range = multi_range_binary_mul(&left.ty, &factor_range);
+
+                    let right = HardwareInt::from(right);
+                    let result =
+                        build_binary_int_arithmetic_op(IrIntArithmeticOp::Shl, large, result_range, left, right);
+                    Value::Hardware(HardwareValue::from(result))
+                }
+            }
+        }
+        BinaryOp::Shr => {
+            let left = check_type_is_int(diags, elab, op_reason, left.map_inner(|e| e.into_value()));
+            let right = check_type_is_uint(diags, elab, op_reason, right.map_inner(|e| e.into_value()));
+
+            let left = left?;
+            let right = right?;
+
+            match pair_compile_int(left, right) {
+                MaybeCompile::Compile((left, right)) => {
+                    let divisor = BigUint::pow_2_to(&right);
+                    let result = left.div_floor(&BigInt::from(divisor)).expect("non-zero div");
+                    Value::new_int(result)
+                }
+                MaybeCompile::Hardware((left, right)) => {
+                    let divisor_range =
+                        multi_range_binary_pow(&ClosedNonEmptyMultiRange::single(BigInt::TWO), &right.ty)
+                            .expect("non-zero expr");
+                    let result_range = multi_range_binary_div(&left.ty, &divisor_range).expect("non-zero divisor");
+
+                    let right = HardwareInt::from(right);
+                    let result =
+                        build_binary_int_arithmetic_op(IrIntArithmeticOp::Shr, large, result_range, left, right);
+                    Value::Hardware(HardwareValue::from(result))
+                }
+            }
+        }
+
         // (bool, bool)
         // TODO these should short-circuit, so delay evaluation of right
         BinaryOp::BoolAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
@@ -2501,10 +2574,6 @@ pub fn eval_binary_expression(
         BinaryOp::BitAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
         BinaryOp::BitOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
         BinaryOp::BitXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
-        // TODO (boolean array, non-negative int) and maybe (non-negative int, non-negative int),
-        //   and maybe even negative shift amounts?
-        BinaryOp::Shl => return Err(diags.report_error_todo(expr_span, "binary op Shl")),
-        BinaryOp::Shr => return Err(diags.report_error_todo(expr_span, "binary op Shr")),
     };
 
     Ok(ValueWithImplications::simple(result_simple))

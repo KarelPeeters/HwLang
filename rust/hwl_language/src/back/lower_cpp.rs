@@ -452,6 +452,8 @@ impl CodegenBlockContext<'_> {
                         IrIntArithmeticOp::Div => "/",
                         IrIntArithmeticOp::Mod => "%",
                         IrIntArithmeticOp::Pow => "**",
+                        IrIntArithmeticOp::Shr => ">>",
+                        IrIntArithmeticOp::Shl => "<<",
                     };
                     let left_eval = self.eval(indent, span, left, stage_read)?;
                     let right_eval = self.eval(indent, span, right, stage_read)?;

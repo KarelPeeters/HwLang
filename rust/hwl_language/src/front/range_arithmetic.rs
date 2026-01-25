@@ -192,6 +192,7 @@ pub fn multi_range_binary_pow(
 
 // multi-range versions just apply the single-range versions to each possible combination
 // TODO is there an easy way to optimize that?
+// TODO many of these should be more sparse, eg. power operations and multiplications often create gaps
 fn wrap_multi_unary<A: Ord, R: Ord + Clone>(
     a: &ClosedNonEmptyMultiRange<A>,
     f: impl Fn(ClosedNonEmptyRange<&A>) -> ClosedNonEmptyRange<R>,

@@ -137,3 +137,17 @@ def test_div_tricky(tmp_dir: Path, op: str):
 def test_compare_signed(tmp_dir: Path):
     e = compare_expression(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmp_dir)
     e.eval_assert([-1, 1], True)
+
+
+def test_shift_left_basic(tmp_dir: Path):
+    e = compare_expression(["int(0..16)", "int(0..4)"], "int(0..256)", "a0 << a1", tmp_dir)
+    for a in [0, 3, 15]:
+        for i in range(4):
+            e.eval_assert([a, i], a << i)
+
+
+def test_shift_right_basic(tmp_dir: Path):
+    e = compare_expression(["int(0..16)", "int(0..4)"], "int(0..256)", "a0 >> a1", tmp_dir)
+    for a in [0, 3, 15]:
+        for i in range(4):
+            e.eval_assert([a, i], a >> i)

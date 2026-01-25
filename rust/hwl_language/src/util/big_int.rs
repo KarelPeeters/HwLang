@@ -25,6 +25,21 @@ enum Storage {
     Big(num_bigint::BigInt),
 }
 
+pub trait AnyInt: Debug + Clone + Eq + PartialEq + Ord + PartialOrd + std::hash::Hash + Sized + Into<BigInt> {
+    fn next(&self) -> Self;
+}
+
+impl AnyInt for BigUint {
+    fn next(&self) -> Self {
+        self + 1u8
+    }
+}
+impl AnyInt for BigInt {
+    fn next(&self) -> Self {
+        self + 1u8
+    }
+}
+
 impl Storage {
     const ZERO: Self = Storage::Small(0);
     const ONE: Self = Storage::Small(1);

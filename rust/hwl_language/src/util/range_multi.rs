@@ -1,3 +1,4 @@
+use crate::util::big_int::AnyInt;
 use crate::util::data::VecExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, NonEmptyRange, Range, RangeEmpty, RangeOpen};
 use itertools::{Either, Itertools};
@@ -75,7 +76,7 @@ impl<T> MultiRange<T> {
 
     pub fn single(value: T) -> MultiRange<T>
     where
-        for<'a> &'a T: std::ops::Add<u8, Output = T>,
+        T: AnyInt,
     {
         MultiRange {
             ranges: vec![NonEmptyRange::single(value)],
@@ -451,10 +452,7 @@ macro_rules! impl_common {
             }
         }
 
-        impl<T> $R<T>
-        where
-            for<'a> &'a T: std::ops::Add<u8, Output = T>,
-        {
+        impl<T: AnyInt> $R<T> {
             pub fn single(value: T) -> $R<T> {
                 $R {
                     inner: MultiRange::single(value),

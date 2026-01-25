@@ -333,6 +333,8 @@ pub enum IrIntArithmeticOp {
     Div,
     Mod,
     Pow,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

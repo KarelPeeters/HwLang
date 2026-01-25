@@ -1606,6 +1606,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "-", left, right)
             }
             IrIntArithmeticOp::Mul => {
+                // TODO replace multiplication with (constant?) power of two with shift
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "*", left, right)
             }
             IrIntArithmeticOp::Div => self.lower_arithmetic_expression_div_mod(
@@ -1625,7 +1626,18 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 right,
             ),
             IrIntArithmeticOp::Pow => {
+                // TODO do we actually need to expand left/right?
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "**", left, right)
+            }
+            IrIntArithmeticOp::Shl => {
+                // TODO bitwidths, signed/unsigned
+                // TOOD we don't need to expand right (probably)
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "<<", left, right)
+            }
+            IrIntArithmeticOp::Shr => {
+                // TODO bitwidths, signed/unsigned
+                // TOOD we don't need to expand right (probably)
+                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, ">>", left, right)
             }
         }
     }
@@ -1672,6 +1684,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         a: &IrExpression,
         b: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
+        // TODO replace division by constant with magic multiply + shift, EDA tools probably don't reliably do this
+        // TODO warn for division by non-constant?
         let indent = self.indent;
         let diags = self.diags;
 

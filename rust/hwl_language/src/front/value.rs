@@ -620,6 +620,12 @@ impl From<HardwareBool> for HardwareValue {
     }
 }
 
+impl From<HardwareUInt> for HardwareInt {
+    fn from(value: HardwareUInt) -> Self {
+        value.map_type(|range| range.map(BigInt::from))
+    }
+}
+
 impl<C, H: Into<HardwareValue>> From<MaybeCompile<BigInt, H>> for Value<SimpleCompileValue, C, HardwareValue> {
     fn from(value: MaybeCompile<BigInt, H>) -> Self {
         match value {
