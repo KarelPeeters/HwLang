@@ -139,15 +139,44 @@ def test_compare_signed(tmp_dir: Path):
     e.eval_assert([-1, 1], True)
 
 
-def test_shift_left_basic(tmp_dir: Path):
+def test_shift_left_pos(tmp_dir: Path):
     e = compare_expression(["int(0..16)", "int(0..4)"], "int(0..256)", "a0 << a1", tmp_dir)
     for a in [0, 3, 15]:
         for i in range(4):
             e.eval_assert([a, i], a << i)
 
 
-def test_shift_right_basic(tmp_dir: Path):
+def test_shift_right_pos(tmp_dir: Path):
     e = compare_expression(["int(0..16)", "int(0..4)"], "int(0..256)", "a0 >> a1", tmp_dir)
     for a in [0, 3, 15]:
         for i in range(4):
             e.eval_assert([a, i], a >> i)
+
+
+SHIFT_LEFT_MIXED_VALUES = [-2 ** 7, -4, -1, 0, 1, 4, 2 ** 7 - 1]
+
+
+def test_shift_left_mixed(tmp_dir: Path):
+    e = compare_expression(["int(8)", "uint(0..4)"], "int(12)", "a0 << a1", tmp_dir)
+    for x in SHIFT_LEFT_MIXED_VALUES:
+        for i in range(4):
+            e.eval_assert([x, i], x << i)
+
+
+def test_shift_right_mixed(tmp_dir: Path):
+    e = compare_expression(["int(8)", "uint(0..4)"], "int(8)", "a0 >> a1", tmp_dir)
+    for x in SHIFT_LEFT_MIXED_VALUES:
+        for i in range(4):
+            e.eval_assert([x, i], x >> i)
+
+
+def test_shift_left_zero(tmp_dir: Path):
+    e = compare_expression(["int(8)", "int(0..=0)"], "int(8)", "a0 << a1", tmp_dir)
+    for x in SHIFT_LEFT_MIXED_VALUES:
+        e.eval_assert([x, 0], x)
+
+
+def test_shift_right_zero(tmp_dir: Path):
+    e = compare_expression(["int(8)", "int(0..=0)"], "int(8)", "a0 >> a1", tmp_dir)
+    for x in SHIFT_LEFT_MIXED_VALUES:
+        e.eval_assert([x, 0], x)

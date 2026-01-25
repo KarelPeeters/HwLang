@@ -1630,14 +1630,40 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "**", left, right)
             }
             IrIntArithmeticOp::Shl => {
-                // TODO bitwidths, signed/unsigned
-                // TOOD we don't need to expand right (probably)
-                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "<<", left, right)
+                let left = self.lower_expression_int_expanded(span, result_range, left)?;
+                let right = match self.lower_expression(span, right)? {
+                    Ok(right) => right,
+                    Err(ZeroWidth) => return Ok(left),
+                };
+
+                let indent = self.indent;
+                let tmp = self.new_temporary(span, result_ty_verilog)?;
+                swriteln!(self.f, "{indent}{tmp} = {left} << {right};");
+                Ok(Evaluated::Temporary(tmp))
             }
             IrIntArithmeticOp::Shr => {
-                // TODO bitwidths, signed/unsigned
-                // TOOD we don't need to expand right (probably)
-                self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, ">>", left, right)
+                let left_can_be_neg = left.ty(self.module, self.locals).unwrap_int().start.is_negative();
+
+                let left = match self.lower_expression(span, left)? {
+                    Ok(left) => left,
+                    Err(ZeroWidth) => return Ok(lower_int_constant(result_range, &BigInt::ZERO)),
+                };
+                let right = match self.lower_expression(span, right)? {
+                    Ok(right) => right,
+                    Err(ZeroWidth) => return Ok(left),
+                };
+
+                let indent = self.indent;
+                let tmp = self.new_temporary(span, result_ty_verilog)?;
+
+                if left_can_be_neg {
+                    let left_singed = left.as_signed();
+                    swriteln!(self.f, "{indent}{tmp} = $unsigned({left_singed} >>> {right});");
+                } else {
+                    swriteln!(self.f, "{indent}{tmp} = {left} >> {right};");
+                }
+
+                Ok(Evaluated::Temporary(tmp))
             }
         }
     }
