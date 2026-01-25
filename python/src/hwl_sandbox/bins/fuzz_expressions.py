@@ -1,15 +1,14 @@
-import os
 import random
 import re
 import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import hwl
 
-from hwl_sandbox.common.compare import compare_body, compare_get_type
+from hwl_sandbox.common.compare import compare_body, compare_get_type, compare_codegen
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
@@ -73,104 +72,150 @@ def sample_from_range(rng: random.Random, r: Optional[hwl.Range]) -> int:
 class SampledCode:
     # "None" means this is a boolean input
     # TODO replace this with hwl Type instances once those are convenient enough
-    input_ranges: List[hwl.Range | None]
-    input_tys: List[str]
+    inputs: List[Tuple[hwl.Range | None, str]]
     res_ty: str
     body: str
 
 
-def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
-    input_ranges: List[hwl.Range | None] = []
-    next_var_index = 0
-    available_values_int = []
-    available_values_bool = []
-    body = ""
+class SampleState:
+    def __init__(self):
+        self.inputs: List[Tuple[hwl.Range | None, str]] = []
+        self.next_var_index = 0
+        self.available_values_int = []
+        self.available_values_bool = []
+        self.body = ""
 
-    def sample_value(ty_int_not_bool: bool, depth: int) -> str:
-        nonlocal next_var_index, body
+    def checkpoint(self):
+        return (
+            len(self.inputs),
+            self.next_var_index,
+            len(self.available_values_int),
+            len(self.available_values_bool),
+            len(self.body)
+        )
 
-        if depth > 8 or (depth > 0 and rng.random() < 0.5):
-            # reuse an existing value (if possible)
-            if rng.random() < .5:
-                if ty_int_not_bool and available_values_int:
-                    return rng.choice(available_values_int)
-                if not ty_int_not_bool and available_values_bool:
-                    return rng.choice(available_values_bool)
+    def restore(self, checkpoint):
+        (
+            inputs_len,
+            next_var_index,
+            avail_int_len,
+            avail_bool_len,
+            body_len
+        ) = checkpoint
 
-            # create a new input
-            input_str = f"a{len(input_ranges)}"
-            if ty_int_not_bool:
-                r = sample_range(rng, max_abs=None)
-                input_ranges.append(r)
-                available_values_int.append(input_str)
-            else:
-                input_ranges.append(None)
-                available_values_bool.append(input_str)
+        self.inputs = self.inputs[:inputs_len]
+        self.next_var_index = next_var_index
+        self.available_values_int = self.available_values_int[:avail_int_len]
+        self.available_values_bool = self.available_values_bool[:avail_bool_len]
+        self.body = self.body[:body_len]
 
-            return input_str
 
-        # create a new expression
-        # pick operator
+def sample_value_inner(state: SampleState, rng, ty_int_not_bool: bool, depth: int) -> str:
+    if depth > 8 or (depth > 0 and rng.random() < 0.5):
+        # reuse an existing value (if possible)
+        if rng.random() < .5:
+            if ty_int_not_bool and state.available_values_int:
+                return rng.choice(state.available_values_int)
+            if not ty_int_not_bool and state.available_values_bool:
+                return rng.choice(state.available_values_bool)
+
+        # create a new input
+        input_str = f"a{len(state.inputs)}"
         if ty_int_not_bool:
-            # int result
-            # TODO include power, unary minus
-            operators = ["+", "-", "*", "/", "%"]
+            r = sample_range(rng, max_abs=None)
+            state.inputs.append((r, f"int({r.start}..{r.end})"))
+            state.available_values_int.append(input_str)
+        else:
+            state.inputs.append((None, "bool"))
+            state.available_values_bool.append(input_str)
+
+        return input_str
+
+    # create a new expression
+    # pick operator
+    if ty_int_not_bool:
+        # int result
+        # TODO include power, unary minus
+        operators = ["+", "-", "*", "/", "%"]
+        operand_int_not_bool = True
+    else:
+        # bool result
+        if rng.random() < 0.8:
+            # int operands
+            operators = ["==", "!=", "<", "<=", ">", ">="]
             operand_int_not_bool = True
         else:
-            # bool result
-            if rng.random() < 0.8:
-                # int operands
-                operators = ["==", "!=", "<", "<=", ">", ">="]
-                operand_int_not_bool = True
-            else:
-                # bool operands
-                # TODO add all binary bool operators
-                operators = ["&&", "||", "^^", "&", "|", "^"]
-                operand_int_not_bool = False
+            # bool operands
+            # TODO add all binary bool operators
+            operators = ["&&", "||", "^^", "&", "|", "^"]
+            operand_int_not_bool = False
 
-        operator = rng.choice(operators)
+    operator = rng.choice(operators)
 
-        # pick operands
-        operand_a = sample_value(ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
-        if rng.random() < 0.1:
-            operand_b = operand_a
-        else:
-            operand_b = sample_value(ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
+    # pick operands
+    operand_a = sample_value(state, rng, ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
+    if rng.random() < 0.1:
+        operand_b = operand_a
+    else:
+        operand_b = sample_value(state, rng, ty_int_not_bool=operand_int_not_bool, depth=depth + 1)
 
-        # build expression
-        expr = f"{operand_a} {operator} {operand_b}"
+    # build expression
+    expr = f"{operand_a} {operator} {operand_b}"
 
-        # maybe store in variable
-        if rng.random() < 0.8:
-            var_index = next_var_index
-            next_var_index += 1
+    # maybe store in variable
+    if rng.random() < 0.8:
+        var_index = state.next_var_index
+        state.next_var_index += 1
 
-            val_str = f"v_{var_index}"
-            body += f"val {val_str} = {expr};\n"
-            return val_str
-        else:
-            return f"({expr})"
+        val_str = f"v_{var_index}"
+        state.body += f"val {val_str} = {expr};\n"
+        return val_str
+    else:
+        return f"({expr})"
+
+
+def sample_value(state: SampleState, rng: random.Random, ty_int_not_bool: bool, depth: int) -> str:
+    while True:
+        checkpoint = state.checkpoint()
+        v = sample_value_inner(state, rng, ty_int_not_bool=ty_int_not_bool, depth=depth)
+
+        # check if the last sampled expression is actually valid
+        body_test = state.body
+        body_test += f"val _ = {v};\n"
+        body_test += "return ();\n"
+
+        try:
+            c = compare_codegen(ty_inputs=[ty for _, ty in state.inputs], ty_res="Tuple()", body=body_test, prefix="")
+            _: hwl.Module = c.resolve("top.eval_mod")
+        except hwl.DiagnosticException as e:
+            # check that this is once of the expected failure modes
+            allowed_messages = [
+                "division by zero is not allowed",
+                "modulo by zero is not allowed",
+                "invalid power operation",
+                "operator requires type `uint`"
+            ]
+            if all(any(a in m for a in allowed_messages) for m in e.messages):
+                state.restore(checkpoint)
+                continue
+
+            raise e
+
+        # compilation succeeded, return value
+        return v
+
+    assert False, "unreachable"
+
+
+def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
+    state = SampleState()
 
     # sample the final return value
-    return_value = sample_value(ty_int_not_bool=rng.random() < 0.8, depth=0)
-    body += f"return {return_value};"
+    return_value = sample_value(state, rng, ty_int_not_bool=rng.random() < 0.8, depth=0)
+    state.body += f"return {return_value};"
 
-    # check expression validness and extract the return type
-    input_types = [f"int({r.start}..{r.end})" if r is not None else "bool" for r in input_ranges]
-    try:
-        ty_res_min = compare_get_type(ty_inputs=input_types, body=body, prefix="")
-    except hwl.DiagnosticException as e:
-        # check that this is once of the expected failure modes
-        allowed_messages = [
-            "division by zero is not allowed",
-            "modulo by zero is not allowed",
-            "invalid power operation",
-        ]
-        if all(any(a in m for a in allowed_messages) for m in e.messages):
-            return None
-
-        # unexpected error
-        raise e
+    # extract the return type
+    ty_res_min = compare_get_type(ty_inputs=[ty for _, ty in state.inputs], body=state.body, prefix="")
 
     # success, we've generated a valid expression
     # parse return type and generate a random range that contains it
@@ -183,7 +228,7 @@ def try_sample_code(rng: random.Random) -> Optional[SampledCode]:
         range_res = sample_range(rng, must_contain=range_res_min)
         res_ty = f"int({range_res.start}..{range_res.end})"
 
-    return SampledCode(input_ranges=input_ranges, input_tys=input_types, res_ty=res_ty, body=body)
+    return SampledCode(inputs=state.inputs, res_ty=res_ty, body=state.body)
 
 
 def sample_code(rng: random.Random) -> SampledCode:
@@ -206,7 +251,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
     # generate and compile code
     compiled = compare_body(
-        ty_inputs=sampled_code.input_tys,
+        ty_inputs=[ty for _, ty in sampled_code.inputs],
         ty_res=sampled_code.res_ty,
         body=sampled_code.body,
         build_dir=build_dir
@@ -214,7 +259,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
     # put through some random values
     for _ in range(sample_count):
-        values = [sample_from_range(rng, r) for r in sampled_code.input_ranges]
+        values = [sample_from_range(rng, r) for r, _ in sampled_code.inputs]
         res_func, res_mod = compiled.eval(values)
         assert res_func == res_mod, f"Mismatch for code {sampled_code}, values `{values}`: function {res_func} != module {res_mod}"
 
@@ -266,7 +311,7 @@ def main():
     sample_count = 1024
     thread_count = 16
     build_dir_base = Path(__file__).parent / "../../../build/" / Path(__file__).stem
-    os.environ["OBJCACHE"] = "ccache"
+    # os.environ["OBJCACHE"] = "ccache"
     max_iter_count = None
 
     # random seed
