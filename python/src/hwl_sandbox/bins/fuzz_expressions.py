@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces, compile_rust_module
+
+enable_rust_backtraces()
+compile_rust_module()
+
 import hwl
 
 from hwl_sandbox.common.compare import compare_body, compare_get_type, compare_codegen
-from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
 def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
@@ -261,10 +265,6 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
 
 
 def main_iteration(build_dir_base: Path, sample_count: int, seed_base: int, i: int):
-    # TODO move this print into a lock
-    # TODO log current expression and number of trials
-    print(f"Starting fuzz iteration: {i}")
-
     rng = random.Random(str((seed_base, i)))
 
     # create a new build dir for each iteration to avoid issues with dlopen caching old versions
@@ -339,5 +339,4 @@ def main():
 
 
 if __name__ == "__main__":
-    enable_rust_backtraces()
     main()
