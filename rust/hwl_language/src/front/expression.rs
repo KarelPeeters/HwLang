@@ -40,11 +40,11 @@ use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
+use crate::util::ResultDoubleExt;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
-use crate::util::{ResultDoubleExt, result_pair};
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -816,15 +816,14 @@ impl<'a> CompileItemContext<'a, '_> {
                 } = reg_delay;
 
                 // eval
-                let value = self.eval_expression(scope, flow, expected_ty, value);
+                let value = self.eval_expression(scope, flow, expected_ty, value)?;
                 let init = self.eval_expression_as_compile_or_undefined(
                     scope,
                     flow,
                     expected_ty,
                     init,
                     Spanned::new(span_keyword, "register init"),
-                );
-                let (value, init) = result_pair(value, init)?;
+                )?;
 
                 // figure out type
                 let value_ty = value.inner.ty();
@@ -1359,7 +1358,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
                 .eval_expression(scope, flow, &Type::Any, start)
-                .and_then(|start| check_type_is_int(diags, elab, reason, start));
+                .and_then(|start| check_type_is_int(diags, elab, reason, start))?;
 
             let ty_uint = Type::Int(MultiRange::from(Range {
                 start: Some(BigInt::ZERO),
@@ -1367,10 +1366,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }));
             let len = self
                 .eval_expression_as_compile(scope, flow, &ty_uint, len, Spanned::new(index.span, "range length"))
-                .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len));
-
-            let start = start?;
-            let len = len?;
+                .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len))?;
 
             match start {
                 MaybeCompile::Compile(start) => ArrayStep::Compile(ArrayStepCompile::ArraySlice {

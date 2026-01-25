@@ -31,7 +31,6 @@ use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
-use crate::util::{ResultExt, result_pair};
 use itertools::{Either, Itertools, enumerate, zip_eq};
 use unwrap_match::unwrap_match;
 
@@ -434,47 +433,45 @@ impl CompileItemContext<'_, '_> {
                 } = decl;
 
                 // eval ty
-                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose();
+                let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
                 // eval init
-                let init = ty.as_ref_ok().and_then(|ty| {
-                    let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
-                    init.map(|init| self.eval_expression_with_implications(scope, flow, init_expected_ty, init))
-                        .transpose()
-                });
+                let init_expected_ty = ty.as_ref().map_or(&Type::Any, |ty| &ty.inner);
+                let init = init
+                    .map(|init| self.eval_expression_with_implications(scope, flow, init_expected_ty, init))
+                    .transpose()?;
 
-                let entry = result_pair(ty, init).and_then(|(ty, init)| {
-                    // check that init fits in type
-                    if let Some(ty) = &ty
-                        && let Some(init) = &init
-                    {
-                        let reason = TypeContainsReason::Assignment {
-                            span_target: id.span(),
-                            span_target_ty: ty.span,
-                        };
-                        check_type_contains_value(diags, elab, reason, &ty.inner, init.as_ref())?;
-                    }
-
-                    // build variable
-                    let info = VariableInfo {
-                        span_decl: id.span(),
-                        id: VariableId::Id(id),
-                        mutable,
-                        ty,
-                        join_ir_variable: None,
+                // check that init fits in type
+                if let Some(ty) = &ty
+                    && let Some(init) = &init
+                {
+                    let reason = TypeContainsReason::Assignment {
+                        span_target: id.span(),
+                        span_target_ty: ty.span,
                     };
-                    let var = flow.var_new(info);
+                    check_type_contains_value(diags, elab, reason, &ty.inner, init.as_ref())?;
+                }
 
-                    // store initial value if there is one
-                    if let Some(init) = init {
-                        flow.var_set(self.refs, var, decl.span, Ok(init.inner))?;
-                    }
+                // build variable
+                let info = VariableInfo {
+                    span_decl: id.span(),
+                    id: VariableId::Id(id),
+                    mutable,
+                    ty,
+                    join_ir_variable: None,
+                };
+                let var = flow.var_new(info);
 
-                    Ok(ScopedEntry::Named(NamedValue::Variable(var)))
-                });
+                // store initial value if there is one
+                if let Some(init) = init {
+                    flow.var_set(self.refs, var, decl.span, Ok(init.inner))?;
+                }
 
+                // declare entry
+                let entry = ScopedEntry::Named(NamedValue::Variable(var));
                 let id = Ok(id.spanned_str(self.refs.fixed.source));
-                scope.maybe_declare(diags, id, entry);
+                scope.maybe_declare(diags, id, Ok(entry));
+
                 BlockEnd::Normal
             }
             BlockStatementKind::Assignment(stmt) => {
