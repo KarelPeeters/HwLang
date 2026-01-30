@@ -2,15 +2,15 @@ pub module top ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         enable: in bool,
         x: in int(0..256),
         y: out int(0..256),
         t: out bool,
     }
 ) {
-    reg d0: sync(clk, rst) int(0..256) = 0;
-    reg d1: sync(clk, rst) int(0..256) = 0;
+    reg d0: sync(clk, async rst) int(0..256) = 0;
+    reg d1: sync(clk, async rst) int(0..256) = 0;
     reg out t = false;
 
     clocked(clk, async rst) {
@@ -45,7 +45,7 @@ module child(T: type) ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         x: in T,
         y: out T,
     }
