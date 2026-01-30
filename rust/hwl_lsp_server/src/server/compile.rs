@@ -4,12 +4,12 @@ use crate::server::vfs::{Vfs, VfsResult};
 use crate::util::encode::span_to_lsp;
 use crate::util::sender::SendErrorOr;
 use crate::util::uri::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
-use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{ElaborationSet, compile};
 use hwl_language::front::diagnostic::{
     DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
 };
 use hwl_language::front::print::IgnorePrintHandler;
+use hwl_language::mid::ir::IrDatabase;
 use hwl_language::syntax::collect::{add_source_files_to_tree, add_std_sources, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
@@ -79,11 +79,8 @@ impl ServerState {
 
                 // TODO at this point we can clear/update all parsing diagnostics already
                 // TODO enable multithreading
-                // TODO optionally also check C++ generation
-                //   or maybe remove verilog instead, hopefully the backends get complete enough
                 // TODO compile all items in the open files first, then later the rest for increased interactivity
                 // TODO propagate prints to a separate output channel or log file
-                // TODO enable multithreading
                 let early_stop = AtomicBool::new(false);
                 let should_stop_inner = || {
                     let should_stop_new = should_stop();
@@ -91,7 +88,7 @@ impl ServerState {
                     should_stop_new || should_stop_old
                 };
 
-                let compiled = compile(
+                let _: DiagResult<IrDatabase> = compile(
                     &diags,
                     source,
                     hierarchy,
@@ -107,8 +104,6 @@ impl ServerState {
                     // return immediately without reporting any diagnostics, they would include interrupts
                     return Ok(());
                 }
-
-                let _ = compiled.and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
             }
 
             let file_to_uri = manifest
