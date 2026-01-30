@@ -333,6 +333,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 )
                                 .add_info(start.span, msg_start)
                                 .add_info(end.span, msg_end)
+                                .add_footer_hint(HINT_RANGE_USE_START_LENGTH)
                                 .report(diags);
                                 return Err(diag);
                             }
@@ -371,6 +372,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 )
                                 .add_info(start.span, msg_start)
                                 .add_info(end_inc.span, msg_end)
+                                .add_footer_hint(HINT_RANGE_USE_START_LENGTH)
                                 .report(diags);
                                 return Err(diag);
                             }
@@ -2995,3 +2997,5 @@ fn message_range_or_single(name: &str, range: &impl AnyMultiRange<BigInt>, suffi
         Some(single) => format!("{name} is {single}"),
     }
 }
+
+const HINT_RANGE_USE_START_LENGTH: &str = "to construct ranges that are valid by design, use the `start+..len` syntax";
