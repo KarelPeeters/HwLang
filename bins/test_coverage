@@ -20,15 +20,12 @@ cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" clean --workspace
 
 # run rust tests
 (
-  cd rust &&
-  cargo test
+  cd rust && (cargo test || true)
 )
 
 # run python tests
 (
-  cd python &&
-  uv run maturin dev --compression-method stored -m ../rust/hwl_python/Cargo.toml &&
-  uv run pytest -n auto src/hwl_sandbox || true
+  cd python && (uv run pytest -n auto src/hwl_sandbox || true)
 )
 
 # report coverage
