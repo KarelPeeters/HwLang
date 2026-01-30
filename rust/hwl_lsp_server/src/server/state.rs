@@ -135,8 +135,11 @@ impl ServerState {
         Ok(HandleMessageOutcome::Continue)
     }
 
-    pub fn do_background_work(&mut self) -> Result<(), SendErrorOr<RequestError>> {
-        self.compile_project_and_send_diagnostics()
+    pub fn do_background_work(
+        &mut self,
+        should_stop: &(impl Fn() -> bool + Sync),
+    ) -> Result<(), SendErrorOr<RequestError>> {
+        self.compile_project_and_send_diagnostics(should_stop)
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {

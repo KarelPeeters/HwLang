@@ -1,16 +1,16 @@
 use clap::Parser;
-use crossbeam_channel::{RecvError, TryRecvError};
+use crossbeam_channel::{RecvError, TryRecvError, bounded};
 use hwl_language::throw;
 use hwl_lsp_server::server::settings::Settings;
 use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
 use hwl_lsp_server::util::logger::Logger;
 use hwl_lsp_server::util::sender::{SendError, SendErrorOr, ServerSender};
 use hwl_util::constants::{HWL_LSP_NAME, HWL_VERSION};
-use lsp_server::{Connection, ErrorCode, ProtocolError, Response};
+use lsp_server::{Connection, ErrorCode, Message, ProtocolError, Response};
 use lsp_types::{InitializeParams, InitializeResult, ServerInfo};
 use serde_json::to_value;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, stdin, stdout};
 use std::path::PathBuf;
 
 #[global_allocator]
@@ -56,7 +56,7 @@ fn main_inner() -> Result<(), TopError> {
 
     // open connection
     // TODO allow runtime selection of different protocols
-    let (connection, io_threads) = Connection::stdio();
+    let (connection, io_threads) = connection_stdio_with_input_capacity();
 
     // initialization
     let settings = {
@@ -138,7 +138,8 @@ fn main_inner() -> Result<(), TopError> {
         // there are no more messages immediately available, spend some time doing other things
         // (eg. incremental compilation, collecting and pushing diagnostics, ...)
         state.log("doing background work");
-        match state.do_background_work() {
+        let should_stop = || !connection.receiver.is_empty();
+        match state.do_background_work(&should_stop) {
             Ok(()) => {
                 state.log("finished background work");
             }
@@ -157,6 +158,61 @@ fn main_inner() -> Result<(), TopError> {
     io_threads.join()?;
     state.log(format!("exiting with code {exit_code}"));
     std::process::exit(exit_code);
+}
+
+/// Copy of [lsp_server::stdio::stdio_transport], with non-zero capacity on the input channel,
+/// to allow using [crossbeam_channel::Receiver::is_empty].
+fn connection_stdio_with_input_capacity() -> (Connection, IoThreads) {
+    let (writer_sender, writer_receiver) = bounded::<Message>(0);
+    let writer = std::thread::spawn(move || {
+        let stdout = stdout();
+        let mut stdout = stdout.lock();
+        writer_receiver.into_iter().try_for_each(|it| it.write(&mut stdout))
+    });
+
+    let (reader_sender, reader_receiver) = bounded::<Message>(1);
+    let reader = std::thread::spawn(move || {
+        let stdin = stdin();
+        let mut stdin = stdin.lock();
+
+        while let Some(msg) = Message::read(&mut stdin)? {
+            let is_exit = matches!(&msg, Message::Notification(n) if n.method == "exit");
+
+            reader_sender
+                .send(msg)
+                .expect("receiver was dropped, failed to send a message");
+
+            if is_exit {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    let connection = Connection {
+        sender: writer_sender,
+        receiver: reader_receiver,
+    };
+    let threads = IoThreads { reader, writer };
+    (connection, threads)
+}
+
+struct IoThreads {
+    reader: std::thread::JoinHandle<std::io::Result<()>>,
+    writer: std::thread::JoinHandle<std::io::Result<()>>,
+}
+
+impl IoThreads {
+    fn join(self) -> std::io::Result<()> {
+        match self.reader.join() {
+            Ok(r) => r?,
+            Err(err) => std::panic::panic_any(err),
+        }
+        match self.writer.join() {
+            Ok(r) => r,
+            Err(err) => std::panic::panic_any(err),
+        }
+    }
 }
 
 #[derive(Debug)]

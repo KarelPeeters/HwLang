@@ -6,6 +6,7 @@ pub struct Logger {
     log_writer: Option<BufWriter<File>>,
 }
 
+// TODO replace with proper logging setup, ideally the same one the lsp-server crate uses
 #[allow(clippy::print_stderr)]
 impl Logger {
     pub fn new(log_to_stderr: bool, log_writer: Option<BufWriter<File>>) -> Self {

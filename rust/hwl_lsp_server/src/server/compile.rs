@@ -26,6 +26,7 @@ use lsp_types::{
 };
 use std::ffi::OsStr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct ManifestCommon {
     diags: Diagnostics,
@@ -52,9 +53,12 @@ struct ManifestCollectedInner {
 }
 
 impl ServerState {
-    pub fn compile_project_and_send_diagnostics(&mut self) -> Result<(), SendErrorOr<RequestError>> {
+    pub fn compile_project_and_send_diagnostics(
+        &mut self,
+        should_stop: &(impl Fn() -> bool + Sync),
+    ) -> Result<(), SendErrorOr<RequestError>> {
         // if nothing has changed we don't need to do any work
-        if !self.vfs.get_and_clear_changed() {
+        if !self.vfs.get_changed() {
             return Ok(());
         }
 
@@ -73,12 +77,20 @@ impl ServerState {
                 let hierarchy = &inner.hierarchy;
                 let parsed = ParsedDatabase::new(&diags, source, hierarchy);
 
+                // TODO at this point we can clear/update all parsing diagnostics already
                 // TODO enable multithreading
                 // TODO optionally also check C++ generation
                 //   or maybe remove verilog instead, hopefully the backends get complete enough
                 // TODO compile all items in the open files first, then later the rest for increased interactivity
                 // TODO propagate prints to a separate output channel or log file
                 // TODO enable multithreading
+                let early_stop = AtomicBool::new(false);
+                let should_stop_inner = || {
+                    let should_stop_new = should_stop();
+                    let should_stop_old = early_stop.fetch_or(should_stop_new, Ordering::Relaxed);
+                    should_stop_new || should_stop_old
+                };
+
                 let compiled = compile(
                     &diags,
                     source,
@@ -86,10 +98,16 @@ impl ServerState {
                     &parsed,
                     ElaborationSet::AsMuchAsPossible,
                     &mut IgnorePrintHandler,
-                    &|| false,
+                    &should_stop_inner,
                     NON_ZERO_USIZE_ONE,
                     source.full_span(manifest.common.manifest_file),
                 );
+
+                if early_stop.load(Ordering::Relaxed) {
+                    // return immediately without reporting any diagnostics, they would include interrupts
+                    return Ok(());
+                }
+
                 let _ = compiled.and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
             }
 
@@ -108,7 +126,11 @@ impl ServerState {
             "sending diagnostics: {}",
             grouped_diags.values().map(|v| v.len()).sum::<usize>()
         ));
-        self.send_diagnostics(grouped_diags)
+        self.send_diagnostics(grouped_diags)?;
+
+        // we've completed all work
+        self.vfs.clear_changed();
+        Ok(())
     }
 
     fn collect_manifests(&mut self) -> Result<Vec<ManifestCollected>, SendErrorOr<RequestError>> {

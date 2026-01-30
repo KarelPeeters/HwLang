@@ -70,10 +70,12 @@ impl Vfs {
         std::str::from_utf8(content).map_err(VfsError::ContentInvalidUtf8)
     }
 
-    pub fn get_and_clear_changed(&mut self) -> bool {
-        let changed = self.changed;
+    pub fn get_changed(&mut self) -> bool {
+        self.changed
+    }
+
+    pub fn clear_changed(&mut self) {
         self.changed = false;
-        changed
     }
 }
 
