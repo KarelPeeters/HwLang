@@ -163,47 +163,70 @@ fn main_inner() -> Result<(), TopError> {
 /// Copy of [lsp_server::stdio::stdio_transport], with non-zero capacity on the input channel,
 /// to allow using [crossbeam_channel::Receiver::is_empty].
 fn connection_stdio_with_input_capacity() -> (Connection, IoThreads) {
+    let (drop_sender, drop_receiver) = bounded::<Message>(4);
     let (writer_sender, writer_receiver) = bounded::<Message>(0);
-    let writer = std::thread::spawn(move || {
-        let stdout = stdout();
-        let mut stdout = stdout.lock();
-        writer_receiver.into_iter().try_for_each(|it| it.write(&mut stdout))
-    });
+    let writer = std::thread::Builder::new()
+        .name("LspServerWriter".to_owned())
+        .spawn(move || {
+            let stdout = stdout();
+            let mut stdout = stdout.lock();
+            writer_receiver.into_iter().try_for_each(|it| {
+                let result = it.write(&mut stdout);
+                let _ = drop_sender.send(it);
+                result
+            })
+        })
+        .unwrap();
+    let dropper = std::thread::Builder::new()
+        .name("LspMessageDropper".to_owned())
+        .spawn(move || drop_receiver.into_iter().for_each(drop))
+        .unwrap();
 
     let (reader_sender, reader_receiver) = bounded::<Message>(1);
-    let reader = std::thread::spawn(move || {
-        let stdin = stdin();
-        let mut stdin = stdin.lock();
+    let reader = std::thread::Builder::new()
+        .name("LspServerReader".to_owned())
+        .spawn(move || {
+            let stdin = stdin();
+            let mut stdin = stdin.lock();
+            while let Some(msg) = Message::read(&mut stdin)? {
+                let is_exit = matches!(&msg, Message::Notification(n) if n.method == "exit");
 
-        while let Some(msg) = Message::read(&mut stdin)? {
-            let is_exit = matches!(&msg, Message::Notification(n) if n.method == "exit");
+                if let Err(e) = reader_sender.send(msg) {
+                    return Err(std::io::Error::other(e));
+                }
 
-            reader_sender
-                .send(msg)
-                .expect("receiver was dropped, failed to send a message");
-
-            if is_exit {
-                break;
+                if is_exit {
+                    break;
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        })
+        .unwrap();
 
     let connection = Connection {
         sender: writer_sender,
         receiver: reader_receiver,
     };
-    let threads = IoThreads { reader, writer };
+    let threads = IoThreads {
+        dropper,
+        reader,
+        writer,
+    };
     (connection, threads)
 }
 
 struct IoThreads {
+    dropper: std::thread::JoinHandle<()>,
     reader: std::thread::JoinHandle<std::io::Result<()>>,
     writer: std::thread::JoinHandle<std::io::Result<()>>,
 }
 
 impl IoThreads {
     fn join(self) -> std::io::Result<()> {
+        match self.dropper.join() {
+            Ok(()) => {}
+            Err(join_error) => std::panic::panic_any(join_error),
+        }
         match self.reader.join() {
             Ok(r) => r?,
             Err(err) => std::panic::panic_any(err),
