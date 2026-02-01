@@ -12,6 +12,10 @@ pub fn assert_formats_to(src: &str, expected: &str) {
 
     // first format
     let result = assert_format_valid("dummy.kh", src, &settings);
+    if result != expected {
+        println!("Result:\n{}", result);
+    }
+
     assert_eq!(result, expected, "output differs from expected");
 
     // second format, if necessary, to check for stability

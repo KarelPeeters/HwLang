@@ -158,9 +158,13 @@ pub struct ItemDefInterface {
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub span_body: Span,
-    pub port_types: ExtraList<(Identifier, Expression)>,
-    // TODO this should be an ExtraList too
-    pub views: Vec<InterfaceView>,
+    pub body: ExtraList<InterfaceListItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum InterfaceListItem {
+    PortType { port_id: Identifier, port_ty: Expression },
+    View(InterfaceView),
 }
 
 #[derive(Debug, Clone)]
@@ -191,11 +195,17 @@ pub struct ExtraList<I> {
     pub items: Vec<ExtraItem<I>>,
 }
 
+impl<I> ExtraList<I> {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExtraItem<I> {
     Inner(I),
     Declaration(CommonDeclaration<()>),
-    // TODO add `match`
+    // TODO add match, for, while(?)
     If(IfStatement<ExtraList<I>>),
 }
 
@@ -349,6 +359,7 @@ pub struct BlockExpression {
 pub type ModuleStatement = Spanned<ModuleStatementKind>;
 pub type BlockStatement = Spanned<BlockStatementKind>;
 
+// TODO convert to ExtraList
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
     // control flow
@@ -411,6 +422,7 @@ pub struct IfCondBlockPair<B> {
 #[derive(Debug, Clone)]
 pub struct MatchStatement<B> {
     pub target: Expression,
+    // TODO convert to ExtraList
     pub branches: Vec<MatchBranch<B>>,
     pub pos_end: Pos,
 }
@@ -604,7 +616,7 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub span_keyword: Span,
     pub module: Expression,
-    // TODO this should be an extra list
+    // TODO convert to ExtraList
     pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
 }
 
@@ -707,7 +719,7 @@ pub struct RegisterDelay {
 #[derive(Debug, Clone)]
 pub struct Args<N = Option<Identifier>, T = Expression> {
     pub span: Span,
-    // TODO this should be an ExtraList
+    // TODO convert to ExtraList
     pub inner: Vec<Arg<N, T>>,
 }
 
@@ -1279,6 +1291,18 @@ impl HasSpan for DotIndexKind {
         match self {
             DotIndexKind::Id(id) => id.span,
             &DotIndexKind::Int { span } => span,
+        }
+    }
+}
+
+impl HasSpan for InterfaceListItem {
+    fn span(&self) -> Span {
+        match self {
+            InterfaceListItem::PortType {
+                port_id: id,
+                port_ty: ty,
+            } => id.span.join(ty.span),
+            InterfaceListItem::View(view) => view.span,
         }
     }
 }

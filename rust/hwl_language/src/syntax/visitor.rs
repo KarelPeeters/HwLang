@@ -3,11 +3,11 @@ use crate::syntax::ast::{
     BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
     ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier,
-    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceView, Item, ItemDefInterface,
-    ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier,
-    MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
-    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters,
-    PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
+    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceView, Item,
+    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
+    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
@@ -47,6 +47,8 @@ pub trait SyntaxVisitor {
     type Break;
     const SCOPE_DECLARE: bool;
 
+    // TODO think about and document what exactly this means,
+    //   eg. for declarations it's not that straightforward
     fn should_visit_span(&self, span: Span) -> bool;
 
     fn report_id_declare(&mut self, id: GeneralIdentifier) -> ControlFlow<Self::Break, ()> {
@@ -358,8 +360,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     id: _,
                     params,
                     span_body: _,
-                    port_types,
-                    views,
+                    body,
                 } = decl;
 
                 let mut scope_params = scope_file.new_child();
@@ -367,36 +368,43 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_parameters(&mut scope_params, params)?;
                 }
 
+                // match two-pass system from real elaboration
                 let mut scope_body = scope_params.new_child();
-                self.visit_extra_list(
-                    &mut scope_body,
-                    port_types,
-                    &mut |slf, scope_body, &(port_name, port_ty)| {
-                        slf.visitor.report_range(port_name.span.join(port_ty.span), None);
-                        slf.visit_expression(scope_body, port_ty)?;
-                        slf.scope_declare(scope_body, Conditional::No, port_name.into())?;
-                        ControlFlow::Continue(())
-                    },
-                )?;
+                let mut scope_ports = DeclScope::new_root();
+                let mut scope_views = DeclScope::new_root();
 
-                for view in views {
-                    let &InterfaceView {
-                        span,
-                        id,
-                        ref port_dirs,
-                    } = view;
+                let mut all_view_ports = vec![];
 
-                    self.visitor.report_range(span, Some(FoldRangeKind::Region));
+                self.visit_extra_list(&mut scope_body, body, &mut |slf, scope_body, item| {
+                    match item {
+                        &InterfaceListItem::PortType { port_id, port_ty } => {
+                            slf.visitor.report_range(port_id.span.join(port_ty.span), None);
+                            slf.visit_expression(scope_body, port_ty)?;
+                            slf.scope_declare(&mut scope_ports, Conditional::No, port_id.into())?;
+                        }
+                        InterfaceListItem::View(view) => {
+                            let &InterfaceView {
+                                span,
+                                id,
+                                ref port_dirs,
+                            } = view;
 
-                    self.visit_extra_list(
-                        &mut scope_body,
-                        port_dirs,
-                        &mut |slf, scope_body, &(port_name, port_dir)| {
-                            slf.visitor.report_range(port_name.span.join(port_dir.span), None);
-                            slf.visit_id_usage(scope_body, port_name.into())
-                        },
-                    )?;
-                    self.scope_declare(&mut scope_body, Conditional::No, id.into())?;
+                            slf.visitor.report_range(span, Some(FoldRangeKind::Region));
+
+                            slf.visit_extra_list(scope_body, port_dirs, &mut |slf, _, &(port_name, port_dir)| {
+                                slf.visitor.report_range(port_name.span.join(port_dir.span), None);
+                                all_view_ports.push(port_name);
+                                ControlFlow::Continue(())
+                            })?;
+                            slf.scope_declare(&mut scope_views, Conditional::No, id.into())?;
+                        }
+                    }
+
+                    ControlFlow::Continue(())
+                })?;
+
+                for port_id in all_view_ports {
+                    self.visit_id_usage(&scope_ports, port_id.into())?;
                 }
 
                 ControlFlow::Continue(())
@@ -642,6 +650,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                     // TODO this is overly pessimistic, if/else combo can become non-conditional,
                     //   which we don't model correctly
+                    // TODO this is not right, not all declarations leak out into the parent scope,
+                    //   only public ones or in special ExtraList cases (eg. parameters, ports, ...)
                     scope_parent.merge_conditional_child(scope_inner.content);
                 }
             }
@@ -967,7 +977,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         check_skip!(self, span);
         self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
-        // match the two-pass system from the main compiler
+        // match the two-pass system from real elaboration
         for stmt in statements {
             self.visitor.report_range(stmt.span, None);
 
@@ -1052,6 +1062,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 // no declarations, handled in the second pass
+                //   (pub declarations have been handled earlier already)
                 ModuleStatementKind::Block(_) => {}
                 ModuleStatementKind::If(_) => {}
                 ModuleStatementKind::For(_) => {}

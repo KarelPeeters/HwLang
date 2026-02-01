@@ -391,10 +391,8 @@ fn preserve_blanks_interface() {
         swriteln!(src, "}}");
         swriteln!(expected, "}}");
 
-        println!("Source:");
-        println!("{src}");
-        println!("Expected:");
-        println!("{expected}");
+        println!("Source:\n{src}");
+        println!("Expected:\n{expected}");
 
         assert_formats_to(&src, &expected);
     });

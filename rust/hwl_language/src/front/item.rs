@@ -353,8 +353,7 @@ impl CompileItemContext<'_, '_> {
                     id,
                     ref params,
                     ref span_body,
-                    port_types: _,
-                    views: _,
+                    body: _,
                 } = interface;
                 let item = AstRefInterface::new_unchecked(item, interface);
 
