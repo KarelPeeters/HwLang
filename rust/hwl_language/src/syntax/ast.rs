@@ -615,17 +615,16 @@ pub struct ModuleInstance {
     pub name: Option<Identifier>,
     pub span_keyword: Span,
     pub module: Expression,
-    // TODO convert to ExtraList
-    pub port_connections: Spanned<Vec<Spanned<PortConnection>>>,
+    pub port_connections: Spanned<ExtraList<PortConnection>>,
 }
 
-// TODO find a way to avoid this expression representation weirdness
 #[derive(Debug, Clone)]
 pub struct PortConnection {
     pub id: Identifier,
     pub expr: PortConnectionExpression,
 }
 
+// TODO find a way to avoid this expression representation weirdness
 #[derive(Debug, Copy, Clone)]
 pub enum PortConnectionExpression {
     FakeId(Expression),
@@ -1303,6 +1302,13 @@ impl HasSpan for InterfaceListItem {
             } => id.span.join(ty.span),
             InterfaceListItem::View(view) => view.span,
         }
+    }
+}
+
+impl HasSpan for PortConnection {
+    fn span(&self) -> Span {
+        let PortConnection { id, expr } = self;
+        id.span.join(expr.expr().span)
     }
 }
 

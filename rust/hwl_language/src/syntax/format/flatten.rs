@@ -739,22 +739,26 @@ impl Context<'_> {
 
                 seq.push(HNode::Space);
                 seq.push(token(TT::Ports));
-                seq.push(fmt_comma_list(
-                    SurroundKind::Round,
-                    &port_connections.inner,
-                    |connection| {
+
+                let node_connections =
+                    self.fmt_extra_list(SurroundKind::Round, false, &port_connections.inner, &|connection| {
                         // TODO if id and expression match, collapse them automatically
-                        let PortConnection { id, expr } = connection.inner;
+                        let &PortConnection { id, expr } = connection;
 
                         let node_id = self.fmt_id(id);
-                        match expr {
+                        let node_connection = match expr {
                             PortConnectionExpression::FakeId(_) => node_id,
                             PortConnectionExpression::Real(expr) => {
                                 HNode::Sequence(vec![node_id, token(TT::Eq), self.fmt_expr(expr)])
                             }
+                        };
+
+                        HNodeAndComma {
+                            node: node_connection,
+                            comma: true,
                         }
-                    },
-                ));
+                    });
+                seq.push(node_connections);
 
                 seq.push(token(TT::Semi));
                 seq.push(HNode::AlwaysNewline);

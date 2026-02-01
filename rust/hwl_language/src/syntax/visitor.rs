@@ -1119,13 +1119,22 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     self.visit_expression(scope, module)?;
 
                     self.visitor.report_range(port_connections.span, None);
-                    for conn in &port_connections.inner {
-                        self.visitor.report_range(conn.span, None);
-                        let &PortConnection { id, expr } = &conn.inner;
-                        // TODO try resolving port name, needs type info
-                        let _ = id;
-                        self.visit_expression(scope, expr.expr())?;
-                    }
+
+                    let mut scope_connections = DeclScope::new_child(scope);
+                    self.visit_extra_list(
+                        &mut scope_connections,
+                        &port_connections.inner,
+                        &mut |slf, scope_connections, connection| {
+                            slf.visitor.report_range(connection.span(), None);
+
+                            let &PortConnection { id, expr } = connection;
+                            // TODO try resolving port name, needs type info
+                            let _ = id;
+                            slf.visit_expression(scope_connections, expr.expr())?;
+
+                            ControlFlow::Continue(())
+                        },
+                    )?;
                 }
 
                 // declarations, already handled in the first pass

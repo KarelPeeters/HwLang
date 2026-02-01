@@ -1358,6 +1358,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             ref port_connections,
         } = instance;
 
+        // eval module
         let elaborated_module = ctx.eval_expression_as_module(scope, flow_parent, span_keyword, module)?;
 
         let (instance_info, connectors, def_ports_span) = match elaborated_module {
@@ -1390,17 +1391,33 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             }
         };
 
+        // eval port connections
+        let mut port_connections_eval = vec![];
+        {
+            // declarations are not allowed here, so no need to worry about expression scopes
+            let mut scope_connections = Scope::new_child(port_connections.span, scope);
+            ctx.compile_elaborate_extra_list(
+                &mut scope_connections,
+                flow_parent,
+                &port_connections.inner,
+                &mut |_, _, _, connection| {
+                    port_connections_eval.push(connection);
+                    Ok(())
+                },
+            )?;
+        }
+
         // check that connections are unique
-        let mut id_to_connection_and_used: IndexMap<&str, (&Spanned<PortConnection>, bool)> = IndexMap::new();
-        for connection in &port_connections.inner {
-            match id_to_connection_and_used.entry(connection.inner.id.str(source)) {
+        let mut id_to_connection_and_used: IndexMap<&str, (&PortConnection, bool)> = IndexMap::new();
+        for connection in port_connections_eval {
+            match id_to_connection_and_used.entry(connection.id.str(source)) {
                 Entry::Vacant(entry) => {
                     entry.insert((connection, false));
                 }
                 Entry::Occupied(entry) => {
                     let (prev_connection, _) = entry.get();
-                    let diag = DiagnosticError::new("duplicate connection", connection.span, "connected again here")
-                        .add_info(prev_connection.span, "previous connection here")
+                    let diag = DiagnosticError::new("duplicate connection", connection.span(), "connected again here")
+                        .add_info(prev_connection.span(), "previous connection here")
                         .report(diags);
                     return Err(diag);
                 }
@@ -1419,7 +1436,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 Some((connection, connection_used)) => {
                     if *connection_used {
                         // this should have already been caught during module header elaboration
-                        return Err(diags.report_error_internal(connection.span, "connection used twice"));
+                        return Err(diags.report_error_internal(connection.span(), "connection used twice"));
                     }
                     *connection_used = true;
 
@@ -1457,7 +1474,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             if !used {
                 let diag = DiagnosticError::new(
                     "connection does not match any port",
-                    connection.span,
+                    connection.span(),
                     "invalid connection here",
                 )
                 .add_info(def_ports_span, "ports declared here")
@@ -1496,23 +1513,25 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         connectors: &ArenaConnectors,
         prev_single_to_signal: &IndexMap<ConnectorSingle, ConnectionSignal>,
         connector: Connector,
-        connection: &Spanned<PortConnection>,
+        connection: &PortConnection,
     ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;
         let elab = &self.ctx.refs.shared.elaboration_arenas;
 
+        let connection_span = connection.span();
         let &PortConnection {
-            id: ref connection_id,
+            id: connection_id,
             expr: value_expr,
-        } = &connection.inner;
+        } = &connection;
+
         let value_expr = value_expr.expr();
 
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
         // double-check id match
         if connector_id.str(source) != connection_id.str(source) {
-            return Err(diags.report_error_internal(connection.span, "connection name mismatch"));
+            return Err(diags.report_error_internal(connection_span, "connection name mismatch"));
         }
 
         // replace signals that are earlier ports with their connected value
@@ -1523,7 +1542,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|raw_port| {
                     let mapped_port = match prev_single_to_signal.get(&raw_port.signal) {
                         None => throw!(
-                            diags.report_error_internal(connection.span, "failed to get signal for previous port")
+                            diags.report_error_internal(connection_span, "failed to get signal for previous port")
                         ),
                         Some(&ConnectionSignal::Dummy(dummy_span)) => {
                             let diag = DiagnosticError::new_todo(
@@ -1602,7 +1621,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                         // eval expr
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
-                            span_connection: connection.span,
+                            span_connection: connection_span,
                         };
                         let mut flow = FlowHardwareRoot::new(
                             flow_parent,
@@ -1636,7 +1655,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         };
                         let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
                         let check_domain = self.ctx.check_valid_domain_crossing(
-                            connection.span,
+                            connection_span,
                             target_domain,
                             source_domain,
                             "input port connection",
@@ -1673,7 +1692,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                             });
 
                             ir_block.statements.push(Spanned {
-                                span: connection.span,
+                                span: connection_span,
                                 inner: IrStatement::Assign(
                                     IrAssignmentTarget::simple(extra_ir_wire.into()),
                                     connection_value_ir_raw.inner,
@@ -1684,7 +1703,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                                 block: ir_block,
                             };
                             let child = Child::Finished(IrModuleChild::CombinatorialProcess(process));
-                            self.children.push(Spanned::new(connection.span, child));
+                            self.children.push(Spanned::new(connection_span, child));
 
                             IrSignal::Wire(extra_ir_wire)
                         };
@@ -1765,7 +1784,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
                                 // check domain
                                 any_err = any_err.and(self.ctx.check_valid_domain_crossing(
-                                    connection.span,
+                                    connection_span,
                                     signal_domain,
                                     connector_domain,
                                     "output port connection",
@@ -1786,7 +1805,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 };
 
                 let spanned_ir_connection = Spanned {
-                    span: connection.span,
+                    span: connection_span,
                     inner: ir_connection,
                 };
                 Ok(vec![(single, signal, spanned_ir_connection)])
@@ -1941,7 +1960,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                     result_connections.push((
                         connector_singles[port_index],
                         signal,
-                        Spanned::new(connection.span, ir_connection),
+                        Spanned::new(connection_span, ir_connection),
                     ))
                 }
 
@@ -1949,7 +1968,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 let mut any_err_domain = Ok(());
                 if any_input {
                     let r = self.ctx.check_valid_domain_crossing(
-                        connection.span,
+                        connection_span,
                         value_domain,
                         connector_domain,
                         "interface connection with input port",
@@ -1958,7 +1977,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                 }
                 if any_output {
                     let r = self.ctx.check_valid_domain_crossing(
-                        connection.span,
+                        connection_span,
                         connector_domain,
                         value_domain,
                         "interface connection with output port",

@@ -1517,7 +1517,7 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    pub fn compile_elaborate_extra_list<'a, F: Flow, I: HasSpan>(
+    pub fn compile_elaborate_extra_list<'a, F: Flow, I>(
         &mut self,
         scope: &mut Scope,
         flow: &mut F,

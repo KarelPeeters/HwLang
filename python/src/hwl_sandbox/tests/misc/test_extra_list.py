@@ -57,3 +57,23 @@ def test_extra_list_match():
     assert f(False, 1) == -1
     assert f(False, 2) == 2
     assert f(False, 3) == -3
+
+
+def test_extra_list_module_instance():
+    src = """
+    module child ports(x: in async bool) {}
+    module parent(c: bool) ports() {
+        instance child ports(
+            x=false,
+            if (c) {
+                y=true,
+            }
+        );
+    }
+    """
+
+    parent = compile_custom(src).resolve("top.parent")
+
+    parent(False)
+    with pytest.raises(hwl.DiagnosticException, match="connection does not match any port"):
+        parent(True)

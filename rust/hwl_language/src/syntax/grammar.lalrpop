@@ -269,9 +269,8 @@ ModuleStatementKind: ModuleStatementKind = {
     },
 }
 
-// TODO make this an extra list
-InstancePortConnections: Vec<Spanned<PortConnection>> = {
-    "(" <Separated<Spanned<PortConnection>,",">> ")"
+InstancePortConnections: ExtraList<PortConnection> = {
+    "(" <ExtraListNoDecl<PortConnection>> ")"
 }
 
 // TODO find a way to avoid having to create a fake expression for the value here
