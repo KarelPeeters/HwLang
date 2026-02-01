@@ -28,7 +28,6 @@ use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
 use crate::util::big_int::BigInt;
 use crate::util::data::VecExt;
-use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use itertools::{Either, Itertools, enumerate, zip_eq};
@@ -630,16 +629,23 @@ impl CompileItemContext<'_, '_> {
         let target_ty = target.inner.ty();
 
         // eval branches
-        let branch_patterns = branches
-            .iter()
-            .map(|branch| self.eval_match_pattern(scope, flow, target.span, &target_ty, branch.pattern.as_ref()))
-            .try_collect_all_vec()?;
+        let mut branches_evaluated = vec![];
+        {
+            let mut scope_branches = Scope::new_child(branches.span, scope);
+            self.compile_elaborate_extra_list(&mut scope_branches, flow, branches, &mut |slf, scope, flow, branch| {
+                let MatchBranch { pattern, block } = branch;
+                let pattern_eval = slf.eval_match_pattern(scope, flow, target.span, &target_ty, pattern.as_ref())?;
+                branches_evaluated.push((Spanned::new(pattern.span, pattern_eval), block));
+                Ok(())
+            })?;
+        }
 
+        // dispatch on target
         match CompileValue::try_from(&target.inner) {
             Ok(target_inner) => {
                 // compile-time target value, we can handle the entire match at compile-time
                 let target = Spanned::new(target.span, target_inner);
-                self.elaborate_match_statement_compile(scope, flow, stack, target, pos_end, branches, branch_patterns)
+                self.elaborate_match_statement_compile(scope, flow, stack, target, pos_end, branches_evaluated)
             }
             Err(NotCompile) => {
                 // hardware target value (at least partially), convert the target to full hardware
@@ -672,8 +678,7 @@ impl CompileItemContext<'_, '_> {
                     stmt.span,
                     target,
                     pos_end,
-                    branches,
-                    branch_patterns,
+                    branches_evaluated,
                 )
             }
         }
@@ -779,18 +784,14 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         target: Spanned<CompileValue>,
         pos_end: Pos,
-        branches: &Vec<MatchBranch<Block<BlockStatement>>>,
-        branch_patterns: Vec<EvaluatedMatchPattern>,
+        branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         // compile-time match, just check each pattern in sequence with early exit
-        for (branch, pattern) in zip_eq(branches, branch_patterns) {
-            let MatchBranch { pattern: _, block } = branch;
-            let pattern_span = branch.pattern.span;
-
-            let matched = match pattern {
+        for (branch_pattern, branch_block) in branches {
+            let matched = match branch_pattern.inner {
                 EvaluatedMatchPattern::Wildcard => CompileBranchMatched::Yes(None),
                 EvaluatedMatchPattern::WildcardVal(id) => CompileBranchMatched::Yes(Some(BranchDeclare {
                     id,
@@ -826,7 +827,7 @@ impl CompileItemContext<'_, '_> {
                                 value: target_payload.as_ref().clone(),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
-                                return Err(diags.report_error_internal(pattern_span, "payload mismatch"));
+                                return Err(diags.report_error_internal(branch_pattern.span, "payload mismatch"));
                             }
                         };
 
@@ -840,7 +841,7 @@ impl CompileItemContext<'_, '_> {
             match matched {
                 CompileBranchMatched::Yes(declare) => {
                     // declare any pattern variables
-                    let mut scope_branch = Scope::new_child(pattern_span.join(block.span), scope_parent);
+                    let mut scope_branch = Scope::new_child(branch_pattern.span.join(branch_block.span), scope_parent);
                     if let Some(BranchDeclare {
                         id: declare_id,
                         value: declare_value,
@@ -850,7 +851,7 @@ impl CompileItemContext<'_, '_> {
                             self.refs,
                             declare_id.span(),
                             VariableId::Id(declare_id),
-                            pattern_span,
+                            branch_pattern.span,
                             Ok(Value::from(declare_value)),
                         )?;
                         scope_branch.maybe_declare(
@@ -861,7 +862,7 @@ impl CompileItemContext<'_, '_> {
                     }
 
                     // evaluate the branch and exit
-                    return self.elaborate_block(&scope_branch, flow, stack, block);
+                    return self.elaborate_block(&scope_branch, flow, stack, branch_block);
                 }
                 CompileBranchMatched::No => {
                     // continue to next branch
@@ -889,8 +890,7 @@ impl CompileItemContext<'_, '_> {
         span_match: Span,
         target: Spanned<HardwareValueWithImplications>,
         pos_end: Pos,
-        branches: &Vec<MatchBranch<Block<BlockStatement>>>,
-        branch_patterns: Vec<EvaluatedMatchPattern>,
+        branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
@@ -956,19 +956,11 @@ impl CompileItemContext<'_, '_> {
                     .report(diags);
             };
 
-        // TODO emit warning if parts are already covered
-        for (branch, branch_pattern) in zip_eq(branches, branch_patterns) {
-            let MatchBranch {
-                pattern: _,
-                block: branch_block,
-            } = branch;
-            let branch_pattern_span = branch.pattern.span;
-
-            // TODO extract function
-            let matched = match branch_pattern {
+        for (branch_pattern, branch_block) in branches {
+            let matched = match branch_pattern.inner {
                 EvaluatedMatchPattern::Wildcard => {
                     if !coverage_remaining.any() {
-                        warn_unreachable_branch(branch.pattern.span, &coverage_remaining, None);
+                        warn_unreachable_branch(branch_pattern.span, &coverage_remaining, None);
                         continue;
                     }
                     coverage_remaining.clear();
@@ -981,7 +973,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 EvaluatedMatchPattern::WildcardVal(id) => {
                     if !coverage_remaining.any() {
-                        warn_unreachable_branch(branch.pattern.span, &coverage_remaining, None);
+                        warn_unreachable_branch(branch_pattern.span, &coverage_remaining, None);
                         continue;
                     }
                     coverage_remaining.clear();
@@ -1013,7 +1005,7 @@ impl CompileItemContext<'_, '_> {
                             if value {
                                 if !*rem_true {
                                     warn_unreachable_branch(
-                                        branch_pattern_span,
+                                        branch_pattern.span,
                                         &coverage_remaining,
                                         Some("true".to_owned()),
                                     );
@@ -1028,7 +1020,7 @@ impl CompileItemContext<'_, '_> {
                             } else {
                                 if !*rem_false {
                                     warn_unreachable_branch(
-                                        branch_pattern_span,
+                                        branch_pattern.span,
                                         &coverage_remaining,
                                         Some("false".to_owned()),
                                     );
@@ -1047,7 +1039,7 @@ impl CompileItemContext<'_, '_> {
 
                             if !rem_range.contains(&value) {
                                 warn_unreachable_branch(
-                                    branch_pattern_span,
+                                    branch_pattern.span,
                                     &coverage_remaining,
                                     Some(value.to_string()),
                                 );
@@ -1070,7 +1062,7 @@ impl CompileItemContext<'_, '_> {
                             (cond, implications)
                         }
                         MatchCoverage::Enum { .. } => {
-                            return Err(diags.report_error_todo(branch_pattern_span, "matching enum value by equality"));
+                            return Err(diags.report_error_todo(branch_pattern.span, "matching enum value by equality"));
                         }
                     };
 
@@ -1088,7 +1080,7 @@ impl CompileItemContext<'_, '_> {
 
                         if rem_range.intersect(&range_multi).is_empty() {
                             warn_unreachable_branch(
-                                branch_pattern_span,
+                                branch_pattern.span,
                                 &coverage_remaining,
                                 Some(format!("in {}", range.inner)),
                             );
@@ -1139,7 +1131,7 @@ impl CompileItemContext<'_, '_> {
                                 elab.enum_info(target_ty.inner()).variants[variant_index].debug_info_name
                             );
                             warn_unreachable_branch(
-                                branch_pattern_span,
+                                branch_pattern.span,
                                 &coverage_remaining,
                                 Some(branch_pattern_string),
                             );
@@ -1164,7 +1156,7 @@ impl CompileItemContext<'_, '_> {
                                 value: HardwareValueWithImplications::simple(payload_value),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
-                                return Err(diags.report_error_internal(branch_pattern_span, "payload mismatch"));
+                                return Err(diags.report_error_internal(branch_pattern.span, "payload mismatch"));
                             }
                         };
 
@@ -1177,7 +1169,7 @@ impl CompileItemContext<'_, '_> {
                     _ => {
                         let diag = DiagnosticError::new(
                             "enum variant match pattern with non-enum target type",
-                            branch_pattern_span,
+                            branch_pattern.span,
                             "enum variant match pattern used here",
                         )
                         .add_info(
@@ -1196,12 +1188,12 @@ impl CompileItemContext<'_, '_> {
                 implications,
             } = matched;
 
-            let mut branch_scope = Scope::new_child(branch.span(), scope_parent);
-            let mut branch_flow =
-                match flow_parent.new_child_branch(self, branch.span(), target_domain, implications)? {
-                    Ok(branch_flow) => branch_flow,
-                    Err(ImplicationContradiction) => continue,
-                };
+            let branch_span = branch_pattern.span.join(branch_block.span);
+            let mut branch_scope = Scope::new_child(branch_span, scope_parent);
+            let mut branch_flow = match flow_parent.new_child_branch(self, branch_span, target_domain, implications)? {
+                Ok(branch_flow) => branch_flow,
+                Err(ImplicationContradiction) => continue,
+            };
 
             if let Some(declare) = declare {
                 let BranchDeclare { id, value } = declare;

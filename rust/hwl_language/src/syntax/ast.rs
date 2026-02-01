@@ -422,8 +422,7 @@ pub struct IfCondBlockPair<B> {
 #[derive(Debug, Clone)]
 pub struct MatchStatement<B> {
     pub target: Expression,
-    // TODO convert to ExtraList
-    pub branches: Vec<MatchBranch<B>>,
+    pub branches: ExtraList<MatchBranch<B>>,
     pub pos_end: Pos,
 }
 

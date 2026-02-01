@@ -34,3 +34,26 @@ def test_extra_list_interface():
         foo(X=False, Y=False, Z=True, V=False)
     with pytest.raises(hwl.DiagnosticException, match="port not found"):
         foo(X=False, Y=False, Z=False, V=True)
+
+
+def test_extra_list_match():
+    src = """
+    fn f(c: bool, x: int) -> int {
+        match (x) {
+            if (c) {
+                1 => { return 1; }
+            }
+            2 => { return 2; }
+            _ => { return -x; }  
+        }
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+
+    assert f(True, 1) == 1
+    assert f(True, 2) == 2
+    assert f(True, 3) == -3
+
+    assert f(False, 1) == -1
+    assert f(False, 2) == 2
+    assert f(False, 3) == -3

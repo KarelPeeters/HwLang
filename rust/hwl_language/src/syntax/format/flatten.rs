@@ -893,16 +893,10 @@ impl Context<'_> {
             ref branches,
         } = stmt;
 
-        let mut seq_branches = vec![];
-
-        if !branches.is_empty() {
-            seq_branches.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
-        }
-
-        for (branch, last) in branches.iter().with_last() {
+        let node_branches = self.fmt_extra_list(SurroundKind::Curly, true, branches, &|branch| {
             let MatchBranch { pattern, block } = branch;
 
-            let pattern_node = match pattern.inner {
+            let node_pattern = match pattern.inner {
                 MatchPattern::Wildcard => token(TT::Underscore),
                 MatchPattern::WildcardVal(id) => {
                     HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_maybe_id(id)])
@@ -934,21 +928,25 @@ impl Context<'_> {
                 }
             };
 
-            seq_branches.push(pattern_node);
-            seq_branches.push(HNode::Space);
-            seq_branches.push(token(TT::DoubleArrow));
-            seq_branches.push(HNode::Space);
-            seq_branches.push(f(block));
-            seq_branches.push(HNode::AlwaysNewline);
-            seq_branches.push(preserve_blank_lines_after_item(last));
-        }
+            let node_branch = HNode::Sequence(vec![
+                node_pattern,
+                HNode::Space,
+                token(TT::DoubleArrow),
+                HNode::Space,
+                f(block),
+            ]);
+            HNodeAndComma {
+                node: node_branch,
+                comma: false,
+            }
+        });
 
         HNode::Sequence(vec![
             token(TT::Match),
             HNode::Space,
             surrounded_group_indent(SurroundKind::Round, self.fmt_expr(target)),
             HNode::Space,
-            surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(seq_branches)),
+            node_branches,
             HNode::AlwaysNewline,
         ])
     }

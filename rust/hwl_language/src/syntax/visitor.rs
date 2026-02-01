@@ -806,36 +806,38 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 } = stmt;
                 self.visit_expression(scope, target)?;
 
-                for branch in branches {
+                self.visit_extra_list(scope, branches, &mut |slf, scope, branch| {
                     let MatchBranch { pattern, block } = branch;
 
-                    self.visitor.report_range(branch.span(), None);
-                    self.visitor.report_range(pattern.span, None);
+                    slf.visitor.report_range(branch.span(), None);
+                    slf.visitor.report_range(pattern.span, None);
 
                     let mut scope_inner = scope.new_child();
                     match &pattern.inner {
                         MatchPattern::Wildcard => {}
                         &MatchPattern::WildcardVal(id) => {
-                            self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
+                            slf.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
                         }
                         &MatchPattern::EqualTo(expr) => {
-                            self.visit_expression(scope, expr)?;
+                            slf.visit_expression(scope, expr)?;
                         }
                         &MatchPattern::InRange { span_in: _, range } => {
-                            self.visit_expression(scope, range)?;
+                            slf.visit_expression(scope, range)?;
                         }
                         &MatchPattern::IsEnumVariant {
                             variant: _,
                             payload_id: payload,
                         } => {
                             if let Some(payload) = payload {
-                                self.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
+                                slf.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
                             }
                         }
                     }
 
-                    self.visit_block_statements(&scope_inner, block)?;
-                }
+                    slf.visit_block_statements(&scope_inner, block)?;
+
+                    ControlFlow::Continue(())
+                })?;
             }
             BlockStatementKind::For(stmt) => {
                 check_skip!(self, stmt_span);

@@ -359,7 +359,7 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 // TODO don't require parentheses?
 // TODO make the branches an extra list?
 MatchStatement<B>: MatchStatement<B> = {
-    "match" "(" <target:Expr> ")" "{" <branches:MatchBranch<B>*> <pos_end:@L> "}"
+    "match" "(" <target:Expr> ")" "{" <branches:ExtraListWithBlockNoDecl<Never<MatchBranch<B>>, MatchBranch<B>>> <pos_end:@L> "}"
         => MatchStatement { target, branches, pos_end: ctx.pos(pos_end) },
 }
 
