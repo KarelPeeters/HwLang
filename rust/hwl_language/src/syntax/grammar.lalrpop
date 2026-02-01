@@ -142,7 +142,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L> "{"
-            <port_types:ExtraList<InterfacePortType>>
+            <port_types:ExtraListWithDecl<InterfacePortType>>
             <views:InterfaceView*>
         "}"
     <end:@R> => {
@@ -155,7 +155,7 @@ Item: Item = {
 }
 
 InterfaceView: InterfaceView  = {
-    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
+    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraListWithDecl<InterfacePortDir>> "}" <end:@R> => {
         InterfaceView { id, port_dirs, span: ctx.span(start, end) }
     }
 }
@@ -409,13 +409,13 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
-        <start_body:@L> "{" <fields: ExtraList<StructField>> "}"
+        <start_body:@L> "{" <fields: ExtraListWithDecl<StructField>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Struct(StructDeclaration { id, params, fields, span: ctx.span(start, end), span_body: ctx.span(start_body, end) }),
 
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
-        "{" <variants: ExtraList<EnumVariant>> "}"
+        "{" <variants: ExtraListWithDecl<EnumVariant>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Enum(EnumDeclaration { id, params, variants, span: ctx.span(start, end) }),
 
@@ -442,7 +442,7 @@ VariableMutable: bool = {
 
 // parameters
 Parameters: Parameters = {
-    <start:@L> "(" <items:ExtraList<Parameter>> ")" <end:@R>
+    <start:@L> "(" <items:ExtraListWithDecl<Parameter>> ")" <end:@R>
         => Parameters { items, span: ctx.span(start, end) },
 }
 
@@ -452,7 +452,7 @@ Parameter: Parameter = {
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
-    <start_ports:@L> "ports" "(" <ports:ExtraListE<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
+    <start_ports:@L> "ports" "(" <ports:ExtraListWithBlockWithDecl<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
         => Spanned { inner: ports, span: ctx.span(start_ports, end_ports) },
 }
 
@@ -463,7 +463,7 @@ ModulePortItemPort: ModulePortItem = {
 
 ModulePortItemBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
-    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock, Never<ModulePortInBlock>>> <end:@R>
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlockWithDecl<ModulePortInBlock, Never<ModulePortInBlock>>> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: ctx.span(start, end) }),
 }
 
@@ -491,21 +491,25 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ExtraList<I> = ExtraListImpl<I, Never<I>>;
-ExtraListE<I, E> = ExtraListImpl<I, E>;
+ExtraListNoDecl<I> = ExtraListImpl<I, Never<I>, Never<CommonDeclaration<()>>>;
+ExtraListWithDecl<I> = ExtraListImpl<I, Never<I>, CommonDeclaration<()>>;
+ExtraListWithBlockNoDecl<I, B> = ExtraListImpl<I, B, Never<CommonDeclaration<()>>>;
+ExtraListWithBlockWithDecl<I, B> = ExtraListImpl<I, B, CommonDeclaration<()>>;
 
-ExtraListImpl<I, E>: ExtraList<I> = {
-    <items:Spanned<ExtraListItems<I, E>>> => {
+ExtraBlockWithDecl<I, B> = ExtraBlockImpl<I, B, CommonDeclaration<()>>;
+
+ExtraListImpl<I, B, D>: ExtraList<I> = {
+    <items:Spanned<ExtraListItems<I, B, D>>> => {
         ExtraList { items: items.inner, span: items.span }
     }
 }
 
-ExtraBlock<I, E>: ExtraList<I> = {
-    "{" <items:ExtraListImpl<I, E>> "}" => <>,
+ExtraBlockImpl<I, B, D>: ExtraList<I> = {
+    "{" <items:ExtraListImpl<I, B, D>> "}" => <>,
 }
 
-ExtraListItems<I, E>: Vec<ExtraItem<I>> = {
-    <items:ExtraItem<I, E>*> <last:I?> => {
+ExtraListItems<I, B, D>: Vec<ExtraItem<I>> = {
+    <items:ExtraItem<I, B, D>*> <last:I?> => {
         let mut items = items;
         if let Some(last) = last {
             items.push(ExtraItem::Inner(last));
@@ -514,17 +518,18 @@ ExtraListItems<I, E>: Vec<ExtraItem<I>> = {
     }
 }
 
-ExtraItem<I, E>: ExtraItem<I> = {
-    // leaf inner
+ExtraItem<I, B, D>: ExtraItem<I> = {
+    // leaf inner item with trailing comma (the potential final item without a trailing comma is handled in ExtraListItems)
     <I> "," => ExtraItem::Inner(<>),
-    <E> => ExtraItem::Inner(<>),
+    // leaf inner block, there should include a trailing separator if necessary,
+    //   typically not because they already end in "}"
+    <B> => ExtraItem::Inner(<>),
 
-    // declarations, these already include a trailing ";" if necessary
-    // TODO maybe these should use commas instead of semicolons as the separator?
-    <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
+    // leaf declaration, these should include a trailing separator if necessary, typically ";"
+    <D> => ExtraItem::Declaration(<>),
     
     // control flow
-    IfStatement<ExtraBlock<I, E>> => ExtraItem::If(<>),
+    IfStatement<ExtraBlockImpl<I, B, D>> => ExtraItem::If(<>),
     // TODO add match, for, maybe even while?
 }
 
@@ -896,6 +901,7 @@ SeparatedAtLeastOneSep<T, S>: Vec<T> = {
 }
 
 // Matches nothing, useful to skip branches in generic macros.
+#[inline]
 Never<T>: T = {}
 
 #[inline]
