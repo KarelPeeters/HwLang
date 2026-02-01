@@ -791,10 +791,6 @@ ArrayLiteralElement: ArrayLiteralElement<Expression> = {
     <value:Expr> => ArrayLiteralElement::Single(value),
 }
 
-StructLiteralField: StructLiteralField = {
-    <start:@L> <id:Id> ":" <value:Expr> <end:@R> => StructLiteralField { id, value, span: ctx.span(start, end) },
-}
-
 ExprLevelAtomic<allow_block>: ExpressionKind = {
     // error recovery
     ! => ExpressionKind::ParseError(ctx.push_error(<>)),

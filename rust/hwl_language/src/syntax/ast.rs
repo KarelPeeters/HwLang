@@ -758,19 +758,6 @@ pub struct ArrayComprehension {
     pub iter: Expression,
 }
 
-#[derive(Debug, Clone)]
-pub struct StructLiteral {
-    pub struct_ty: Expression,
-    pub fields: Vec<StructLiteralField>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StructLiteralField {
-    pub span: Span,
-    pub id: Identifier,
-    pub value: Expression,
-}
-
 #[derive(Debug, Copy, Clone)]
 pub enum RangeLiteral {
     ExclusiveEnd {
