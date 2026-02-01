@@ -180,3 +180,11 @@ def test_shift_right_zero(tmp_dir: Path):
     e = compare_expression(["int(8)", "int(0..=0)"], "int(8)", "a0 >> a1", tmp_dir)
     for x in SHIFT_LEFT_MIXED_VALUES:
         e.eval_assert([x, 0], x)
+
+
+def test_shift_right_type(tmp_dir: Path):
+    e = compare_expression(["uint(8)"], "uint(7)", "a0 >> 1", tmp_dir)
+    e.eval_assert([1], 0)
+    e.eval_assert([2], 1)
+    e.eval_assert([3], 1)
+    e.eval_assert([4], 2)

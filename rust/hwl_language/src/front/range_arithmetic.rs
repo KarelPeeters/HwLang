@@ -5,6 +5,7 @@
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::{ClosedNonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
+use itertools::{Itertools, chain};
 use std::cmp::{max, min};
 
 pub fn range_unary_neg(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<BigInt> {
@@ -164,15 +165,22 @@ pub fn range_binary_pow(
         return None;
     }
 
-    let mut result_min = min(a_min.clone().pow(b_min), a_min.clone().pow(&b_max));
-    let mut result_max = max(a_min.clone().pow(&b_max), a_max.clone().pow(&b_max));
+    // calculate and combine different cases
+    let cases_basic = [a_min.pow(b_min), a_min.pow(&b_max), a_max.pow(&b_max)];
+    let case_even_odd = if b_min < &b_max {
+        let b_max_m1 = BigUint::try_from(b_max - 1).expect("start < end and 0 <= start, so 0 < end");
+        Some(a_min.pow(&b_max_m1))
+    } else {
+        None
+    };
+    let case_zero = if a_min <= &BigInt::ZERO && BigInt::ZERO < a_max {
+        Some(BigInt::ZERO)
+    } else {
+        None
+    };
 
-    // If base is negative, even/odd powers can cause extremes.
-    // To guard this, try the second highest exponent too if it exists.
-    if let Ok(b_end_inc_1) = BigUint::try_from(b_max - 1) {
-        result_min = min(result_min, a_min.clone().pow(&b_end_inc_1));
-        result_max = max(result_max, a_min.clone().pow(&b_end_inc_1));
-    }
+    let cases = chain!(cases_basic, case_even_odd, case_zero);
+    let (result_min, result_max) = cases.minmax().into_option().unwrap();
 
     Some(range_from_min_max(result_min, result_max))
 }

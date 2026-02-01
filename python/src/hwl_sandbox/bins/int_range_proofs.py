@@ -10,6 +10,10 @@ import z3
 
 @dataclass
 class RangedValue:
+    """
+    The value and its allowed range. The range is inclusive on both sides:
+      min <= val <= max
+    """
     val: z3.ArithRef
     min: z3.ArithRef
     max: z3.ArithRef
@@ -249,18 +253,29 @@ def main():
                 result = z3.If(e == e_const, math.prod([b] * e_const), result)
             return result
 
+        basic_cases = [
+            z3_pow(base.min, exp.min),
+            z3_pow(base.min, exp.max),
+            z3_pow(base.max, exp.max),
+        ]
+        conditional_cases = [
+            # For negative bases, even/odd exp powers can cause extremes.
+            # If the previous exp exists, try it too.
+            (exp.min < exp.max, z3_pow(base.min, exp.max - 1)),
+            # A zero base can cause extremes, if it exists try it too.
+            (((base.min <= 0) & (0 <= base.max)), 0)
+        ]
+
+        curr_min = z3_min(basic_cases)
+        curr_max = z3_max(basic_cases)
+        for cond, case in conditional_cases:
+            curr_min = z3.If(cond, z3_min([curr_min, case]), curr_min)
+            curr_max = z3.If(cond, z3_max([curr_max, case]), curr_max)
+
         return RangedValue(
             val=z3_pow(base.val, exp.val),
-            min=z3_min([
-                z3_pow(base.min, exp.min),
-                z3_pow(base.min, exp.max),
-                z3.If(exp.max > 0, z3_pow(base.min, exp.max - 1), z3_pow(base.min, exp.min)),
-            ]),
-            max=z3_max([
-                z3_pow(base.min, exp.max),
-                z3_pow(base.max, exp.max),
-                z3.If(exp.max > 0, z3_pow(base.min, exp.max - 1), z3_pow(base.min, exp.max)),
-            ]),
+            min=curr_min,
+            max=curr_max,
         )
 
     start = time.perf_counter()
