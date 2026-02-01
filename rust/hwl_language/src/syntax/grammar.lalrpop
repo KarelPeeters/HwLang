@@ -463,7 +463,7 @@ ModulePortItemPort: ModulePortItem = {
 
 ModulePortItemBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
-    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock, (), "false">> <end:@R>
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock, Never<ModulePortInBlock>>> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: ctx.span(start, end) }),
 }
 
@@ -491,21 +491,21 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ExtraList<I> = ExtraListImpl<I, (), "false">;
-ExtraListE<I, E> = ExtraListImpl<I, E, "true">;
+ExtraList<I> = ExtraListImpl<I, Never<I>>;
+ExtraListE<I, E> = ExtraListImpl<I, E>;
 
-ExtraListImpl<I, E, has_e>: ExtraList<I> = {
-    <items:Spanned<ExtraListItems<I, E, has_e>>> => {
+ExtraListImpl<I, E>: ExtraList<I> = {
+    <items:Spanned<ExtraListItems<I, E>>> => {
         ExtraList { items: items.inner, span: items.span }
     }
 }
 
-ExtraBlock<I, E, has_e>: ExtraList<I> = {
-    "{" <items:ExtraListImpl<I, E, has_e>> "}" => <>,
+ExtraBlock<I, E>: ExtraList<I> = {
+    "{" <items:ExtraListImpl<I, E>> "}" => <>,
 }
 
-ExtraListItems<I, E, has_e>: Vec<ExtraItem<I>> = {
-    <items:ExtraItem<I, E, has_e>*> <last:I?> => {
+ExtraListItems<I, E>: Vec<ExtraItem<I>> = {
+    <items:ExtraItem<I, E>*> <last:I?> => {
         let mut items = items;
         if let Some(last) = last {
             items.push(ExtraItem::Inner(last));
@@ -514,17 +514,17 @@ ExtraListItems<I, E, has_e>: Vec<ExtraItem<I>> = {
     }
 }
 
-ExtraItem<I, E, has_e>: ExtraItem<I> = {
+ExtraItem<I, E>: ExtraItem<I> = {
     // leaf inner
     <I> "," => ExtraItem::Inner(<>),
-    <E> if has_e == "true" => ExtraItem::Inner(<>),
+    <E> => ExtraItem::Inner(<>),
 
     // declarations, these already include a trailing ";" if necessary
     // TODO maybe these should use commas instead of semicolons as the separator?
     <CommonDeclaration<()>> => ExtraItem::Declaration(<>),
     
     // control flow
-    IfStatement<ExtraBlock<I, E, has_e>> => ExtraItem::If(<>),
+    IfStatement<ExtraBlock<I, E>> => ExtraItem::If(<>),
     // TODO add match, for, maybe even while?
 }
 
@@ -894,6 +894,9 @@ SeparatedAtLeastOneSep<T, S>: Vec<T> = {
         }
     }
 }
+
+// Matches nothing, useful to skip branches in generic macros.
+Never<T>: T = {}
 
 #[inline]
 Box<T>: Box<T> = {
