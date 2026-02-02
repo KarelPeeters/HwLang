@@ -87,7 +87,6 @@ pub struct ImportEntry {
     pub as_: Option<MaybeIdentifier>,
 }
 
-// TODO allow "if" in a bunch of places? eg. struct fields
 #[derive(Debug, Clone)]
 pub struct StructDeclaration {
     pub span: Span,
@@ -188,7 +187,7 @@ pub struct Parameter {
     pub default: Option<Expression>,
 }
 
-// TODO maybe this is the same as Block?
+// TODO make declarations optional, they mess with scopes
 #[derive(Debug, Clone)]
 pub struct ExtraList<I> {
     pub span: Span,
@@ -654,7 +653,11 @@ pub enum ExpressionKind {
     Undefined,
     Type,
     TypeFunction,
-    Builtin,
+    Builtin {
+        span_keyword: Span,
+        args: Spanned<Vec<Expression>>,
+    },
+
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Expression),
@@ -714,12 +717,7 @@ pub struct RegisterDelay {
     pub init: Expression,
 }
 
-#[derive(Debug, Clone)]
-pub struct Args<N = Option<Identifier>, T = Expression> {
-    pub span: Span,
-    // TODO convert to ExtraList
-    pub inner: Vec<Arg<N, T>>,
-}
+pub type Args<N = Option<Identifier>, T = Expression> = ExtraList<Arg<N, T>>;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Arg<N = Option<Identifier>, T = Expression> {

@@ -1,25 +1,18 @@
 use crate::{Compile, Function, Module, Range, Type, Value};
-use hwl_language::front::value::{CompileCompoundValue, SimpleCompileValue};
-use hwl_language::syntax::pos::Spanned;
+use hwl_language::front::function::EvaluatedArgs;
+use hwl_language::front::implication::ValueWithImplications;
+use hwl_language::front::types::Type as RustType;
+use hwl_language::front::value::{CompileCompoundValue, CompileValue, SimpleCompileValue};
+use hwl_language::syntax::ast::Arg;
+use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::range_multi::MultiRange;
-use hwl_language::{
-    front::{types::Type as RustType, value::CompileValue},
-    syntax::{
-        ast::{Arg, Args},
-        pos::Span,
-    },
-};
 use itertools::Itertools;
-use pyo3::types::{PyBool, PyInt, PyType};
-use pyo3::{
-    IntoPyObjectExt,
-    exceptions::PyException,
-    prelude::*,
-    types::{PyDict, PyList, PyTuple},
-};
+use pyo3::exceptions::PyException;
+use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyInt, PyList, PyTuple, PyTupleMethods, PyType};
+use pyo3::{Bound, IntoPyObjectExt, Py, PyAny, PyRef, PyResult, Python};
 use std::sync::Arc;
 
 pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue) -> PyResult<Py<PyAny>> {
@@ -145,19 +138,18 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     )))
 }
 
-pub fn convert_python_args_and_kwargs_to_args<'k, V>(
+pub fn convert_python_args_and_kwargs_to_args<'k>(
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
     key_buffer: &'k GrowVec<String>,
-    mut f: impl FnMut(CompileValue) -> V,
-) -> PyResult<Args<Option<Spanned<&'k str>>, Spanned<V>>> {
+) -> PyResult<EvaluatedArgs<'k>> {
     let mut args_inner = vec![];
     for value in args {
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: Spanned::new(dummy_span, f(compile_value_from_py(&value)?)),
+            value: Spanned::new(dummy_span, ValueWithImplications::from(compile_value_from_py(&value)?)),
         });
     }
     if let Some(kwargs) = kwargs {
@@ -166,12 +158,12 @@ pub fn convert_python_args_and_kwargs_to_args<'k, V>(
             args_inner.push(Arg {
                 span: dummy_span,
                 name: Some(Spanned::new(dummy_span, name.as_str())),
-                value: Spanned::new(dummy_span, f(compile_value_from_py(&value)?)),
+                value: Spanned::new(dummy_span, ValueWithImplications::from(compile_value_from_py(&value)?)),
             });
         }
     }
 
-    Ok(Args {
+    Ok(EvaluatedArgs {
         span: dummy_span,
         inner: args_inner,
     })

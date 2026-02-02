@@ -34,7 +34,6 @@ pub enum Type {
     Module,
     Interface,
     InterfaceView,
-    Builtin,
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
@@ -166,7 +165,6 @@ impl Type {
             (Type::Module, Type::Module) => Type::Module,
             (Type::Interface, Type::Interface) => Type::Interface,
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
-            (Type::Builtin, Type::Builtin) => Type::Builtin,
 
             (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
@@ -215,7 +213,6 @@ impl Type {
                 | Type::Module
                 | Type::Interface
                 | Type::InterfaceView
-                | Type::Builtin
                 | Type::Int(_)
                 | Type::Tuple(_)
                 | Type::Array(_, _)
@@ -277,8 +274,7 @@ impl Type {
             | Type::Function
             | Type::Module
             | Type::Interface
-            | Type::InterfaceView
-            | Type::Builtin => Err(NonHardwareType),
+            | Type::InterfaceView => Err(NonHardwareType),
         }
     }
 }

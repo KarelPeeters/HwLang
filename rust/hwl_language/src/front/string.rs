@@ -14,7 +14,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::token::{TOKEN_STR_BUILTIN_WITHOUT_UNDERSCORES, apply_string_literal_escapes};
+use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
@@ -548,7 +548,6 @@ impl Type {
             Type::Module => "<type_module>".to_string(),
             Type::Interface => "<type_interface>".to_string(),
             Type::InterfaceView => "<type_interface_view>".to_string(),
-            Type::Builtin => format!("<type_{TOKEN_STR_BUILTIN_WITHOUT_UNDERSCORES}>"),
         }
     }
 }

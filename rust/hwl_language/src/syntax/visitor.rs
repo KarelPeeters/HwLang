@@ -628,7 +628,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         })
     }
 
-    fn visit_extra_list<I: HasSpan>(
+    fn visit_extra_list<I>(
         &mut self,
         scope_parent: &mut DeclScope,
         extra: &ExtraList<I>,
@@ -1171,6 +1171,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             &ExpressionKind::ParseError(_) => {
                 // do nothing
             }
+            &ExpressionKind::Builtin { span_keyword, ref args } => {
+                self.visitor.report_range(span_keyword, None);
+                self.visitor.report_range(args.span, Some(FoldRangeKind::Region));
+                for &arg in &args.inner {
+                    self.visit_expression(scope, arg)?;
+                }
+            }
             &ExpressionKind::Wrapped(inner) => {
                 self.visit_expression(scope, inner)?;
             }
@@ -1304,13 +1311,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 self.visitor.report_range(args.span, None);
 
-                for arg in &args.inner {
+                let mut scope_dummy = DeclScope::new_child(scope);
+                self.visit_extra_list(&mut scope_dummy, args, &mut |slf, scope, arg| {
                     let &Arg { span, ref name, value } = arg;
-                    self.visitor.report_range(span, None);
+                    slf.visitor.report_range(span, None);
                     // TODO try resolving name, needs type info
                     let _ = name;
-                    self.visit_expression(scope, value)?;
-                }
+                    slf.visit_expression(scope, value)?;
+                    ControlFlow::Continue(())
+                })?;
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
                 self.visit_expression(scope, value)?;
@@ -1331,7 +1340,6 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             | ExpressionKind::Undefined
             | ExpressionKind::Type
             | ExpressionKind::TypeFunction
-            | ExpressionKind::Builtin
             | ExpressionKind::IntLiteral(_)
             | ExpressionKind::BoolLiteral(_) => {}
         }

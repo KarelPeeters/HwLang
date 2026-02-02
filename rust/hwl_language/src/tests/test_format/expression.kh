@@ -3,7 +3,6 @@ const {
     undef;
     type;
     fn;
-    __builtin;
 
     (false);
     {

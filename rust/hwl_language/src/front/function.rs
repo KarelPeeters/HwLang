@@ -19,9 +19,7 @@ use crate::front::value::{
     StructValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
-use crate::syntax::ast::{
-    Arg, Args, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters,
-};
+use crate::syntax::ast::{Arg, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::FileId;
 use crate::util::data::VecExt;
@@ -113,7 +111,7 @@ pub struct CapturedScope {
 pub struct ParamArgMacher<'a> {
     // constant initial values
     refs: CompileRefs<'a, 'a>,
-    args: &'a Args<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>,
+    args: &'a EvaluatedArgs<'a>,
     arg_name_to_index: IndexMap<&'a str, usize>,
     positional_count: usize,
     params_span: Span,
@@ -124,6 +122,11 @@ pub struct ParamArgMacher<'a> {
     param_names: IndexMap<&'a str, Span>,
 
     any_err: DiagResult,
+}
+
+pub struct EvaluatedArgs<'a> {
+    pub span: Span,
+    pub inner: Vec<Arg<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -138,7 +141,7 @@ impl<'a> ParamArgMacher<'a> {
     fn new(
         refs: CompileRefs<'a, 'a>,
         params_span: Span,
-        args: &'a Args<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>,
+        args: &'a EvaluatedArgs,
         args_must_be_compile: bool,
         args_must_be_named: NamedRule,
     ) -> DiagResult<Self> {
@@ -358,7 +361,7 @@ impl CompileItemContext<'_, '_> {
         span_target: Span,
         span_call: Span,
         function: &FunctionValue,
-        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+        args: EvaluatedArgs,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
@@ -425,12 +428,7 @@ impl CompileItemContext<'_, '_> {
 
     // TODO ensure the expected type for fields is correctly propagated to the args
     //   (this might need a major re-think, currently args are always evaluated in advance)
-    fn call_struct_new(
-        &mut self,
-        span_call: Span,
-        elab: ElaboratedStruct,
-        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
-    ) -> DiagResult<Value> {
+    fn call_struct_new(&mut self, span_call: Span, elab: ElaboratedStruct, args: EvaluatedArgs) -> DiagResult<Value> {
         let _ = span_call;
         let &ElaboratedStructInfo {
             unique: _,
@@ -462,7 +460,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         elab: ElaboratedEnum,
         variant_index: usize,
-        args: &Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+        args: &EvaluatedArgs,
     ) -> DiagResult<Value> {
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
@@ -493,7 +491,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         flow: &mut impl Flow,
         function: &UserFunctionValue,
-        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+        args: EvaluatedArgs,
     ) -> DiagResult<Value> {
         let UserFunctionValue {
             decl_span,
@@ -644,7 +642,7 @@ impl CompileItemContext<'_, '_> {
         span_call: Span,
         span_target: Span,
         function: &FunctionBits,
-        args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+        args: EvaluatedArgs,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;

@@ -8,7 +8,9 @@ use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
-use crate::front::function::{FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch};
+use crate::front::function::{
+    EvaluatedArgs, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch,
+};
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
@@ -24,9 +26,9 @@ use crate::mid::ir::{
     IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrSignal, IrStatement, IrVariableInfo,
 };
 use crate::syntax::ast::{
-    Arg, Args, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind,
-    Expression, ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection,
-    RangeLiteral, RegisterDelay, SyncDomain, UnaryOp,
+    Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
+    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
+    RegisterDelay, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
@@ -205,7 +207,10 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
             ExpressionKind::TypeFunction => Value::new_ty(Type::Function),
-            ExpressionKind::Builtin => Value::new_ty(Type::Builtin),
+            &ExpressionKind::Builtin { span_keyword, ref args } => {
+                let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
+                return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+            }
             &ExpressionKind::Wrapped(inner) => {
                 return self.eval_expression_inner(scope, flow, expected_ty, inner);
             }
@@ -734,11 +739,6 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // handle special cases that can't immediately evaluate their arguments
                 match target.inner {
-                    Value::Simple(SimpleCompileValue::Type(Type::Builtin)) => {
-                        // builtin
-                        let value = self.eval_builtin(scope, flow, expr.span, target.span, args)?;
-                        return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
-                    }
                     Value::Simple(SimpleCompileValue::Type(Type::Type)) => {
                         // typeof operator
                         let ty = self.eval_type_of(scope, flow, expr.span, args)?;
@@ -750,21 +750,32 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
 
                 // eval args
-                let args_eval = args
-                    .inner
-                    .iter()
-                    .map(|arg| {
-                        // TODO pass an actual expected type in cases where we know it (eg. struct/enum construction)
-                        let arg_value = self.eval_expression_with_implications(scope, flow, &Type::Any, arg.value)?;
-
-                        Ok(Arg {
-                            span: arg.span,
-                            name: arg.name.map(|id| Spanned::new(id.span, id.str(source))),
+                let mut args_eval = vec![];
+                let mut scope_args = Scope::new_child(args.span, scope);
+                let args_result =
+                    self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
+                        let &Arg {
+                            span: arg_span,
+                            name: arg_name,
                             value: arg_value,
-                        })
-                    })
-                    .try_collect_all_vec();
-                let args = args_eval.map(|inner| Args { span: args.span, inner });
+                        } = arg;
+
+                        let arg_name = arg_name.map(|name| name.spanned_str(source));
+                        // TODO pass expected type in cases where we know it (eg. struct/enum construction)
+                        let arg_value = slf.eval_expression_with_implications(scope, flow, &Type::Any, arg_value)?;
+
+                        args_eval.push(Arg {
+                            span: arg_span,
+                            name: arg_name,
+                            value: arg_value,
+                        });
+                        Ok(())
+                    });
+
+                let args = args_result.map(|()| EvaluatedArgs {
+                    span: args.span,
+                    inner: args_eval,
+                });
 
                 self.eval_call(flow, expected_ty, expr.span, target.as_ref(), args)?
             }
@@ -941,7 +952,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         expr_span: Span,
         target: Spanned<&CompileValue>,
-        args: DiagResult<Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>>,
+        args: DiagResult<EvaluatedArgs>,
     ) -> DiagResult<Value> {
         let refs = self.refs;
         let diags = refs.diags;
@@ -1962,7 +1973,7 @@ fn eval_int_ty_call(
     refs: CompileRefs,
     span_call: Span,
     target: Spanned<&MultiRange<BigInt>>,
-    args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
+    args: EvaluatedArgs,
 ) -> DiagResult<Type> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
@@ -2092,10 +2103,7 @@ fn eval_int_ty_call(
     Ok(Type::Int(result))
 }
 
-fn eval_tuple_ty_call(
-    refs: CompileRefs,
-    args: Args<Option<Spanned<&str>>, Spanned<ValueWithImplications>>,
-) -> DiagResult<Type> {
+fn eval_tuple_ty_call(refs: CompileRefs, args: EvaluatedArgs) -> DiagResult<Type> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 

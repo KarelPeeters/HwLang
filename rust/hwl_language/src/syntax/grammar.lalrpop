@@ -253,7 +253,6 @@ ModuleStatementKind: ModuleStatementKind = {
     },
     // module instance
     // TODO allow strings as instance names? necessary for modules instantiated in loops
-    // TODO allow "if" here?
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:Expr>
         "ports" <port_connections:Spanned<InstancePortConnections>>
@@ -356,7 +355,6 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 }
 
 // TODO don't require parentheses?
-// TODO make the branches an extra list?
 MatchStatement<B>: MatchStatement<B> = {
     "match" "(" <target:Expr> ")" "{" <branches:ExtraListWithBlockNoDecl<Never<MatchBranch<B>>, MatchBranch<B>>> <pos_end:@L> "}"
         => MatchStatement { target, branches, pos_end: ctx.pos(pos_end) },
@@ -750,10 +748,12 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
 
 ExprLevelCall<allow_block>: ExpressionKind = {
     // normal call
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:Args> ")"
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:ExtraListNoDecl<Arg>> ")"
         => ExpressionKind::Call(target, args),
 
     // builtins
+    <span_keyword:Span<"__builtin">> "(" <args:Spanned<Separated<Expr,",">>> ")"
+        => ExpressionKind::Builtin { span_keyword, args },
     "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")"
         => ExpressionKind::UnsafeValueWithDomain(value, domain),
 
@@ -774,12 +774,6 @@ ExprLevelDot<allow_block>: ExpressionKind = {
 DotIndexKind: DotIndexKind = {
     <index:Id> => DotIndexKind::Id(index),
     <index:Span<TokenIntLiteralDecimal>> => DotIndexKind::Int { span: index },
-}
-
-// TODO allow "if" here
-Args: Args = {
-    <start:@L> <inner:Separated<Arg,",">> <end:@L> =>
-        Args { inner, span: ctx.span(start, end) },
 }
 
 Arg: Arg = {
@@ -812,7 +806,6 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     "true" => ExpressionKind::BoolLiteral(true),
     "false" => ExpressionKind::BoolLiteral(false),
     "undef" => ExpressionKind::Undefined,
-    "__builtin" => ExpressionKind::Builtin,
     <span:Span<TokenIntLiteralBinary>>
         => ExpressionKind::IntLiteral(IntLiteral::Binary { span }),
     <span:Span<TokenIntLiteralDecimal>>

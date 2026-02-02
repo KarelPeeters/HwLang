@@ -10,7 +10,6 @@ use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
-use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
@@ -701,13 +700,7 @@ fn call_impl(
 
         // convert args
         let arg_key_buffer = GrowVec::new();
-        let args = convert_python_args_and_kwargs_to_args(
-            args,
-            kwargs,
-            dummy_span,
-            &arg_key_buffer,
-            ValueWithImplications::from,
-        )?;
+        let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
 
         // prepare context
         let refs = CompileRefs {

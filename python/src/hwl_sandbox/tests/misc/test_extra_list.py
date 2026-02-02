@@ -71,9 +71,35 @@ def test_extra_list_module_instance():
         );
     }
     """
-
     parent = compile_custom(src).resolve("top.parent")
 
     parent(False)
     with pytest.raises(hwl.DiagnosticException, match="connection does not match any port"):
         parent(True)
+
+
+def test_extra_list_params():
+    src = """
+    fn f(c: bool, if (c) { x: int }) -> int {
+        if (c) {
+            return x;
+        } else {
+            return 0;
+        }
+    }
+    fn g(c: bool, d: bool, x: int) -> int {
+        return f(c, if (d) { x=x });
+    }
+    """
+    g = compile_custom(src).resolve("top.g")
+
+    assert g(False, False, 0) == 0
+    assert g(False, False, 1) == 0
+
+    assert g(True, True, 0) == 0
+    assert g(True, True, 1) == 1
+
+    with pytest.raises(hwl.DiagnosticException, match="argument did not match"):
+        assert g(False, True, 0) == 0
+    with pytest.raises(hwl.DiagnosticException, match="missing argument"):
+        assert g(True, False, 0) == 0

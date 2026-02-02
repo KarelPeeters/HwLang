@@ -1,5 +1,5 @@
 use crate::syntax::ast::{
-    ArenaExpressions, Arg, Args, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
+    ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset,
     CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
     ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem,
@@ -703,7 +703,7 @@ impl Context<'_> {
                     None => &[Either::Left(clock)],
                     Some(reset) => &[Either::Left(clock), Either::Right(reset)],
                 };
-                let node_domain = fmt_call(token(TT::Clocked), args, |&arg| match arg {
+                let node_domain = fmt_call_like(token(TT::Clocked), args, |&arg| match arg {
                     Either::Left(clock) => self.fmt_expr(clock),
                     Either::Right(reset) => {
                         let ClockedBlockReset { kind, signal } = reset.inner;
@@ -1014,7 +1014,7 @@ impl Context<'_> {
                     None => &[Either::Left(clock)],
                     Some(reset) => &[Either::Left(clock), Either::Right(reset)],
                 };
-                fmt_call(token(TT::Sync), args, |&arg| match arg {
+                fmt_call_like(token(TT::Sync), args, |&arg| match arg {
                     Either::Left(clock) => self.fmt_expr(clock),
                     Either::Right(reset) => HNode::Sequence(vec![token(TT::Async), HNode::Space, self.fmt_expr(reset)]),
                 })
@@ -1032,7 +1032,9 @@ impl Context<'_> {
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),
             ExpressionKind::TypeFunction => token(TT::Fn),
-            ExpressionKind::Builtin => token(TT::Builtin),
+            ExpressionKind::Builtin { span_keyword: _, args } => {
+                fmt_call_like(token(TT::Builtin), &args.inner, |&arg| self.fmt_expr(arg))
+            }
             &ExpressionKind::Wrapped(inner) => surrounded_group_indent(SurroundKind::Round, self.fmt_expr(inner)),
             ExpressionKind::Block(expr) => {
                 let &BlockExpression {
@@ -1196,19 +1198,26 @@ impl Context<'_> {
                 wrapping_binary_op(HNode::EMPTY, Some(node_base), Some(node_indices))
             }
             &ExpressionKind::Call(target, ref args) => {
-                let Args { span: _, inner: args } = args;
-                fmt_call(self.fmt_expr(target), args, |arg| {
+                let node_target = self.fmt_expr(target);
+
+                let node_args = self.fmt_extra_list(SurroundKind::Round, false, args, &|arg| {
                     let &Arg { span: _, name, value } = arg;
                     let node_value = self.fmt_expr(value);
-                    if let Some(name) = name {
+                    let node_arg = if let Some(name) = name {
                         // TODO allow wrapping before/after "="?
                         HNode::Sequence(vec![self.fmt_id(name), token(TT::Eq), node_value])
                     } else {
                         node_value
+                    };
+                    HNodeAndComma {
+                        node: node_arg,
+                        comma: true,
                     }
-                })
+                });
+
+                HNode::Sequence(vec![node_target, node_args])
             }
-            &ExpressionKind::UnsafeValueWithDomain(value, domain) => fmt_call(
+            &ExpressionKind::UnsafeValueWithDomain(value, domain) => fmt_call_like(
                 token(TT::UnsafeValueWithDomain),
                 &[Either::Left(value), Either::Right(domain)],
                 |&either| match either {
@@ -1222,7 +1231,7 @@ impl Context<'_> {
                     value,
                     init,
                 } = expr;
-                fmt_call(token(TT::Reg), &[value, init], |&expr| self.fmt_expr(expr))
+                fmt_call_like(token(TT::Reg), &[value, init], |&expr| self.fmt_expr(expr))
             }
         }
     }
@@ -1279,7 +1288,7 @@ impl Context<'_> {
         match id {
             GeneralIdentifier::Simple(id) => self.fmt_id(id),
             GeneralIdentifier::FromString(_span, expr) => {
-                fmt_call(token(TT::IdFromStr), &[expr], |&expr| self.fmt_expr(expr))
+                fmt_call_like(token(TT::IdFromStr), &[expr], |&expr| self.fmt_expr(expr))
             }
         }
     }
@@ -1320,7 +1329,7 @@ fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl 
     surrounded_group_indent(SurroundKind::Curly, HNode::Sequence(seq))
 }
 
-fn fmt_call<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
+fn fmt_call_like<T>(target: HNode, args: &[T], f: impl Fn(&T) -> HNode) -> HNode {
     HNode::Sequence(vec![target, fmt_comma_list(SurroundKind::Round, args, f)])
 }
 

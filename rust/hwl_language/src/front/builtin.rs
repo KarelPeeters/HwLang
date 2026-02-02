@@ -11,10 +11,9 @@ use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MaybeCompile, NotCompile, Value};
 use crate::mid::ir::{IrExpression, IrStatement};
-use crate::syntax::ast::{Arg, Args, ExpressionKind, StringPiece};
+use crate::syntax::ast::{Arg, Args, Expression, ExpressionKind, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
-use crate::util::data::VecExt;
 use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
 use std::sync::Arc;
@@ -31,36 +30,34 @@ impl CompileItemContext<'_, '_> {
 
         // check single unnamed arg
         // TODO extract common code, there are probably other users of this pattern
-        let Args {
-            span: args_span,
-            inner: args_inner,
-        } = args;
-        let arg = match args_inner.single_ref() {
-            Some(&Arg { span: _, name, value }) => {
-                if let Some(name) = name {
-                    return Err(diags.report_error_simple(
-                        "typeof only takes a single unnamed argument",
-                        name.span,
-                        "tried to pass named argument here",
-                    ));
-                } else {
-                    value
-                }
+        const ARG_DIAG_TITLE: &str = "typeof only takes a single unnamed argument";
+
+        let mut arg_expr = None;
+        let mut scope_args = Scope::new_child(args.span, scope);
+        self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
+            let &Arg { span: _, name, value } = arg;
+
+            if let Some(name) = name {
+                return Err(diags.report_error_simple(ARG_DIAG_TITLE, name.span, "tried to pass named argument here"));
             }
-            None => {
-                return Err(diags.report_error_simple(
-                    "typeof only takes a single unnamed argument",
-                    *args_span,
-                    "incorrect number of arguments here",
-                ));
+
+            if arg_expr.is_some() {
+                return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span, "too many arguments passed here"));
             }
+
+            arg_expr = Some(value);
+            Ok(())
+        })?;
+
+        let Some(arg_expr) = arg_expr else {
+            return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span, "no arguments passed here"));
         };
 
         // eval id
-        let &ExpressionKind::Id(id) = self.refs.get_expr(arg) else {
+        let &ExpressionKind::Id(id) = self.refs.get_expr(arg_expr) else {
             return Err(diags.report_error_simple(
                 "typeof only works on identifiers, not general expressions",
-                arg.span,
+                arg_expr.span,
                 "tried to pass non-identifier here",
             ));
         };
@@ -102,30 +99,13 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         expr_span: Span,
         target_span: Span,
-        args: &Args,
+        args: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        // check that there are no named arguments
-        let Args {
-            span: _,
-            inner: args_inner,
-        } = args;
-        for arg in args_inner {
-            let Arg {
-                span: _,
-                name,
-                value: _,
-            } = arg;
-            if let Some(name) = name {
-                let msg = format!("{TOKEN_STR_BUILTIN} does not support named arguments");
-                return Err(diags.report_error_internal(name.span, msg));
-            }
-        }
-
         // evaluate the first two arguments as string literals
-        if args_inner.len() < 2 {
+        if args.inner.len() < 2 {
             return Err(diags.report_error_internal(
                 args.span,
                 format!("{TOKEN_STR_BUILTIN} requires at least two arguments"),
@@ -135,17 +115,17 @@ impl CompileItemContext<'_, '_> {
             scope,
             flow,
             &Type::String,
-            args_inner[0].value,
+            args.inner[0],
             Spanned::new(target_span, "builtin arg"),
         )?;
         let arg_1 = self.eval_expression_as_compile(
             scope,
             flow,
             &Type::String,
-            args_inner[1].value,
+            args.inner[1],
             Spanned::new(target_span, "builtin arg"),
         )?;
-        let args_rest = &args_inner[2..];
+        let args_rest = &args.inner[2..];
 
         let type_reason = TypeContainsReason::Operator(target_span);
         let arg_0 = check_type_is_string_compile(diags, elab, type_reason, arg_0)?;
@@ -163,7 +143,7 @@ impl CompileItemContext<'_, '_> {
 
             // print
             ("fn", "print", &[msg]) => {
-                let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
+                let msg = self.eval_expression(scope, flow, &Type::String, msg)?;
 
                 let reason_str = TypeContainsReason::Internal(expr_span);
                 let msg = check_type_is_string(diags, elab, reason_str, msg)?;
@@ -193,7 +173,7 @@ impl CompileItemContext<'_, '_> {
             ("fn", "assert_fail", &[msg]) => {
                 // TODO for compile-time, include entire stack trace (handled by diagnostics)
                 //      for hardware, include the source location of the caller (enough levels up, maybe with a marker per function?)
-                let msg = self.eval_expression(scope, flow, &Type::String, msg.value)?;
+                let msg = self.eval_expression(scope, flow, &Type::String, msg)?;
 
                 let reason_str = TypeContainsReason::Internal(expr_span);
                 let msg = check_type_is_string(diags, elab, reason_str, msg)?;
@@ -240,7 +220,7 @@ impl CompileItemContext<'_, '_> {
                 }
             }
             ("fn", "assume", &[cond]) => {
-                let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond.value)?;
+                let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
                 let reason_bool = TypeContainsReason::Internal(expr_span);
                 let cond = check_type_is_bool(diags, elab, reason_bool, cond)?;
@@ -287,7 +267,7 @@ impl CompileItemContext<'_, '_> {
 
             // casting
             ("fn", "unsafe_bool_to_clock", &[value]) => {
-                let value = self.eval_expression(scope, flow, &Type::Bool, value.value)?;
+                let value = self.eval_expression(scope, flow, &Type::Bool, value)?;
                 let value = check_type_is_bool(
                     diags,
                     elab,
