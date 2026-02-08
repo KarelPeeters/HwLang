@@ -751,7 +751,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // eval args
                 let mut args_eval = vec![];
-                let mut scope_args = Scope::new_child(args.span, scope);
+                let mut scope_args = Scope::new_child(args.span(), scope);
                 let args_result =
                     self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
                         let &Arg {
@@ -773,7 +773,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     });
 
                 let args = args_result.map(|()| EvaluatedArgs {
-                    span: args.span,
+                    span: args.span(),
                     inner: args_eval,
                 });
 

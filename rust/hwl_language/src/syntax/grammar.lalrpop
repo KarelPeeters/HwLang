@@ -142,7 +142,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L>
-        "{" <body:ExtraListWithBlockWithDecl<InterfacePortType, InterfaceView>> "}"
+        "{" <body:ExtraListWithBlock<InterfacePortType, InterfaceView>> "}"
     <end:@R> => {
         let inter = ItemDefInterface {
             vis, id, params, body,
@@ -157,7 +157,7 @@ InterfacePortType: InterfaceListItem = {
 }
 
 InterfaceView: InterfaceListItem = {
-    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraListWithDecl<InterfacePortDir>> "}" <end:@R> => {
+    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
         InterfaceListItem::View(InterfaceView { id, port_dirs, span: ctx.span(start, end) })
     }
 }
@@ -269,7 +269,7 @@ ModuleStatementKind: ModuleStatementKind = {
 }
 
 InstancePortConnections: ExtraList<PortConnection> = {
-    "(" <ExtraListNoDecl<PortConnection>> ")"
+    "(" <ExtraList<PortConnection>> ")"
 }
 
 // TODO find a way to avoid having to create a fake expression for the value here
@@ -356,7 +356,7 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 
 // TODO don't require parentheses?
 MatchStatement<B>: MatchStatement<B> = {
-    "match" "(" <target:Expr> ")" "{" <branches:ExtraListWithBlockNoDecl<Never<MatchBranch<B>>, MatchBranch<B>>> <pos_end:@L> "}"
+    "match" "(" <target:Expr> ")" "{" <branches:ExtraListWithBlock<Never<MatchBranch<B>>, MatchBranch<B>>> <pos_end:@L> "}"
         => MatchStatement { target, branches, pos_end: ctx.pos(pos_end) },
 }
 
@@ -404,13 +404,13 @@ CommonDeclarationNamedKind: CommonDeclarationNamedKind = {
 
     <start:@L>
         "struct" <id:MaybeId> <params:Parameters?>
-        <start_body:@L> "{" <fields: ExtraListWithDecl<StructField>> "}"
+        <start_body:@L> "{" <fields: ExtraList<StructField>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Struct(StructDeclaration { id, params, fields, span: ctx.span(start, end), span_body: ctx.span(start_body, end) }),
 
     <start:@L>
         "enum" <id:MaybeId> <params:Parameters?>
-        "{" <variants: ExtraListWithDecl<EnumVariant>> "}"
+        "{" <variants: ExtraList<EnumVariant>> "}"
     <end:@R>
         => CommonDeclarationNamedKind::Enum(EnumDeclaration { id, params, variants, span: ctx.span(start, end) }),
 
@@ -437,7 +437,7 @@ VariableMutable: bool = {
 
 // parameters
 Parameters: Parameters = {
-    <start:@L> "(" <items:ExtraListWithDecl<Parameter>> ")" <end:@R>
+    <start:@L> "(" <items:ExtraList<Parameter>> ")" <end:@R>
         => Parameters { items, span: ctx.span(start, end) },
 }
 
@@ -447,7 +447,7 @@ Parameter: Parameter = {
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
-    <start_ports:@L> "ports" "(" <ports:ExtraListWithBlockWithDecl<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
+    <start_ports:@L> "ports" "(" <ports:ExtraListWithBlock<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
         => Spanned { inner: ports, span: ctx.span(start_ports, end_ports) },
 }
 
@@ -458,7 +458,7 @@ ModulePortItemPort: ModulePortItem = {
 
 ModulePortItemBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
-    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlockWithDecl<ModulePortInBlock, Never<ModulePortInBlock>>> <end:@R>
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock>> <end:@R>
         => ModulePortItem::Block(ModulePortBlock { domain, ports, span: ctx.span(start, end) }),
 }
 
@@ -486,45 +486,69 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ExtraListNoDecl<I> = ExtraListImpl<I, Never<I>, Never<CommonDeclaration<()>>>;
-ExtraListWithDecl<I> = ExtraListImpl<I, Never<I>, CommonDeclaration<()>>;
-ExtraListWithBlockNoDecl<I, B> = ExtraListImpl<I, B, Never<CommonDeclaration<()>>>;
-ExtraListWithBlockWithDecl<I, B> = ExtraListImpl<I, B, CommonDeclaration<()>>;
+ExtraList<T> = ExtraListImpl<T, Never<T>>;
+ExtraListWithBlock<T, B> = ExtraListImpl<T, B>;
 
-ExtraBlockWithDecl<I, B> = ExtraBlockImpl<I, B, CommonDeclaration<()>>;
+ExtraBlock<T>: ExtraList<T> = {
+    "{" <ExtraList<T>> "}" => <>,
+}
 
-ExtraListImpl<I, B, D>: ExtraList<I> = {
-    <items:Spanned<ExtraListItems<I, B, D>>> => {
-        ExtraList { items: items.inner, span: items.span }
+ExtraListImpl<T, B>: ExtraList<T> = {
+    ExtraListRaw<T, B> => {
+        let span = <>.span;
+        let (leafs, items) = <>.inner;
+        let root = ExtraListBlock { span, items };
+        ParseContext::extra_list_new_compute_indices(leafs, root)
     }
 }
 
-ExtraBlockImpl<I, B, D>: ExtraList<I> = {
-    "{" <items:ExtraListImpl<I, B, D>> "}" => <>,
-}
-
-ExtraListItems<I, B, D>: Vec<ExtraItem<I>> = {
-    <items:ExtraItem<I, B, D>*> <last:I?> => {
-        let mut items = items;
-        if let Some(last) = last {
-            items.push(ExtraItem::Inner(last));
+ExtraListRaw<T, B>: Spanned<(Vec<T>, Vec<ExtraListItem>)> = {
+    <start:@L> <items:ExtraListItem<T, B>*> <last:T?> <end:@R> => {
+        let mut leafs = vec![];
+        let mut extra_items = vec![];
+        for (item_leafs, item) in items {
+            leafs.extend(item_leafs);
+            extra_items.push(item);
         }
-        items
+        if let Some(last) = last {
+            leafs.push(last);
+            extra_items.push(ExtraListItem::Leaf(usize::MAX));
+        }
+
+        let span = ctx.span(start, end);
+        Spanned::new(span, (leafs, extra_items))
     }
 }
 
-ExtraItem<I, B, D>: ExtraItem<I> = {
+ExtraBlockRaw<T, B>: Spanned<(Vec<T>, Vec<ExtraListItem>)> = {
+    "{" <items:ExtraListRaw<T, B>> "}" => <>,
+}
+
+ExtraListItem<T, B>: (Vec<T>, ExtraListItem) = {
     // leaf inner item with trailing comma (the potential final item without a trailing comma is handled in ExtraListItems)
-    <I> "," => ExtraItem::Inner(<>),
+    // always emit leaf nodes with index 0 for now,
+    //   the actual index will be filled in when the entire ExtraList is constructed
+    <v:T> "," => (vec![v], ExtraListItem::Leaf(usize::MAX)),
+
     // leaf inner block, there should include a trailing separator if necessary,
     //   typically not because they already end in "}"
-    <B> => ExtraItem::Inner(<>),
+    <v:B> => (vec![v], ExtraListItem::Leaf(usize::MAX)),
 
     // leaf declaration, these should include a trailing separator if necessary, typically ";"
-    <D> => ExtraItem::Declaration(<>),
-    
+    CommonDeclaration<()> => (vec![], ExtraListItem::Declaration(<>)),
+
     // control flow
-    IfStatement<ExtraBlockImpl<I, B, D>> => ExtraItem::If(<>),
+    <if_stmt:IfStatement<ExtraBlockRaw<T, B>>> => {
+        let mut result_leafs = vec![];
+        let result_stmt = if_stmt.map_block(|block| {
+            let block_span = block.span;
+            let (block_leafs, block_items) = block.inner;
+
+            result_leafs.extend(block_leafs);
+            ExtraListBlock { span: block_span, items: block_items }
+        });
+        (result_leafs, ExtraListItem::If(result_stmt))
+    },
     // TODO add match, for, maybe even while?
 }
 
@@ -748,7 +772,7 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
 
 ExprLevelCall<allow_block>: ExpressionKind = {
     // normal call
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:ExtraListNoDecl<Arg>> ")"
+    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:ExtraList<Arg>> ")"
         => ExpressionKind::Call(target, args),
 
     // builtins

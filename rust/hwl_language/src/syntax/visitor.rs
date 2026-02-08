@@ -2,9 +2,9 @@ use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
     BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
     CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
-    ExpressionKind, ExtraItem, ExtraList, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier,
-    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceView, Item,
-    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
+    ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration,
+    GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceView,
+    Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
     MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
     ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
     Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
@@ -628,24 +628,39 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         })
     }
 
-    fn visit_extra_list<I>(
+    fn visit_extra_list<T>(
         &mut self,
         scope_parent: &mut DeclScope,
-        extra: &ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
+        list: &ExtraList<T>,
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &T) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
-        let &ExtraList { span, ref items } = extra;
+        let ExtraList { leafs, root } = list;
+        self.visit_extra_list_block(scope_parent, leafs, root, f)?;
+        ControlFlow::Continue(())
+    }
+
+    fn visit_extra_list_block<'a, T: 'a>(
+        &mut self,
+        scope_parent: &mut DeclScope,
+        leafs: &'a [T],
+        block: &ExtraListBlock,
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &'a T) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
+        let &ExtraListBlock { span, ref items } = block;
 
         self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
         for item in items {
             match item {
-                ExtraItem::Inner(item) => f(self, scope_parent, item)?,
-                ExtraItem::Declaration(decl) => self.visit_common_declaration(scope_parent, decl)?,
-                ExtraItem::If(if_stmt) => {
+                &ExtraListItem::Leaf(index) => {
+                    let leaf = &leafs[index];
+                    f(self, scope_parent, leaf)?
+                }
+                ExtraListItem::Declaration(decl) => self.visit_common_declaration(scope_parent, decl)?,
+                ExtraListItem::If(if_stmt) => {
                     let mut scope_inner = scope_parent.new_child();
                     self.visit_if_stmt(&mut scope_inner, if_stmt, &mut |slf, s: &mut DeclScope, b| {
-                        slf.visit_extra_list(s, b, f)
+                        slf.visit_extra_list_block(s, leafs, b, f)
                     })?;
 
                     // TODO this is overly pessimistic, if/else combo can become non-conditional,
@@ -1309,7 +1324,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             &ExpressionKind::Call(target, ref args) => {
                 self.visit_expression(scope, target)?;
 
-                self.visitor.report_range(args.span, None);
+                self.visitor.report_range(args.span(), None);
 
                 let mut scope_dummy = DeclScope::new_child(scope);
                 self.visit_extra_list(&mut scope_dummy, args, &mut |slf, scope, arg| {

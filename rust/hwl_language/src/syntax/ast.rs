@@ -4,6 +4,7 @@ use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
 use crate::util::arena::Arena;
 use crate::{impl_has_span, new_index_type};
+use itertools::Itertools;
 
 new_index_type!(pub ExpressionKindIndex);
 
@@ -187,25 +188,37 @@ pub struct Parameter {
     pub default: Option<Expression>,
 }
 
-// TODO make declarations optional, they mess with scopes
+/// A list of (often comma separated) items which also allows inline declarations and conditional branches.
+/// This adds a lot of flexibility to port lists, function parameters, module statements and similar constructs.
+///
+/// The leaf items are not stored inline in the [ExtraListItem] enum, that would result in recursive type issues.
+/// Instead, they're stored in the `leafs` vec of the containing [ExtraList], in order.
 #[derive(Debug, Clone)]
-pub struct ExtraList<I> {
+pub struct ExtraList<T> {
+    pub leafs: Vec<T>,
+    pub root: ExtraListBlock,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtraListBlock {
     pub span: Span,
-    pub items: Vec<ExtraItem<I>>,
-}
-
-impl<I> ExtraList<I> {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
+    pub items: Vec<ExtraListItem>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ExtraItem<I> {
-    Inner(I),
+pub enum ExtraListItem {
+    /// The actual value is stored in the `leafs` field of the containing [ExtraList].
+    Leaf(usize),
+
     Declaration(CommonDeclaration<()>),
     // TODO add match, for, while(?)
-    If(IfStatement<ExtraList<I>>),
+    If(IfStatement<ExtraListBlock>),
+}
+
+impl<T> ExtraList<T> {
+    pub fn is_empty(&self) -> bool {
+        self.root.items.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1138,6 +1151,41 @@ impl AssignBinaryOp {
     }
 }
 
+impl<B> IfStatement<B> {
+    pub fn map_block<C>(self, mut f: impl FnMut(B) -> C) -> IfStatement<C> {
+        let IfStatement {
+            span,
+            initial_if,
+            else_ifs,
+            final_else,
+        } = self;
+
+        IfStatement {
+            span,
+            initial_if: initial_if.map_block(&mut f),
+            else_ifs: else_ifs.into_iter().map(|p| p.map_block(&mut f)).collect_vec(),
+            final_else: final_else.map(&mut f),
+        }
+    }
+}
+
+impl<B> IfCondBlockPair<B> {
+    pub fn map_block<C>(self, mut f: impl FnMut(B) -> C) -> IfCondBlockPair<C> {
+        let IfCondBlockPair {
+            span,
+            span_if,
+            cond,
+            block,
+        } = self;
+        IfCondBlockPair {
+            span,
+            span_if,
+            cond,
+            block: f(block),
+        }
+    }
+}
+
 // TODO this could be reduced a bit with a derive macro, eg. for enums it could automatically combine the branches
 impl_has_span!(Identifier);
 impl_has_span!(Parameter);
@@ -1145,6 +1193,12 @@ impl_has_span!(ModulePortInBlock);
 impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
+
+impl<T> HasSpan for ExtraList<T> {
+    fn span(&self) -> Span {
+        self.root.span
+    }
+}
 
 impl HasSpan for WhileStatement {
     fn span(&self) -> Span {
@@ -1163,16 +1217,6 @@ impl HasSpan for ModulePortItem {
         match self {
             ModulePortItem::Single(port) => port.span,
             ModulePortItem::Block(block) => block.span,
-        }
-    }
-}
-
-impl<I: HasSpan> HasSpan for ExtraItem<I> {
-    fn span(&self) -> Span {
-        match self {
-            ExtraItem::Inner(item) => item.span(),
-            ExtraItem::Declaration(decl) => decl.span(),
-            ExtraItem::If(if_stmt) => if_stmt.span,
         }
     }
 }

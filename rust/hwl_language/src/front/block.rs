@@ -20,9 +20,9 @@ use crate::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
 };
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraItem, ExtraList, ForStatement, IfCondBlockPair,
-    IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement, VariableDeclaration,
-    WhileStatement,
+    Block, BlockStatement, BlockStatementKind, ConstBlock, ExtraList, ExtraListBlock, ExtraListItem, ForStatement,
+    IfCondBlockPair, IfStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, ReturnStatement,
+    VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
@@ -631,7 +631,7 @@ impl CompileItemContext<'_, '_> {
         // eval branches
         let mut branches_evaluated = vec![];
         {
-            let mut scope_branches = Scope::new_child(branches.span, scope);
+            let mut scope_branches = Scope::new_child(branches.span(), scope);
             self.compile_elaborate_extra_list(&mut scope_branches, flow, branches, &mut |slf, scope, flow, branch| {
                 let MatchBranch { pattern, block } = branch;
                 let pattern_eval = slf.eval_match_pattern(scope, flow, target.span, &target_ty, pattern.as_ref())?;
@@ -1517,24 +1517,41 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    pub fn compile_elaborate_extra_list<'a, F: Flow, I>(
+    // TODO rework this, scopes are not handled correctly
+    pub fn compile_elaborate_extra_list<'a, F: Flow, T>(
         &mut self,
         scope: &mut Scope,
         flow: &mut F,
-        list: &'a ExtraList<I>,
-        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a I) -> DiagResult,
+        list: &'a ExtraList<T>,
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
-        let ExtraList { span: _, items } = list;
+        let ExtraList { leafs, root } = list;
+        self.compile_elaborate_extra_list_block(scope, flow, leafs, root, f)?;
+        Ok(())
+    }
+
+    fn compile_elaborate_extra_list_block<'a, F: Flow, T: 'a>(
+        &mut self,
+        scope: &mut Scope,
+        flow: &mut F,
+        leafs: &'a [T],
+        block: &ExtraListBlock,
+        f: &mut impl FnMut(&mut Self, &mut Scope, &mut F, &'a T) -> DiagResult,
+    ) -> DiagResult {
+        let ExtraListBlock { span: _, items } = block;
         for item in items {
             match item {
-                ExtraItem::Inner(inner) => f(self, scope, flow, inner)?,
-                ExtraItem::Declaration(decl) => {
+                &ExtraListItem::Leaf(index) => {
+                    let leaf = &leafs[index];
+                    f(self, scope, flow, leaf)?
+                }
+                ExtraListItem::Declaration(decl) => {
                     self.eval_and_declare_declaration(scope, flow, decl);
                 }
-                ExtraItem::If(if_stmt) => {
+                ExtraListItem::If(if_stmt) => {
                     let list_inner = self.compile_if_statement_choose_block(scope, flow, if_stmt)?;
                     if let Some(list_inner) = list_inner {
-                        self.compile_elaborate_extra_list(scope, flow, list_inner, f)?;
+                        self.compile_elaborate_extra_list_block(scope, flow, leafs, list_inner, f)?;
                     }
                 }
             }

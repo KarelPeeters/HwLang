@@ -12,7 +12,7 @@ use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MaybeCompile, NotCompile, Value};
 use crate::mid::ir::{IrExpression, IrStatement};
 use crate::syntax::ast::{Arg, Args, Expression, ExpressionKind, StringPiece};
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
@@ -33,7 +33,7 @@ impl CompileItemContext<'_, '_> {
         const ARG_DIAG_TITLE: &str = "typeof only takes a single unnamed argument";
 
         let mut arg_expr = None;
-        let mut scope_args = Scope::new_child(args.span, scope);
+        let mut scope_args = Scope::new_child(args.span(), scope);
         self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
             let &Arg { span: _, name, value } = arg;
 
@@ -42,7 +42,7 @@ impl CompileItemContext<'_, '_> {
             }
 
             if arg_expr.is_some() {
-                return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span, "too many arguments passed here"));
+                return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span(), "too many arguments passed here"));
             }
 
             arg_expr = Some(value);
@@ -50,7 +50,7 @@ impl CompileItemContext<'_, '_> {
         })?;
 
         let Some(arg_expr) = arg_expr else {
-            return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span, "no arguments passed here"));
+            return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span(), "no arguments passed here"));
         };
 
         // eval id

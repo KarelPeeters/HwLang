@@ -1,5 +1,5 @@
 use crate::front::diagnostic::DiagnosticError;
-use crate::syntax::ast::FileContent;
+use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem, FileContent, IfCondBlockPair, IfStatement};
 use crate::syntax::pos::Span;
 use crate::syntax::source::FileId;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
@@ -64,6 +64,55 @@ impl ParseContext {
         } = recovery;
         self.errors.push(error.map_location(|x| self.pos(x)));
         ReportedParseError(())
+    }
+
+    pub fn extra_list_new_compute_indices<T>(leafs: Vec<T>, root: ExtraListBlock) -> ExtraList<T> {
+        fn visit(next: &mut usize, block: &mut ExtraListBlock) {
+            let ExtraListBlock { span: _, items } = block;
+            for item in items {
+                match item {
+                    ExtraListItem::Leaf(index) => {
+                        *index = *next;
+                        *next += 1;
+                    }
+                    ExtraListItem::Declaration(_) => {}
+                    ExtraListItem::If(stmt) => {
+                        let IfStatement {
+                            span: _,
+                            initial_if,
+                            else_ifs,
+                            final_else,
+                        } = stmt;
+                        let IfCondBlockPair {
+                            span: _,
+                            span_if: _,
+                            cond: _,
+                            block: initial_block,
+                        } = initial_if;
+                        visit(next, initial_block);
+                        for else_if in else_ifs {
+                            let IfCondBlockPair {
+                                span: _,
+                                span_if: _,
+                                cond: _,
+                                block: else_if_block,
+                            } = else_if;
+                            visit(next, else_if_block);
+                        }
+                        if let Some(final_else_block) = final_else {
+                            visit(next, final_else_block);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut next = 0;
+        let mut root = root;
+        visit(&mut next, &mut root);
+        assert_eq!(next, leafs.len());
+
+        ExtraList { leafs, root }
     }
 }
 

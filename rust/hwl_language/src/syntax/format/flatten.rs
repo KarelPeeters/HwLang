@@ -2,16 +2,16 @@ use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset,
     CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
-    ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraItem,
-    ExtraList, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier, IfCondBlockPair,
-    IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceView, Item, ItemDefInterface,
-    ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern, MatchStatement,
-    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegDeclaration,
-    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain,
-    TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
-    WireDeclarationKind,
+    ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList,
+    ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier,
+    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceView, Item,
+    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern,
+    MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock,
+    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
+    RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration,
+    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
+    WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -163,31 +163,35 @@ impl Context<'_> {
         list: &ExtraList<T>,
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
-        surrounded_group_indent(surround, self.fmt_extra_list_inner(force_wrap, list, false, f))
+        let ExtraList { leafs, root } = list;
+        let node = self.fmt_extra_list_block(surround, force_wrap, leafs, root, f);
+        node
     }
 
-    fn fmt_extra_list_inner<T>(
+    fn fmt_extra_list_block<'a, T: 'a>(
         &self,
+        surround: SurroundKind,
         force_wrap: bool,
-        list: &ExtraList<T>,
-        extra_trailing_items: bool,
+        leafs: &[T],
+        block: &ExtraListBlock,
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
-        let ExtraList { span: _, items } = list;
+        let ExtraListBlock { span: _, items } = block;
 
         let mut seq = vec![];
         if force_wrap && !items.is_empty() {
             seq.push(HNode::ForceWrap);
         }
-
-        if !items.is_empty() || extra_trailing_items {
+        if !items.is_empty() {
             seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
         }
 
         for (item, last) in items.iter().with_last() {
             match item {
-                ExtraItem::Inner(item) => {
-                    let HNodeAndComma { node, comma } = f(item);
+                &ExtraListItem::Leaf(index) => {
+                    let leaf = &leafs[index];
+                    let HNodeAndComma { node, comma } = f(leaf);
+
                     seq.push(node);
                     if comma {
                         seq.push(comma_nodes(last));
@@ -198,18 +202,18 @@ impl Context<'_> {
                         seq.push(HNode::WrapNewline);
                     }
                 }
-                ExtraItem::Declaration(decl) => {
+                ExtraListItem::Declaration(decl) => {
                     seq.push(self.fmt_common_decl(decl));
                 }
-                ExtraItem::If(stmt) => {
-                    seq.push(self.fmt_if(stmt, |inner| self.fmt_extra_list(SurroundKind::Curly, true, inner, f)))
-                }
+                ExtraListItem::If(stmt) => seq.push(self.fmt_if(stmt, |inner| {
+                    self.fmt_extra_list_block(SurroundKind::Curly, true, leafs, inner, f)
+                })),
             }
 
-            seq.push(preserve_blank_lines_after_item(last && !extra_trailing_items));
+            seq.push(preserve_blank_lines_after_item(last));
         }
 
-        HNode::Sequence(seq)
+        surrounded_group_indent(surround, HNode::Sequence(seq))
     }
 
     fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
@@ -847,14 +851,14 @@ impl Context<'_> {
         HNode::Sequence(seq)
     }
 
-    fn fmt_if<B>(&self, stmt: &IfStatement<B>, f: impl Fn(&B) -> HNode) -> HNode {
+    fn fmt_if<B>(&self, stmt: &IfStatement<B>, mut f: impl FnMut(&B) -> HNode) -> HNode {
         fn fmt_else(seq: &mut Vec<HNode>) {
             seq.push(HNode::Space);
             seq.push(token(TT::Else));
             seq.push(HNode::Space);
         }
 
-        fn fmt_pair<B>(slf: &Context, f: impl Fn(&B) -> HNode, seq: &mut Vec<HNode>, pair: &IfCondBlockPair<B>) {
+        fn fmt_pair<B>(slf: &Context, mut f: impl FnMut(&B) -> HNode, seq: &mut Vec<HNode>, pair: &IfCondBlockPair<B>) {
             let &IfCondBlockPair {
                 span: _,
                 span_if: _,
@@ -876,10 +880,10 @@ impl Context<'_> {
         } = stmt;
 
         let mut seq = vec![];
-        fmt_pair(self, &f, &mut seq, initial_if);
+        fmt_pair(self, &mut f, &mut seq, initial_if);
         for else_if in else_ifs {
             fmt_else(&mut seq);
-            fmt_pair(self, &f, &mut seq, else_if);
+            fmt_pair(self, &mut f, &mut seq, else_if);
         }
         if let Some(final_else) = final_else {
             fmt_else(&mut seq);
