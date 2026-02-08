@@ -34,13 +34,12 @@ impl CompileItemContext<'_, '_> {
 
         let mut arg_expr = None;
         let mut scope_args = Scope::new_child(args.span(), scope);
-        self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
+        self.elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
             let &Arg { span: _, name, value } = arg;
 
             if let Some(name) = name {
                 return Err(diags.report_error_simple(ARG_DIAG_TITLE, name.span, "tried to pass named argument here"));
             }
-
             if arg_expr.is_some() {
                 return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span(), "too many arguments passed here"));
             }

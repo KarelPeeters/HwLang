@@ -752,25 +752,24 @@ impl<'a> CompileItemContext<'a, '_> {
                 // eval args
                 let mut args_eval = vec![];
                 let mut scope_args = Scope::new_child(args.span(), scope);
-                let args_result =
-                    self.compile_elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
-                        let &Arg {
-                            span: arg_span,
-                            name: arg_name,
-                            value: arg_value,
-                        } = arg;
+                let args_result = self.elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
+                    let &Arg {
+                        span: arg_span,
+                        name: arg_name,
+                        value: arg_value,
+                    } = arg;
 
-                        let arg_name = arg_name.map(|name| name.spanned_str(source));
-                        // TODO pass expected type in cases where we know it (eg. struct/enum construction)
-                        let arg_value = slf.eval_expression_with_implications(scope, flow, &Type::Any, arg_value)?;
+                    let arg_name = arg_name.map(|name| name.spanned_str(source));
+                    // TODO pass expected type in cases where we know it (eg. struct/enum construction)
+                    let arg_value = slf.eval_expression_with_implications(scope, flow, &Type::Any, arg_value)?;
 
-                        args_eval.push(Arg {
-                            span: arg_span,
-                            name: arg_name,
-                            value: arg_value,
-                        });
-                        Ok(())
+                    args_eval.push(Arg {
+                        span: arg_span,
+                        name: arg_name,
+                        value: arg_value,
                     });
+                    Ok(())
+                });
 
                 let args = args_result.map(|()| EvaluatedArgs {
                     span: args.span(),

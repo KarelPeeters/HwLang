@@ -4,7 +4,7 @@ import pytest
 from hwl_sandbox.common.util import compile_custom
 
 
-def test_extra_list_interface():
+def test_extra_list_in_interface():
     src = """
     interface foo(X: bool, Y: bool, Z: bool, V: bool) {
         if (X) { x: bool }
@@ -36,7 +36,7 @@ def test_extra_list_interface():
         foo(X=False, Y=False, Z=False, V=True)
 
 
-def test_extra_list_match():
+def test_extra_list_in_match():
     src = """
     fn f(c: bool, x: int) -> int {
         match (x) {
@@ -59,7 +59,45 @@ def test_extra_list_match():
     assert f(False, 3) == -3
 
 
-def test_extra_list_module_instance():
+def test_extra_list_in_module_ports():
+    src = """
+    module top(c: bool) ports(
+        x0: in async bool,
+        if (c) {
+            y0: in async bool,
+        }
+        
+        async {
+            x1: in bool,
+            if (c) {
+                y1: in bool,
+            }            
+        }
+        
+        if (c) {
+            async {
+                y2: in bool,
+            }
+        }
+    ) {
+        comb {
+            val _ = x0;
+            val _ = x1;
+            if (c) {
+                val _ = y0;
+                val _ = y1;
+                val _ = y2;
+            }
+        }
+    }
+    """
+
+    top = compile_custom(src).resolve("top.top")
+    top(c=False)
+    top(c=True)
+
+
+def test_extra_list_in_module_instance():
     src = """
     module child ports(x: in async bool) {}
     module parent(c: bool) ports() {
@@ -78,7 +116,7 @@ def test_extra_list_module_instance():
         parent(True)
 
 
-def test_extra_list_params():
+def test_extra_list_in_params():
     src = """
     fn f(c: bool, if (c) { x: int }) -> int {
         if (c) {
@@ -103,3 +141,67 @@ def test_extra_list_params():
         assert g(False, True, 0) == 0
     with pytest.raises(hwl.DiagnosticException, match="missing argument"):
         assert g(True, False, 0) == 0
+
+
+def test_extra_list_params_conflict():
+    src = "fn f(const c = false; c: bool) {}"
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="declared multiple times"):
+        f(c=False)
+
+
+def test_extra_list_scopes():
+    # TODO also test this for modules, where scopes are restored later
+    # TODO test for loops
+    src = """
+    fn f(
+        c: bool,
+        d: bool,
+        e: bool,
+        
+        // top-level scope is visible everywhere, including the function body
+        const A = 4;
+        
+        if (c) {
+            // branches have local, non-conflicting scopes
+            const B = 4;
+            b: uint(B),
+            
+            const C = 8;
+        } else {
+            const B = 2;
+            b: uint(B),
+        }
+        
+        if (e) {
+            // we can reuse names in different branches
+            const B = 4;
+        }
+        if (d) {
+            // branches scopes don't leak outside
+            const { print(C); } 
+        }
+    ) -> int {
+        return A;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+
+    # top-level visible
+    assert f(c=True, d=False, e=False, b=0) == 4
+
+    # branches local
+    f(c=True, d=False, e=False, b=2 ** 4 - 1)
+    f(c=True, d=False, e=False, b=2 ** 2 - 1)
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f(c=False, d=False, e=False, b=2 ** 4 - 1)
+    f(c=False, d=False, e=False, b=2 ** 2 - 1)
+
+    # reuse
+    f(c=True, d=False, e=True, b=0)
+
+    # no leaking
+    with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
+        f(c=True, d=True, e=False, b=0)
+    with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
+        f(c=False, d=True, e=False, b=0)

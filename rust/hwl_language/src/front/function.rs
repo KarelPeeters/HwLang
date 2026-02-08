@@ -500,6 +500,7 @@ impl CompileItemContext<'_, '_> {
             body,
         } = function;
         let decl_span = *decl_span;
+        let diags = self.refs.diags;
 
         self.refs.check_should_stop(decl_span)?;
 
@@ -514,7 +515,7 @@ impl CompileItemContext<'_, '_> {
         let compile = body.inner.params_must_be_compile();
         let mut matcher = ParamArgMacher::new(self.refs, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
 
-        self.compile_elaborate_extra_list(&mut scope, flow, &params.items, &mut |slf, scope, flow, param| {
+        self.elaborate_extra_list(&mut scope, flow, &params.items, &mut |slf, scope, flow, param| {
             let &Parameter {
                 span: _,
                 id,
@@ -522,12 +523,12 @@ impl CompileItemContext<'_, '_> {
                 default,
             } = param;
 
-            let ty = slf.eval_expression_as_ty(scope, flow, ty)?;
+            let ty = slf.eval_expression_as_ty(scope.as_scope(), flow, ty)?;
             let default = default
                 .as_ref()
                 .map(|&default| {
                     let value = slf.eval_expression_as_compile(
-                        scope,
+                        scope.as_scope(),
                         flow,
                         &ty.inner,
                         default,
@@ -552,11 +553,9 @@ impl CompileItemContext<'_, '_> {
                 param.id.span,
                 value.map(|v| v.inner),
             )?;
-            let entry = DeclaredValueSingle::Value {
-                span: param.id.span,
-                value: ScopedEntry::Named(NamedValue::Variable(param_var)),
-            };
-            scope.declare_already_checked(param.id.str(self.refs.fixed.source).to_owned(), entry);
+            let entry = ScopedEntry::Named(NamedValue::Variable(param_var));
+
+            scope.declare_root(diags, Ok(param.id.spanned_str(self.refs.fixed.source)), Ok(entry));
 
             Ok(())
         })?;

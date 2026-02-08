@@ -114,19 +114,19 @@ impl CompileRefs<'_, '_> {
         let mut port_map = IndexMap::new();
         let mut views_partial: Vec<InterfaceViewPartialElab> = vec![];
 
-        ctx.compile_elaborate_extra_list(&mut scope_body, &mut flow, body, &mut |ctx, scope, flow, item| {
+        ctx.elaborate_extra_list(&mut scope_body, &mut flow, body, &mut |ctx, scope, flow, item| {
             match item {
                 &InterfaceListItem::PortType { port_id, port_ty } => {
-                    let ty_eval = ctx.eval_expression_as_ty(scope, flow, port_ty).and_then(|ty| {
-                        match ty.inner.as_hardware_type(elab) {
+                    let ty_eval = ctx
+                        .eval_expression_as_ty(scope.as_scope(), flow, port_ty)
+                        .and_then(|ty| match ty.inner.as_hardware_type(elab) {
                             Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                             Err(_) => Err(diags.report_error_simple(
                                 "interface ports must have hardware types",
                                 ty.span,
                                 format!("got non-hardware type `{}`", ty.inner.value_string(elab)),
                             )),
-                        }
-                    });
+                        });
 
                     match port_map.entry(port_id.str(source).to_owned()) {
                         Entry::Occupied(mut entry) => {
@@ -152,7 +152,7 @@ impl CompileRefs<'_, '_> {
                     } = view;
 
                     let mut port_dirs_partial = vec![];
-                    ctx.compile_elaborate_extra_list(scope, flow, port_dirs, &mut |_, _, _, &port_dir| {
+                    ctx.elaborate_extra_list(scope.as_scope(), flow, port_dirs, &mut |_, _, _, &port_dir| {
                         port_dirs_partial.push(port_dir);
                         Ok(())
                     })?;
