@@ -5,11 +5,12 @@ use crate::syntax::ast::{
     ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration,
     GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceView,
     Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
-    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
+    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration,
+    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain,
+    TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
+    WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
@@ -438,8 +439,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.scope_declare(scope_ports, Conditional::No, id.into())?;
                 ControlFlow::Continue(())
             }
-            ModulePortItem::Block(block) => {
-                let &ModulePortBlock {
+            ModulePortItem::DomainBlock(block) => {
+                let &ModulePortDomainBlock {
                     span,
                     domain,
                     ref ports,
@@ -448,7 +449,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visitor.report_range(span, Some(FoldRangeKind::Region));
 
                 self.visit_domain(scope_ports, domain)?;
-                self.visit_extra_list(scope_ports, ports, &mut |slf, scope_ports, port| {
+                self.visit_extra_list_block(scope_ports, ports, &mut |slf, scope_ports, port| {
                     let &ModulePortInBlock { span, id, ref kind } = port;
                     slf.visitor.report_range(span, None);
 
@@ -634,40 +635,60 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         list: &ExtraList<T>,
         f: &mut impl FnMut(&mut Self, &mut DeclScope, &T) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
-        let ExtraList { leafs, root } = list;
-        self.visit_extra_list_block(scope_parent, leafs, root, f)?;
-        ControlFlow::Continue(())
+        let &ExtraList { span, ref items } = list;
+        self.visitor.report_range(span, None);
+        self.visit_extra_list_items(scope_parent, items, f)
     }
 
-    fn visit_extra_list_block<'a, T: 'a>(
+    fn visit_extra_list_block<T>(
         &mut self,
         scope_parent: &mut DeclScope,
-        leafs: &'a [T],
-        block: &ExtraListBlock,
-        f: &mut impl FnMut(&mut Self, &mut DeclScope, &'a T) -> ControlFlow<V::Break>,
+        block: &ExtraListBlock<T>,
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &T) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
         let &ExtraListBlock { span, ref items } = block;
-
         self.visitor.report_range(span, Some(FoldRangeKind::Region));
+        self.visit_extra_list_items(scope_parent, items, f)
+    }
 
+    fn visit_extra_list_items<T>(
+        &mut self,
+        scope_parent: &mut DeclScope,
+        items: &[ExtraListItem<T>],
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &T) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
+        // TODO this is overly pessimistic, if/else combo can become non-conditional,
+        //   which we don't model correctly
+        // TODO this is not right, not all declarations leak out into the parent scope,
+        //   only public ones or in special ExtraList cases (eg. parameters, ports, ...)
+        // TODO leaking and non-leaking of declarations is wrongly implemented in general,
+        //   we should probably split extra if/for out from statement if/for
         for item in items {
             match item {
-                &ExtraListItem::Leaf(index) => {
-                    let leaf = &leafs[index];
-                    f(self, scope_parent, leaf)?
-                }
+                ExtraListItem::Leaf(leaf) => f(self, scope_parent, leaf)?,
                 ExtraListItem::Declaration(decl) => self.visit_common_declaration(scope_parent, decl)?,
-                ExtraListItem::If(if_stmt) => {
-                    let mut scope_inner = scope_parent.new_child();
-                    self.visit_if_stmt(&mut scope_inner, if_stmt, &mut |slf, s: &mut DeclScope, b| {
-                        slf.visit_extra_list_block(s, leafs, b, f)
+                ExtraListItem::If(stmt) => {
+                    let mut scope_cond = scope_parent.new_child();
+                    self.visit_if_stmt(&mut scope_cond, stmt, &mut |slf, s: &mut DeclScope, b| {
+                        slf.visit_extra_list_block(s, b, f)
                     })?;
 
-                    // TODO this is overly pessimistic, if/else combo can become non-conditional,
-                    //   which we don't model correctly
-                    // TODO this is not right, not all declarations leak out into the parent scope,
-                    //   only public ones or in special ExtraList cases (eg. parameters, ports, ...)
-                    scope_parent.merge_conditional_child(scope_inner.content);
+                    scope_parent.merge_conditional_child(scope_cond.content);
+                }
+                ExtraListItem::Match(stmt) => {
+                    let mut scope_cond = scope_parent.new_child();
+
+                    self.visit_match_stmt(&mut scope_cond, stmt, &mut |slf, s: &mut DeclScope, b| {
+                        slf.visit_extra_list_block(s, b, f)
+                    })?;
+
+                    scope_parent.merge_conditional_child(scope_cond.content);
+                }
+                ExtraListItem::For(stmt) => {
+                    let scope_cond = scope_parent.new_child();
+                    self.visit_for_stmt(scope_parent, stmt, |slf, s, b| slf.visit_extra_list_block(s, b, f))?;
+
+                    scope_parent.merge_conditional_child(scope_cond.content);
                 }
             }
         }
@@ -675,11 +696,11 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn visit_if_stmt<I>(
+    fn visit_if_stmt<'a, B: 'a>(
         &mut self,
         scope: &mut DeclScope,
-        if_stmt: &IfStatement<I>,
-        f: &mut impl FnMut(&mut Self, &mut DeclScope, &I) -> ControlFlow<V::Break>,
+        if_stmt: &'a IfStatement<B>,
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &'a B) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
         let &IfStatement {
             span,
@@ -690,7 +711,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
         self.visitor.report_range(span, None);
 
-        let mut visit_pair = |slf: &mut Self, pair: &IfCondBlockPair<I>| {
+        let mut visit_pair = |slf: &mut Self, pair: &'a IfCondBlockPair<B>| {
             let &IfCondBlockPair {
                 span,
                 span_if: _,
@@ -716,11 +737,62 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn visit_for_stmt<S>(
+    fn visit_match_stmt<'a, B: HasSpan>(
+        &mut self,
+        scope: &mut DeclScope,
+        match_stmt: &'a MatchStatement<B>,
+        f: &mut impl FnMut(&mut Self, &mut DeclScope, &'a B) -> ControlFlow<V::Break>,
+    ) -> ControlFlow<V::Break> {
+        let &MatchStatement {
+            span_keyword: _,
+            target,
+            ref branches,
+            pos_end: _,
+        } = match_stmt;
+
+        self.visitor.report_range(match_stmt.span(), None);
+
+        self.visit_expression(scope, target)?;
+
+        for branch in branches {
+            let MatchBranch { pattern, block } = branch;
+
+            self.visitor.report_range(branch.span(), None);
+            self.visitor.report_range(pattern.span, None);
+
+            let mut scope_inner = scope.new_child();
+            match &pattern.inner {
+                MatchPattern::Wildcard => {}
+                &MatchPattern::WildcardVal(id) => {
+                    self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
+                }
+                &MatchPattern::EqualTo(expr) => {
+                    self.visit_expression(scope, expr)?;
+                }
+                &MatchPattern::InRange { span_in: _, range } => {
+                    self.visit_expression(scope, range)?;
+                }
+                &MatchPattern::IsEnumVariant {
+                    variant: _,
+                    payload_id: payload,
+                } => {
+                    if let Some(payload) = payload {
+                        self.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
+                    }
+                }
+            }
+
+            f(self, &mut scope_inner, block)?;
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    fn visit_for_stmt<'a, B: HasSpan>(
         &mut self,
         scope: &DeclScope,
-        stmt: &ForStatement<S>,
-        f: impl FnOnce(&mut Self, &DeclScope, &Block<S>) -> ControlFlow<V::Break>,
+        stmt: &'a ForStatement<B>,
+        f: impl FnOnce(&mut Self, &mut DeclScope, &'a B) -> ControlFlow<V::Break>,
     ) -> ControlFlow<V::Break> {
         let &ForStatement {
             span_keyword: _,
@@ -741,7 +813,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         let mut scope_inner = scope.new_child();
         self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
 
-        f(self, &scope_inner, body)?;
+        f(self, &mut scope_inner, body)?;
 
         ControlFlow::Continue(())
     }
@@ -813,46 +885,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             }
             BlockStatementKind::Match(stmt) => {
                 check_skip!(self, stmt_span);
-
-                let &MatchStatement {
-                    target,
-                    pos_end: _,
-                    ref branches,
-                } = stmt;
-                self.visit_expression(scope, target)?;
-
-                self.visit_extra_list(scope, branches, &mut |slf, scope, branch| {
-                    let MatchBranch { pattern, block } = branch;
-
-                    slf.visitor.report_range(branch.span(), None);
-                    slf.visitor.report_range(pattern.span, None);
-
-                    let mut scope_inner = scope.new_child();
-                    match &pattern.inner {
-                        MatchPattern::Wildcard => {}
-                        &MatchPattern::WildcardVal(id) => {
-                            slf.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
-                        }
-                        &MatchPattern::EqualTo(expr) => {
-                            slf.visit_expression(scope, expr)?;
-                        }
-                        &MatchPattern::InRange { span_in: _, range } => {
-                            slf.visit_expression(scope, range)?;
-                        }
-                        &MatchPattern::IsEnumVariant {
-                            variant: _,
-                            payload_id: payload,
-                        } => {
-                            if let Some(payload) = payload {
-                                slf.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
-                            }
-                        }
-                    }
-
-                    slf.visit_block_statements(&scope_inner, block)?;
-
-                    ControlFlow::Continue(())
-                })?;
+                self.visit_match_stmt(scope, stmt, &mut |slf, s, b| slf.visit_block_statements(s, b))?;
             }
             BlockStatementKind::For(stmt) => {
                 check_skip!(self, stmt_span);

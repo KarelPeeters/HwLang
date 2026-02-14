@@ -7,6 +7,11 @@ module top ports(
         y: out uint(8),
         z: out uint(8),
     }
+
+    match (false) {
+        true => { a: in async bool, }
+        false => { b: in async bool, }
+    }
 ) {
     comb {
         y = x;

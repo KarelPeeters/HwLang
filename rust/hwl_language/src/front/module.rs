@@ -29,7 +29,7 @@ use crate::mid::ir::{
     IrWireInfo, IrWireOrPort,
 };
 use crate::syntax::ast::{
-    self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModuleInstance, ModulePortBlock,
+    self, ClockedBlockReset, ExpressionKind, ExtraList, ForStatement, ModuleInstance, ModulePortDomainBlock,
     ModulePortInBlock, ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind,
     PortDirection, PortSingleKindInner, ResetKind, Visibility, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
@@ -303,8 +303,8 @@ impl CompileRefs<'_, '_> {
                         }
                     }
                 }
-                ModulePortItem::Block(port_item) => {
-                    let &ModulePortBlock {
+                ModulePortItem::DomainBlock(port_item) => {
+                    let &ModulePortDomainBlock {
                         span: _,
                         domain,
                         ref ports,
@@ -382,7 +382,7 @@ impl CompileRefs<'_, '_> {
                             Ok(())
                         };
 
-                    ctx.elaborate_extra_list_in_extra_scope(scope_ports, flow, ports, &mut visit_port_item_in_block)?;
+                    ctx.elaborate_extra_list_block(scope_ports, flow, ports, &mut visit_port_item_in_block)?;
                 }
             }
             Ok(())
@@ -1249,7 +1249,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         &mut self,
         scope_parent: &Scope,
         flow_parent: &FlowCompile,
-        for_stmt: Spanned<&'a ForStatement<ModuleStatement>>,
+        for_stmt: Spanned<&'a ForStatement<Block<ModuleStatement>>>,
     ) -> DiagResult<(ModuleTodo<'a>, PublicDeclarations<'a>)> {
         let diags = self.ctx.refs.diags;
         let source = self.ctx.refs.fixed.source;

@@ -190,41 +190,41 @@ pub struct Parameter {
 
 /// A list of (often comma separated) items which also allows inline declarations and conditional branches.
 /// This adds a lot of flexibility to port lists, function parameters, module statements and similar constructs.
-///
-/// The leaf items are not stored inline in the [ExtraListItem] enum, that would result in recursive type issues.
-/// Instead, they're stored in the `leafs` vec of the containing [ExtraList], in order.
 #[derive(Debug, Clone)]
 pub struct ExtraList<T> {
-    pub leafs: Vec<T>,
-    pub root: ExtraListBlock,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExtraListBlock {
     pub span: Span,
-    pub items: Vec<ExtraListItem>,
+    pub items: Vec<ExtraListItem<T>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ExtraListItem {
-    /// The actual value is stored in the `leafs` field of the containing [ExtraList].
-    Leaf(usize),
+pub struct ExtraListBlock<T> {
+    pub span: Span,
+    pub items: Vec<ExtraListItem<T>>,
+}
 
+#[derive(Debug, Clone)]
+pub enum ExtraListItem<T> {
+    // leaf node
+    Leaf(T),
+    // common declaration
     Declaration(CommonDeclaration<()>),
-    // TODO add match, for, block
-    If(IfStatement<ExtraListBlock>),
+
+    // control flow
+    If(IfStatement<ExtraListBlock<T>>),
+    Match(MatchStatement<ExtraListBlock<T>>),
+    For(ForStatement<ExtraListBlock<T>>),
 }
 
 impl<T> ExtraList<T> {
     pub fn is_empty(&self) -> bool {
-        self.root.items.is_empty()
+        self.items.is_empty()
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum ModulePortItem {
     Single(ModulePortSingle),
-    Block(ModulePortBlock),
+    DomainBlock(ModulePortDomainBlock),
 }
 
 #[derive(Debug, Clone)]
@@ -235,10 +235,10 @@ pub struct ModulePortSingle {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModulePortBlock {
+pub struct ModulePortDomainBlock {
     pub span: Span,
     pub domain: Spanned<DomainKind<Expression>>,
-    pub ports: ExtraList<ModulePortInBlock>,
+    pub ports: ExtraListBlock<ModulePortInBlock>,
 }
 
 #[derive(Debug, Clone)]
@@ -377,7 +377,7 @@ pub enum ModuleStatementKind {
     // control flow
     Block(Block<ModuleStatement>),
     If(IfStatement<Block<ModuleStatement>>),
-    For(ForStatement<ModuleStatement>),
+    For(ForStatement<Block<ModuleStatement>>),
     // declarations
     CommonDeclaration(CommonDeclaration<()>),
     RegDeclaration(RegDeclaration),
@@ -406,7 +406,7 @@ pub enum BlockStatementKind {
     If(IfStatement<Block<BlockStatement>>),
     Match(MatchStatement<Block<BlockStatement>>),
 
-    For(ForStatement<BlockStatement>),
+    For(ForStatement<Block<BlockStatement>>),
     While(WhileStatement),
 
     // control flow terminators
@@ -433,8 +433,10 @@ pub struct IfCondBlockPair<B> {
 
 #[derive(Debug, Clone)]
 pub struct MatchStatement<B> {
+    pub span_keyword: Span,
     pub target: Expression,
-    pub branches: ExtraList<MatchBranch<B>>,
+    // TODO re-instate some variant of ExtraList that does not support match itself
+    pub branches: Vec<MatchBranch<B>>,
     pub pos_end: Pos,
 }
 
@@ -467,12 +469,12 @@ pub struct WhileStatement {
 }
 
 #[derive(Debug, Clone)]
-pub struct ForStatement<S> {
+pub struct ForStatement<B> {
     pub span_keyword: Span,
     pub index: MaybeIdentifier,
     pub index_ty: Option<Expression>,
     pub iter: Expression,
-    pub body: Block<S>,
+    pub body: B,
 }
 
 #[derive(Debug, Clone)]
@@ -1196,7 +1198,13 @@ impl_has_span!(EnumVariant);
 
 impl<T> HasSpan for ExtraList<T> {
     fn span(&self) -> Span {
-        self.root.span
+        self.span
+    }
+}
+
+impl<T> HasSpan for ExtraListBlock<T> {
+    fn span(&self) -> Span {
+        self.span
     }
 }
 
@@ -1206,9 +1214,21 @@ impl HasSpan for WhileStatement {
     }
 }
 
-impl<S> HasSpan for ForStatement<S> {
+impl<B: HasSpan> HasSpan for ForStatement<B> {
     fn span(&self) -> Span {
-        self.span_keyword.join(self.body.span)
+        self.span_keyword.join(self.body.span())
+    }
+}
+
+impl<B> HasSpan for IfStatement<B> {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl<B> HasSpan for MatchStatement<B> {
+    fn span(&self) -> Span {
+        self.span_keyword.join(Span::empty_at(self.pos_end))
     }
 }
 
@@ -1216,7 +1236,7 @@ impl HasSpan for ModulePortItem {
     fn span(&self) -> Span {
         match self {
             ModulePortItem::Single(port) => port.span,
-            ModulePortItem::Block(block) => block.span,
+            ModulePortItem::DomainBlock(block) => block.span,
         }
     }
 }
@@ -1310,7 +1330,7 @@ impl<B: HasSpan> HasSpan for MatchBranch<B> {
     }
 }
 
-impl<B: HasSpan> HasSpan for Block<B> {
+impl<B> HasSpan for Block<B> {
     fn span(&self) -> Span {
         self.span
     }

@@ -205,3 +205,35 @@ def test_extra_list_scopes():
         f(c=True, d=True, e=False, b=0)
     with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
         f(c=False, d=True, e=False, b=0)
+
+
+def test_extra_item_kind_decl():
+    src = """
+    fn f(const x: int = 4;) -> int { return x; }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f() == 4
+
+
+def test_extra_item_kind_if():
+    src = """
+    fn f(if (true) { x: int } else { y: int }) -> int { return x; }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(x=4) == 4
+
+
+def test_extra_item_kind_for():
+    src = """
+    fn f(for (i in 0..=1) { x: int }) -> int { return x; }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(x=4) == 0
+
+
+def test_extra_item_kind_match():
+    src = """
+    fn f(match (0) { 0 => { x: int }) -> int { return x; }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(x=4) == 0

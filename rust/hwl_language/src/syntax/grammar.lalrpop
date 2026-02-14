@@ -142,7 +142,7 @@ Item: Item = {
 
     <start:@L>
         <vis:Vis> "interface" <id:MaybeId> <params:Parameters?> <start_body:@L>
-        "{" <body:ExtraListWithBlock<InterfacePortType, InterfaceView>> "}"
+        "{" <body:ExtraListWithSecond<InterfacePortType, InterfaceView>> "}"
     <end:@R> => {
         let inter = ItemDefInterface {
             vis, id, params, body,
@@ -211,7 +211,7 @@ ModuleStatementKind: ModuleStatementKind = {
     // control flow
     Block<ModuleStatement> => ModuleStatementKind::Block(<>),
     IfStatement<Block<ModuleStatement>> => ModuleStatementKind::If(<>),
-    ForStatement<ModuleStatement> => ModuleStatementKind::For(<>),
+    ForStatement<Block<ModuleStatement>> => ModuleStatementKind::For(<>),
     // declaration
     <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
     <vis:Vis> <span_keyword:Span<"reg">> <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
@@ -317,7 +317,7 @@ BlockStatementKind: BlockStatementKind = {
         => BlockStatementKind::If(<>),
     MatchStatement<Block<BlockStatement>>
         => BlockStatementKind::Match(<>),
-    ForStatement<BlockStatement>
+    ForStatement<Block<BlockStatement>>
         => BlockStatementKind::For(<>),
     // TODO don't require parentheses?
     <span_keyword:Span<"while">> "(" <cond:Expr> ")" <body:Block<BlockStatement>>
@@ -355,9 +355,11 @@ ElseIfPair<B>: IfCondBlockPair<B> = {
 }
 
 // TODO don't require parentheses?
+// TODO re-introduce conditional match branches, without recursive match for now
 MatchStatement<B>: MatchStatement<B> = {
-    "match" "(" <target:Expr> ")" "{" <branches:ExtraListWithBlock<Never<MatchBranch<B>>, MatchBranch<B>>> <pos_end:@L> "}"
-        => MatchStatement { target, branches, pos_end: ctx.pos(pos_end) },
+    <span_keyword:Span<"match">> "(" <target:Expr> ")"
+        "{" <branches:MatchBranch<B>*> <pos_end:@L> "}"
+        => MatchStatement { target, branches, span_keyword, pos_end: ctx.pos(pos_end) },
 }
 
 MatchBranch<B>: MatchBranch<B> = {
@@ -382,9 +384,9 @@ MaybeValId: MaybeIdentifier = {
     Span<"_"> => MaybeIdentifier::Dummy { span: <> },
 }
 
-ForStatement<S>: ForStatement<S> = {
+ForStatement<B>: ForStatement<B> = {
     // TODO don't require parentheses?
-    <span_keyword:Span<"for">> "(" <index:MaybeId> <index_ty: (":" <ExprNoIn>)?> "in" <iter:ExprNoIn> ")" <body:Block<S>>
+    <span_keyword:Span<"for">> "(" <index:MaybeId> <index_ty: (":" <ExprNoIn>)?> "in" <iter:ExprNoIn> ")" <body:B>
         => ForStatement { span_keyword, index, index_ty, iter, body },
 }
 
@@ -447,7 +449,7 @@ Parameter: Parameter = {
 }
 
 ModulePorts: Spanned<ExtraList<ModulePortItem>> = {
-    <start_ports:@L> "ports" "(" <ports:ExtraListWithBlock<ModulePortItemPort, ModulePortItemBlock>> ")" <end_ports:@R>
+    <start_ports:@L> "ports" "(" <ports:ExtraListWithSecond<ModulePortItemPort, ModulePortItemDomainBlock>> ")" <end_ports:@R>
         => Spanned { inner: ports, span: ctx.span(start_ports, end_ports) },
 }
 
@@ -456,10 +458,10 @@ ModulePortItemPort: ModulePortItem = {
         => ModulePortItem::Single(ModulePortSingle { id, kind, span: ctx.span(start, end) }),
 }
 
-ModulePortItemBlock: ModulePortItem = {
+ModulePortItemDomainBlock: ModulePortItem = {
     // TODO allow const domain here again, it conflicts with const blocks
-    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraBlock<ModulePortInBlock>> <end:@R>
-        => ModulePortItem::Block(ModulePortBlock { domain, ports, span: ctx.span(start, end) }),
+    <start:@L> <domain:Spanned<AsyncOrSyncDomain>> <ports:ExtraListBlock<ModulePortInBlock, Never<ModulePortInBlock>>> <end:@R>
+        => ModulePortItem::DomainBlock(ModulePortDomainBlock { domain, ports, span: ctx.span(start, end) }),
 }
 
 ModulePortInBlock: ModulePortInBlock = {
@@ -486,70 +488,44 @@ ModulePortInBlockKind: ModulePortInBlockKind = {
         => ModulePortInBlockKind::Interface { span_keyword, interface },
 }
 
-ExtraList<T> = ExtraListImpl<T, Never<T>>;
-ExtraListWithBlock<T, B> = ExtraListImpl<T, B>;
-
-ExtraBlock<T>: ExtraList<T> = {
-    "{" <ExtraList<T>> "}" => <>,
+ExtraList<T>: ExtraList<T> = ExtraListWithSecond<T, Never<T>>;
+ExtraListWithSecond<T, S>: ExtraList<T> = {
+    Spanned<ExtraListItems<T, S>> => ExtraList { span: <>.span, items: <>.inner },
 }
 
-ExtraListImpl<T, B>: ExtraList<T> = {
-    ExtraListRaw<T, B> => {
-        let span = <>.span;
-        let (leafs, items) = <>.inner;
-        let root = ExtraListBlock { span, items };
-        ParseContext::extra_list_new_compute_indices(leafs, root)
-    }
+#[inline]
+ExtraListBlock<T, S>: ExtraListBlock<T> = {
+    <start:@L> "{" <items:ExtraListItems<T, S>> "}" <end:@R>
+        => ExtraListBlock { items, span: ctx.span(start, end) },
 }
 
-ExtraListRaw<T, B>: Spanned<(Vec<T>, Vec<ExtraListItem>)> = {
-    <start:@L> <items:ExtraListItem<T, B>*> <last:T?> <end:@R> => {
-        let mut leafs = vec![];
-        let mut extra_items = vec![];
-        for (item_leafs, item) in items {
-            leafs.extend(item_leafs);
-            extra_items.push(item);
-        }
+ExtraListItems<T, S>: Vec<ExtraListItem<T>> = {
+    <items:ExtraListItem<T, S>*> <last:T?> => {
+        let mut items = items;
         if let Some(last) = last {
-            leafs.push(last);
-            extra_items.push(ExtraListItem::Leaf(usize::MAX));
+            items.push(ExtraListItem::Leaf(last));
         }
-
-        let span = ctx.span(start, end);
-        Spanned::new(span, (leafs, extra_items))
+        items
     }
 }
 
-ExtraBlockRaw<T, B>: Spanned<(Vec<T>, Vec<ExtraListItem>)> = {
-    "{" <items:ExtraListRaw<T, B>> "}" => <>,
-}
-
-ExtraListItem<T, B>: (Vec<T>, ExtraListItem) = {
+ExtraListItem<T, S>: ExtraListItem<T> = {
     // leaf inner item with trailing comma (the potential final item without a trailing comma is handled in ExtraListItems)
     // always emit leaf nodes with index 0 for now,
     //   the actual index will be filled in when the entire ExtraList is constructed
-    <v:T> "," => (vec![v], ExtraListItem::Leaf(usize::MAX)),
+    <T> "," => ExtraListItem::Leaf(<>),
 
-    // leaf inner block, there should include a trailing separator if necessary,
+    // leaf inner second, these should already include a trailing separator if necessary,
     //   typically not because they already end in "}"
-    <v:B> => (vec![v], ExtraListItem::Leaf(usize::MAX)),
+    S => ExtraListItem::Leaf(<>),
 
     // leaf declaration, these should include a trailing separator if necessary, typically ";"
-    CommonDeclaration<()> => (vec![], ExtraListItem::Declaration(<>)),
+    CommonDeclaration<()> => ExtraListItem::Declaration(<>),
 
     // control flow
-    <if_stmt:IfStatement<ExtraBlockRaw<T, B>>> => {
-        let mut result_leafs = vec![];
-        let result_stmt = if_stmt.map_block(|block| {
-            let block_span = block.span;
-            let (block_leafs, block_items) = block.inner;
-
-            result_leafs.extend(block_leafs);
-            ExtraListBlock { span: block_span, items: block_items }
-        });
-        (result_leafs, ExtraListItem::If(result_stmt))
-    },
-    // TODO add match, for, maybe even while?
+    IfStatement<ExtraListBlock<T, S>> => ExtraListItem::If(<>),
+    MatchStatement<ExtraListBlock<T, S>> => ExtraListItem::Match(<>),
+    ForStatement<ExtraListBlock<T, S>> => ExtraListItem::For(<>),
 }
 
 WireDeclarationKind: WireDeclarationKind = {
