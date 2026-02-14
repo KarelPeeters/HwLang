@@ -235,6 +235,8 @@ Other projects are building a standalone RTL language, more similar to the appro
 
 * [Veryl](https://veryl-lang.org/)
 * [PipelineC](https://github.com/JulianKemmerer/PipelineC)
+* [Spade](https://spade-lang.org/)
+* [Filament](https://filamenthdl.com/)
 
 There is also ongoing work on the supporting infrastructure necessary to make future EDA tooling and RTL language
 development easier:
