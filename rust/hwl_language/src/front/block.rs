@@ -2,9 +2,10 @@ use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
     check_type_is_range_compile,
 };
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
+use crate::front::expression::ForIterator;
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
@@ -262,14 +263,34 @@ enum CompileBranchMatched {
 #[derive(Debug)]
 struct HardwareBranchMatched {
     cond: Option<IrExpression>,
-    declare: Option<BranchDeclare<HardwareValueWithImplications>>,
+    declare: Option<BranchDeclare<ValueWithImplications>>,
     implications: Vec<Implication>,
 }
 
 #[derive(Debug)]
 struct BranchDeclare<V> {
+    pattern_span: Span,
     id: MaybeIdentifier,
     value: V,
+}
+
+impl<V: Into<ValueWithImplications>> BranchDeclare<V> {
+    fn declare(self, refs: CompileRefs, scope: &mut Scope, flow: &mut impl Flow) -> DiagResult<()> {
+        let BranchDeclare {
+            pattern_span,
+            id,
+            value,
+        } = self;
+
+        let var = flow.var_new_immutable_init(refs, id.span(), VariableId::Id(id), pattern_span, Ok(value.into()))?;
+        scope.maybe_declare(
+            refs.diags,
+            Ok(id.spanned_str(refs.fixed.source)),
+            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+        );
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -313,6 +334,11 @@ impl<'p> ExtraScope<'p, '_, '_> {
 
         self.scope.declare(diags, id, entry);
     }
+}
+
+struct ElaboratedForHeader {
+    index_ty: Option<Spanned<Type>>,
+    iter: ForIterator,
 }
 
 impl CompileItemContext<'_, '_> {
@@ -527,7 +553,7 @@ impl CompileItemContext<'_, '_> {
             }
             BlockStatementKind::Match(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
-                self.elaborate_match_statement(scope, flow, stack, stmt)?
+                self.elaborate_match_statement(scope, flow, stack, &stmt.inner)?
             }
             BlockStatementKind::While(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
@@ -646,29 +672,25 @@ impl CompileItemContext<'_, '_> {
         scope: &Scope,
         flow: &mut impl Flow,
         stack: &mut ExitStack,
-        stmt: Spanned<&MatchStatement<Block<BlockStatement>>>,
+        stmt: &MatchStatement<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let &MatchStatement {
-            span_keyword: _,
+            span_keyword,
             target,
             pos_end,
             ref branches,
-        } = stmt.inner;
+        } = stmt;
 
         // eval target
         let target = self.eval_expression_with_implications(scope, flow, &Type::Any, target)?;
         let target_ty = target.inner.ty();
 
         // eval branches
-        let mut branches_evaluated = vec![];
-        for branch in branches {
-            let MatchBranch { pattern, block } = branch;
-            let pattern_eval = self.eval_match_pattern(scope, flow, target.span, &target_ty, pattern.as_ref())?;
-            branches_evaluated.push((Spanned::new(pattern.span, pattern_eval), block));
-        }
+        let branches_evaluated =
+            self.elaborate_match_statement_eval_branches(scope, flow, target.span, &target_ty, branches)?;
 
         // dispatch on target
         match CompileValue::try_from(&target.inner) {
@@ -680,7 +702,7 @@ impl CompileItemContext<'_, '_> {
             Err(NotCompile) => {
                 // hardware target value (at least partially), convert the target to full hardware
                 //   and handle the match at hardware time
-                let flow = flow.require_hardware(stmt.span, "match on hardware target")?;
+                let flow = flow.require_hardware(span_keyword, "match on hardware target")?;
 
                 let target_ty = target_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
                     diags.report_error_simple(
@@ -705,13 +727,56 @@ impl CompileItemContext<'_, '_> {
                     scope,
                     flow,
                     stack,
-                    stmt.span,
+                    span_keyword,
                     target,
                     pos_end,
                     branches_evaluated,
                 )
             }
         }
+    }
+
+    fn compile_match_statement_choose_branch<'a, B>(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        stmt: &'a MatchStatement<B>,
+    ) -> DiagResult<(Option<BranchDeclare<CompileValue>>, &'a B)> {
+        let &MatchStatement {
+            span_keyword,
+            target,
+            pos_end,
+            ref branches,
+        } = stmt;
+
+        // eval target
+        let reason = Spanned::new(span_keyword, "compile-time match");
+        let target = self.eval_expression_as_compile(scope, flow, &Type::Any, target, reason)?;
+        let target_ty = target.inner.ty();
+
+        // eval branches
+        let branches_evaluated =
+            self.elaborate_match_statement_eval_branches(scope, flow, target.span, &target_ty, branches)?;
+
+        // choose branch
+        self.elaborate_match_statement_compile_choose_branch(target, pos_end, branches_evaluated)
+    }
+
+    pub fn elaborate_match_statement_eval_branches<'a, B>(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        target_span: Span,
+        target_ty: &Type,
+        branches: &'a Vec<MatchBranch<B>>,
+    ) -> DiagResult<Vec<(Spanned<EvaluatedMatchPattern>, &'a B)>> {
+        let mut result = vec![];
+        for branch in branches {
+            let MatchBranch { pattern, block } = branch;
+            let pattern_eval = self.eval_match_pattern(scope, flow, target_span, target_ty, pattern.as_ref())?;
+            result.push((Spanned::new(pattern.span, pattern_eval), block));
+        }
+        Ok(result)
     }
 
     fn eval_match_pattern(
@@ -816,14 +881,31 @@ impl CompileItemContext<'_, '_> {
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
     ) -> DiagResult<BlockEnd> {
+        let (declare, block) = self.elaborate_match_statement_compile_choose_branch(target, pos_end, branches)?;
+
+        let mut scope_branch = Scope::new_child(block.span(), scope_parent);
+        if let Some(declare) = declare {
+            declare.declare(self.refs, &mut scope_branch, flow)?;
+        }
+
+        self.elaborate_block(&scope_branch, flow, stack, block)
+    }
+
+    fn elaborate_match_statement_compile_choose_branch<'a, B>(
+        &mut self,
+        target: Spanned<CompileValue>,
+        pos_end: Pos,
+        branches: Vec<(Spanned<EvaluatedMatchPattern>, &'a B)>,
+    ) -> DiagResult<(Option<BranchDeclare<CompileValue>>, &'a B)> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         // compile-time match, just check each pattern in sequence with early exit
-        for (branch_pattern, branch_block) in branches {
-            let matched = match branch_pattern.inner {
+        for (pattern, branch) in branches {
+            let matched = match pattern.inner {
                 EvaluatedMatchPattern::Wildcard => CompileBranchMatched::Yes(None),
                 EvaluatedMatchPattern::WildcardVal(id) => CompileBranchMatched::Yes(Some(BranchDeclare {
+                    pattern_span: pattern.span,
                     id,
                     value: target.inner.clone(),
                 })),
@@ -853,11 +935,12 @@ impl CompileItemContext<'_, '_> {
                         let declare = match (payload_id, &target.payload) {
                             (None, None) => None,
                             (Some(payload_id), Some(target_payload)) => Some(BranchDeclare {
+                                pattern_span: pattern.span,
                                 id: payload_id,
                                 value: target_payload.as_ref().clone(),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
-                                return Err(diags.report_error_internal(branch_pattern.span, "payload mismatch"));
+                                return Err(diags.report_error_internal(pattern.span, "payload mismatch"));
                             }
                         };
 
@@ -870,29 +953,7 @@ impl CompileItemContext<'_, '_> {
 
             match matched {
                 CompileBranchMatched::Yes(declare) => {
-                    // declare any pattern variables
-                    let mut scope_branch = Scope::new_child(branch_pattern.span.join(branch_block.span), scope_parent);
-                    if let Some(BranchDeclare {
-                        id: declare_id,
-                        value: declare_value,
-                    }) = declare
-                    {
-                        let var = flow.var_new_immutable_init(
-                            self.refs,
-                            declare_id.span(),
-                            VariableId::Id(declare_id),
-                            branch_pattern.span,
-                            Ok(Value::from(declare_value)),
-                        )?;
-                        scope_branch.maybe_declare(
-                            diags,
-                            Ok(declare_id.spanned_str(self.refs.fixed.source)),
-                            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
-                        );
-                    }
-
-                    // evaluate the branch and exit
-                    return self.elaborate_block(&scope_branch, flow, stack, branch_block);
+                    return Ok((declare, branch));
                 }
                 CompileBranchMatched::No => {
                     // continue to next branch
@@ -917,7 +978,7 @@ impl CompileItemContext<'_, '_> {
         scope_parent: &Scope,
         flow_parent: &mut FlowHardware,
         stack: &mut ExitStack,
-        span_match: Span,
+        span_keyword: Span,
         target: Spanned<HardwareValueWithImplications>,
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
@@ -1011,8 +1072,9 @@ impl CompileItemContext<'_, '_> {
                     HardwareBranchMatched {
                         cond: None,
                         declare: Some(BranchDeclare {
+                            pattern_span: branch_pattern.span,
                             id,
-                            value: target_value.clone(),
+                            value: Value::Hardware(target_value.clone()),
                         }),
                         implications: vec![],
                     }
@@ -1182,8 +1244,9 @@ impl CompileItemContext<'_, '_> {
                         let declare = match (payload_id, payload_hw) {
                             (None, None) => None,
                             (Some(payload_id), Some(payload_value)) => Some(BranchDeclare {
+                                pattern_span: branch_pattern.span,
                                 id: payload_id,
-                                value: HardwareValueWithImplications::simple(payload_value),
+                                value: Value::Hardware(HardwareValueWithImplications::simple(payload_value)),
                             }),
                             (None, Some(_)) | (Some(_), None) => {
                                 return Err(diags.report_error_internal(branch_pattern.span, "payload mismatch"));
@@ -1226,21 +1289,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             if let Some(declare) = declare {
-                let BranchDeclare { id, value } = declare;
-                if let MaybeIdentifier::Identifier(id) = id {
-                    let var = branch_flow.as_flow().var_new_immutable_init(
-                        self.refs,
-                        id.span(),
-                        VariableId::Id(MaybeIdentifier::Identifier(id)),
-                        id.span(),
-                        Ok(Value::Hardware(value)),
-                    )?;
-                    branch_scope.declare(
-                        diags,
-                        Ok(id.spanned_str(self.refs.fixed.source)),
-                        Ok(ScopedEntry::Named(NamedValue::Variable(var))),
-                    );
-                }
+                declare.declare(self.refs, &mut branch_scope, &mut branch_flow.as_flow())?;
             }
 
             let branch_end = self.elaborate_block(&branch_scope, &mut branch_flow.as_flow(), stack, branch_block)?;
@@ -1279,7 +1328,7 @@ impl CompileItemContext<'_, '_> {
         }
 
         // join things
-        let all_blocks = flow_parent.join_child_branches(self.refs, &mut self.large, span_match, all_contents)?;
+        let all_blocks = flow_parent.join_child_branches(self.refs, &mut self.large, span_keyword, all_contents)?;
         let joined_end = join_block_ends_branches(&all_ends);
 
         // build the if statement
@@ -1291,13 +1340,13 @@ impl CompileItemContext<'_, '_> {
                 Some(cond) => Some(IrStatement::If(IrIfStatement {
                     condition: cond,
                     then_block: block,
-                    else_block: joined_statement.map(|curr| IrBlock::new_single(span_match, curr)),
+                    else_block: joined_statement.map(|curr| IrBlock::new_single(span_keyword, curr)),
                 })),
             };
         }
 
         if let Some(curr) = joined_statement {
-            flow_parent.push_ir_statement(Spanned::new(span_match, curr));
+            flow_parent.push_ir_statement(Spanned::new(span_keyword, curr));
         }
 
         Ok(joined_end)
@@ -1355,7 +1404,72 @@ impl CompileItemContext<'_, '_> {
         )
     }
 
-    // TODO code reuse between this and module
+    fn elaborate_for_statement_header<B>(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        stmt: &ForStatement<B>,
+    ) -> DiagResult<ElaboratedForHeader> {
+        let &ForStatement {
+            span_keyword: _,
+            index: _,
+            index_ty,
+            iter,
+            body: _,
+        } = stmt;
+
+        let index_ty = index_ty
+            .map(|index_ty| self.eval_expression_as_ty(scope, flow, index_ty))
+            .transpose()?;
+        let iter = self.eval_expression_as_for_iterator(scope, flow, iter)?;
+
+        Ok(ElaboratedForHeader { index_ty, iter })
+    }
+
+    fn elaborate_for_statement_iteration<B: HasSpan>(
+        &mut self,
+        scope: &mut Scope,
+        flow: &mut impl Flow,
+        stmt: &ForStatement<B>,
+        index_ty: &Option<Spanned<Type>>,
+        index_value: <ForIterator as Iterator>::Item,
+    ) -> DiagResult {
+        let refs = self.refs;
+        let diags = self.refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
+
+        // convert index to actual value
+        let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
+
+        // typecheck index (if specified)
+        if let Some(index_ty) = &index_ty {
+            let curr_spanned = Spanned {
+                span: stmt.iter.span,
+                inner: &index_value,
+            };
+            let reason = TypeContainsReason::ForIndexType(index_ty.span);
+            check_type_contains_value(diags, elab, reason, &index_ty.inner, curr_spanned)?;
+        }
+
+        // store index in variable
+        let var = flow.var_new_immutable_init(
+            refs,
+            stmt.index.span(),
+            VariableId::Id(stmt.index),
+            stmt.span_keyword,
+            Ok(ValueWithImplications::simple(index_value)),
+        )?;
+
+        // declare variable in scope
+        scope.maybe_declare(
+            diags,
+            Ok(stmt.index.spanned_str(self.refs.fixed.source)),
+            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
+        );
+
+        Ok(())
+    }
+
     fn elaborate_for_statement(
         &mut self,
         scope_parent: &Scope,
@@ -1363,63 +1477,20 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&ForStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let ElaboratedForHeader { index_ty, iter } =
+            self.elaborate_for_statement_header(scope_parent, flow, &stmt.inner)?;
 
-        let &ForStatement {
-            span_keyword,
-            index: index_id,
-            index_ty,
+        self.elaborate_loop(
+            flow,
+            stack,
+            stmt.inner.span_keyword,
             iter,
-            ref body,
-        } = stmt.inner;
-
-        // header
-        let index_ty = index_ty
-            .map(|index_ty| self.eval_expression_as_ty(scope_parent, flow, index_ty))
-            .transpose();
-        let iter = self.eval_expression_as_for_iterator(scope_parent, flow, iter);
-
-        let index_ty = index_ty?;
-        let iter = iter?;
-
-        // create variable and scope for the index
-        let index_var = flow.var_new(VariableInfo {
-            span_decl: index_id.span(),
-            id: VariableId::Id(index_id),
-            mutable: false,
-            ty: None,
-            join_ir_variable: None,
-        });
-        let mut scope_index = Scope::new_child(stmt.span, scope_parent);
-        scope_index.maybe_declare(
-            diags,
-            Ok(index_id.spanned_str(self.refs.fixed.source)),
-            Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
-        );
-
-        self.elaborate_loop(flow, stack, span_keyword, iter, |slf, flow, stack, index_value| {
-            let index_value = index_value.map_hardware(|h| h.map_expression(|h| slf.large.push_expr(h)));
-
-            // typecheck index (if specified)
-            if let Some(index_ty) = &index_ty {
-                let curr_spanned = Spanned {
-                    span: stmt.inner.iter.span,
-                    inner: &index_value,
-                };
-                let reason = TypeContainsReason::ForIndexType(index_ty.span);
-                check_type_contains_value(diags, elab, reason, &index_ty.inner, curr_spanned)?;
-            }
-
-            // set index and elaborate body
-            flow.var_set(
-                slf.refs,
-                index_var,
-                span_keyword,
-                Ok(ValueWithImplications::simple(index_value)),
-            )?;
-            slf.elaborate_block(&scope_index, flow, stack, body)
-        })
+            |slf, flow, stack, index_value| {
+                let mut scope_body = Scope::new_child(stmt.span, scope_parent);
+                slf.elaborate_for_statement_iteration(&mut scope_body, flow, &stmt.inner, &index_ty, index_value)?;
+                slf.elaborate_block(&scope_body, flow, stack, &stmt.inner.body)
+            },
+        )
     }
 
     fn elaborate_loop<F: Flow, T>(
@@ -1626,14 +1697,42 @@ impl CompileItemContext<'_, '_> {
                         }
                     }
                 }
-                ExtraListItem::If(if_stmt) => {
-                    let block = self.compile_if_statement_choose_block(scope.as_scope(), flow, if_stmt)?;
+                ExtraListItem::If(stmt) => {
+                    let block = self.compile_if_statement_choose_block(scope.as_scope(), flow, stmt)?;
                     if let Some(block) = block {
                         self.elaborate_extra_list_block(scope, flow, block, f)?;
                     }
                 }
-                ExtraListItem::Match(_) => todo!(),
-                ExtraListItem::For(_) => todo!(),
+                ExtraListItem::Match(stmt) => {
+                    let (declare, block) = self.compile_match_statement_choose_branch(scope.as_scope(), flow, stmt)?;
+
+                    let mut scope_inner = ExtraScope {
+                        scope: &mut Scope::new_child(stmt.span(), scope.scope),
+                        root_declarations: scope.root_declarations,
+                    };
+                    if let Some(declare) = declare {
+                        declare.declare(self.refs, scope_inner.as_scope(), flow)?;
+                    }
+
+                    self.elaborate_extra_list_block(&mut scope_inner, flow, block, f)?;
+                }
+                ExtraListItem::For(stmt) => {
+                    let ElaboratedForHeader { index_ty, iter } =
+                        self.elaborate_for_statement_header(scope.as_scope(), flow, stmt)?;
+
+                    for index_value in iter {
+                        self.refs.check_should_stop(stmt.span_keyword)?;
+
+                        let mut scope_iter = Scope::new_child(stmt.span(), scope.scope);
+                        self.elaborate_for_statement_iteration(&mut scope_iter, flow, stmt, &index_ty, index_value)?;
+
+                        let mut scope_iter_extra = ExtraScope {
+                            scope: &mut scope_iter,
+                            root_declarations: scope.root_declarations,
+                        };
+                        self.elaborate_extra_list_block(&mut scope_iter_extra, flow, &stmt.body, f)?;
+                    }
+                }
             }
         }
         Ok(())

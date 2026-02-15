@@ -225,15 +225,15 @@ def test_extra_item_kind_if():
 
 def test_extra_item_kind_for():
     src = """
-    fn f(for (i in 0..=1) { x: int }) -> int { return x; }
+    fn f(for (i in 0..1) { x: int }) -> int { return x; }
     """
     f = compile_custom(src).resolve("top.f")
-    assert f(x=4) == 0
+    assert f(x=4) == 4
 
 
 def test_extra_item_kind_match():
     src = """
-    fn f(match (0) { 0 => { x: int }) -> int { return x; }
+    fn f(match (0) { 0 => { x: int } }) -> int { return x; }
     """
     f = compile_custom(src).resolve("top.f")
-    assert f(x=4) == 0
+    assert f(x=4) == 4
