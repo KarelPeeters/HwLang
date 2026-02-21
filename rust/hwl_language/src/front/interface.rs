@@ -3,7 +3,6 @@ use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{FlowCompile, FlowRoot};
 use crate::front::function::CapturedScope;
 use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
-use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
 use crate::front::value::CompileValue;
 use crate::syntax::ast::{
@@ -110,7 +109,7 @@ impl CompileRefs<'_, '_> {
 
         // elaborate extra list, collect port types and view directions immediately,
         //   then later actually whether the views ports match the actual ports
-        let mut scope_body = Scope::new_child(span_body, &scope_params);
+        let mut scope_body = scope_params.new_child(span_body);
         let mut port_map = IndexMap::new();
         let mut views_partial: Vec<InterfaceViewPartialElab> = vec![];
 

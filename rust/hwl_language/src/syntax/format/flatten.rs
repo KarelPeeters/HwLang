@@ -164,8 +164,7 @@ impl Context<'_> {
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
         let ExtraList { span: _, items } = list;
-        let node = self.fmt_extra_list_items(surround, force_wrap, items, f);
-        node
+        self.fmt_extra_list_items(surround, force_wrap, items, f)
     }
 
     fn fmt_extra_list_block<T>(

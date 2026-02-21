@@ -87,7 +87,7 @@ impl FunctionBody {
     }
 }
 
-// TODO maybe move this into the variables module
+// TODO move this into the scope module
 // TODO avoid repeated hashing of this potentially large type
 // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
 //   We only need to check for captures values that could actually be used
@@ -509,7 +509,7 @@ impl CompileItemContext<'_, '_> {
         let scope_captured = scope_captured.to_scope(self.refs, flow, span_scope)?;
 
         // map params into scope
-        let mut scope = Scope::new_child(span_scope, &scope_captured);
+        let mut scope = scope_captured.new_child(span_scope);
         let mut param_values = vec![];
 
         let compile = body.inner.params_must_be_compile();
@@ -889,13 +889,13 @@ impl CapturedScope {
         let mut curr = scope;
         let root_file = loop {
             match curr.parent() {
-                ScopeParent::Some(parent) => {
+                ScopeParent::Normal(parent) => {
                     // this is a non-root scope, capture it
-                    for (id, value) in curr.immediate_entries() {
+                    curr.for_each_immediate_entry(|id, value| {
                         let child_values_entry = match captured_values.entry(id.to_owned()) {
                             HashMapEntry::Occupied(_) => {
                                 // shadowed by child scope
-                                continue;
+                                return;
                             }
                             HashMapEntry::Vacant(child_values_entry) => child_values_entry,
                         };
@@ -924,13 +924,13 @@ impl CapturedScope {
                         };
 
                         child_values_entry.insert(captured);
-                    }
+                    });
 
                     curr = parent;
                 }
-                ScopeParent::None(file) => {
+                ScopeParent::File(parent) => {
                     // this is the top file scope, no need to capture this
-                    break file;
+                    break parent.file();
                 }
             }
         };
@@ -957,14 +957,14 @@ impl CapturedScope {
             captured_values,
         } = self;
 
-        let parent_file = refs
+        let file_scope = refs
             .shared
             .file_scopes
             .get(root_file)
             .unwrap()
             .as_ref_ok()
             .expect("file scope should be valid since the capturing succeeded");
-        let mut scope = Scope::new_child(scope_span, parent_file);
+        let mut scope = file_scope.new_child(scope_span);
 
         // TODO we need a span, even for errors
         for (id, value) in captured_values {

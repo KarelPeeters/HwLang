@@ -3,7 +3,7 @@ use crate::front::domain::DomainSignal;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
-use crate::front::scope::{DeclaredValueSingle, Scope, ScopedEntry};
+use crate::front::scope::{DeclaredValueSingle, FileScope, ScopedEntry};
 use crate::front::signal::Signal;
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInterface,
@@ -258,7 +258,7 @@ impl PartialIrDatabase<IrModuleInfo> {
     }
 }
 
-pub type FileScopes = IndexMap<FileId, DiagResult<Scope<'static>>>;
+pub type FileScopes = IndexMap<FileId, DiagResult<FileScope>>;
 
 #[derive(Copy, Clone)]
 pub struct CompileRefs<'a, 's> {
@@ -444,7 +444,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     let mut file_scopes: FileScopes = IndexMap::new();
     for file in hierarchy.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
-            let mut scope = Scope::new_root(ast.span, file);
+            let mut scope = FileScope::new(ast.span);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
                     scope.maybe_declare(
@@ -532,7 +532,8 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
 
     // pass 3: add prelude items to all files scopes
-    // TODO this silently fails if there is no std library, is that okay?
+    // TODO this silently does nothing if there is no std library, is that okay?
+    // TODO this causes errors if there are duplicate identifiers
     let mut prelude_imported_items: Vec<(String, DeclaredValueSingle)> = vec![];
     for std_file in ["types", "util", "math"] {
         let file = hierarchy
@@ -545,9 +546,9 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         if let Some(file) = file {
             let scope = &file_scopes.get(&file).unwrap();
             if let Ok(scope) = scope {
-                for (name, value) in scope.immediate_entries() {
+                scope.for_each_immediate_entry(|name, value| {
                     prelude_imported_items.push((name.to_owned(), value));
-                }
+                });
             }
         }
     }
@@ -625,7 +626,7 @@ fn find_top_module(
             )
         })?;
     let top_file_scope = shared.file_scopes.get(&top_file).unwrap().as_ref_ok()?;
-    let top_entry = top_file_scope.find_immediate_str(diags, "top")?;
+    let top_entry = top_file_scope.find(diags, Spanned::new(manifest_span, "top"))?;
 
     match top_entry.value {
         ScopedEntry::Item(item) => match &fixed.parsed[item] {
@@ -724,7 +725,7 @@ impl CompileShared {
         }
     }
 
-    pub fn file_scope(&self, file: FileId) -> DiagResult<&Scope<'static>> {
+    pub fn file_scope(&self, file: FileId) -> DiagResult<&FileScope> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 

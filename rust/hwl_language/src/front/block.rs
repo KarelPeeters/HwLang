@@ -10,7 +10,7 @@ use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableI
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::{ElaboratedEnum, ElaborationArenas, EvaluatedDeclaration, HardwareChecked};
+use crate::front::item::{ElaboratedEnum, ElaborationArenas, HardwareChecked};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
@@ -27,13 +27,11 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::throw;
-use crate::util::ResultExt;
 use crate::util::big_int::BigInt;
 use crate::util::data::VecExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use itertools::{Either, Itertools, enumerate, zip_eq};
-use std::borrow::Borrow;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -305,34 +303,28 @@ pub enum EvaluatedMatchPattern {
     },
 }
 
-pub struct ExtraScope<'p, 's, 'r> {
-    scope: &'s mut Scope<'p>,
-    root_declarations: &'r mut Vec<ExtraRootDeclaration>,
+pub struct ExtraScope<'a, 'b, 'c, 'd> {
+    root_scope: Option<&'a Scope<'b>>,
+    scope: &'c mut Scope<'d>,
 }
 
-struct ExtraRootDeclaration {
-    id: DiagResult<Spanned<String>>,
-    entry: DiagResult<ScopedEntry>,
-}
-
-impl<'p> ExtraScope<'p, '_, '_> {
-    pub fn as_scope(&mut self) -> &mut Scope<'p> {
+impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
+    pub fn as_scope(&mut self) -> &mut Scope<'d> {
         self.scope
     }
 
-    pub fn declare_root(
-        &mut self,
-        diags: &Diagnostics,
-        id: DiagResult<Spanned<impl Borrow<str>>>,
-        entry: DiagResult<ScopedEntry>,
-    ) {
-        let id_owned = id
-            .as_ref_ok()
-            .map(|id| id.as_ref().map_inner(|s| s.borrow().to_owned()));
-        self.root_declarations
-            .push(ExtraRootDeclaration { id: id_owned, entry });
+    pub fn new_child<'e, 'f>(&self, child_scope: &'e mut Scope<'f>) -> ExtraScope<'_, '_, 'e, 'f> {
+        ExtraScope {
+            root_scope: Some(self.root_scope.unwrap_or(self.scope)),
+            scope: child_scope,
+        }
+    }
 
+    pub fn declare_root(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, entry: DiagResult<ScopedEntry>) {
         self.scope.declare(diags, id, entry);
+        if let Some(root_scope) = self.root_scope {
+            root_scope.declare_non_mut(diags, id, entry);
+        }
     }
 }
 
@@ -369,7 +361,7 @@ impl CompileItemContext<'_, '_> {
         let &Block { span, ref statements } = block;
 
         // Create a new scope, necessary to ensure declarations don't leak into the parent scope.
-        let mut scope = Scope::new_child(span, scope_parent);
+        let mut scope = scope_parent.new_child(span);
 
         // Create a new scoped flow, not strictly necessary for correctness,
         //   but allows dropping variables that go out of scope immediately.
@@ -553,7 +545,7 @@ impl CompileItemContext<'_, '_> {
             }
             BlockStatementKind::Match(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
-                self.elaborate_match_statement(scope, flow, stack, &stmt.inner)?
+                self.elaborate_match_statement(scope, flow, stack, stmt.inner)?
             }
             BlockStatementKind::While(stmt) => {
                 let stmt = Spanned::new(stmt_span, stmt);
@@ -883,7 +875,7 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<BlockEnd> {
         let (declare, block) = self.elaborate_match_statement_compile_choose_branch(target, pos_end, branches)?;
 
-        let mut scope_branch = Scope::new_child(block.span(), scope_parent);
+        let mut scope_branch = scope_parent.new_child(block.span);
         if let Some(declare) = declare {
             declare.declare(self.refs, &mut scope_branch, flow)?;
         }
@@ -1282,7 +1274,7 @@ impl CompileItemContext<'_, '_> {
             } = matched;
 
             let branch_span = branch_pattern.span.join(branch_block.span);
-            let mut branch_scope = Scope::new_child(branch_span, scope_parent);
+            let mut branch_scope = scope_parent.new_child(branch_span);
             let mut branch_flow = match flow_parent.new_child_branch(self, branch_span, target_domain, implications)? {
                 Ok(branch_flow) => branch_flow,
                 Err(ImplicationContradiction) => continue,
@@ -1478,7 +1470,7 @@ impl CompileItemContext<'_, '_> {
         stmt: Spanned<&ForStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
         let ElaboratedForHeader { index_ty, iter } =
-            self.elaborate_for_statement_header(scope_parent, flow, &stmt.inner)?;
+            self.elaborate_for_statement_header(scope_parent, flow, stmt.inner)?;
 
         self.elaborate_loop(
             flow,
@@ -1486,8 +1478,8 @@ impl CompileItemContext<'_, '_> {
             stmt.inner.span_keyword,
             iter,
             |slf, flow, stack, index_value| {
-                let mut scope_body = Scope::new_child(stmt.span, scope_parent);
-                slf.elaborate_for_statement_iteration(&mut scope_body, flow, &stmt.inner, &index_ty, index_value)?;
+                let mut scope_body = scope_parent.new_child(stmt.span);
+                slf.elaborate_for_statement_iteration(&mut scope_body, flow, stmt.inner, &index_ty, index_value)?;
                 slf.elaborate_block(&scope_body, flow, stack, &stmt.inner.body)
             },
         )
@@ -1625,24 +1617,12 @@ impl CompileItemContext<'_, '_> {
         list: &'a ExtraList<T>,
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
-        // TODO simplify by declaring things in the extra list root scope even while child scopes exist, through ?Cell
-        let &ExtraList { span, ref items } = list;
-
-        let mut scope_inner = Scope::new_child(span, scope_parent);
-        let mut root_declarations = vec![];
-
+        let ExtraList { span: _, items } = list;
         let mut scope_extra = ExtraScope {
-            scope: &mut scope_inner,
-            root_declarations: &mut root_declarations,
+            root_scope: None,
+            scope: scope_parent,
         };
-        self.elaborate_extra_list_items(&mut scope_extra, flow, true, items, f)?;
-
-        for entry in root_declarations {
-            let ExtraRootDeclaration { id, entry } = entry;
-            scope_parent.declare(self.refs.diags, id, entry);
-        }
-
-        Ok(())
+        self.elaborate_extra_list_items(&mut scope_extra, flow, items, f)
     }
 
     pub fn elaborate_extra_list_block<'a, F: Flow, T>(
@@ -1654,48 +1634,25 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult {
         let &ExtraListBlock { span, ref items } = block;
 
-        let mut scope = ExtraScope {
-            scope: &mut Scope::new_child(span, scope_parent.scope),
-            root_declarations: scope_parent.root_declarations,
-        };
-
-        self.elaborate_extra_list_items(&mut scope, flow, false, items, f)
+        let mut scope_child = scope_parent.scope.new_child(span);
+        let mut scope_child = scope_parent.new_child(&mut scope_child);
+        self.elaborate_extra_list_items(&mut scope_child, flow, items, f)
     }
 
     fn elaborate_extra_list_items<'a, F: Flow, T: 'a>(
         &mut self,
         scope: &mut ExtraScope,
         flow: &mut F,
-        is_root: bool,
         items: &'a [ExtraListItem<T>],
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
+        let refs = self.refs;
+
         for item in items {
             match item {
                 ExtraListItem::Leaf(leaf) => f(self, scope, flow, leaf)?,
                 ExtraListItem::Declaration(decl) => {
-                    let eval = self.eval_declaration(scope.as_scope(), flow, decl)?;
-
-                    if let Some(eval) = eval {
-                        let EvaluatedDeclaration { span: _, id, value: _ } = eval;
-
-                        let id_str = id.spanned_str(self.refs.fixed.source);
-                        let entry = eval.value_into_entry(self.refs, flow);
-
-                        match id_str {
-                            MaybeIdentifier::Dummy { .. } => {}
-                            MaybeIdentifier::Identifier(id_str) => {
-                                if is_root {
-                                    scope.root_declarations.push(ExtraRootDeclaration {
-                                        id: Ok(id_str.map_inner(str::to_owned)),
-                                        entry,
-                                    })
-                                }
-
-                                scope.as_scope().declare(self.refs.diags, Ok(id_str), entry);
-                            }
-                        }
-                    }
+                    self.eval_and_declare_declaration(scope.as_scope(), flow, decl)?;
                 }
                 ExtraListItem::If(stmt) => {
                     let block = self.compile_if_statement_choose_block(scope.as_scope(), flow, stmt)?;
@@ -1706,31 +1663,34 @@ impl CompileItemContext<'_, '_> {
                 ExtraListItem::Match(stmt) => {
                     let (declare, block) = self.compile_match_statement_choose_branch(scope.as_scope(), flow, stmt)?;
 
-                    let mut scope_inner = ExtraScope {
-                        scope: &mut Scope::new_child(stmt.span(), scope.scope),
-                        root_declarations: scope.root_declarations,
-                    };
+                    let mut scope_child = scope.scope.new_child(block.span);
+                    let mut scope_child = scope.new_child(&mut scope_child);
+
                     if let Some(declare) = declare {
-                        declare.declare(self.refs, scope_inner.as_scope(), flow)?;
+                        declare.declare(refs, scope_child.as_scope(), flow)?;
                     }
 
-                    self.elaborate_extra_list_block(&mut scope_inner, flow, block, f)?;
+                    self.elaborate_extra_list_block(&mut scope_child, flow, block, f)?;
                 }
                 ExtraListItem::For(stmt) => {
                     let ElaboratedForHeader { index_ty, iter } =
                         self.elaborate_for_statement_header(scope.as_scope(), flow, stmt)?;
 
                     for index_value in iter {
-                        self.refs.check_should_stop(stmt.span_keyword)?;
+                        refs.check_should_stop(stmt.span_keyword)?;
 
-                        let mut scope_iter = Scope::new_child(stmt.span(), scope.scope);
-                        self.elaborate_for_statement_iteration(&mut scope_iter, flow, stmt, &index_ty, index_value)?;
+                        let mut scope_iter = scope.scope.new_child(stmt.span());
+                        let mut scope_iter = scope.new_child(&mut scope_iter);
 
-                        let mut scope_iter_extra = ExtraScope {
-                            scope: &mut scope_iter,
-                            root_declarations: scope.root_declarations,
-                        };
-                        self.elaborate_extra_list_block(&mut scope_iter_extra, flow, &stmt.body, f)?;
+                        self.elaborate_for_statement_iteration(
+                            scope_iter.as_scope(),
+                            flow,
+                            stmt,
+                            &index_ty,
+                            index_value,
+                        )?;
+
+                        self.elaborate_extra_list_block(&mut scope_iter, flow, &stmt.body, f)?;
                     }
                 }
             }

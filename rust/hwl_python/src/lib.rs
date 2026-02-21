@@ -406,6 +406,7 @@ impl Compile {
         let source_ref = parsed_ref.source.borrow(py);
         let source = &source_ref.source;
         let hierarchy = &source_ref.hierarchy;
+        let dummy_span = source_ref.dummy_span;
 
         // find directory, file and scope
         if path.is_empty() {
@@ -431,7 +432,12 @@ impl Compile {
 
         // look up the item
         let diags = Diagnostics::new();
-        let found = map_diag_error(py, &diags, source, scope.find_immediate_str(&diags, item_name))?;
+        let found = map_diag_error(
+            py,
+            &diags,
+            source,
+            scope.find(&diags, Spanned::new(dummy_span, item_name)),
+        )?;
         let item = match found.value {
             ScopedEntry::Item(ast_ref_item) => ast_ref_item,
             ScopedEntry::Named(_) => {

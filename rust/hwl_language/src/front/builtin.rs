@@ -33,7 +33,7 @@ impl CompileItemContext<'_, '_> {
         const ARG_DIAG_TITLE: &str = "typeof only takes a single unnamed argument";
 
         let mut arg_expr = None;
-        let mut scope_args = Scope::new_child(args.span(), scope);
+        let mut scope_args = scope.new_child(args.span());
         self.elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
             let &Arg { span: _, name, value } = arg;
 

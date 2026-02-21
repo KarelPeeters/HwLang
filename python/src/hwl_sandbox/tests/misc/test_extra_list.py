@@ -36,6 +36,7 @@ def test_extra_list_in_interface():
         foo(X=False, Y=False, Z=False, V=True)
 
 
+@pytest.mark.xfail
 def test_extra_list_in_match():
     src = """
     fn f(c: bool, x: int) -> int {

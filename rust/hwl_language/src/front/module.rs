@@ -15,7 +15,7 @@ use crate::front::interface::ElaboratedInterfacePortInfo;
 use crate::front::item::{
     ElaboratedInterface, ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration,
 };
-use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopedEntry};
+use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterfaceInfo, Register, RegisterInfo, Signal, Wire, WireInfo, WireInfoInInterface,
     WireInfoSingle, WireInterfaceInfo, WireOrPort,
@@ -195,7 +195,7 @@ impl CompileRefs<'_, '_> {
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
 
         let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
-        let scope_ports = Scope::restore_child_from_content(def_span, &scope_params, scope_ports);
+        let scope_ports = Scope::restore_from_content(ScopeParent::Normal(&scope_params), scope_ports);
 
         // elaborate the body
         self.elaborate_module_body_impl(ctx, &flow, &scope_ports, id, debug_info_params, ports_ir, body)
@@ -213,8 +213,7 @@ impl CompileRefs<'_, '_> {
         let source = self.fixed.source;
         let elab = &self.shared.elaboration_arenas;
 
-        let mut scope_ports_root =
-            Scope::new_child(ports.span.join(Span::empty_at(module_def_span.end())), scope_params);
+        let mut scope_ports_root = scope_params.new_child(ports.span.join(Span::empty_at(module_def_span.end())));
 
         let mut connectors: ArenaConnectors = Arena::new();
         let mut port_to_single: IndexMap<Port, ConnectorSingle> = IndexMap::new();
@@ -795,7 +794,6 @@ pub struct ExtraRegisterInit {
 }
 
 pub struct ModuleTodo<'a> {
-    span: Span,
     scope: ScopeContent,
     flow: FlowCompileContent,
     children: Vec<ModuleChildTodo<'a>>,
@@ -828,7 +826,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
         let Block { span: _, statements } = block_outer;
 
-        let mut scope = Scope::new_child(block_outer.span, scope_outer);
+        let mut scope = scope_outer.new_child(block_outer.span);
         let mut flow = flow_outer.new_child_isolated();
 
         let mut todo_children = vec![];
@@ -922,6 +920,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         Visibility::Private => {}
                     }
 
+                    let id = id
+                        .as_ref_ok()
+                        .map(|id| id.as_ref().map_id(|id| id.as_ref().map_inner(ArcOrRef::as_ref)));
                     scope.maybe_declare(diags, id, entry);
                 }
                 ModuleStatementKind::WireDeclaration(decl) => {
@@ -950,6 +951,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
                         Visibility::Private => {}
                     }
 
+                    let id = id
+                        .as_ref_ok()
+                        .map(|id| id.as_ref().map_id(|id| id.as_ref().map_inner(ArcOrRef::as_ref)));
                     scope.maybe_declare(diags, id, entry);
                 }
                 ModuleStatementKind::RegOutPortMarker(decl) => {
@@ -1004,7 +1008,6 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         }
 
         let todo = ModuleTodo {
-            span: block_outer.span,
             scope: scope.into_content(),
             flow: flow.into_content(),
             children: todo_children,
@@ -1013,14 +1016,9 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
     }
 
     fn pass_1_elaborate_children(&mut self, scope_parent: &Scope, flow_parent: &FlowCompile, todo: ModuleTodo) {
-        let ModuleTodo {
-            span: span_block,
-            scope,
-            flow,
-            children,
-        } = todo;
+        let ModuleTodo { scope, flow, children } = todo;
 
-        let scope = Scope::restore_child_from_content(span_block, scope_parent, scope);
+        let scope = Scope::restore_from_content(ScopeParent::Normal(scope_parent), scope);
         let mut flow = FlowCompile::restore_child_isolated(flow_parent, flow);
 
         for child in children {
@@ -1264,7 +1262,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         } = for_stmt.inner;
         let iter_span = iter.span;
 
-        let mut scope_for = Scope::new_child(for_stmt.span, scope_parent);
+        let mut scope_for = scope_parent.new_child(for_stmt.span);
         let mut flow_for = flow_parent.new_child_isolated();
 
         // header
@@ -1297,7 +1295,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
             }
 
             // elaborate the body
-            let mut scope_body = Scope::new_child(index.span().join(body.span), &scope_for);
+            let mut scope_body = scope_for.new_child(index.span().join(body.span));
             let mut flow_body = flow_for.new_child_isolated();
 
             let index_var = flow_body.var_new_immutable_init(
@@ -1331,7 +1329,6 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
 
             if !todo_children_inner.is_empty() {
                 todo_children.push(ModuleChildTodo::Nested(ModuleTodo {
-                    span: body.span,
                     scope: scope_body,
                     flow: flow_body,
                     children: todo_children_inner,
@@ -1340,7 +1337,6 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         }
 
         let todo = ModuleTodo {
-            span: for_stmt.span,
             scope: scope_for.into_content(),
             flow: flow_for.into_content(),
             children: todo_children,
@@ -1405,7 +1401,7 @@ impl<'a> BodyElaborationContext<'_, 'a, '_> {
         let mut port_connections_eval = vec![];
         {
             // declarations are not allowed here, so no need to worry about expression scopes
-            let mut scope_connections = Scope::new_child(port_connections.span, scope);
+            let mut scope_connections = scope.new_child(port_connections.span);
             ctx.elaborate_extra_list(
                 &mut scope_connections,
                 flow_parent,
@@ -2649,8 +2645,10 @@ fn process_todo_and_decls<'a>(
     }
 
     for (id, entry) in &decls {
-        let id_ref = id.as_ref_ok().map(|id| id.as_ref().map_id(|id| id.as_ref()));
-        scope.maybe_declare(diags, id_ref, *entry);
+        let id = id
+            .as_ref_ok()
+            .map(|id| id.as_ref().map_id(|id| id.as_ref().map_inner(ArcOrRef::as_ref)));
+        scope.maybe_declare(diags, id, *entry);
     }
     decls_children.extend(decls);
 }

@@ -220,7 +220,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     expression,
                 } = block_expr;
 
-                let mut scope_inner = Scope::new_child(expr.span, scope);
+                let mut scope_inner = scope.new_child(expr.span);
 
                 let mut stack = ExitStack::new_in_block_expression(expr.span);
                 let end = self.elaborate_block_statements(&mut scope_inner, flow, &mut stack, statements)?;
@@ -509,7 +509,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     )?;
 
                     let scope_span = body.span().join(index.span());
-                    let mut scope_body = Scope::new_child(scope_span, scope);
+                    let mut scope_body = scope.new_child(scope_span);
                     scope_body.maybe_declare(
                         diags,
                         Ok(index.spanned_str(source)),
@@ -751,7 +751,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // eval args
                 let mut args_eval = vec![];
-                let mut scope_args = Scope::new_child(args.span(), scope);
+                let mut scope_args = scope.new_child(args.span());
                 let args_result = self.elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
                     let &Arg {
                         span: arg_span,

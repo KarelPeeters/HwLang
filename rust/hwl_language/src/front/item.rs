@@ -305,10 +305,11 @@ impl EvaluatedDeclaration {
 impl CompileItemContext<'_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
-        let file_scope = self.refs.shared.file_scope(item.file())?;
 
         let item_ast = &self.refs.fixed.parsed[item];
         self.refs.check_should_stop(item_ast.info().span_short)?;
+
+        let file_scope = self.refs.shared.file_scope(item.file())?.as_scope();
 
         match item_ast {
             Item::Import(item_inner) => {
@@ -319,7 +320,7 @@ impl CompileItemContext<'_, '_> {
                 let flow_root = FlowRoot::new(diags);
                 let mut flow = FlowCompile::new_root(&flow_root, decl.span, "item declaration");
 
-                let eval = self.eval_declaration(file_scope, &mut flow, &decl.inner)?;
+                let eval = self.eval_declaration(&file_scope, &mut flow, &decl.inner)?;
 
                 let value = match eval {
                     None => CompileValue::unit(),
@@ -342,10 +343,9 @@ impl CompileItemContext<'_, '_> {
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::ModuleInternal(unique, item);
 
-                let scope = self.refs.shared.file_scope(item.file())?;
                 let flow_root = FlowRoot::new(diags);
                 let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
-                self.eval_maybe_generic_item(id.span(), body_span, scope, &mut flow, params, body)
+                self.eval_maybe_generic_item(id.span(), body_span, &file_scope, &mut flow, params, body)
             }
             Item::ModuleExternal(module) => {
                 let &ItemDefModuleExternal {
@@ -366,10 +366,9 @@ impl CompileItemContext<'_, '_> {
                     .next_unique_declaration(MaybeIdentifier::Identifier(id));
                 let body = FunctionItemBody::ModuleExternal(unique, item);
 
-                let scope = self.refs.shared.file_scope(item.file())?;
                 let flow_root = FlowRoot::new(diags);
                 let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
-                self.eval_maybe_generic_item(id.span, body_span, scope, &mut flow, params, body)
+                self.eval_maybe_generic_item(id.span, body_span, &file_scope, &mut flow, params, body)
             }
 
             Item::Interface(interface) => {
@@ -386,10 +385,9 @@ impl CompileItemContext<'_, '_> {
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::Interface(unique, item);
 
-                let scope = self.refs.shared.file_scope(item.file())?;
                 let flow_root = FlowRoot::new(diags);
                 let mut flow = FlowCompile::new_root(&flow_root, interface.span, "item declaration");
-                self.eval_maybe_generic_item(id.span(), *span_body, scope, &mut flow, params, body)
+                self.eval_maybe_generic_item(id.span(), *span_body, &file_scope, &mut flow, params, body)
             }
         }
     }
@@ -778,7 +776,7 @@ impl CompileItemContext<'_, '_> {
             Ok(())
         };
 
-        let mut scope = Scope::new_child(span_body, scope_params);
+        let mut scope = scope_params.new_child(span_body);
         self.elaborate_extra_list(&mut scope, flow, fields, &mut visit_field)?;
         any_field_err?;
 
@@ -852,7 +850,7 @@ impl CompileItemContext<'_, '_> {
                 Ok(())
             };
 
-        let mut scope = Scope::new_child(span_body, scope_params);
+        let mut scope = scope_params.new_child(span_body);
         self.elaborate_extra_list(&mut scope, flow, variants, &mut visit_variant)?;
         any_variant_err?;
 
