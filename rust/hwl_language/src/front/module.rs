@@ -1,10 +1,10 @@
-use crate::front::block::ExtraScope;
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::{NamedOrValue, ValueInner};
+use crate::front::extra::ExtraScope;
 use crate::front::flow::{
     ExtraRegisters, Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent,
     HardwareProcessKind, VariableId,

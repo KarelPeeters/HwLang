@@ -1,7 +1,7 @@
-use crate::front::block::ExtraScope;
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
