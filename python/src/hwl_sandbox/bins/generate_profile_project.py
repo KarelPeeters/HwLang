@@ -52,13 +52,13 @@ fn select_{i}(T: type, select: bool, a: T, b: T) -> T {{
 pub module top ports(
     clk: in clock,
     rst: in async bool,
-    sync(clk, rst) {{
+    sync(clk, async rst) {{
         data_a: in [4]bool,
         data_b: in [4]bool,
         data_out: out [4]bool,
     }}
 ) {{
-    wire select: sync(clk, rst) bool = true;
+    wire select: sync(clk, async rst) bool = true;
     instance passthrough_{n - 1}(w=4) ports(
         clk,
         rst,
@@ -88,7 +88,6 @@ def main():
     manifest = """
     [source]
     _ = "."
-    std = "../../design/project/std"
     """
     (output_path / "hwl.toml").write_text(textwrap.dedent(manifest).lstrip())
 
