@@ -9,11 +9,13 @@ pub module top ports(
         t: out bool,
     }
 ) {
-    reg d0: sync(clk, async rst) int(0..256) = 0;
-    reg d1: sync(clk, async rst) int(0..256) = 0;
-    reg out t = false;
+    wire d1: sync(clk, async rst) int(0..256);
 
     clocked(clk, async rst) {
+        reg d0: int(0..256) = 0;
+        reg d1 = 0:
+        reg port t = false;
+
         if (enable) {
             d1 = d0;
             d0 = x;

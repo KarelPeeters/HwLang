@@ -48,14 +48,12 @@ const {
     foo(a=false, b=true);
 
     unsafe_value_with_domain(a, sync(clk, async rst));
-    reg(a, false);
-    reg(a, undef);
 }
 
 // force dummy variants of identifiers
 type _ = bool;
 
 module foo ports() {
-    reg _: bool = undef;
-    reg id_from_str("derp"): bool = undef;
+    wire _: bool = undef;
+    wire id_from_str("derp"): bool = undef;
 }

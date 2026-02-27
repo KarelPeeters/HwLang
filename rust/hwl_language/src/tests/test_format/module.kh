@@ -38,7 +38,7 @@ module module_params_wrap(
     const d = false;
 ) ports() {}
 
-module module_declarations ports() {
+module module_wires ports() {
     const c = false;
 
     wire w;
@@ -55,20 +55,13 @@ module module_declarations ports() {
     wire w: interface axi(bool);
     wire w: async interface axi(bool);
 
-    reg r: bool = false;
-    reg r: bool = false;
-    reg r: sync(clk) bool = false;
-
     pub wire w = false;
-    pub reg r: bool = false;
-
-    reg out y = false;
 }
 
-module module_structures ports() {
-    {
-        wire a = false;
-    }
+module module_extra ports() {
+    const a = false;
+    type t = bool;
+    wire a = false;
 
     if (false) {
         wire a = false;
@@ -83,33 +76,6 @@ module module_structures ports() {
     }
 }
 
-module module_declarations ports() {
-    const c = false;
-
-    wire w;
-    wire w: clock;
-    wire w: bool;
-    wire w: async;
-    wire w: async bool;
-    wire w = false;
-    wire w: clock = false;
-    wire w: bool = false;
-    wire w: async = false;
-    wire w: async bool = false;
-
-    wire w: interface axi(bool);
-    wire w: async interface axi(bool);
-
-    reg r: bool = false;
-    reg r: bool = false;
-    reg r: sync(clk) bool = false;
-
-    pub wire w = false;
-    pub reg r: bool = false;
-
-    reg out y = false;
-}
-
 module module_blocks ports() {
     comb {}
     clocked(clk) {}
@@ -120,4 +86,19 @@ module module_blocks ports() {
 module module_instance ports() {
     instance foo ports(x=x, y, z=false);
     instance f = foo ports();
+}
+
+module module_regs ports(
+    clk: in clock,
+    data: out sync(clk) uint(8),
+) {
+    wire w;
+    clocked(clk) {
+        reg port data = 0;
+        reg wire w = false;
+
+        reg r = false;
+        reg r: bool = false;
+        reg r: bool = undef;
+    }
 }

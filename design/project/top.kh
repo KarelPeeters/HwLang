@@ -7,18 +7,27 @@ module top ports(
         y: out uint(8),
         z: out uint(8),
     }
-
-    match (false) {
-        true => { a: in async bool, }
-        false => { b: in async bool, }
-    }
 ) {
-    comb {
+    wire w0: bool;
+    wire w1: bool;
+
+    clocked(clk, async rst) {
+        reg port y = 0;
+        reg port z = 0;
+        reg wire w0 = false;
+
+        reg r: bool = false;
+
+        r = !r;
         y = x;
+        z = x;
+
+        w0 = true;
+        // w1 = false; // error: not a register, hint: add reg to top of process
     }
 
-    reg out z = 0;
-    clocked(clk, async rst) {
-        z = x;
+    comb {
+        w1 = true; // error: multiple drivers
+        w1 = false;
     }
 }

@@ -11,12 +11,12 @@ pub module axi_gearbox(T: type, input_width: natural, output_width: natural) por
 ) {
     const buffer_size = input_width + output_width + max(input_width, output_width) - gcd(input_width, output_width);
 
-    reg buffer: [buffer_size]T = [false] * buffer_size;
-    reg level: int(0..=buffer_size) = 0;
-
     // TODO range implications kind of suck for this, allow assert to add implications
     // TODO store ValueWithImplications in variables, allowing them to later be used in conditions?
     clocked(clk, async rst) {
+        reg buffer: [buffer_size]T = [false] * buffer_size;
+        reg level: int(0..=buffer_size) = 0;
+
         // TODO does the other of these matter?
         // input
         if (input.ready && input.valid && level <= buffer_size - input_width) {

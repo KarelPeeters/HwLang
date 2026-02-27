@@ -14,9 +14,11 @@ module cdc_sync_ff(N: int(2..) = 2) ports(
     out_rst: in async bool,
     out_data: out sync(out_clk, async out_rst) bool,
 ) {
-    reg buffer: [N]bool = [false] * N;
+    wire buffer: [N]bool;
 
     clocked(out_clk, async out_rst) {
+        reg buffer = [false] * N;
+
         val in_data_domain = unsafe_value_with_domain(in_data, sync(out_clk, async out_rst));
         buffer = [*buffer[1..], in_data_domain];
     }

@@ -27,6 +27,7 @@ extern {
         "struct" => TokenType::Struct,
         "enum" => TokenType::Enum,
         "ports" => TokenType::Ports,
+        "port" => TokenType::Port,
         "module" => TokenType::Module,
         "interface" => TokenType::Interface,
         "instance" => TokenType::Instance,
@@ -128,9 +129,13 @@ Item: Item = {
         <vis:Vis> "module" <id:MaybeId>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
-        <body:Block<ModuleStatement>>
+        <body_start:@L> "{" <body:ExtraListWithSecond<Never<ModuleStatement>, ModuleStatement>> "}" <body_end:@R>
     <end:@R> => {
-        Item::ModuleInternal(ItemDefModuleInternal { vis, id, params, ports, body, span: ctx.span(start, end) })
+        Item::ModuleInternal(ItemDefModuleInternal {
+            vis, id, params, ports,
+            body: Spanned::new(ctx.span(body_start, body_end), body),
+            span: ctx.span(start, end)
+        })
     },
     <start:@L>
         <vis:Vis> <span_ext:Span<"external">> "module" <id:Id>
@@ -208,51 +213,38 @@ ModuleStatementKind: ModuleStatementKind = {
 //        ModuleStatementKind::ParseError
 //    },
 
-    // control flow
-    Block<ModuleStatement> => ModuleStatementKind::Block(<>),
-    IfStatement<Block<ModuleStatement>> => ModuleStatementKind::If(<>),
-    ForStatement<Block<ModuleStatement>> => ModuleStatementKind::For(<>),
-    // declaration
-    <CommonDeclaration<()>> => ModuleStatementKind::CommonDeclaration(<>),
-    <vis:Vis> <span_keyword:Span<"reg">> <id:MaybeGeneralId> ":" <sync:(<Spanned<SyncDomain>>)?> <ty:Expr> "=" <init:Expr> ";" => {
-        let decl = RegDeclaration { vis, span_keyword, id, sync, ty, init };
-        ModuleStatementKind::RegDeclaration(decl)
-    },
+    // declarations
     <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
         let decl = WireDeclaration { vis, span_keyword, id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
-    // marker
-    "reg" "out" <id:Id> "=" <init:Expr> ";" => {
-        let decl = RegOutPortMarker { id, init };
-        ModuleStatementKind::RegOutPortMarker(decl)
-    },
-    // combinatorial block
+
+    // combinatorial process
     <span_keyword:Span<"comb">> <block:Block<BlockStatement>> => {
-        let inner = CombinatorialBlock {
+        let inner = CombinatorialProcess {
             block,
             span_keyword,
         };
-        ModuleStatementKind::CombinatorialBlock(inner)
+        ModuleStatementKind::CombinatorialProcess(inner)
     },
-    // clocked block
+    // clocked process
     // TODO why is reset still part of the syntax here? only the registers themselves care, not the block?
     //   registers declared inside of the block do still inherit their clock/reset from the block though
     <span_keyword:Span<"clocked">> <start_domain:@L> "("
-        <clock:Expr> <reset:("," <Spanned<ClockedBlockReset>>)?> ","?
+        <clock:Expr> <reset:("," <Spanned<ClockedProcessReset>>)?> ","?
     ")" <end_domain:@R> <block:Block<BlockStatement>>
     => {
-        let inner = ClockedBlock {
+        let inner = ClockedProcess {
             clock,
             reset,
             block,
             span_keyword,
             span_domain: ctx.span(start_domain, end_domain),
         };
-        ModuleStatementKind::ClockedBlock(inner)
+        ModuleStatementKind::ClockedProcess(inner)
     },
     // module instance
-    // TODO allow strings as instance names? necessary for modules instantiated in loops
+    // TODO allow strings as instance names? necessary for modules instantiated in loops -> MaybeGeneralId
     <start:@L>
         "instance" <instance_end:@R> <name:(<Id> "=")?> <module:Expr>
         "ports" <port_connections:Spanned<InstancePortConnections>>
@@ -287,8 +279,8 @@ PortConnection: PortConnection = {
     }
 }
 
-ClockedBlockReset: ClockedBlockReset<Expression> = {
-    <kind:Spanned<ResetKind>> <signal:Expr> => ClockedBlockReset { kind, signal },
+ClockedProcessReset: ClockedProcessReset<Expression> = {
+    <kind:Spanned<ResetKind>> <signal:Expr> => ClockedProcessReset { kind, signal },
 }
 
 ResetKind: ResetKind = {
@@ -300,6 +292,19 @@ BlockStatementKind: BlockStatementKind = {
     // declaration
     <CommonDeclaration<()>> => BlockStatementKind::CommonDeclaration(<>),
     <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
+
+    // register
+    <span_keyword:Span<"reg">> <kind:Spanned<PortOrWire>> <id:GeneralId> "=" <reset:Expr> ";" => {
+        let kind = RegisterDeclarationKind::Existing(kind);
+        let decl = RegisterDeclaration { span_keyword, kind, id, reset };
+        BlockStatementKind::RegisterDeclaration(decl)
+    },
+    <span_keyword:Span<"reg">> <id:GeneralId> <ty:(":" <Expr>)?> "=" <reset:Expr> ";" => {
+        let kind = RegisterDeclarationKind::New(RegisterDeclarationNew { ty });
+        let decl = RegisterDeclaration { span_keyword, kind, id, reset };
+        BlockStatementKind::RegisterDeclaration(decl)
+    },
+
     // assignment
     <start:@L> <target:Expr> <op:AssignOp> <value:Expr> ";" <end:@R> => {
         let assignment = Assignment { op, target, value, span: ctx.span(start, end) };
@@ -327,6 +332,11 @@ BlockStatementKind: BlockStatementKind = {
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),
     <span:Span<"break">> ";" => BlockStatementKind::Break { span },
     <span:Span<"continue">> ";" => BlockStatementKind::Continue { span },
+}
+
+PortOrWire: PortOrWire = {
+    "port" => PortOrWire::Port,
+    "wire" => PortOrWire::Wire,
 }
 
 // TODO don't require parentheses?
@@ -756,10 +766,6 @@ ExprLevelCall<allow_block>: ExpressionKind = {
         => ExpressionKind::Builtin { span_keyword, args },
     "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")"
         => ExpressionKind::UnsafeValueWithDomain(value, domain),
-
-    // reg expression
-    <span_keyword:Span<"reg">> "(" <value:Expr> "," <init:Expr> ","? ")"
-        => ExpressionKind::RegisterDelay(RegisterDelay { span_keyword, value, init }),
 
     ExprLevelDot<allow_block>,
 }

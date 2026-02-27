@@ -14,8 +14,8 @@ pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
     const buffer_size = input_width + output_width + min(input_width, output_width) - step;
     const shift_bits = clog2((buffer_size - input_width) / step + 1);
 
-    reg buffer: sync(clk, async rst) [buffer_size]bool = undef;
-    reg level: sync(clk, async rst) int(0..=(buffer_size / step)) = 0;
+    wire buffer: sync(clk, async rst) [buffer_size]bool;
+    wire level: sync(clk, async rst) int(0..=(buffer_size / step));
 
     comb {
         output.data = buffer[..output_width];
@@ -24,6 +24,9 @@ pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
     }
 
     clocked(clk, async rst) {
+        reg buffer = undef;
+        reg level = 0;
+
         // handle input
         // TODO use input_ready port here? but then the level type may overflow
         if (input.valid && level <= (buffer_size - input_width) / step) {
