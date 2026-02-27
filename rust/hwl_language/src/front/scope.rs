@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{FailedCaptureReason, Variable};
-use crate::front::signal::{Port, PortInterface, Register, Wire, WireInterface};
+use crate::front::signal::{Port, PortInterface, Wire, WireInterface};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
@@ -52,7 +52,6 @@ pub enum NamedValue {
     PortInterface(PortInterface),
     Wire(Wire),
     WireInterface(WireInterface),
-    Register(Register),
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
@@ -185,6 +184,34 @@ impl<'p> Scope<'p> {
         self.declare_impl(diags, id, value)
     }
 
+    pub fn maybe_declare(
+        &mut self,
+        diags: &Diagnostics,
+        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
+        entry: DiagResult<ScopedEntry>,
+    ) {
+        let id = match id {
+            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
+            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
+            Err(e) => Err(e),
+        };
+        self.declare(diags, id, entry);
+    }
+
+    pub fn maybe_declare_non_mut(
+        &self,
+        diags: &Diagnostics,
+        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
+        value: DiagResult<ScopedEntry>,
+    ) {
+        let id = match id {
+            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
+            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
+            Err(e) => Err(e),
+        };
+        self.declare_non_mut(diags, id, value);
+    }
+
     fn declare_impl(&self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
         let id = match id {
             Ok(id) => id,
@@ -237,20 +264,6 @@ impl<'p> Scope<'p> {
 
     pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
         self.content.borrow_mut().declare_already_checked(id, value);
-    }
-
-    pub fn maybe_declare(
-        &mut self,
-        diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
-        entry: DiagResult<ScopedEntry>,
-    ) {
-        let id = match id {
-            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
-            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
-            Err(e) => Err(e),
-        };
-        self.declare(diags, id, entry);
     }
 
     /// Find the given identifier in this scope.

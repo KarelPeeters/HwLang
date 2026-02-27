@@ -1,17 +1,17 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
-    BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedBlock, ClockedBlockReset,
-    CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
+    BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
+    CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
     ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList,
     ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier,
     IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceView, Item,
     ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern,
     MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
     ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
-    RangeLiteral, RegDeclaration, RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration,
-    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
-    WireDeclarationDomainTyKind, WireDeclarationKind,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortOrWire,
+    PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -69,7 +69,7 @@ impl Context<'_> {
                         ref ports,
                         ref body,
                     } = decl;
-                    self.fmt_module_decl(vis, false, id, params.as_ref(), &ports.inner, Some(body))
+                    self.fmt_module_decl(vis, false, id, params.as_ref(), &ports.inner, Some(&body.inner))
                 }
                 Item::ModuleExternal(decl) => {
                     let &ItemDefModuleExternal {
@@ -251,7 +251,7 @@ impl Context<'_> {
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-                        self.fmt_variable_decl(TT::Const, id, ty, Some(value))
+                        self.fmt_variable_decl(token(TT::Const), self.fmt_maybe_id(id), ty, Some(value))
                     }
                     CommonDeclarationNamedKind::Struct(decl) => {
                         let &StructDeclaration {
@@ -360,7 +360,7 @@ impl Context<'_> {
         id: MaybeIdentifier,
         params: Option<&Parameters>,
         ports: &ExtraList<ModulePortItem>,
-        body: Option<&Block<ModuleStatement>>,
+        body: Option<&ExtraList<ModuleStatement>>,
     ) -> HNode {
         let mut seq = vec![];
         vis.to_seq(&mut seq);
@@ -385,11 +385,13 @@ impl Context<'_> {
         }));
 
         if let Some(body) = body {
-            let Block { span: _, statements } = body;
-            let node_block = fmt_block_impl(statements, None, |stmt| self.fmt_module_statement(stmt));
+            let node_body = self.fmt_extra_list(SurroundKind::Curly, false, body, &|stmt| HNodeAndComma {
+                node: self.fmt_module_statement(stmt),
+                comma: false,
+            });
 
             seq.push(HNode::Space);
-            seq.push(node_block);
+            seq.push(node_body);
         }
 
         seq.push(HNode::AlwaysNewline);
@@ -555,11 +557,6 @@ impl Context<'_> {
         }
     }
 
-    fn fmt_module_block(&self, block: &Block<ModuleStatement>) -> HNode {
-        let Block { span: _, statements } = block;
-        fmt_block_impl(statements, None, |stmt| self.fmt_module_statement(stmt))
-    }
-
     fn fmt_block(&self, block: &Block<BlockStatement>) -> HNode {
         let Block { span: _, statements } = block;
         self.fmt_block_ext(statements, None)
@@ -573,44 +570,6 @@ impl Context<'_> {
 
     fn fmt_module_statement(&self, stmt: &ModuleStatement) -> HNode {
         match &stmt.inner {
-            ModuleStatementKind::Block(block) => {
-                let node_block = self.fmt_module_block(block);
-                HNode::Sequence(vec![node_block, HNode::AlwaysNewline])
-            }
-            ModuleStatementKind::If(stmt) => self.fmt_if(stmt, |b| self.fmt_module_block(b)),
-            ModuleStatementKind::For(stmt) => self.fmt_for(stmt, |b| self.fmt_module_block(b)),
-            ModuleStatementKind::CommonDeclaration(decl) => self.fmt_common_decl(decl),
-            ModuleStatementKind::RegDeclaration(decl) => {
-                let &RegDeclaration {
-                    vis,
-                    span_keyword: _,
-                    id,
-                    sync,
-                    ty,
-                    init,
-                } = decl;
-
-                let mut seq = vec![];
-                vis.to_seq(&mut seq);
-
-                seq.push(token(TT::Reg));
-                seq.push(HNode::Space);
-                seq.push(self.fmt_maybe_general_id(id));
-
-                let mut sync_ty_seq = vec![];
-                if let Some(sync) = sync {
-                    sync_ty_seq.push(self.fmt_domain(DomainKind::Sync(sync.inner)));
-                    sync_ty_seq.push(HNode::Space);
-                }
-                sync_ty_seq.push(self.fmt_expr(ty));
-                seq.push(wrapping_type(HNode::Sequence(sync_ty_seq)));
-
-                seq.push(wrapping_assign(self.fmt_expr(init)));
-
-                seq.push(token(TT::Semi));
-                seq.push(HNode::AlwaysNewline);
-                HNode::Sequence(seq)
-            }
             ModuleStatementKind::WireDeclaration(decl) => {
                 let &WireDeclaration {
                     vis,
@@ -680,24 +639,8 @@ impl Context<'_> {
                 seq.push(HNode::AlwaysNewline);
                 HNode::Sequence(seq)
             }
-            ModuleStatementKind::RegOutPortMarker(marker) => {
-                let &RegOutPortMarker { id, init } = marker;
-                HNode::Sequence(vec![
-                    token(TT::Reg),
-                    HNode::Space,
-                    token(TT::Out),
-                    HNode::Space,
-                    self.fmt_id(id),
-                    HNode::Space,
-                    token(TT::Eq),
-                    HNode::Space,
-                    self.fmt_expr(init),
-                    token(TT::Semi),
-                    HNode::AlwaysNewline,
-                ])
-            }
-            ModuleStatementKind::CombinatorialBlock(block) => {
-                let CombinatorialBlock { span_keyword: _, block } = block;
+            ModuleStatementKind::CombinatorialProcess(block) => {
+                let CombinatorialProcess { span_keyword: _, block } = block;
                 HNode::Sequence(vec![
                     token(TT::Comb),
                     HNode::Space,
@@ -705,8 +648,8 @@ impl Context<'_> {
                     HNode::AlwaysNewline,
                 ])
             }
-            ModuleStatementKind::ClockedBlock(block) => {
-                let &ClockedBlock {
+            ModuleStatementKind::ClockedProcess(block) => {
+                let &ClockedProcess {
                     span_keyword: _,
                     span_domain: _,
                     clock,
@@ -721,7 +664,7 @@ impl Context<'_> {
                 let node_domain = fmt_call_like(token(TT::Clocked), args, |&arg| match arg {
                     Either::Left(clock) => self.fmt_expr(clock),
                     Either::Right(reset) => {
-                        let ClockedBlockReset { kind, signal } = reset.inner;
+                        let ClockedProcessReset { kind, signal } = reset.inner;
                         HNode::Sequence(vec![token(kind.inner.token()), HNode::Space, self.fmt_expr(signal)])
                     }
                 });
@@ -794,7 +737,31 @@ impl Context<'_> {
                     init,
                 } = decl;
                 let kind = if mutable { TT::Var } else { TT::Val };
-                self.fmt_variable_decl(kind, id, ty, init)
+                self.fmt_variable_decl(token(kind), self.fmt_maybe_id(id), ty, init)
+            }
+            BlockStatementKind::RegisterDeclaration(decl) => {
+                let &RegisterDeclaration {
+                    span_keyword: _,
+                    kind,
+                    id,
+                    reset,
+                } = decl;
+
+                let (kind, ty) = match kind {
+                    RegisterDeclarationKind::Existing(kind) => {
+                        let kind = match kind.inner {
+                            PortOrWire::Port => TT::Port,
+                            PortOrWire::Wire => TT::Wire,
+                        };
+                        (HNode::Sequence(vec![token(TT::Reg), HNode::Space, token(kind)]), None)
+                    }
+                    RegisterDeclarationKind::New(kind) => {
+                        let RegisterDeclarationNew { ty } = kind;
+                        (token(TT::Reg), ty)
+                    }
+                };
+
+                self.fmt_variable_decl(kind, self.fmt_general_id(id), ty, Some(reset))
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
@@ -840,17 +807,11 @@ impl Context<'_> {
         }
     }
 
-    fn fmt_variable_decl(
-        &self,
-        kind: TT,
-        id: MaybeIdentifier,
-        ty: Option<Expression>,
-        value: Option<Expression>,
-    ) -> HNode {
+    fn fmt_variable_decl(&self, kind: HNode, id: HNode, ty: Option<Expression>, value: Option<Expression>) -> HNode {
         let mut seq = vec![];
-        seq.push(token(kind));
+        seq.push(kind);
         seq.push(HNode::Space);
-        seq.push(self.fmt_maybe_id(id));
+        seq.push(id);
         if let Some(ty) = ty {
             seq.push(wrapping_type(self.fmt_expr(ty)));
         }
@@ -1243,14 +1204,6 @@ impl Context<'_> {
                     Either::Right(domain) => self.fmt_domain(domain.inner),
                 },
             ),
-            ExpressionKind::RegisterDelay(expr) => {
-                let &RegisterDelay {
-                    span_keyword: _,
-                    value,
-                    init,
-                } = expr;
-                fmt_call_like(token(TT::Reg), &[value, init], |&expr| self.fmt_expr(expr))
-            }
         }
     }
 

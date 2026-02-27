@@ -12,7 +12,7 @@ use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
 use crate::syntax::ast::{Assignment, SyncDomain};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{Span, Spanned};
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {
@@ -67,7 +67,6 @@ impl CompileItemContext<'_, '_> {
                         Signal::Wire(wire) => self.wires[wire]
                             .typed_maybe(refs, &self.wire_interfaces)?
                             .map(|info| info.ty.map_inner(HardwareType::as_type)),
-                        Signal::Register(reg) => Some(self.registers[reg].ty.as_ref().map_inner(HardwareType::as_type)),
                     },
                     SignalOrVariable::Variable(var) => flow.var_info(Spanned::new(target_base.span, var))?.ty.clone(),
                 };
@@ -373,70 +372,40 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<BlockKind> {
         let diags = self.refs.diags;
 
-        let block_kind = match flow.block_kind() {
-            HardwareProcessKind::CombinatorialBlockBody {
+        let block_kind = match flow.process_kind() {
+            HardwareProcessKind::CombinatorialProcessBody {
                 span_keyword: _,
-                wires_driven,
-                ports_driven,
+                signals_driven,
             } => {
-                match target_base_signal.inner {
-                    Signal::Port(port) => {
-                        ports_driven.entry(port).or_insert(target_base_signal.span);
-                    }
-                    Signal::Wire(wire) => {
-                        wires_driven.entry(wire).or_insert(target_base_signal.span);
-                    }
-                    Signal::Register(reg) => {
-                        let reg_info = &self.registers[reg];
-                        return Err(DiagnosticError::new(
-                            "registers must be driven by a clocked block",
-                            target_base_signal.span,
-                            "driven incorrectly here",
-                        )
-                        .add_info(reg_info.id.span(), "register declared here")
-                        .add_footer_hint("drive the register from a clocked block or turn it into a wire")
-                        .report(diags));
-                    }
-                }
-
+                signals_driven
+                    .entry(target_base_signal.inner)
+                    .or_insert(target_base_signal.span);
                 BlockKind::Combinatorial
             }
-            HardwareProcessKind::ClockedBlockBody {
+            HardwareProcessKind::ClockedProcessBody {
                 span_keyword: _,
                 domain,
-                registers_driven,
-                extra_registers: _,
+                registers,
             } => {
-                match target_base_signal.inner {
-                    Signal::Register(reg) => {
-                        registers_driven.entry(reg).or_insert(target_base_signal.span);
-                    }
-                    Signal::Port(port) => {
-                        let port_info = &self.ports[port];
-                        return Err(DiagnosticError::new(
-                            "ports cannot be driven by a clocked block",
-                            target_base_signal.span,
-                            "driven incorrectly here",
-                        )
-                        .add_info(port_info.span, "port declared here")
+                if !registers.contains_key(&target_base_signal.inner) {
+                    let (signal_kind, signal_decl_span) = match target_base_signal.inner {
+                        Signal::Port(signal) => ("port", self.ports[signal].span),
+                        Signal::Wire(signal) => ("wire", self.wires[signal].decl_span()),
+                    };
+
+                    return Err(DiagnosticError::new(
+                        format!("clocked process cannot drive {signal_kind} without marking it as a register"),
+                        target_base_signal.span,
+                        "driven incorrectly here",
+                    )
+                        .add_info(signal_decl_span, format!("{signal_kind} declared here"))
                         .add_footer_hint(
-                            "mark the port as a register or drive it from a combinatorial block or connection",
+                            format!("to mark the {signal_kind} as a register, add `reg {signal_kind} <name> = <reset>;` to the body of the process"),
+                        )
+                        .add_footer_hint(
+                            format!("to drive the {signal_kind} combinatorially, use a combinatorial process or an instance port"),
                         )
                         .report(diags));
-                    }
-                    Signal::Wire(wire) => {
-                        let wire_info = &self.wires[wire];
-                        return Err(DiagnosticError::new(
-                            "wires cannot be driven by a clocked block",
-                            target_base_signal.span,
-                            "driven incorrectly here",
-                        )
-                        .add_info(wire_info.decl_span(), "wire declared here")
-                        .add_footer_hint(
-                            "change the wire to a register or drive it from a combinatorial block or connection",
-                        )
-                        .report(diags));
-                    }
                 }
 
                 BlockKind::Clocked(*domain)

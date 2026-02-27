@@ -1,13 +1,13 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
-use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
+use crate::front::domain::{PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
 use crate::front::types::HardwareType;
 use crate::front::value::HardwareValue;
-use crate::mid::ir::{IrExpression, IrPort, IrRegister, IrSignal, IrWire, IrWireInfo, IrWires};
+use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, SyncDomain};
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortOrWire};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
@@ -17,25 +17,17 @@ new_index_type!(pub Port);
 new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
 new_index_type!(pub WireInterface);
-new_index_type!(pub Register);
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
-pub enum Signal {
-    Port(Port),
-    Wire(Wire),
-    Register(Register),
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Signal<P = Port, W = Wire> {
+    Port(P),
+    Wire(W),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
 pub enum SignalOrVariable {
     Signal(Signal),
     Variable(Variable),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum WireOrPort<W = Wire, P = Port> {
-    Wire(W),
-    Port(P),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -109,14 +101,6 @@ impl<T> WireInfoTyped<T> {
             ir: self.ir,
         }
     }
-}
-
-#[derive(Debug)]
-pub struct RegisterInfo {
-    pub id: MaybeIdentifier<Spanned<String>>,
-    pub domain: DiagResult<Option<Spanned<SyncDomain<DomainSignal>>>>,
-    pub ty: Spanned<HardwareType>,
-    pub ir: IrRegister,
 }
 
 impl PortInfo {
@@ -290,31 +274,6 @@ impl WireInterfaceInfo {
     }
 }
 
-impl RegisterInfo {
-    pub fn suggest_domain(&mut self, suggest: Spanned<SyncDomain<DomainSignal>>) -> Spanned<SyncDomain<DomainSignal>> {
-        match self.domain {
-            Ok(Some(domain)) => domain,
-            Ok(None) | Err(_) => {
-                self.domain = Ok(Some(suggest));
-                suggest
-            }
-        }
-    }
-
-    pub fn domain(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<Spanned<SyncDomain<DomainSignal>>> {
-        get_inferred(diags, "register", "domain", &mut self.domain, self.id.span(), span).copied()
-    }
-
-    pub fn as_hardware_value(&mut self, diags: &Diagnostics, span: Span) -> DiagResult<HardwareValue> {
-        let domain = self.domain(diags, span)?;
-        Ok(HardwareValue {
-            ty: self.ty.inner.clone(),
-            domain: ValueDomain::Sync(domain.inner),
-            expr: IrExpression::Signal(IrSignal::Register(self.ir)),
-        })
-    }
-}
-
 // TODO prevent cascading errors if a previous block has failed for some reason,
 //   which caused certain things to not be inferred
 fn get_inferred<'s, T>(
@@ -390,13 +349,21 @@ impl Polarized<Signal> {
     }
 }
 
+// TODO all of this can probably be simplified now that registers don't exist any more
+impl<P, W> Signal<P, W> {
+    pub fn kind(self) -> PortOrWire {
+        match self {
+            Signal::Port(_) => PortOrWire::Port,
+            Signal::Wire(_) => PortOrWire::Wire,
+        }
+    }
+}
+
 impl Signal {
-    // TODO rename
     pub fn diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
         match self {
             Signal::Port(port) => &s.ports[port].name,
             Signal::Wire(wire) => s.wires[wire].diagnostic_str(),
-            Signal::Register(reg) => s.registers[reg].id.diagnostic_str(),
         }
     }
 
@@ -405,21 +372,9 @@ impl Signal {
         ctx: &mut CompileItemContext,
         suggest_domain: Spanned<ValueDomain>,
     ) -> DiagResult<Spanned<ValueDomain>> {
-        let diags = ctx.refs.diags;
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
             Signal::Wire(wire) => ctx.wires[wire].suggest_domain(&mut ctx.wire_interfaces, suggest_domain),
-            Signal::Register(reg) => {
-                let reg_info = &mut ctx.registers[reg];
-                if let Some(domain) = reg_info.domain? {
-                    Ok(domain.map_inner(ValueDomain::Sync))
-                } else if let ValueDomain::Sync(suggest_domain_inner) = suggest_domain.inner {
-                    let reg_domain = reg_info.suggest_domain(Spanned::new(suggest_domain.span, suggest_domain_inner));
-                    Ok(reg_domain.map_inner(ValueDomain::Sync))
-                } else {
-                    Err(diags.report_error_internal(suggest_domain.span, "suggesting non-sync domain for register"))
-                }
-            }
         }
     }
 
@@ -431,8 +386,6 @@ impl Signal {
     ) -> DiagResult<Spanned<&'s HardwareType>> {
         match self {
             Signal::Port(_) => self.expect_ty(ctx, suggest.span),
-            // TODO allow suggesting type for registers too?
-            Signal::Register(_) => self.expect_ty(ctx, suggest.span),
             Signal::Wire(wire) => ctx.wires[wire]
                 .suggest_ty(ctx.refs, &ctx.wire_interfaces, ir_wires, suggest)
                 .map(|typed| typed.ty),
@@ -444,9 +397,6 @@ impl Signal {
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
             Signal::Wire(wire) => ctx.wires[wire].domain(diags, &mut ctx.wire_interfaces, span),
-            Signal::Register(reg) => ctx.registers[reg]
-                .domain(diags, span)
-                .map(|d| d.map_inner(ValueDomain::Sync)),
         }
     }
 
@@ -465,10 +415,6 @@ impl Signal {
                 let info = &ctx.wires[wire].expect_typed(ctx.refs, &ctx.wire_interfaces, use_span)?;
                 Ok((info.ty, IrSignal::Wire(info.ir)))
             }
-            Signal::Register(reg) => {
-                let info = &ctx.registers[reg];
-                Ok((info.ty.as_ref(), IrSignal::Register(info.ir)))
-            }
         }
     }
 
@@ -485,12 +431,22 @@ impl Signal {
     }
 
     pub fn as_hardware_value(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<HardwareValue> {
-        let diags = ctx.refs.diags;
         match self {
             Signal::Port(port) => Ok(ctx.ports[port].as_hardware_value()),
             Signal::Wire(wire) => ctx.wires[wire].as_hardware_value(ctx.refs, &mut ctx.wire_interfaces, span),
-            Signal::Register(reg) => ctx.registers[reg].as_hardware_value(diags, span),
         }
+    }
+}
+
+impl From<Port> for Signal {
+    fn from(value: Port) -> Self {
+        Signal::Port(value)
+    }
+}
+
+impl From<Wire> for Signal {
+    fn from(value: Wire) -> Self {
+        Signal::Wire(value)
     }
 }
 
@@ -503,11 +459,5 @@ impl From<Port> for SignalOrVariable {
 impl From<Wire> for SignalOrVariable {
     fn from(value: Wire) -> Self {
         SignalOrVariable::Signal(Signal::Wire(value))
-    }
-}
-
-impl From<Register> for SignalOrVariable {
-    fn from(value: Register) -> Self {
-        SignalOrVariable::Signal(Signal::Register(value))
     }
 }

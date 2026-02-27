@@ -6,24 +6,11 @@ import pytest
 from hwl_sandbox.common.util import compile_custom
 
 
-def test_inline_register():
-    # TODO simulate and check that this results in two cycles of delay
-    src = """
-    module foo ports(clk: in clock, x: in sync(clk) bool, y: out sync(clk) bool) {
-        reg out y = undef;
-        clocked(clk) {
-            y = reg(x, undef);
-        }
-    }
-    """
-    compile_custom(src).resolve("top.foo")
-
-
 def test_port_reg_name(tmpdir: Path):
     src = """
     module foo ports(clk: in clock, a: out sync(clk) bool) {
-        reg out a = undef;
         clocked(clk) {
+            reg port a = undef;
             a = !a;
         }
     }
@@ -69,7 +56,7 @@ def test_wire_driven_by_child(tmp_dir: Path):
     parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
 
     parent_inst.step(1)
-    assert parent_inst.ports.y.value == True
+    assert parent_inst.ports.y.value is True
 
 
 def test_interface_access(tmp_dir: Path):

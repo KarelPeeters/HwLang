@@ -7,7 +7,7 @@ use crate::front::check::{
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
-use crate::front::flow::{ExtraRegisters, FlowKind, ValueVersion, VariableId};
+use crate::front::flow::{ValueVersion, VariableId};
 use crate::front::function::{
     EvaluatedArgs, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch,
 };
@@ -18,17 +18,17 @@ use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MaybeUndefined,
-    MixedCompoundValue, NotCompile, RangeValue, SimpleCompileValue, Value, ValueCommon,
+    CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue,
+    NotCompile, RangeValue, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
-    IrIntCompareOp, IrLargeArena, IrRegisterInfo, IrSignal, IrStatement, IrVariableInfo,
+    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
+    IrLargeArena,
 };
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
     ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    RegisterDelay, SyncDomain, UnaryOp,
+    SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
@@ -36,8 +36,7 @@ use crate::util::big_int::{AnyInt, BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
-use crate::front::flow::{Flow, HardwareProcessKind};
-use crate::front::module::ExtraRegisterInit;
+use crate::front::flow::Flow;
 use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
@@ -246,22 +245,10 @@ impl<'a> CompileItemContext<'a, '_> {
                         NamedValue::Wire(wire) => {
                             flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
                         }
-                        NamedValue::Register(reg) => {
-                            if let FlowKind::Hardware(flow) = flow.kind_mut() {
-                                if let HardwareProcessKind::ClockedBlockBody { domain, .. } = flow.block_kind() {
-                                    let reg_info = &mut self.registers[reg];
-                                    reg_info.suggest_domain(Spanned::new(expr.span, domain.inner));
-                                }
-                            }
-
-                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Register(reg)))?
-                        }
                         NamedValue::PortInterface(interface) => {
-                            // we don't need a hardware context yet, only when we actually access an actual port
                             return Ok(ValueInner::PortInterface(interface));
                         }
                         NamedValue::WireInterface(interface) => {
-                            // we don't need a hardware context yet, only when we actually access an actual port
                             return Ok(ValueInner::WireInterface(interface));
                         }
                     },
@@ -820,126 +807,6 @@ impl<'a> CompileItemContext<'a, '_> {
                     expr: value_expr,
                 })
             }
-            ExpressionKind::RegisterDelay(reg_delay) => {
-                let &RegisterDelay {
-                    span_keyword,
-                    value,
-                    init,
-                } = reg_delay;
-
-                // eval
-                let value = self.eval_expression(scope, flow, expected_ty, value)?;
-                let init = self.eval_expression_as_compile_or_undefined(
-                    scope,
-                    flow,
-                    expected_ty,
-                    init,
-                    Spanned::new(span_keyword, "register init"),
-                )?;
-
-                // figure out type
-                let value_ty = value.inner.ty();
-                let init_ty = init.inner.ty();
-                let ty = value_ty.union(&init_ty);
-                let ty_hw = ty.as_hardware_type(elab).map_err(|_| {
-                    DiagnosticError::new(
-                        "register type must be representable in hardware",
-                        span_keyword,
-                        format!("got non-hardware type `{}`", ty.value_string(elab)),
-                    )
-                    .add_info(value.span, format!("from combining `{}`", value_ty.value_string(elab)))
-                    .add_info(init.span, format!("from combining `{}`", init_ty.value_string(elab)))
-                    .report(diags)
-                })?;
-
-                let flow = flow.require_hardware(expr.span, "register expression")?;
-
-                // convert values to hardware
-                let value =
-                    value
-                        .inner
-                        .as_hardware_value_unchecked(refs, &mut self.large, value.span, ty_hw.clone())?;
-                let init_span = init.span;
-                let init = init
-                    .map_inner(|inner| match inner {
-                        MaybeUndefined::Undefined => Ok(MaybeUndefined::Undefined),
-                        MaybeUndefined::Defined(inner) => Ok(MaybeUndefined::Defined(
-                            inner.as_ir_expression_unchecked(refs, &mut self.large, init_span, &ty_hw)?,
-                        )),
-                    })
-                    .transpose()?;
-
-                // create variable to hold the result
-                let var_info = IrVariableInfo {
-                    ty: ty_hw.as_ir(refs),
-                    debug_info_span: span_keyword,
-                    debug_info_id: Some("reg_delay".to_owned()),
-                };
-                let ir_var = flow.new_ir_variable(var_info);
-
-                // create register to act as the delay storage
-                let (clocked_domain, clocked_registers, ir_registers) =
-                    flow.check_clocked_block(span_keyword, "register expression")?;
-                let reg_info = IrRegisterInfo {
-                    ty: ty_hw.as_ir(refs),
-                    debug_info_id: Spanned::new(span_keyword, None),
-                    debug_info_ty: ty_hw.clone().value_string(elab),
-                    debug_info_domain: clocked_domain.inner.diagnostic_string(self),
-                };
-                let reg = ir_registers.push(reg_info);
-
-                // record the reset value if any
-                match clocked_registers {
-                    ExtraRegisters::NoReset => match init.inner {
-                        MaybeUndefined::Undefined => {
-                            // we can't reset, but luckily we don't need to
-                        }
-                        MaybeUndefined::Defined(_) => {
-                            let _ = DiagnosticError::new(
-                                "registers without reset cannot have an initial value",
-                                init.span,
-                                "attempt to create a register with init here",
-                            )
-                            .add_info(
-                                clocked_domain.span,
-                                "the current clocked block is defined without reset here",
-                            )
-                            .add_footer_hint("either add a reset to the block or use `undef` as the initial value")
-                            .report(diags);
-                        }
-                    },
-                    ExtraRegisters::WithReset(extra_registers) => {
-                        match init.inner {
-                            MaybeUndefined::Undefined => {
-                                // we can reset but we don't need to
-                            }
-                            MaybeUndefined::Defined(init_inner) => {
-                                extra_registers.push(ExtraRegisterInit {
-                                    span: init.span,
-                                    reg,
-                                    init: init_inner,
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // do the right shuffle operations
-                let stmt_load = IrStatement::Assign(
-                    IrAssignmentTarget::simple(ir_var.into()),
-                    IrExpression::Signal(IrSignal::Register(reg)),
-                );
-                flow.push_ir_statement(Spanned::new(span_keyword, stmt_load));
-                let stmt_store = IrStatement::Assign(IrAssignmentTarget::simple(reg.into()), value.expr);
-                flow.push_ir_statement(Spanned::new(span_keyword, stmt_store));
-
-                // return the variable, now containing the previous value of the register
-                Value::Hardware(HardwareValue {
-                    ty: ty_hw,
-                    domain: ValueDomain::Sync(clocked_domain.inner),
-                    expr: IrExpression::Variable(ir_var),
-                })
-            }
         };
 
         Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
@@ -1488,41 +1355,6 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    pub fn eval_expression_as_compile_or_undefined(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        expected_ty: &Type,
-        expr: Expression,
-        reason: Spanned<&'static str>,
-    ) -> DiagResult<Spanned<MaybeUndefined<CompileValue>>> {
-        let diags = self.refs.diags;
-
-        if let ExpressionKind::Undefined = self.refs.get_expr(expr) {
-            Ok(Spanned {
-                span: expr.span,
-                inner: MaybeUndefined::Undefined,
-            })
-        } else {
-            // TODO should we allow compile-time writes to the outside?
-            //   right now we intentionally don't because that might be confusing in eg. function params or types
-            let mut flow_inner = flow.new_child_compile(reason.span, reason.inner);
-            let value_eval = self.eval_expression(scope, &mut flow_inner, expected_ty, expr)?.inner;
-
-            match CompileValue::try_from(&value_eval) {
-                Ok(value_eval) => Ok(Spanned {
-                    span: expr.span,
-                    inner: MaybeUndefined::Defined(value_eval),
-                }),
-                Err(NotCompile) => Err(diags.report_error_simple(
-                    format!("{} must be a compile-time value", reason.inner),
-                    expr.span,
-                    "got hardware value",
-                )),
-            }
-        }
-    }
-
     pub fn eval_expression_as_ty(
         &mut self,
         scope: &Scope,
@@ -1617,7 +1449,6 @@ impl<'a> CompileItemContext<'a, '_> {
                             return Err(build_err("interface instance"));
                         }
                         NamedValue::Wire(w) => AssignmentTarget::simple(Spanned::new(expr.span, w.into())),
-                        NamedValue::Register(r) => AssignmentTarget::simple(Spanned::new(expr.span, r.into())),
                     },
                 }
             }
@@ -1778,7 +1609,6 @@ impl<'a> CompileItemContext<'a, '_> {
                             Err(build_err("interface instance"))
                         }
                         NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
-                        NamedValue::Register(r) => Ok(Polarized::new(Signal::Register(r))),
                     },
                 }
             }
@@ -1843,9 +1673,6 @@ impl<'a> CompileItemContext<'a, '_> {
                     signal.try_map_inner(|signal| match signal {
                         Signal::Port(port) => Ok(port),
                         Signal::Wire(_) => Err(diags.report_error_internal(domain.span, "expected port, got wire")),
-                        Signal::Register(_) => {
-                            Err(diags.report_error_internal(domain.span, "expected port, got register"))
-                        }
                     })
                 })?),
             },

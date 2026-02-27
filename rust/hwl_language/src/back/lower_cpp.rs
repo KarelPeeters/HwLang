@@ -5,9 +5,8 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
-    IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
-    IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
-    IrWireOrPort,
+    IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece, IrStringSubstitution,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -53,7 +52,6 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
     let module_info = &modules[module];
     let IrModuleInfo {
         ports,
-        registers,
         wires,
         large: _,
         children,
@@ -100,11 +98,6 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
 
     // signals
     swriteln!(f_structs, "struct {struct_signals} {{");
-    for (reg, reg_info) in registers {
-        let ty_str = type_to_cpp(diags, reg_info.debug_info_id.span, &reg_info.ty)?;
-        let name = reg_str(reg, reg_info);
-        swriteln!(f_structs, "{I}{ty_str} {name};");
-    }
     for (wire, wire_info) in wires {
         let ty_str = type_to_cpp(diags, wire_info.debug_info_id.span, &wire_info.ty)?;
         let name = wire_str(wire, wire_info);
@@ -162,14 +155,28 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     swriteln!(ctx.f);
 
                     for reset in resets {
-                        let (reg, value) = &reset.inner;
-                        let indent = Indent::new(2);
+                        let &(reg, ref value) = &reset.inner;
 
-                        let reg_str = reg_str(*reg, &ctx.module_info.registers[*reg]);
-                        let next = Stage::Next;
                         // TODO we actually shouldn't read anything here, maybe assert that
                         let value = ctx.eval(indent, reset.span, value, Stage::Next)?;
-                        swriteln!(ctx.f, "{indent}{next}_signals.{reg_str} = {value};");
+
+                        let indent = Indent::new(2);
+                        swrite!(ctx.f, "{indent}");
+
+                        let next = Stage::Next;
+                        match reg {
+                            IrSignal::Port(port) => {
+                                // TODO this is probably not correct
+                                let name = port_str(port, &ctx.module_info.ports[port]);
+                                swrite!(ctx.f, "*{next}_ports.{name}")
+                            }
+                            IrSignal::Wire(wire) => {
+                                let name = wire_str(wire, &ctx.module_info.wires[wire]);
+                                swrite!(ctx.f, "{next}_signals.{name}")
+                            }
+                        }
+
+                        swriteln!(ctx.f, " = {value};");
                     }
 
                     swriteln!(f_step, "}}");
@@ -256,27 +263,24 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 for (connection_index, connection) in enumerate(port_connections) {
                     let port_info = child_module_info.ports.get_by_index(connection_index).unwrap().1;
 
-                    let connection_str = match &connection.inner {
-                        IrPortConnection::Input(expr) => match expr.inner {
+                    let connection_str = match connection.inner {
+                        IrPortConnection::Input(expr) => match expr {
                             IrSignal::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
                             IrSignal::Wire(wire) => {
                                 format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
                             }
-                            IrSignal::Register(reg) => {
-                                format!("&signals.{}", reg_str(reg, &module_info.registers[reg]))
-                            }
                         },
-                        &IrPortConnection::Output(expr) => match expr {
+                        IrPortConnection::Output(expr) => match expr {
                             None => {
                                 // connect to dummy "signal"
                                 let port_ty = type_to_cpp(diags, connection.span, &port_info.ty)?;
                                 swriteln!(f_structs, "{I}{port_ty} dummy_{child_index}_{connection_index};");
                                 format!("&signals.dummy_{child_index}_{connection_index}")
                             }
-                            Some(IrWireOrPort::Port(port)) => {
+                            Some(IrSignal::Port(port)) => {
                                 format!("ports.{}", port_str(port, &module_info.ports[port]))
                             }
-                            Some(IrWireOrPort::Wire(wire)) => {
+                            Some(IrSignal::Wire(wire)) => {
                                 format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
                             }
                         },
@@ -394,10 +398,6 @@ impl CodegenBlockContext<'_> {
             }
             IrSignal::Wire(wire) => {
                 let name = wire_str(wire, &self.module_info.wires[wire]);
-                Evaluated::Inline(format!("{stage_read}_signals.{name}"))
-            }
-            IrSignal::Register(reg) => {
-                let name = reg_str(reg, &self.module_info.registers[reg]);
                 Evaluated::Inline(format!("{stage_read}_signals.{name}"))
             }
         }
@@ -830,11 +830,6 @@ impl CodegenBlockContext<'_> {
                 swrite!(target_str, "{next}_ports.{port_str}");
                 true
             }
-            IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
-                let reg_str = reg_str(reg, &self.module_info.registers[reg]);
-                swrite!(target_str, "{next}_signals.{reg_str}");
-                false
-            }
             IrSignalOrVariable::Signal(IrSignal::Wire(wire)) => {
                 let wire_str = wire_str(wire, &self.module_info.wires[wire]);
                 swrite!(target_str, "{next}_signals.{wire_str}");
@@ -937,14 +932,6 @@ fn wire_str(wire: IrWire, wire_info: &IrWireInfo) -> String {
         "wire",
         wire.inner(),
         wire_info.debug_info_id.inner.as_ref().map(String::as_ref),
-    )
-}
-
-fn reg_str(reg: IrRegister, reg_info: &IrRegisterInfo) -> String {
-    name_str(
-        "reg",
-        reg.inner(),
-        reg_info.debug_info_id.inner.as_ref().map(String::as_ref),
     )
 }
 

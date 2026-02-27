@@ -184,6 +184,7 @@ fn token_category(ty: TokenType) -> Option<Category> {
         // other keywords
         TokenType::Interface
         | TokenType::Ports
+        | TokenType::Port
         | TokenType::Instance
         | TokenType::Fn
         | TokenType::Comb

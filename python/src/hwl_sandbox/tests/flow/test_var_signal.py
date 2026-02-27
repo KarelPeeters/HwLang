@@ -10,7 +10,7 @@ def test_read_const_from_signal(tmp_dir: Path):
     src = """
     module top ports(clk: in clock, p: out async uint(8)) {
         wire w: uint(8);
-        reg r: uint(8) = undef;
+        wire r: uint(8);
         comb {
             w = 3;
             p = 4;
@@ -20,6 +20,7 @@ def test_read_const_from_signal(tmp_dir: Path):
             }
         }
         clocked(clk) {
+            reg wire r = undef;
             r = 5;
             const {
                 assert(r == 5);

@@ -1,16 +1,16 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
-    BlockStatementKind, ClockedBlock, ClockedBlockReset, CombinatorialBlock, CommonDeclaration, CommonDeclarationNamed,
-    CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration, EnumVariant, Expression,
-    ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration,
-    GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceView,
-    Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement,
-    MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
-    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegDeclaration,
-    RegOutPortMarker, RegisterDelay, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain,
-    TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind,
-    WireDeclarationKind,
+    BlockStatementKind, ClockedProcess, ClockedProcessReset, CombinatorialProcess, CommonDeclaration,
+    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration,
+    EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement,
+    FunctionDeclaration, GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
+    InterfaceListItem, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
+    MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
+    ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortOrWire,
+    PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
@@ -18,6 +18,11 @@ use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
 use std::ops::ControlFlow;
+
+// TODO rework this, especially:
+// * top-level decls in extra lists: match real compiler, eg. refcell and declare in root
+// * decls in extra list branches: find some correct tree-like structure for disjoint sets,
+//     and rework "certain" behavior
 
 pub fn syntax_visit<V: SyntaxVisitor>(
     source: &SourceDatabase,
@@ -325,10 +330,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     slf.visit_port_item(scope_ports, port)
                 })?;
 
+                self.visitor.report_range(body.span, Some(FoldRangeKind::Region));
                 let mut scope_body = scope_ports.new_child();
-                self.collect_module_body_pub_declarations(&mut scope_body, Conditional::Yes, body)?;
+                self.visit_extra_list(&mut scope_body, &body.inner, &mut |slf, scope, stmt| {
+                    slf.visit_module_statement(scope, stmt)
+                })?;
 
-                self.visit_block_module_inner(&mut scope_body, body)?;
                 ControlFlow::Continue(())
             }
             Item::ModuleExternal(decl) => {
@@ -863,6 +870,33 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
                 self.scope_declare(scope, Conditional::No, id.into())?;
             }
+            BlockStatementKind::RegisterDeclaration(decl) => {
+                let &RegisterDeclaration {
+                    span_keyword: _,
+                    kind,
+                    id,
+                    reset,
+                } = decl;
+
+                match kind {
+                    RegisterDeclarationKind::Existing(kind) => {
+                        let _: PortOrWire = kind.inner;
+
+                        self.visit_id_usage(scope, MaybeIdentifier::Identifier(id))?;
+                        self.visit_expression(scope, reset)?;
+                    }
+                    RegisterDeclarationKind::New(RegisterDeclarationNew { ty }) => {
+                        self.visit_id_decl(scope, MaybeIdentifier::Identifier(id))?;
+                        if let Some(ty) = ty {
+                            self.visit_expression(scope, ty)?;
+                        }
+                        self.visit_expression(scope, reset)?;
+
+                        let id_eval = eval_general_id(self.source, self.arena_expressions, id);
+                        scope.declare(Conditional::No, id.span(), id_eval);
+                    }
+                }
+            }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {
                     span: _,
@@ -913,283 +947,105 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn collect_module_body_pub_declarations(
-        &mut self,
-        scope_body: &mut DeclScope,
-        cond: Conditional,
-        curr_block: &Block<ModuleStatement>,
-    ) -> ControlFlow<V::Break> {
-        for stmt in &curr_block.statements {
-            match &stmt.inner {
-                // control flow
-                ModuleStatementKind::Block(block) => {
-                    self.collect_module_body_pub_declarations(scope_body, cond, block)?;
-                }
-                ModuleStatementKind::If(if_stmt) => {
-                    let IfStatement {
-                        span: _,
-                        initial_if,
-                        else_ifs,
-                        final_else,
-                    } = if_stmt;
+    fn visit_module_statement(&mut self, scope: &mut DeclScope, stmt: &ModuleStatement) -> ControlFlow<V::Break> {
+        self.visitor.report_range(stmt.span, None);
+        match &stmt.inner {
+            ModuleStatementKind::WireDeclaration(decl) => {
+                let &WireDeclaration {
+                    vis,
+                    span_keyword: _,
+                    id,
+                    kind,
+                } = decl;
 
-                    let IfCondBlockPair {
-                        span: _,
-                        span_if: _,
-                        cond: _,
-                        block,
-                    } = initial_if;
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
+                self.visit_id_decl(scope, id)?;
 
-                    for else_if in else_ifs {
-                        let IfCondBlockPair {
-                            span: _,
-                            span_if: _,
-                            cond: _,
-                            block,
-                        } = else_if;
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, block)?;
-                    }
-
-                    if let Some(final_else) = final_else {
-                        self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, final_else)?;
-                    }
-                }
-                ModuleStatementKind::For(for_stmt) => {
-                    let ForStatement {
-                        span_keyword: _,
-                        index: _,
-                        index_ty: _,
-                        iter: _,
-                        body,
-                    } = for_stmt;
-
-                    self.collect_module_body_pub_declarations(scope_body, Conditional::Yes, body)?;
-                }
-
-                // potentially public declarations
-                // TODO it's annoying that this messes up visiting order a bit, maybe we should only call the visitor
-                //   for these right next to the non-public visits
-                ModuleStatementKind::RegDeclaration(decl) => {
-                    let &RegDeclaration {
-                        vis,
-                        span_keyword: _,
-                        id,
-                        sync: _,
-                        ty: _,
-                        init: _,
-                    } = decl;
-                    match vis {
-                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
-                        Visibility::Private => {}
-                    }
-                }
-                ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration {
-                        vis,
-                        span_keyword: _,
-                        id,
-                        kind: _,
-                    } = decl;
-                    match vis {
-                        Visibility::Public { span: _ } => self.scope_declare(scope_body, cond, id)?,
-                        Visibility::Private => {}
-                    }
-                }
-
-                // no public declarations
-                ModuleStatementKind::CommonDeclaration(_) => {}
-                ModuleStatementKind::RegOutPortMarker(_) => {}
-                ModuleStatementKind::CombinatorialBlock(_) => {}
-                ModuleStatementKind::ClockedBlock(_) => {}
-                ModuleStatementKind::Instance(_) => {}
-            }
-        }
-
-        ControlFlow::Continue(())
-    }
-
-    fn visit_block_module(
-        &mut self,
-        scope_parent: &DeclScope,
-        block: &Block<ModuleStatement>,
-    ) -> ControlFlow<V::Break> {
-        let mut scope = scope_parent.new_child();
-        self.visit_block_module_inner(&mut scope, block)
-    }
-
-    fn visit_block_module_inner(
-        &mut self,
-        scope: &mut DeclScope,
-        block: &Block<ModuleStatement>,
-    ) -> ControlFlow<V::Break> {
-        let &Block { span, ref statements } = block;
-        check_skip!(self, span);
-        self.visitor.report_range(span, Some(FoldRangeKind::Region));
-
-        // match the two-pass system from real elaboration
-        for stmt in statements {
-            self.visitor.report_range(stmt.span, None);
-
-            match &stmt.inner {
-                ModuleStatementKind::CommonDeclaration(decl) => {
-                    self.visit_common_declaration(scope, decl)?;
-                }
-                ModuleStatementKind::RegDeclaration(decl) => {
-                    let &RegDeclaration {
-                        vis,
-                        span_keyword: _,
-                        id,
-                        sync,
-                        ty,
-                        init,
-                    } = decl;
-
-                    if let Some(sync) = sync {
-                        self.visitor.report_range(sync.span, None);
-                        self.visit_domain_sync(scope, sync.inner)?;
-                    }
-                    self.visit_expression(scope, ty)?;
-                    self.visit_expression(scope, init)?;
-
-                    self.visit_maybe_general(scope, id)?;
-                    match vis {
-                        Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
-                    }
-                }
-                ModuleStatementKind::WireDeclaration(decl) => {
-                    let &WireDeclaration {
-                        vis,
-                        span_keyword: _,
-                        id,
-                        kind,
-                    } = decl;
-
-                    match kind {
-                        WireDeclarationKind::Normal {
-                            domain_ty,
-                            assign_span_and_value,
-                        } => {
-                            match domain_ty {
-                                WireDeclarationDomainTyKind::Clock { span_clock: _ } => {}
-                                WireDeclarationDomainTyKind::Normal { domain, ty } => {
-                                    if let Some(domain) = domain {
-                                        self.visit_domain(scope, domain)?;
-                                    }
-                                    if let Some(ty) = ty {
-                                        self.visit_expression(scope, ty)?;
-                                    }
+                match kind {
+                    WireDeclarationKind::Normal {
+                        domain_ty,
+                        assign_span_and_value,
+                    } => {
+                        match domain_ty {
+                            WireDeclarationDomainTyKind::Clock { span_clock: _ } => {}
+                            WireDeclarationDomainTyKind::Normal { domain, ty } => {
+                                if let Some(domain) = domain {
+                                    self.visit_domain(scope, domain)?;
+                                }
+                                if let Some(ty) = ty {
+                                    self.visit_expression(scope, ty)?;
                                 }
                             }
-
-                            if let Some((_, value)) = assign_span_and_value {
-                                self.visit_expression(scope, value)?;
-                            }
                         }
-                        WireDeclarationKind::Interface {
-                            domain,
-                            span_keyword: _,
-                            interface,
-                        } => {
-                            if let Some(domain) = domain {
-                                self.visit_domain(scope, domain)?;
-                            }
-                            self.visit_expression(scope, interface)?;
+
+                        if let Some((_, value)) = assign_span_and_value {
+                            self.visit_expression(scope, value)?;
                         }
                     }
-
-                    self.visit_maybe_general(scope, id)?;
-                    match vis {
-                        Visibility::Public { span: _ } => {}
-                        Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
+                    WireDeclarationKind::Interface {
+                        domain,
+                        span_keyword: _,
+                        interface,
+                    } => {
+                        if let Some(domain) = domain {
+                            self.visit_domain(scope, domain)?;
+                        }
+                        self.visit_expression(scope, interface)?;
                     }
                 }
-                ModuleStatementKind::RegOutPortMarker(decl) => {
-                    let &RegOutPortMarker { id, init } = decl;
-                    self.visit_expression(scope, init)?;
-                    self.visit_id_usage(scope, id.into())?;
-                }
 
-                // no declarations, handled in the second pass
-                //   (pub declarations have been handled earlier already)
-                ModuleStatementKind::Block(_) => {}
-                ModuleStatementKind::If(_) => {}
-                ModuleStatementKind::For(_) => {}
-                ModuleStatementKind::CombinatorialBlock(_) => {}
-                ModuleStatementKind::ClockedBlock(_) => {}
-                ModuleStatementKind::Instance(_) => {}
+                match vis {
+                    Visibility::Public { span: _ } => {}
+                    Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
+                }
             }
-        }
-
-        for stmt in statements {
-            self.visitor.report_range(stmt.span, None);
-
-            match &stmt.inner {
-                ModuleStatementKind::Block(block) => {
-                    self.visit_block_module(scope, block)?;
+            ModuleStatementKind::CombinatorialProcess(stmt) => {
+                let CombinatorialProcess { span_keyword: _, block } = stmt;
+                self.visit_block_statements(scope, block)?;
+            }
+            ModuleStatementKind::ClockedProcess(stmt) => {
+                let &ClockedProcess {
+                    span_keyword: _,
+                    span_domain,
+                    clock,
+                    reset,
+                    ref block,
+                } = stmt;
+                self.visitor.report_range(span_domain, None);
+                self.visit_expression(scope, clock)?;
+                if let Some(reset) = reset {
+                    self.visitor.report_range(reset.span, None);
+                    let ClockedProcessReset { kind: _, signal } = reset.inner;
+                    self.visit_expression(scope, signal)?;
                 }
-                ModuleStatementKind::If(stmt) => {
-                    self.visit_if_stmt(scope, stmt, &mut |slf, s, b| slf.visit_block_module(s, b))?;
-                }
-                ModuleStatementKind::For(stmt) => {
-                    self.visit_for_stmt(scope, stmt, |slf, s, b| slf.visit_block_module(s, b))?
-                }
-                ModuleStatementKind::CombinatorialBlock(stmt) => {
-                    let CombinatorialBlock { span_keyword: _, block } = stmt;
-                    self.visit_block_statements(scope, block)?;
-                }
-                ModuleStatementKind::ClockedBlock(stmt) => {
-                    let &ClockedBlock {
-                        span_keyword: _,
-                        span_domain,
-                        clock,
-                        reset,
-                        ref block,
-                    } = stmt;
-                    self.visitor.report_range(span_domain, None);
-                    self.visit_expression(scope, clock)?;
-                    if let Some(reset) = reset {
-                        self.visitor.report_range(reset.span, None);
-                        let ClockedBlockReset { kind: _, signal } = reset.inner;
-                        self.visit_expression(scope, signal)?;
-                    }
-                    self.visit_block_statements(scope, block)?;
-                }
-                ModuleStatementKind::Instance(stmt) => {
-                    let &ModuleInstance {
-                        name: _,
-                        span_keyword: _,
-                        module,
-                        ref port_connections,
-                    } = stmt;
+                self.visit_block_statements(scope, block)?;
+            }
+            ModuleStatementKind::Instance(stmt) => {
+                let &ModuleInstance {
+                    name: _,
+                    span_keyword: _,
+                    module,
+                    ref port_connections,
+                } = stmt;
 
-                    self.visit_expression(scope, module)?;
+                self.visit_expression(scope, module)?;
 
-                    self.visitor.report_range(port_connections.span, None);
+                self.visitor.report_range(port_connections.span, None);
 
-                    let mut scope_connections = DeclScope::new_child(scope);
-                    self.visit_extra_list(
-                        &mut scope_connections,
-                        &port_connections.inner,
-                        &mut |slf, scope_connections, connection| {
-                            slf.visitor.report_range(connection.span(), None);
+                let mut scope_connections = DeclScope::new_child(scope);
+                self.visit_extra_list(
+                    &mut scope_connections,
+                    &port_connections.inner,
+                    &mut |slf, scope_connections, connection| {
+                        slf.visitor.report_range(connection.span(), None);
 
-                            let &PortConnection { id, expr } = connection;
-                            // TODO try resolving port name, needs type info
-                            let _ = id;
-                            slf.visit_expression(scope_connections, expr.expr())?;
+                        let &PortConnection { id, expr } = connection;
+                        // TODO try resolving port name, needs type info
+                        let _ = id;
+                        slf.visit_expression(scope_connections, expr.expr())?;
 
-                            ControlFlow::Continue(())
-                        },
-                    )?;
-                }
-
-                // declarations, already handled in the first pass
-                ModuleStatementKind::CommonDeclaration(_) => {}
-                ModuleStatementKind::RegDeclaration(_) => {}
-                ModuleStatementKind::WireDeclaration(_) => {}
-                ModuleStatementKind::RegOutPortMarker(_) => {}
+                        ControlFlow::Continue(())
+                    },
+                )?;
             }
         }
 
@@ -1373,17 +1229,6 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, value)?;
                 self.visit_domain(scope, domain)?;
             }
-            ExpressionKind::RegisterDelay(delay) => {
-                let &RegisterDelay {
-                    span_keyword: _,
-                    value,
-                    init,
-                } = delay;
-                self.visitor.report_range(value.span.join(init.span), None);
-                self.visit_expression(scope, value)?;
-                self.visit_expression(scope, init)?;
-            }
-
             ExpressionKind::Dummy
             | ExpressionKind::Undefined
             | ExpressionKind::Type
@@ -1396,7 +1241,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 
     // TODO what is the difference between this and visit_id_usage?
-    fn visit_maybe_general(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
+    // TODO refactor all id visiting functions, we have a bunch of partially overlapping ones
+    fn visit_id_decl(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
         self.visitor.report_range(id.span(), None);
 
         match id {

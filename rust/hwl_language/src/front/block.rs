@@ -2,25 +2,28 @@ use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::expression::ForIterator;
-use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
+use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, ImplicationContradiction, RegisterInfo, VariableId};
 use crate::front::flow::{FlowKind, VariableInfo};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::ScopedEntry;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::types::{Type, TypeBool};
-use crate::front::value::{CompileValue, MaybeCompile, SimpleCompileValue, Value};
+use crate::front::signal::{Signal, WireInfo, WireInfoSingle};
+use crate::front::types::{NonHardwareType, Type, TypeBool, Typed};
+use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::ir::{IrBlock, IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement};
 use crate::syntax::ast::{
-    Block, BlockStatement, BlockStatementKind, ConstBlock, ForStatement, IfCondBlockPair, IfStatement, ReturnStatement,
+    Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ForStatement, IfCondBlockPair, IfStatement,
+    MaybeIdentifier, PortOrWire, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement,
     VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
-use crate::util::data::VecExt;
+use crate::util::data::{IndexMapExt, VecExt};
 use itertools::{Either, enumerate};
 use unwrap_match::unwrap_match;
 
@@ -378,8 +381,9 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: &BlockStatement,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let refs = self.refs;
+        let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
 
         let stmt_span = stmt.span;
         let end = match &stmt.inner {
@@ -428,13 +432,215 @@ impl CompileItemContext<'_, '_> {
 
                 // store initial value if there is one
                 if let Some(init) = init {
-                    flow.var_set(self.refs, var, decl.span, Ok(init.inner))?;
+                    flow.var_set(refs, var, decl.span, Ok(init.inner))?;
                 }
 
                 // declare entry
                 let entry = ScopedEntry::Named(NamedValue::Variable(var));
-                let id = Ok(id.spanned_str(self.refs.fixed.source));
+                let id = Ok(id.spanned_str(refs.fixed.source));
                 scope.maybe_declare(diags, id, Ok(entry));
+
+                BlockEnd::Normal
+            }
+            BlockStatementKind::RegisterDeclaration(decl) => {
+                let &RegisterDeclaration {
+                    span_keyword,
+                    kind,
+                    id,
+                    reset,
+                } = decl;
+
+                // eval id
+                let id = self.eval_general_id(scope, flow, id)?;
+                let id = id.as_ref().map_inner(|id| id.as_ref());
+
+                // check that we're in a clocked process
+                let flow = flow.require_hardware(stmt_span, "register declaration")?;
+                let err_process_kind = |kind: &str, span: Span| {
+                    Err(DiagnosticError::new(
+                        "registers cannot be declared outside of clocked processes",
+                        stmt_span,
+                        "trying to declare register here",
+                    )
+                    .add_info(span, format!("currently inside {kind}"))
+                    .report(diags))
+                };
+                let (domain, registers) = match flow.process_kind() {
+                    HardwareProcessKind::ClockedProcessBody {
+                        span_keyword: _,
+                        domain,
+                        registers,
+                    } => (*domain, registers),
+                    &mut HardwareProcessKind::CombinatorialProcessBody { span_keyword, .. } => {
+                        return err_process_kind("a combinatorial process", span_keyword);
+                    }
+                    &mut HardwareProcessKind::WireExpression { span_init, .. } => {
+                        return err_process_kind("a wire declaration", span_init);
+                    }
+                    &mut HardwareProcessKind::InstancePortConnection { span_connection, .. } => {
+                        return err_process_kind("an instance port connection", span_connection);
+                    }
+                };
+
+                let signal = match kind {
+                    RegisterDeclarationKind::Existing(signal_kind) => {
+                        let found = scope.find(diags, id)?;
+
+                        let err_entry_kind = |entry_kind: &str| {
+                            Err(DiagnosticError::new(
+                                format!("expected {} for register declaration", signal_kind.inner.str()),
+                                id.span,
+                                format!("found {entry_kind}"),
+                            )
+                            .add_info(signal_kind.span, "due to signal kind set here")
+                            .add_info(found.defining_span, "found entry declared here")
+                            .add_footer_hint("the register kind must match the actual signal kind")
+                            .add_footer_hint("to declare a new register, remove the signal kind")
+                            .report(diags))
+                        };
+
+                        let signal = match found.value {
+                            ScopedEntry::Item(_) => return err_entry_kind("item"),
+                            ScopedEntry::Named(value) => match value {
+                                NamedValue::Port(port) => match signal_kind.inner {
+                                    PortOrWire::Port => Signal::Port(port),
+                                    PortOrWire::Wire => return err_entry_kind("wire"),
+                                },
+                                NamedValue::Wire(wire) => match signal_kind.inner {
+                                    PortOrWire::Port => return err_entry_kind("port"),
+                                    PortOrWire::Wire => Signal::Wire(wire),
+                                },
+
+                                NamedValue::Variable(_) => return err_entry_kind("variable"),
+                                NamedValue::PortInterface(_) => return err_entry_kind("port interface"),
+                                NamedValue::WireInterface(_) => return err_entry_kind("wire interface"),
+                            },
+                        };
+
+                        // check that this is the first register declaration in this block with this signal
+                        if let Some(prev_info) = registers.get(&signal) {
+                            let diag = DiagnosticError::new(
+                                format!(
+                                    "{} already marked as a register in this process",
+                                    signal_kind.inner.str()
+                                ),
+                                stmt_span,
+                                "trying to mark as register here",
+                            )
+                            .add_info(prev_info.span, "previous declaration here")
+                            .report(diags);
+                            return Err(diag);
+                        }
+
+                        signal
+                    }
+                    RegisterDeclarationKind::New(new) => {
+                        let RegisterDeclarationNew { ty } = new;
+
+                        // eval ty
+                        let ty = ty
+                            .map(|ty| self.eval_expression_as_ty_hardware(scope, flow, ty, "register type"))
+                            .transpose()?;
+
+                        // create new wire
+                        let wire = self.wires.push(WireInfo::Single(WireInfoSingle {
+                            id: MaybeIdentifier::Identifier(id.map_inner(str::to_owned)),
+                            domain: Ok(None),
+                            typed: Ok(None),
+                        }));
+
+                        // suggest type
+                        if let Some(ty) = ty {
+                            self.wires[wire].suggest_ty(
+                                refs,
+                                &self.wire_interfaces,
+                                flow.get_ir_wires(),
+                                ty.as_ref(),
+                            )?;
+                        }
+
+                        // declare in scope
+                        scope.declare(diags, Ok(id), Ok(ScopedEntry::Named(NamedValue::Wire(wire))));
+
+                        Signal::Wire(wire)
+                    }
+                };
+
+                // suggest domain
+                let domain = domain.map_inner(ValueDomain::Sync);
+                let domain_signal = signal.suggest_domain(self, domain)?;
+                self.check_valid_domain_crossing(span_keyword, domain_signal, domain, "register driving signal")?;
+
+                // eval reset value, possibly suggesting a type
+                let reset_value = match self.refs.get_expr(reset) {
+                    ExpressionKind::Undefined => MaybeUndefined::Undefined,
+                    _ => {
+                        // figure out expected type
+                        let signal_ty = match signal {
+                            Signal::Port(port) => Some(self.ports[port].ty.as_ref()),
+                            Signal::Wire(wire) => self.wires[wire]
+                                .typed_maybe(refs, &self.wire_interfaces)?
+                                .map(|info| info.ty),
+                        };
+                        let expected_ty = signal_ty.map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
+                        let signal_ty_is_none = signal_ty.is_none();
+
+                        // eval expression
+                        let reason = Spanned::new(stmt_span, "register reset value");
+                        let reset_value = self.eval_expression_as_compile(scope, flow, &expected_ty, reset, reason)?;
+
+                        // suggest ty
+                        if signal_ty_is_none {
+                            let reset_ty = reset_value.inner.ty();
+                            let reset_ty = reset_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
+                                diags.report_error_simple(
+                                    "register reset value must be representable in hardware",
+                                    reset_value.span,
+                                    format!("got type `{}`", reset_ty.value_string(elab)),
+                                )
+                            })?;
+                            signal.suggest_ty(self, flow.get_ir_wires(), Spanned::new(reset.span, &reset_ty))?;
+                        }
+
+                        // check reset value type
+                        let signal_ty = signal.expect_ty(self, id.span)?.cloned();
+                        let reason = TypeContainsReason::Assignment {
+                            span_target: id.span,
+                            span_target_ty: signal_ty.span,
+                        };
+                        check_type_contains_value(
+                            diags,
+                            elab,
+                            reason,
+                            &signal_ty.inner.as_type(),
+                            reset_value.as_ref(),
+                        )?;
+
+                        // convert reset value to ir expression
+                        let reset_ir = reset_value.inner.as_ir_expression_unchecked(
+                            refs,
+                            &mut self.large,
+                            reset.span,
+                            &signal_ty.inner,
+                        )?;
+                        MaybeUndefined::Defined(reset_ir)
+                    }
+                };
+
+                // collect info
+                let signal_ir = signal.expect_ir(self, id.span)?;
+                let register_info = RegisterInfo {
+                    span: stmt_span,
+                    ir: signal_ir,
+                    reset: Spanned::new(reset.span, reset_value),
+                };
+
+                // re-borrow process kind to store register info
+                let registers = match flow.process_kind() {
+                    HardwareProcessKind::ClockedProcessBody { registers, .. } => registers,
+                    _ => unreachable!(),
+                };
+                registers.insert_first(signal, register_info);
 
                 BlockEnd::Normal
             }
@@ -485,7 +691,7 @@ impl CompileItemContext<'_, '_> {
                     .map(|value| self.eval_expression_with_implications(scope, flow, expected_ty, value))
                     .transpose()?;
 
-                check_function_return_type_and_set_value(self.refs, flow, entry, stmt_span, span_return, value)?;
+                check_function_return_type_and_set_value(refs, flow, entry, stmt_span, span_return, value)?;
 
                 BlockEnd::CompileExit(EarlyExitKind::Return)
             }

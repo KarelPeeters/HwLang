@@ -6,8 +6,7 @@ use crate::front::print::PrintHandler;
 use crate::front::scope::{DeclaredValueSingle, FileScope, ScopedEntry};
 use crate::front::signal::Signal;
 use crate::front::signal::{
-    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Register, RegisterInfo, Wire, WireInfo, WireInterface,
-    WireInterfaceInfo,
+    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, SimpleCompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_cycles;
@@ -278,12 +277,11 @@ pub struct CompileItemContext<'a, 's> {
     // TODO maybe inline this
     pub refs: CompileRefs<'a, 's>,
 
-    // TODO all of this should be part of some kind of ComputeModuleContext, instead of CompileItemContext
+    // TODO all of this should really be part of some kind of CompileModuleContext, instead of CompileItemContext
     pub ports: ArenaPorts,
     pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub wire_interfaces: Arena<WireInterface, WireInterfaceInfo>,
-    pub registers: Arena<Register, RegisterInfo>,
     pub large: IrLargeArena,
 
     pub origin: Option<AstRefItem>,
@@ -328,7 +326,6 @@ impl<'a, 's> CompileItemContext<'a, 's> {
             port_interfaces,
             wires: Arena::new(),
             wire_interfaces: Arena::new(),
-            registers: Arena::new(),
             large: IrLargeArena::new(),
             origin,
             call_stack: vec![],
@@ -794,7 +791,6 @@ impl CompileItemContext<'_, '_> {
                     let typed = self.wires[wire].expect_typed(self.refs, &self.wire_interfaces, signal_span)?;
                     IrSignal::Wire(typed.ir)
                 }
-                Signal::Register(reg) => IrSignal::Register(self.registers[reg].ir),
             };
             Ok(signal_ir)
         })

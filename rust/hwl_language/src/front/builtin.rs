@@ -80,10 +80,6 @@ impl CompileItemContext<'_, '_> {
                     self,
                     Spanned::new(id.span, SignalOrVariable::Signal(Signal::Wire(wire))),
                 )?,
-                NamedValue::Register(reg) => flow.type_of(
-                    self,
-                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Register(reg))),
-                )?,
                 NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
                     return Err(diags.report_error_todo(expr_span, "typeof for interfaces"));
                 }

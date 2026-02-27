@@ -191,11 +191,9 @@ const c = [
 }
 
 #[test]
-fn pub_wire_reg() {
+fn pub_wire() {
     let src_wire = "module foo ports() {\n    pub wire a = false;\n}\n";
     assert_formatted(src_wire);
-    let src_reg = "module foo ports() {\n    pub reg a: bool = false;\n}\n";
-    assert_formatted(src_reg);
 }
 
 #[test]

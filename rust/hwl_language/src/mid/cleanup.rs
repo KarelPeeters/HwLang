@@ -21,7 +21,6 @@ pub fn cleanup(db: &mut IrDatabase) {
 pub fn cleanup_module(ir: &mut IrModuleInfo) {
     let IrModuleInfo {
         ports: _,
-        registers: _,
         wires: _,
         large,
         children,

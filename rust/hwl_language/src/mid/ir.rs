@@ -46,13 +46,11 @@ pub enum IrType {
 new_index_type!(pub IrModule);
 new_index_type!(pub IrPort);
 new_index_type!(pub IrWire);
-new_index_type!(pub IrRegister);
 new_index_type!(pub IrVariable);
 
 #[derive(Debug, Clone)]
 pub struct IrModuleInfo {
     pub ports: Arena<IrPort, IrPortInfo>,
-    pub registers: Arena<IrRegister, IrRegisterInfo>,
     pub wires: Arena<IrWire, IrWireInfo>,
     pub large: IrLargeArena,
 
@@ -71,15 +69,6 @@ pub struct IrPortInfo {
 
     pub debug_span: Span,
     pub debug_info_ty: Spanned<String>,
-    pub debug_info_domain: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct IrRegisterInfo {
-    pub ty: IrType,
-
-    pub debug_info_id: Spanned<Option<String>>,
-    pub debug_info_ty: String,
     pub debug_info_domain: String,
 }
 
@@ -121,7 +110,7 @@ pub struct IrClockedProcess {
 pub struct IrAsyncResetInfo {
     pub signal: Spanned<Polarized<IrSignal>>,
     // TODO make this a constant instead of an arbitrary expression, or maybe a "SimpleExpression"
-    pub resets: Vec<Spanned<(IrRegister, IrExpression)>>,
+    pub resets: Vec<Spanned<(IrSignal, IrExpression)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,10 +136,16 @@ pub struct IrModuleExternalInstance {
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum IrPortConnection {
-    Input(Spanned<IrSignal>),
-    Output(Option<IrWireOrPort>),
+    Input(IrSignal),
+    Output(Option<IrSignal>),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
+pub enum IrSignal {
+    Port(IrPort),
+    Wire(IrWire),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
@@ -159,22 +154,8 @@ pub enum IrSignalOrVariable {
     Variable(IrVariable),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
-pub enum IrSignal {
-    Port(IrPort),
-    Wire(IrWire),
-    Register(IrRegister),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, From)]
-pub enum IrWireOrPort {
-    Port(IrPort),
-    Wire(IrWire),
-}
-
 pub type IrPorts = Arena<IrPort, IrPortInfo>;
 pub type IrWires = Arena<IrWire, IrWireInfo>;
-pub type IrRegisters = Arena<IrRegister, IrRegisterInfo>;
 pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
 
 #[derive(Debug, Clone)]
@@ -496,7 +477,6 @@ impl IrExpression {
             &IrExpression::Signal(signal) => match signal {
                 IrSignal::Port(port) => module.ports[port].ty.clone(),
                 IrSignal::Wire(wire) => module.wires[wire].ty.clone(),
-                IrSignal::Register(reg) => module.registers[reg].ty.clone(),
             },
             &IrExpression::Variable(var) => locals[var].ty.clone(),
 
@@ -727,15 +707,6 @@ impl Polarized<IrSignal> {
     }
 }
 
-impl IrWireOrPort {
-    pub fn as_signal(self) -> IrSignal {
-        match self {
-            IrWireOrPort::Wire(wire) => IrSignal::Wire(wire),
-            IrWireOrPort::Port(port) => IrSignal::Port(port),
-        }
-    }
-}
-
 impl IrSignalOrVariable {
     pub fn as_expression(self) -> IrExpression {
         match self {
@@ -753,12 +724,6 @@ impl From<IrPort> for IrSignalOrVariable {
 
 impl From<IrWire> for IrSignalOrVariable {
     fn from(value: IrWire) -> Self {
-        IrSignalOrVariable::Signal(value.into())
-    }
-}
-
-impl From<IrRegister> for IrSignalOrVariable {
-    fn from(value: IrRegister) -> Self {
         IrSignalOrVariable::Signal(value.into())
     }
 }

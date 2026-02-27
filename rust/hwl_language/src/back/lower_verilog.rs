@@ -5,9 +5,9 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrRegister, IrRegisterInfo, IrSignal,
-    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, IrWireOrPort, ValueAccess,
+    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable,
+    IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
+    IrWireInfo, ValueAccess,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -254,13 +254,12 @@ struct ModuleNameMap<'n> {
     dummy_name: &'n LoweredName,
     ports: &'n IndexMap<IrPort, Result<LoweredName, ZeroWidth>>,
     wires: &'n IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
-    regs: &'n IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
 }
 
 #[derive(Debug, Copy, Clone)]
 struct ProcessNameMap<'n> {
     module_name_map: ModuleNameMap<'n>,
-    regs_shadowed: &'n IndexMap<IrRegister, LoweredName>,
+    shadow_name_map: &'n IndexMap<IrSignal, LoweredName>,
     variables: &'n IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>,
 }
 
@@ -269,19 +268,16 @@ impl<'n> ModuleNameMap<'n> {
         match s {
             IrSignal::Port(port) => self.ports.get(&port).unwrap().as_ref_ok(),
             IrSignal::Wire(wire) => self.wires.get(&wire).unwrap().as_ref_ok(),
-            IrSignal::Register(reg) => self.regs.get(&reg).unwrap().as_ref_ok(),
         }
     }
 }
 
 impl<'n> ProcessNameMap<'n> {
     pub fn read_signal(&self, signal: IrSignal) -> Result<&'n LoweredName, ZeroWidth> {
-        match signal {
-            IrSignal::Port(_) | IrSignal::Wire(_) => self.module_name_map.map_signal(signal),
-            IrSignal::Register(reg) => match self.regs_shadowed.get(&reg) {
-                Some(name) => Ok(name),
-                None => self.module_name_map.map_signal(signal),
-            },
+        if let Some(name) = self.shadow_name_map.get(&signal) {
+            Ok(name)
+        } else {
+            self.module_name_map.map_signal(signal)
         }
     }
 
@@ -304,7 +300,6 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     let IrModuleInfo {
         ports,
         large: _,
-        registers,
         wires,
         children: _,
         debug_info_location,
@@ -341,11 +336,10 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     swriteln!(f, ");");
 
     let mut newline_module = NewlineGenerator::new();
-    let (reg_name_map, wire_name_map) = lower_module_signals(
+    let wire_name_map = lower_module_wires(
         diags,
         &mut module_name_scope,
         &signals_driven_by_instances,
-        registers,
         wires,
         &mut newline_module,
         &mut f,
@@ -366,7 +360,6 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         dummy_name: &dummy_name,
         ports: &port_name_map,
         wires: &wire_name_map,
-        regs: &reg_name_map,
     };
 
     lower_module_statements(
@@ -391,7 +384,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
 fn lower_module_ports(
     diags: &Diagnostics,
-    signals_driven_by_child_instances: &IndexSet<IrWireOrPort>,
+    signals_driven_by_child_instances: &IndexSet<IrSignal>,
     ports: &Arena<IrPort, IrPortInfo>,
     module_name_scope: &mut LoweredNameScope,
     f: &mut String,
@@ -426,7 +419,7 @@ fn lower_module_ports(
         let dir_str = match direction {
             PortDirection::Input => "input",
             PortDirection::Output => {
-                if signals_driven_by_child_instances.contains(&IrWireOrPort::Port(port)) {
+                if signals_driven_by_child_instances.contains(&IrSignal::Port(port)) {
                     "output"
                 } else {
                     "output reg"
@@ -468,7 +461,7 @@ fn lower_module_ports(
 }
 
 // TODO Handle signals partially driven by different drivers? Or will that not be supported?
-fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrWireOrPort> {
+fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrSignal> {
     let mut signals = IndexSet::new();
 
     let mut visit_connections = |connections: &Vec<Spanned<IrPortConnection>>| {
@@ -496,74 +489,15 @@ fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrWire
     signals
 }
 
-fn lower_module_signals(
+fn lower_module_wires(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
-    signals_driven_by_child_instances: &IndexSet<IrWireOrPort>,
-    registers: &Arena<IrRegister, IrRegisterInfo>,
+    signals_driven_by_child_instances: &IndexSet<IrSignal>,
     wires: &Arena<IrWire, IrWireInfo>,
     newline: &mut NewlineGenerator,
     f: &mut String,
-) -> DiagResult<(
-    IndexMap<IrRegister, Result<LoweredName, ZeroWidth>>,
-    IndexMap<IrWire, Result<LoweredName, ZeroWidth>>,
-)> {
-    let mut lower_signal = |verilog_kind,
-                            signal_kind,
-                            ty,
-                            debug_info_id: &Spanned<Option<String>>,
-                            debug_info_ty: &String,
-                            debug_info_domain,
-                            newline: &mut NewlineGenerator,
-                            f: &mut String| {
-        // skip zero-width signals
-        let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_id.span, ty)? {
-            Ok(ty) => ty,
-            Err(ZeroWidth) => return Ok(Err(ZeroWidth)),
-        };
-        let ty_prefix = ty_verilog.prefix();
-
-        // pick a unique name
-        let debug_info_id = maybe_id_as_ref(debug_info_id);
-        let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
-
-        // figure out debug info
-        let debug_name = debug_info_id.inner.unwrap_or("_");
-
-        // actually write the verilog
-        newline.start_item(f);
-        swriteln!(
-            f,
-            "{I}{verilog_kind} {ty_prefix}{name}; // {signal_kind} {debug_name}: {debug_info_domain} {debug_info_ty}"
-        );
-
-        Ok(Ok(name))
-    };
-
-    let mut reg_name_map = IndexMap::new();
+) -> DiagResult<IndexMap<IrWire, Result<LoweredName, ZeroWidth>>> {
     let mut wire_name_map = IndexMap::new();
-
-    newline.start_group();
-    for (register, register_info) in registers {
-        let IrRegisterInfo {
-            ty,
-            debug_info_id,
-            debug_info_ty,
-            debug_info_domain,
-        } = register_info;
-
-        let name = lower_signal(
-            "reg",
-            "reg",
-            ty,
-            debug_info_id,
-            debug_info_ty,
-            debug_info_domain,
-            newline,
-            f,
-        )?;
-        reg_name_map.insert_first(register, name);
-    }
 
     newline.start_group();
     for (wire, wire_info) in wires {
@@ -574,26 +508,43 @@ fn lower_module_signals(
             debug_info_domain,
         } = &wire_info;
 
-        let verilog_kind = if signals_driven_by_child_instances.contains(&IrWireOrPort::Wire(wire)) {
-            "wire"
-        } else {
-            "reg"
+        let name = match VerilogType::new_from_ir(diags, debug_info_id.span, ty)? {
+            Err(ZeroWidth) => {
+                // skip zero-width signals
+                Err(ZeroWidth)
+            }
+            Ok(ty_verilog) => {
+                let ty_prefix = ty_verilog.prefix();
+
+                // figure out verilog kind
+                let verilog_kind = if signals_driven_by_child_instances.contains(&IrSignal::Wire(wire)) {
+                    "wire"
+                } else {
+                    "reg"
+                };
+
+                // pick a unique name
+                let debug_info_id = maybe_id_as_ref(debug_info_id);
+                let name = module_name_scope.make_unique_maybe_id(diags, debug_info_id)?;
+
+                // figure out debug info
+                let debug_name = debug_info_id.inner.unwrap_or("_");
+
+                // actually write the verilog
+                newline.start_item(f);
+                swriteln!(
+                    f,
+                    "{I}{verilog_kind} {ty_prefix}{name}; // wire {debug_name}: {debug_info_domain} {debug_info_ty}"
+                );
+
+                Ok(name)
+            }
         };
 
-        let name = lower_signal(
-            verilog_kind,
-            "wire",
-            ty,
-            debug_info_id,
-            debug_info_ty,
-            debug_info_domain,
-            newline,
-            f,
-        )?;
         wire_name_map.insert_first(wire, name);
     }
 
-    Ok((reg_name_map, wire_name_map))
+    Ok(wire_name_map)
 }
 
 fn lower_module_statements(
@@ -726,7 +677,7 @@ fn lower_port_connections<S: AsRef<str>>(
 
         match connection.inner {
             IrPortConnection::Input(expr) => {
-                let signal_name = unwrap_zero_width(parent_name_map.map_signal(expr.inner));
+                let signal_name = unwrap_zero_width(parent_name_map.map_signal(expr));
                 swrite!(f, "{signal_name}");
             }
             IrPortConnection::Output(signal) => {
@@ -735,7 +686,7 @@ fn lower_port_connections<S: AsRef<str>>(
                         // write nothing, resulting in an empty `()`
                     }
                     Some(signal) => {
-                        let signal_name = unwrap_zero_width(parent_name_map.map_signal(signal.as_signal()));
+                        let signal_name = unwrap_zero_width(parent_name_map.map_signal(signal));
                         swrite!(f, "{signal_name}");
                     }
                 }
@@ -786,7 +737,7 @@ fn lower_combinatorial_process(
     // combinatorial processes don't have register shadowing, they can't write to any
     let process_name_map = ProcessNameMap {
         module_name_map,
-        regs_shadowed: &IndexMap::default(),
+        shadow_name_map: &IndexMap::default(),
         variables: &variables,
     };
 
@@ -796,6 +747,7 @@ fn lower_combinatorial_process(
         large: &module_info.large,
         module: module_info,
         locals,
+        is_clocked_process: false,
         name_map: process_name_map,
         name_scope: &mut name_scope,
         temporaries: &temporaries,
@@ -853,11 +805,12 @@ fn lower_clocked_process(
 
     let variables =
         declare_and_init_variables(diags, &mut f_decl, &mut f_init, Indent::new(2), &mut name_scope, locals)?;
-    let reg_name_map_shadowed = declare_shadow_registers(
+    let shadow_name_map = declare_shadow_signals(
         diags,
         &mut f_decl,
+        &module_info.ports,
+        &module_info.wires,
         &mut name_scope,
-        &module_info.registers,
         &shadow_regs,
     )?;
 
@@ -865,17 +818,17 @@ fn lower_clocked_process(
     let process_name_map = ProcessNameMap {
         module_name_map,
         variables: &variables,
-        regs_shadowed: &reg_name_map_shadowed,
+        shadow_name_map: &shadow_name_map,
     };
 
-    // populate shadow registers
-    for (&reg, reg_name_shadow) in &reg_name_map_shadowed {
-        if shadow_regs.contains(&reg) {
-            let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
+    // populate shadow signals
+    for (&signal, signal_name_shadow) in &shadow_name_map {
+        if shadow_regs.contains(&signal) {
+            let reg_name_raw = match module_name_map.map_signal(signal) {
                 Ok(orig_name) => orig_name,
                 Err(ZeroWidth) => continue,
             };
-            swriteln!(f_body, "{indent_clocked}{reg_name_shadow} = {reg_name_raw};");
+            swriteln!(f_body, "{indent_clocked}{signal_name_shadow} = {reg_name_raw};");
         }
     }
     let pos_end_of_shadow_init = f_body.len();
@@ -887,6 +840,7 @@ fn lower_clocked_process(
         large: &module_info.large,
         module: module_info,
         locals,
+        is_clocked_process: true,
         name_map: process_name_map,
         name_scope: &mut name_scope,
         temporaries: &temporaries,
@@ -895,7 +849,7 @@ fn lower_clocked_process(
     };
     ctx.lower_block(clock_block)?;
 
-    if f_body.len() > pos_end_of_shadow_init {
+    if f_body.len() > pos_end_of_shadow_init && pos_end_of_shadow_init > 0 {
         f_body.insert(pos_end_of_shadow_init, '\n');
     }
 
@@ -915,6 +869,7 @@ fn lower_clocked_process(
                 large: &module_info.large,
                 module: module_info,
                 locals,
+                is_clocked_process: true,
                 name_map: process_name_map,
                 name_scope: &mut name_scope,
                 temporaries: &temporaries,
@@ -926,7 +881,7 @@ fn lower_clocked_process(
                 let &(reg, ref value) = &reset.inner;
 
                 // use non-shadowed name
-                let reg_name_raw = match module_name_map.map_signal(IrSignal::Register(reg)) {
+                let reg_name_raw = match module_name_map.map_signal(reg) {
                     Ok(reg_name) => reg_name,
                     Err(ZeroWidth) => continue,
                 };
@@ -1009,33 +964,41 @@ fn declare_and_init_variables(
     Ok(result)
 }
 
-fn declare_shadow_registers(
+fn declare_shadow_signals(
     diags: &Diagnostics,
     f: &mut String,
+    ports: &Arena<IrPort, IrPortInfo>,
+    wires: &Arena<IrWire, IrWireInfo>,
     module_name_scope: &mut LoweredNameScope,
-    registers: &Arena<IrRegister, IrRegisterInfo>,
-    shadow_regs: &IndexSet<IrRegister>,
-) -> DiagResult<IndexMap<IrRegister, LoweredName>> {
+    shadow_signals: &IndexSet<IrSignal>,
+) -> DiagResult<IndexMap<IrSignal, LoweredName>> {
     let mut shadowing_reg_name_map = IndexMap::new();
 
-    for &reg in shadow_regs {
-        let register_info = &registers[reg];
-        let debug_info_id = maybe_id_as_ref(&register_info.debug_info_id);
+    for &signal in shadow_signals {
+        let (span, debug_info_id, ty) = match signal {
+            IrSignal::Port(signal) => {
+                let info = &ports[signal];
+                (info.debug_span, Some(info.name.as_str()), &info.ty)
+            }
+            IrSignal::Wire(wire) => {
+                let info = &wires[wire];
+                (info.debug_info_id.span, info.debug_info_id.inner.as_deref(), &info.ty)
+            }
+        };
 
         // skip zero-width registers
-        let ty_verilog = match VerilogType::new_from_ir(diags, debug_info_id.span, &register_info.ty)? {
+        let ty_verilog = match VerilogType::new_from_ir(diags, span, ty)? {
             Ok(ty) => ty,
             Err(ZeroWidth) => continue,
         };
 
-        let register_name = debug_info_id.inner.unwrap_or("_");
-        let shadow_name =
-            module_name_scope.make_unique_str(diags, debug_info_id.span, &format!("shadow_{register_name}"), false)?;
+        let register_name = debug_info_id.unwrap_or("_");
+        let shadow_name = module_name_scope.make_unique_str(diags, span, &format!("shadow_{register_name}"), false)?;
 
         let ty_prefix = ty_verilog.prefix();
         swriteln!(f, "{I}{I}reg {ty_prefix}{shadow_name};");
 
-        shadowing_reg_name_map.insert_first(reg, shadow_name);
+        shadowing_reg_name_map.insert_first(signal, shadow_name);
     }
 
     Ok(shadowing_reg_name_map)
@@ -1086,12 +1049,12 @@ struct AccessInfo {
 /// We still implement write-through on every assignment instead of only once at the end of the process,
 /// to keep the generated code similar to what users would write,
 /// and to hopefully better pattern match synthesis tool optimizations like clock gating.
-fn collect_shadow_registers(large: &IrLargeArena, block: &IrBlock) -> IndexSet<IrRegister> {
-    let mut regs: IndexMap<IrRegister, AccessInfo> = IndexMap::new();
+fn collect_shadow_registers(large: &IrLargeArena, block: &IrBlock) -> IndexSet<IrSignal> {
+    let mut regs: IndexMap<IrSignal, AccessInfo> = IndexMap::new();
 
     block.visit_values_accessed(large, &mut |value, access| match value {
-        IrSignalOrVariable::Signal(IrSignal::Register(reg)) => {
-            let entry = regs.entry(reg).or_default();
+        IrSignalOrVariable::Signal(signal) => {
+            let entry = regs.entry(signal).or_default();
             match access {
                 ValueAccess::Read => entry.any_read = true,
                 ValueAccess::Write => entry.any_write = true,
@@ -1184,6 +1147,7 @@ struct LowerBlockContext<'a, 'n> {
     module: &'a IrModuleInfo,
     locals: &'a IrVariables,
 
+    is_clocked_process: bool,
     name_map: ProcessNameMap<'n>,
     name_scope: &'a mut LoweredNameScope<'n>,
     temporaries: &'n GrowVec<TemporaryInfo>,
@@ -1805,6 +1769,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_assignment(&mut self, span: Span, target: &IrAssignmentTarget, source: Evaluated<'n>) -> DiagResult {
         // TODO constant fold if some indices are constant?
         // TODO expose the extra knowledge we have about integer ranges to verilog?
+        // TODO avoid emitting duplicate expressions due to shadowed stores
         let &IrAssignmentTarget { base, ref steps } = target;
 
         // evaluate indexing steps
@@ -1821,21 +1786,20 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let name = unwrap_zero_width(self.name_map.map_var(var));
                 append_assign(name, "=");
             }
-            IrSignalOrVariable::Signal(signal) => match signal {
-                IrSignal::Port(_) | IrSignal::Wire(_) => {
-                    let name = unwrap_zero_width(self.name_map.module_name_map.map_signal(signal));
-                    append_assign(name, "=");
-                }
-                IrSignal::Register(reg) => {
-                    let name_raw = unwrap_zero_width(self.name_map.module_name_map.map_signal(signal));
-                    let name_shadow = self.name_map.regs_shadowed.get(&reg);
+            IrSignalOrVariable::Signal(signal) => {
+                let name = unwrap_zero_width(self.name_map.module_name_map.map_signal(signal));
 
-                    append_assign(name_raw, "<=");
+                if self.is_clocked_process {
+                    append_assign(name, "<=");
+
+                    let name_shadow = self.name_map.shadow_name_map.get(&signal);
                     if let Some(name_shadow) = name_shadow {
                         append_assign(name_shadow, "=");
                     }
+                } else {
+                    append_assign(name, "=");
                 }
-            },
+            }
         }
 
         Ok(())

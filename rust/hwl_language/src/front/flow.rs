@@ -4,14 +4,13 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationKind, ValueWithImplications,
 };
-use crate::front::module::ExtraRegisterInit;
-use crate::front::signal::{Port, Register, Signal, SignalOrVariable, Wire};
+use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrRegisters, IrStatement, IrVariable,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrStatement, IrVariable,
     IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
@@ -119,24 +118,20 @@ pub struct FlowHardwareRoot<'p> {
     process_kind: HardwareProcessKind<'p>,
 
     ir_wires: &'p mut IrWires,
-    ir_registers: &'p mut IrRegisters,
     ir_variables: IrVariables,
 
     common: FlowHardwareCommon,
 }
 
-// TODO rename to BlockKind? at least make sure everything is consistent
 pub enum HardwareProcessKind<'e> {
-    CombinatorialBlockBody {
+    CombinatorialProcessBody {
         span_keyword: Span,
-        wires_driven: &'e mut IndexMap<Wire, Span>,
-        ports_driven: &'e mut IndexMap<Port, Span>,
+        signals_driven: &'e mut IndexMap<Signal, Span>,
     },
-    ClockedBlockBody {
+    ClockedProcessBody {
         span_keyword: Span,
         domain: Spanned<SyncDomain<DomainSignal>>,
-        registers_driven: &'e mut IndexMap<Register, Span>,
-        extra_registers: ExtraRegisters<'e>,
+        registers: &'e mut IndexMap<Signal, RegisterInfo>,
     },
     WireExpression {
         span_keyword: Span,
@@ -147,9 +142,10 @@ pub enum HardwareProcessKind<'e> {
     },
 }
 
-pub enum ExtraRegisters<'e> {
-    NoReset,
-    WithReset(&'e mut Vec<ExtraRegisterInit>),
+pub struct RegisterInfo {
+    pub span: Span,
+    pub ir: IrSignal,
+    pub reset: Spanned<MaybeUndefined<IrExpression>>,
 }
 
 pub struct FlowHardwareBranch<'p> {
@@ -651,7 +647,7 @@ pub trait Flow: FlowPrivate {
                 // TODO this probably disables too many things, eg. nested blocks
                 if slf.enable_domain_checks {
                     match &slf.root_hw().process_kind {
-                        &HardwareProcessKind::ClockedBlockBody { domain, .. } => {
+                        &HardwareProcessKind::ClockedProcessBody { domain, .. } => {
                             ctx.check_valid_domain_crossing(
                                 signal.span,
                                 domain.map_inner(ValueDomain::Sync),
@@ -659,7 +655,7 @@ pub trait Flow: FlowPrivate {
                                 "signal read in clocked block",
                             )?;
                         }
-                        HardwareProcessKind::CombinatorialBlockBody { .. }
+                        HardwareProcessKind::CombinatorialProcessBody { .. }
                         | HardwareProcessKind::WireExpression { .. }
                         | HardwareProcessKind::InstancePortConnection { .. } => {}
                     }
@@ -1365,49 +1361,7 @@ impl<'p> FlowHardware<'p> {
         self.root_hw_mut().ir_variables.push(info)
     }
 
-    pub fn check_clocked_block(
-        &mut self,
-        span: Span,
-        reason: &str,
-    ) -> DiagResult<(
-        Spanned<SyncDomain<DomainSignal>>,
-        &mut ExtraRegisters<'p>,
-        &mut IrRegisters,
-    )> {
-        let root_hw = self.root_hw_mut();
-        let diags = root_hw.root.diags;
-
-        let report_err = |span_curr: Span, kind_curr: &str| {
-            DiagnosticError::new(
-                format!("{reason} is only allowed in a clocked block"),
-                span,
-                format!("{reason} used here"),
-            )
-            .add_info(span_curr, format!("currently inside this {kind_curr}"))
-            .report(diags)
-        };
-
-        match &mut root_hw.process_kind {
-            HardwareProcessKind::ClockedBlockBody {
-                span_keyword: _,
-                domain,
-                registers_driven: _,
-                extra_registers,
-            } => Ok((*domain, extra_registers, root_hw.ir_registers)),
-
-            &mut HardwareProcessKind::CombinatorialBlockBody { span_keyword, .. } => {
-                Err(report_err(span_keyword, "combinatorial block"))
-            }
-            &mut HardwareProcessKind::WireExpression { span_keyword, .. } => {
-                Err(report_err(span_keyword, "wire expression"))
-            }
-            &mut HardwareProcessKind::InstancePortConnection { span_connection } => {
-                Err(report_err(span_connection, "instance port connection"))
-            }
-        }
-    }
-
-    pub fn block_kind(&mut self) -> &mut HardwareProcessKind<'p> {
+    pub fn process_kind(&mut self) -> &mut HardwareProcessKind<'p> {
         &mut self.root_hw_mut().process_kind
     }
 
@@ -1709,7 +1663,6 @@ impl<'p> FlowHardwareRoot<'p> {
         span: Span,
         kind: HardwareProcessKind<'p>,
         ir_wires: &'p mut IrWires,
-        ir_registers: &'p mut IrRegisters,
     ) -> FlowHardwareRoot<'p> {
         let parent = unsafe { lifetime_cast::compile_ref(parent) };
         FlowHardwareRoot {
@@ -1718,7 +1671,6 @@ impl<'p> FlowHardwareRoot<'p> {
             span,
             process_kind: kind,
             ir_wires,
-            ir_registers,
             ir_variables: IrVariables::new(),
             common: FlowHardwareCommon {
                 variables: IndexMap::new(),
@@ -1746,7 +1698,6 @@ impl<'p> FlowHardwareRoot<'p> {
             span: _,
             process_kind: _,
             ir_wires: _,
-            ir_registers: _,
             ir_variables,
             common,
         } = self;

@@ -3,8 +3,8 @@ use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
     IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrStatement, IrString, IrStringSubstitution, IrTargetStep,
-    IrType, IrVariables, IrWireOrPort,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString, IrStringSubstitution,
+    IrTargetStep, IrType, IrVariables,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
@@ -83,10 +83,12 @@ impl IrModuleInfo {
 
                         // TODO check drivers, ie. only driven and reset in one process
                         for reset in resets {
-                            let (reg, value) = &reset.inner;
-                            let reg_info = &self.registers[*reg];
+                            let &(reg, ref value) = &reset.inner;
+
                             let empty_locals = IrVariables::new();
-                            check_type_match(diags, reset.span, &reg_info.ty, &value.ty(self, &empty_locals))?
+                            let reg_ty = IrExpression::Signal(reg).ty(self, &empty_locals);
+
+                            check_type_match(diags, reset.span, &reg_ty, &value.ty(self, &empty_locals))?
                         }
                     }
                 }
@@ -112,18 +114,18 @@ impl IrModuleInfo {
                             debug_info_domain: _,
                         } = *port_info;
 
-                        let conn_ty = match &connection.inner {
+                        let conn_ty = match connection.inner {
                             IrPortConnection::Input(expr) => {
                                 check_dir_match(diags, connection.span, PortDirection::Input, direction)?;
-                                let inner_expr = IrExpression::Signal(expr.inner);
-                                inner_expr.validate(diags, self, no_variables, expr.span)?;
+                                let inner_expr = IrExpression::Signal(expr);
+                                inner_expr.validate(diags, self, no_variables, connection.span)?;
                                 inner_expr.ty(self, no_variables)
                             }
-                            &IrPortConnection::Output(expr) => {
+                            IrPortConnection::Output(expr) => {
                                 check_dir_match(diags, connection.span, PortDirection::Output, direction)?;
                                 match expr {
-                                    Some(IrWireOrPort::Wire(wire)) => self.wires[wire].ty.clone(),
-                                    Some(IrWireOrPort::Port(port)) => self.ports[port].ty.clone(),
+                                    Some(IrSignal::Wire(wire)) => self.wires[wire].ty.clone(),
+                                    Some(IrSignal::Port(port)) => self.ports[port].ty.clone(),
                                     None => continue,
                                 }
                             }

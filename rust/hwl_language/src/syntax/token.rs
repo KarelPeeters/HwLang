@@ -584,6 +584,7 @@ declare_tokens! {
         Struct("struct", TC::Keyword),
         Enum("enum", TC::Keyword),
         Ports("ports", TC::Keyword),
+        Port("port", TC::Keyword),
         Module("module", TC::Keyword),
         Interface("interface", TC::Keyword),
         Instance("instance", TC::Keyword),

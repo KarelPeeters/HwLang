@@ -138,7 +138,7 @@ pub struct ItemDefModuleInternal {
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
     pub ports: Spanned<ExtraList<ModulePortItem>>,
-    pub body: Block<ModuleStatement>,
+    pub body: Spanned<ExtraList<ModuleStatement>>,
 }
 
 #[derive(Debug, Clone)]
@@ -371,22 +371,12 @@ pub struct BlockExpression {
 pub type ModuleStatement = Spanned<ModuleStatementKind>;
 pub type BlockStatement = Spanned<BlockStatementKind>;
 
-// TODO convert to ExtraList
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
-    // control flow
-    Block(Block<ModuleStatement>),
-    If(IfStatement<Block<ModuleStatement>>),
-    For(ForStatement<Block<ModuleStatement>>),
-    // declarations
-    CommonDeclaration(CommonDeclaration<()>),
-    RegDeclaration(RegDeclaration),
     WireDeclaration(WireDeclaration),
-    // marker
-    RegOutPortMarker(RegOutPortMarker),
-    // children
-    CombinatorialBlock(CombinatorialBlock),
-    ClockedBlock(ClockedBlock),
+
+    CombinatorialProcess(CombinatorialProcess),
+    ClockedProcess(ClockedProcess),
     Instance(ModuleInstance),
 }
 
@@ -395,6 +385,7 @@ pub enum BlockStatementKind {
     // declarations
     CommonDeclaration(CommonDeclaration<()>),
     VariableDeclaration(VariableDeclaration),
+    RegisterDeclaration(RegisterDeclaration),
 
     // basic statements
     Assignment(Assignment),
@@ -484,22 +475,6 @@ pub struct ReturnStatement {
 }
 
 #[derive(Debug, Clone)]
-pub struct RegOutPortMarker {
-    pub id: Identifier,
-    pub init: Expression,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegDeclaration {
-    pub vis: Visibility,
-    pub span_keyword: Span,
-    pub id: MaybeGeneralIdentifier,
-    pub sync: Option<Spanned<SyncDomain<Expression>>>,
-    pub ty: Expression,
-    pub init: Expression,
-}
-
-#[derive(Debug, Clone)]
 pub struct WireDeclaration {
     pub vis: Visibility,
     pub span_keyword: Span,
@@ -557,6 +532,41 @@ pub struct VariableDeclaration {
 }
 
 #[derive(Debug, Clone)]
+pub struct RegisterDeclaration {
+    pub span_keyword: Span,
+    pub kind: RegisterDeclarationKind,
+    // TODO allow arbitrary assignment target, eg. `reg data[0..4].field = undef;`
+    pub id: GeneralIdentifier,
+    pub reset: Expression,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RegisterDeclarationKind {
+    Existing(Spanned<PortOrWire>),
+    New(RegisterDeclarationNew),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum PortOrWire {
+    Port,
+    Wire,
+}
+
+impl PortOrWire {
+    pub fn str(self) -> &'static str {
+        match self {
+            PortOrWire::Port => "port",
+            PortOrWire::Wire => "wire",
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct RegisterDeclarationNew {
+    pub ty: Option<Expression>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Assignment {
     pub span: Span,
     pub op: Spanned<Option<AssignBinaryOp>>,
@@ -565,37 +575,37 @@ pub struct Assignment {
 }
 
 #[derive(Debug, Clone)]
-pub struct CombinatorialBlock {
+pub struct CombinatorialProcess {
     pub span_keyword: Span,
     pub block: Block<BlockStatement>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ClockedBlock {
+pub struct ClockedProcess {
     pub span_keyword: Span,
     pub span_domain: Span,
     pub clock: Expression,
     /// No reset means this block does not have a reset.
-    pub reset: Option<Spanned<ClockedBlockReset<Expression>>>,
+    pub reset: Option<Spanned<ClockedProcessReset<Expression>>>,
     pub block: Block<BlockStatement>,
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct ClockedBlockReset<S> {
+pub struct ClockedProcessReset<S> {
     pub kind: Spanned<ResetKind>,
     pub signal: S,
 }
 
-impl<S> ClockedBlockReset<S> {
-    pub fn map_signal<U>(self, f: impl FnOnce(S) -> U) -> ClockedBlockReset<U> {
-        ClockedBlockReset {
+impl<S> ClockedProcessReset<S> {
+    pub fn map_signal<U>(self, f: impl FnOnce(S) -> U) -> ClockedProcessReset<U> {
+        ClockedProcessReset {
             kind: self.kind,
             signal: f(self.signal),
         }
     }
 
-    pub fn as_ref(&self) -> ClockedBlockReset<&S> {
-        ClockedBlockReset {
+    pub fn as_ref(&self) -> ClockedProcessReset<&S> {
+        ClockedProcessReset {
             kind: self.kind,
             signal: &self.signal,
         }
@@ -710,7 +720,6 @@ pub enum ExpressionKind {
     // Calls
     Call(Expression, Args),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
-    RegisterDelay(RegisterDelay),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -723,13 +732,6 @@ pub enum DotIndexKind {
 pub enum StringPiece<L, E> {
     Literal(L),
     Substitute(E),
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisterDelay {
-    pub span_keyword: Span,
-    pub value: Expression,
-    pub init: Expression,
 }
 
 pub type Args<N = Option<Identifier>, T = Expression> = ExtraList<Arg<N, T>>;
@@ -826,7 +828,8 @@ pub struct Identifier {
     pub span: Span,
 }
 
-// TODO intern identifiers?
+// TODO intern identifiers!
+// TODO use this almost everywhere, and make the previous id "SimpleId"
 #[derive(Debug, Copy, Clone)]
 pub enum GeneralIdentifier {
     Simple(Identifier),

@@ -3,7 +3,7 @@ use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::flow::Flow;
 use crate::front::scope::{Scope, ScopedEntry};
-use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem};
+use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem, MaybeIdentifier};
 use crate::syntax::pos::{HasSpan, Spanned};
 
 pub struct ExtraScope<'a, 'b, 'c, 'd> {
@@ -27,6 +27,18 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
         self.scope.declare(diags, id, entry);
         if let Some(root_scope) = self.root_scope {
             root_scope.declare_non_mut(diags, id, entry);
+        }
+    }
+
+    pub fn maybe_declare_root(
+        &mut self,
+        diags: &Diagnostics,
+        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
+        entry: DiagResult<ScopedEntry>,
+    ) {
+        self.scope.maybe_declare(diags, id, entry);
+        if let Some(root_scope) = self.root_scope {
+            root_scope.maybe_declare_non_mut(diags, id, entry);
         }
     }
 }

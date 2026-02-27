@@ -57,6 +57,10 @@
       "match": "\\bports\\b"
     },
     {
+      "name": "keyword.other.port.hwlang",
+      "match": "\\bport\\b"
+    },
+    {
       "name": "storage.type.module.hwlang",
       "match": "\\bmodule\\b"
     },

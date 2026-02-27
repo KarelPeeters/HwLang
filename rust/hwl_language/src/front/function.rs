@@ -908,7 +908,6 @@ impl CapturedScope {
                                         NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)),
                                         NamedValue::Port(_)
                                         | NamedValue::Wire(_)
-                                        | NamedValue::Register(_)
                                         | NamedValue::PortInterface(_)
                                         | NamedValue::WireInterface(_) => {
                                             Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
