@@ -17,12 +17,8 @@ use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::ops::ControlFlow;
-
-// TODO rework this, especially:
-// * top-level decls in extra lists: match real compiler, eg. refcell and declare in root
-// * decls in extra list branches: find some correct tree-like structure for disjoint sets,
-//     and rework "certain" behavior
 
 pub fn syntax_visit<V: SyntaxVisitor>(
     source: &SourceDatabase,
@@ -86,10 +82,10 @@ pub enum Conditional {
 #[derive(Debug)]
 pub struct DeclScope<'p> {
     parent: Option<&'p DeclScope<'p>>,
-    content: DeclScopeContent,
+    content: RefCell<DeclScopeContent>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DeclScopeContent {
     simple: IndexMap<String, Vec<(Span, Conditional)>>,
     pattern: Vec<(RegexDfa, Span, Conditional)>,
@@ -120,20 +116,14 @@ impl<'p> DeclScope<'p> {
     fn new_root() -> Self {
         Self {
             parent: None,
-            content: DeclScopeContent {
-                simple: IndexMap::new(),
-                pattern: vec![],
-            },
+            content: RefCell::new(DeclScopeContent::default()),
         }
     }
 
     fn new_child(&'p self) -> Self {
         Self {
             parent: Some(self),
-            content: DeclScopeContent {
-                simple: IndexMap::new(),
-                pattern: vec![],
-            },
+            content: RefCell::new(DeclScopeContent::default()),
         }
     }
 
@@ -142,9 +132,10 @@ impl<'p> DeclScope<'p> {
             simple: fixed,
             pattern: regex,
         } = content;
+        let mut content = self.content.borrow_mut();
         for (k, v) in fixed {
             for (span, _) in v {
-                self.content
+                content
                     .simple
                     .entry(k.clone())
                     .or_default()
@@ -152,20 +143,7 @@ impl<'p> DeclScope<'p> {
             }
         }
         for (k, v, _) in regex {
-            self.content.pattern.push((k, v, Conditional::Yes));
-        }
-    }
-
-    fn declare(&mut self, cond: Conditional, span: Span, id: EvaluatedId<&str>) {
-        match id {
-            EvaluatedId::Simple(id_inner) => {
-                self.content
-                    .simple
-                    .entry(id_inner.to_owned())
-                    .or_default()
-                    .push((span, cond));
-            }
-            EvaluatedId::Pattern(pattern) => self.content.pattern.push((pattern, span, cond)),
+            content.pattern.push((k, v, Conditional::Yes));
         }
     }
 
@@ -175,16 +153,12 @@ impl<'p> DeclScope<'p> {
 
         loop {
             let mut any_certain = false;
-
-            let DeclScopeContent {
-                simple: fixed,
-                pattern: patterns,
-            } = &curr.content;
+            let content = curr.content.borrow();
 
             // check simple
             match id {
                 &EvaluatedId::Simple(id) => {
-                    if let Some(entries) = fixed.get(id) {
+                    if let Some(entries) = content.simple.get(id) {
                         for &(span, cond) in entries {
                             result.push(span);
                             match cond {
@@ -195,7 +169,7 @@ impl<'p> DeclScope<'p> {
                     }
                 }
                 EvaluatedId::Pattern(id) => {
-                    for (key, entries) in fixed {
+                    for (key, entries) in &content.simple {
                         if id.could_match_str(key) {
                             for &(span, cond) in entries {
                                 result.push(span);
@@ -208,7 +182,7 @@ impl<'p> DeclScope<'p> {
             }
 
             // check patterns
-            for &(ref pattern, span, c) in patterns {
+            for &(ref pattern, span, c) in &content.pattern {
                 let could_match = match id {
                     EvaluatedId::Simple(id) => pattern.could_match_str(id),
                     EvaluatedId::Pattern(id) => pattern.could_match_pattern(id),
@@ -231,6 +205,17 @@ impl<'p> DeclScope<'p> {
         }
 
         result
+    }
+}
+
+impl DeclScopeContent {
+    fn declare(&mut self, cond: Conditional, span: Span, id: EvaluatedId<&str>) {
+        match id {
+            EvaluatedId::Simple(id_inner) => {
+                self.simple.entry(id_inner.to_owned()).or_default().push((span, cond));
+            }
+            EvaluatedId::Pattern(pattern) => self.pattern.push((pattern, span, cond)),
+        }
     }
 }
 
@@ -331,9 +316,10 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 })?;
 
                 self.visitor.report_range(body.span, Some(FoldRangeKind::Region));
-                let mut scope_body = scope_ports.new_child();
-                self.visit_extra_list(&mut scope_body, &body.inner, &mut |slf, scope, stmt| {
-                    slf.visit_module_statement(scope, stmt)
+                let scope_body = scope_ports.new_child();
+                let mut scope_body_inner = DeclScope::new_child(&scope_body);
+                self.visit_extra_list(&mut scope_body_inner, &body.inner, &mut |slf, scope, stmt| {
+                    slf.visit_module_statement(&scope_body, scope, stmt)
                 })?;
 
                 ControlFlow::Continue(())
@@ -680,7 +666,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         slf.visit_extra_list_block(s, b, f)
                     })?;
 
-                    scope_parent.merge_conditional_child(scope_cond.content);
+                    scope_parent.merge_conditional_child(scope_cond.content.into_inner());
                 }
                 ExtraListItem::Match(stmt) => {
                     let mut scope_cond = scope_parent.new_child();
@@ -689,13 +675,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         slf.visit_extra_list_block(s, b, f)
                     })?;
 
-                    scope_parent.merge_conditional_child(scope_cond.content);
+                    scope_parent.merge_conditional_child(scope_cond.content.into_inner());
                 }
                 ExtraListItem::For(stmt) => {
                     let scope_cond = scope_parent.new_child();
                     self.visit_for_stmt(scope_parent, stmt, |slf, s, b| slf.visit_extra_list_block(s, b, f))?;
 
-                    scope_parent.merge_conditional_child(scope_cond.content);
+                    scope_parent.merge_conditional_child(scope_cond.content.into_inner());
                 }
             }
         }
@@ -891,9 +877,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             self.visit_expression(scope, ty)?;
                         }
                         self.visit_expression(scope, reset)?;
-
-                        let id_eval = eval_general_id(self.source, self.arena_expressions, id);
-                        scope.declare(Conditional::No, id.span(), id_eval);
+                        self.scope_declare(scope, Conditional::No, id.into())?;
                     }
                 }
             }
@@ -947,7 +931,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn visit_module_statement(&mut self, scope: &mut DeclScope, stmt: &ModuleStatement) -> ControlFlow<V::Break> {
+    fn visit_module_statement(
+        &mut self,
+        module_scope: &DeclScope,
+        scope: &mut DeclScope,
+        stmt: &ModuleStatement,
+    ) -> ControlFlow<V::Break> {
         self.visitor.report_range(stmt.span, None);
         match &stmt.inner {
             ModuleStatementKind::WireDeclaration(decl) => {
@@ -994,7 +983,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 match vis {
-                    Visibility::Public { span: _ } => {}
+                    Visibility::Public { span: _ } => self.scope_ref_declare(module_scope, Conditional::No, id)?,
                     Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                 }
             }
@@ -1288,6 +1277,15 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         cond: Conditional,
         id: MaybeGeneralIdentifier,
     ) -> ControlFlow<V::Break> {
+        self.scope_ref_declare(scope, cond, id)
+    }
+
+    fn scope_ref_declare(
+        &mut self,
+        scope: &DeclScope,
+        cond: Conditional,
+        id: MaybeGeneralIdentifier,
+    ) -> ControlFlow<V::Break> {
         match id {
             MaybeGeneralIdentifier::Dummy { .. } => {}
             MaybeGeneralIdentifier::Identifier(id) => {
@@ -1295,7 +1293,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 if V::SCOPE_DECLARE {
                     let id_eval = eval_general_id(self.source, self.arena_expressions, id);
-                    scope.declare(cond, id.span(), id_eval);
+                    scope.content.borrow_mut().declare(cond, id.span(), id_eval);
                 }
             }
         }

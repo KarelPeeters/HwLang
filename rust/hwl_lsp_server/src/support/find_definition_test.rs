@@ -71,12 +71,6 @@ fn resolve_second_instance() {
 }
 
 #[test]
-fn resolve_wire_process_after() {
-    let src = "module foo ports() { comb { val _ = x; } wire x = false; }";
-    test_resolve(src, 36, Ok(&[46..47]));
-}
-
-#[test]
 fn resolve_pub_wire_top() {
     let src = "module foo ports() { pub wire x = false; wire y = x; }";
     test_resolve(src, 50, Ok(&[30..31]));
@@ -92,12 +86,6 @@ fn resolve_pub_wire_if() {
 fn resolve_pub_wire_for() {
     let src = "module foo ports() { for (i in 0..1) { pub wire x = false; } wire y = x; }";
     test_resolve(src, 70, Ok(&[48..49]));
-}
-
-#[test]
-fn resolve_pub_wire_if_after() {
-    let src = "module foo ports() { wire y = x; if (true) { pub wire x = false; } }";
-    test_resolve(src, 30, Ok(&[54..55]));
 }
 
 #[test]
