@@ -2,7 +2,7 @@ use crate::front::check::{
     TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::expression::ForIterator;
@@ -536,6 +536,19 @@ impl CompileItemContext<'_, '_> {
                     }
                     RegisterDeclarationKind::New(new) => {
                         let RegisterDeclarationNew { ty } = new;
+
+                        // warning if declaring register with same name as signal
+                        // TODO improve, only warn if the entry is actually a signal?
+                        if let Ok(Some(prev_span)) = scope.try_find_for_diagnostic(id.inner) {
+                            DiagnosticWarning::new(
+                                "declaring new register with name matching an existing scope entry",
+                                stmt_span,
+                                "declaring register here",
+                            )
+                            .add_info(prev_span, "existing entry declared here")
+                            .add_footer_hint("to mark an existing signal as a register, use `reg wire`/`port` instead")
+                            .report(diags);
+                        }
 
                         // eval ty
                         let ty = ty

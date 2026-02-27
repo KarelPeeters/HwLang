@@ -91,7 +91,7 @@ def compare_body(
     eval_func: hwl.Function = c.resolve("top.eval_func")
     eval_mod: hwl.Module = c.resolve("top.eval_mod")
 
-    # print(eval_mod.as_verilog().source)
+    print(eval_mod.as_verilog().source)
 
     build_dir.mkdir(parents=True, exist_ok=True)
     eval_mod_inst = eval_mod.as_verilated(build_dir).instance()

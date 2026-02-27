@@ -277,6 +277,21 @@ impl<'p> Scope<'p> {
         self.find_impl(diags, id, false)
     }
 
+    pub fn try_find_for_diagnostic(&self, id: &str) -> DiagResult<Option<Span>> {
+        let mut curr = self;
+        loop {
+            let content = curr.content.borrow();
+            if let Some(span) = content.try_find_for_diagnostic(id)? {
+                return Ok(Some(span));
+            }
+
+            curr = match curr.parent {
+                ScopeParent::File(parent) => return parent.content.try_find_for_diagnostic(id),
+                ScopeParent::Normal(parent) => parent,
+            }
+        }
+    }
+
     fn find_impl(&self, diags: &Diagnostics, id: Spanned<&str>, check_parents: bool) -> DiagResult<ScopeFound> {
         let mut curr = self;
         loop {
@@ -423,6 +438,20 @@ impl ScopeContent {
         } else {
             Ok(None)
         }
+    }
+
+    fn try_find_for_diagnostic(&self, id: &str) -> DiagResult<Option<Span>> {
+        let result = if let Some(value) = self.values.get(id) {
+            match value {
+                &DeclaredValue::Once { value: _, span } => Some(span),
+                DeclaredValue::Multiple { spans, err: _ } => Some(spans[0]),
+                &DeclaredValue::FailedCapture(span, _) => Some(span),
+                &DeclaredValue::Error(e) => return Err(e),
+            }
+        } else {
+            None
+        };
+        Ok(result)
     }
 
     pub fn for_each_immediate_entry(&self, mut f: impl FnMut(&str, DeclaredValueSingle<ScopedEntry>)) {

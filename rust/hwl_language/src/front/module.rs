@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::{NamedOrValue, ValueInner};
@@ -43,7 +43,7 @@ use crate::util::{ResultExt, result_pair, result_pair_split};
 use crate::{new_index_type, throw};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use itertools::{Either, Itertools, enumerate};
+use itertools::{Either, Itertools, chain, enumerate};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -206,15 +206,77 @@ impl CompileRefs<'_, '_> {
             &body.inner,
             &mut |ctx, scope, flow, stmt| ctx_body.elaborate_module_statement(ctx, scope, flow, stmt),
         )?;
-
         ctx_body.delayed_err?;
 
         // check for driver issues
-        // if multiple: error
-        // if none: warning
-        if false {
-            todo!();
+        // (wires without inferred types are fine if they're not actually used or driven)
+        // TODO add warning for unused signals / input ports
+        let signals_that_need_drivers = chain(
+            ctx.wires.keys().map(Signal::Wire),
+            ctx.ports
+                .iter()
+                .filter_map(|(p, info)| match info.direction.inner {
+                    PortDirection::Input => None,
+                    PortDirection::Output => Some(p),
+                })
+                .map(Signal::Port),
+        );
+
+        let mut drivers = ctx_body.drivers;
+        let mut any_driver_err = Ok(());
+        for signal in signals_that_need_drivers {
+            let drivers = drivers.swap_remove(&signal);
+            if let Some(d) = &drivers
+                && d.len() == 1
+            {
+                // okay, exactly one driver
+                continue;
+            }
+
+            let kind = signal.kind().str();
+            let (decl_span, diag_str) = match signal {
+                Signal::Port(signal) => {
+                    let info = &ctx.ports[signal];
+                    (info.span, info.name.as_str())
+                }
+                Signal::Wire(signal) => {
+                    let info = &ctx.wires[signal];
+                    (info.decl_span(), info.diagnostic_str())
+                }
+            };
+
+            if let Some(drivers) = drivers {
+                // error: multiple drivers
+                let mut diag = DiagnosticError::new(
+                    format!("{kind} `{diag_str}` has multiple drivers"),
+                    decl_span,
+                    "declared here",
+                );
+
+                for (kind, span) in drivers {
+                    let kind_str = match kind {
+                        DriverKind::WireDeclaration => "wire declaration expression",
+                        DriverKind::CombinatorialProcess => "combinatorial process",
+                        DriverKind::ClockedProcessRegister => "clocked process register",
+                        DriverKind::InstanceOutputPort => "instance output port",
+                    };
+                    diag = diag.add_info(span, format!("driven by {kind_str} here"));
+                }
+
+                any_driver_err = Err(diag.report(self.diags));
+            } else {
+                // warning: no drivers
+                DiagnosticWarning::new(format!("{kind} `{diag_str}` has no driver"), decl_span, "declared here")
+                    .report(self.diags);
+            }
         }
+        if !drivers.is_empty() {
+            return Err(self
+                .diags
+                .report_error_internal(def_span, "leftover drivers after checking all signals"));
+        }
+
+        any_driver_err?;
 
         // finish building the ir module
         let debug_info_location = match self.fixed.hierarchy.file_steps(def_id.span().file) {
@@ -602,8 +664,8 @@ struct BodyContext {
 #[derive(Debug, Copy, Clone)]
 pub enum DriverKind {
     WireDeclaration,
-    CombinatorialBlock,
-    ClockedBlockRegister,
+    CombinatorialProcess,
+    ClockedProcessRegister,
     InstanceOutputPort,
 }
 
@@ -937,7 +999,7 @@ impl BodyContext {
 
         // report drivers
         for (signal, span) in signals_driven {
-            self.report_driver(signal, DriverKind::CombinatorialBlock, span);
+            self.report_driver(signal, DriverKind::CombinatorialProcess, span);
         }
 
         // record process
@@ -1030,7 +1092,7 @@ impl BodyContext {
 
         // report drivers
         for (&signal, info) in &registers {
-            self.report_driver(signal, DriverKind::ClockedBlockRegister, info.span);
+            self.report_driver(signal, DriverKind::ClockedProcessRegister, info.span);
         }
 
         // build reset structure
