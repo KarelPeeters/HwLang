@@ -46,7 +46,7 @@ def test_port_driver_multi_comb_clocked():
             y = false;
         }
         clocked(clk, async rst) {
-            reg port y = false;
+            reg wire y = false;
         }
     }
     """

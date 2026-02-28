@@ -18,7 +18,7 @@ use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, SimpleComp
 use crate::mid::ir::{IrBlock, IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ForStatement, IfCondBlockPair, IfStatement,
-    MaybeIdentifier, PortOrWire, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement,
+    MaybeIdentifier, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement,
     VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -483,47 +483,40 @@ impl CompileItemContext<'_, '_> {
                 };
 
                 let signal = match kind {
-                    RegisterDeclarationKind::Existing(signal_kind) => {
+                    RegisterDeclarationKind::Existing(span_wire) => {
                         let found = scope.find(diags, id)?;
 
                         let err_entry_kind = |entry_kind: &str| {
                             Err(DiagnosticError::new(
-                                format!("expected {} for register declaration", signal_kind.inner.str()),
+                                "expected existing wire or port for register wire declaration",
                                 id.span,
                                 format!("found {entry_kind}"),
                             )
-                            .add_info(signal_kind.span, "due to signal kind set here")
+                            .add_info(span_wire, "wire declaration here")
                             .add_info(found.defining_span, "found entry declared here")
-                            .add_footer_hint("the register kind must match the actual signal kind")
-                            .add_footer_hint("to declare a new register, remove the signal kind")
+                            .add_footer_hint("to declare a new register instead, remove the `wire` keyword")
                             .report(diags))
                         };
 
                         let signal = match found.value {
-                            ScopedEntry::Item(_) => return err_entry_kind("item"),
                             ScopedEntry::Named(value) => match value {
-                                NamedValue::Port(port) => match signal_kind.inner {
-                                    PortOrWire::Port => Signal::Port(port),
-                                    PortOrWire::Wire => return err_entry_kind("wire"),
-                                },
-                                NamedValue::Wire(wire) => match signal_kind.inner {
-                                    PortOrWire::Port => return err_entry_kind("port"),
-                                    PortOrWire::Wire => Signal::Wire(wire),
-                                },
-
+                                NamedValue::Port(port) => Signal::Port(port),
+                                NamedValue::Wire(wire) => Signal::Wire(wire),
                                 NamedValue::Variable(_) => return err_entry_kind("variable"),
                                 NamedValue::PortInterface(_) => return err_entry_kind("port interface"),
                                 NamedValue::WireInterface(_) => return err_entry_kind("wire interface"),
                             },
+                            ScopedEntry::Item(_) => return err_entry_kind("item"),
+                        };
+                        let kind_str = match signal {
+                            Signal::Port(_) => "port",
+                            Signal::Wire(_) => "wire",
                         };
 
                         // check that this is the first register declaration in this block with this signal
                         if let Some(prev_info) = registers.get(&signal) {
                             let diag = DiagnosticError::new(
-                                format!(
-                                    "{} already marked as a register in this process",
-                                    signal_kind.inner.str()
-                                ),
+                                format!("{kind_str} already marked as a register in this process"),
                                 stmt_span,
                                 "trying to mark as register here",
                             )

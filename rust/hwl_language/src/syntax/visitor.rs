@@ -7,7 +7,7 @@ use crate::syntax::ast::{
     InterfaceListItem, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
     MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
     ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection, PortOrWire,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
     PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
@@ -865,9 +865,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 } = decl;
 
                 match kind {
-                    RegisterDeclarationKind::Existing(kind) => {
-                        let _: PortOrWire = kind.inner;
-
+                    RegisterDeclarationKind::Existing(_span) => {
                         self.visit_id_usage(scope, MaybeIdentifier::Identifier(id))?;
                         self.visit_expression(scope, reset)?;
                     }

@@ -10,7 +10,7 @@ def test_port_reg_name(tmpdir: Path):
     src = """
     module foo ports(clk: in clock, a: out sync(clk) bool) {
         clocked(clk) {
-            reg port a = undef;
+            reg wire a = undef;
             a = !a;
         }
     }

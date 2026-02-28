@@ -7,7 +7,7 @@ use crate::front::types::HardwareType;
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection, PortOrWire};
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
@@ -345,16 +345,6 @@ impl Polarized<Signal> {
         match inverted {
             false => signal_str.to_owned(),
             true => format!("(!{signal_str})"),
-        }
-    }
-}
-
-// TODO all of this can probably be simplified now that registers don't exist any more
-impl<P, W> Signal<P, W> {
-    pub fn kind(self) -> PortOrWire {
-        match self {
-            Signal::Port(_) => PortOrWire::Port,
-            Signal::Wire(_) => PortOrWire::Wire,
         }
     }
 }

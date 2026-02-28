@@ -94,7 +94,7 @@ module module_regs ports(
 ) {
     wire w;
     clocked(clk) {
-        reg port data = 0;
+        reg wire data = 0;
         reg wire w = false;
 
         reg r = false;

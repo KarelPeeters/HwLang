@@ -226,31 +226,28 @@ impl CompileRefs<'_, '_> {
         let mut any_driver_err = Ok(());
         for signal in signals_that_need_drivers {
             let drivers = drivers.swap_remove(&signal);
-            if let Some(d) = &drivers
-                && d.len() == 1
-            {
+            if drivers.as_ref().is_some_and(|d| d.len() == 1) {
                 // okay, exactly one driver
                 continue;
             }
 
-            let kind = signal.kind().str();
-            let (decl_span, diag_str) = match signal {
+            let (decl_span, diag_str, kind_str) = match signal {
                 Signal::Port(signal) => {
                     let info = &ctx.ports[signal];
-                    (info.span, info.name.as_str())
+                    (info.span, info.name.as_str(), "port")
                 }
                 Signal::Wire(signal) => {
                     let info = &ctx.wires[signal];
-                    (info.decl_span(), info.diagnostic_str())
+                    (info.decl_span(), info.diagnostic_str(), "wire")
                 }
             };
 
             if let Some(drivers) = drivers {
                 // error: multiple drivers
                 let mut diag = DiagnosticError::new(
-                    format!("{kind} `{diag_str}` has multiple drivers"),
+                    format!("{kind_str} `{diag_str}` has multiple drivers"),
                     decl_span,
-                    "declared here",
+                    format!("{kind_str} declared here"),
                 );
 
                 for (kind, span) in drivers {
@@ -266,8 +263,12 @@ impl CompileRefs<'_, '_> {
                 any_driver_err = Err(diag.report(self.diags));
             } else {
                 // warning: no drivers
-                DiagnosticWarning::new(format!("{kind} `{diag_str}` has no driver"), decl_span, "declared here")
-                    .report(self.diags);
+                DiagnosticWarning::new(
+                    format!("{kind_str} `{diag_str}` has no driver"),
+                    decl_span,
+                    "declared here",
+                )
+                .report(self.diags);
             }
         }
         if !drivers.is_empty() {

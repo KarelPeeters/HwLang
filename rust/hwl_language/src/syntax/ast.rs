@@ -542,23 +542,8 @@ pub struct RegisterDeclaration {
 
 #[derive(Debug, Copy, Clone)]
 pub enum RegisterDeclarationKind {
-    Existing(Spanned<PortOrWire>),
+    Existing(Span),
     New(RegisterDeclarationNew),
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum PortOrWire {
-    Port,
-    Wire,
-}
-
-impl PortOrWire {
-    pub fn str(self) -> &'static str {
-        match self {
-            PortOrWire::Port => "port",
-            PortOrWire::Wire => "wire",
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -294,8 +294,8 @@ BlockStatementKind: BlockStatementKind = {
     <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
 
     // register
-    <span_keyword:Span<"reg">> <kind:Spanned<PortOrWire>> <id:GeneralId> "=" <reset:Expr> ";" => {
-        let kind = RegisterDeclarationKind::Existing(kind);
+    <span_keyword:Span<"reg">> <span_wire:Span<"wire">> <id:GeneralId> "=" <reset:Expr> ";" => {
+        let kind = RegisterDeclarationKind::Existing(span_wire);
         let decl = RegisterDeclaration { span_keyword, kind, id, reset };
         BlockStatementKind::RegisterDeclaration(decl)
     },
@@ -332,11 +332,6 @@ BlockStatementKind: BlockStatementKind = {
         => BlockStatementKind::Return(ReturnStatement { span_return, value }),
     <span:Span<"break">> ";" => BlockStatementKind::Break { span },
     <span:Span<"continue">> ";" => BlockStatementKind::Continue { span },
-}
-
-PortOrWire: PortOrWire = {
-    "port" => PortOrWire::Port,
-    "wire" => PortOrWire::Wire,
 }
 
 // TODO don't require parentheses?

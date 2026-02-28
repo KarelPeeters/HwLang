@@ -11,7 +11,7 @@ def test_reg_simple():
     module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
         wire w: uint(8);
         clocked(clk, async rst) {
-            reg port y = false;
+            reg wire y = false;
             reg wire w = 5;
             reg r = true;
             
@@ -28,7 +28,7 @@ def test_reg_port_simple():
     src = """
     module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
         clocked(clk, async rst) {
-            reg port y = false;
+            reg wire y = false;
             y = !y;
         }
     }
@@ -52,8 +52,8 @@ def test_reg_twice():
     src = """
     module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
         clocked(clk, async rst) {
-            reg port y = false;
-            reg port y = false;
+            reg wire y = false;
+            reg wire y = false;
             y = !y;
         }
     }
@@ -67,14 +67,14 @@ def test_reg_domain_different():
     // different domain, but valid: output domain is less strict
     module top_valid ports(clk: in clock, rst: in async bool, y: out async bool) {
         clocked(clk, async rst) {
-            reg port y = false;
+            reg wire y = false;
         }
     }
     
     // different domain, invalid: output domain is more strict
     module top_invalid ports(clk: in clock, rst: in async bool, y: out sync(clk) bool) {
         clocked(clk, async rst) {
-            reg port y = false;
+            reg wire y = false;
         }
     }
     """
@@ -96,9 +96,9 @@ def test_reg_decl_in_function(tmp_dir: Path):
         }
     ) {
         clocked(clk, async rst) {
-            reg port y1 = -1;
-            reg port y2 = -1;
-            reg port y3 = -1;
+            reg wire y1 = -1;
+            reg wire y2 = -1;
+            reg wire y3 = -1;
         
             y1 = x;
             y2 = delay(int(8), x, -1);

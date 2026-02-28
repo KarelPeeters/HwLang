@@ -8,10 +8,10 @@ use crate::syntax::ast::{
     ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern,
     MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
     ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortOrWire,
-    PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
+    RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement, StringPiece,
+    StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement,
+    WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -748,13 +748,10 @@ impl Context<'_> {
                 } = decl;
 
                 let (kind, ty) = match kind {
-                    RegisterDeclarationKind::Existing(kind) => {
-                        let kind = match kind.inner {
-                            PortOrWire::Port => TT::Port,
-                            PortOrWire::Wire => TT::Wire,
-                        };
-                        (HNode::Sequence(vec![token(TT::Reg), HNode::Space, token(kind)]), None)
-                    }
+                    RegisterDeclarationKind::Existing(_span) => (
+                        HNode::Sequence(vec![token(TT::Reg), HNode::Space, token(TT::Wire)]),
+                        None,
+                    ),
                     RegisterDeclarationKind::New(kind) => {
                         let RegisterDeclarationNew { ty } = kind;
                         (token(TT::Reg), ty)
