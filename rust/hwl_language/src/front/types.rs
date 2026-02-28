@@ -39,6 +39,7 @@ pub enum Type {
     Reference(ReferenceType),
 }
 
+// TODO think about reference types, start from what users will actually write
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ReferenceType {
     Signal(Arc<HardwareType>),

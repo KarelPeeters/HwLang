@@ -487,7 +487,7 @@ impl SimpleCompileValue {
                     info.debug_info_name, view_info.debug_info_name
                 )
             }
-            SimpleCompileValue::Reference(rf) => match *rf.inner_for_diagnostic() {
+            SimpleCompileValue::Reference(rf) => match *rf.get_unchecked() {
                 Reference::Signal(signal, ref ty) => {
                     let kind_str = signal.kind_str();
                     format!("<ref {kind_str} signal with type `{}`>", ty.value_string(elab))

@@ -109,6 +109,14 @@
       "match": "\\breg\\b"
     },
     {
+      "name": "storage.type.ref.hwlang",
+      "match": "\\bref\\b"
+    },
+    {
+      "name": "storage.type.deref.hwlang",
+      "match": "\\bderef\\b"
+    },
+    {
       "name": "keyword.other.in.hwlang",
       "match": "\\bin\\b"
     },

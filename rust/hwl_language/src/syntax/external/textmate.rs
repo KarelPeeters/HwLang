@@ -176,7 +176,9 @@ fn token_category(ty: TokenType) -> Option<Category> {
         | TokenType::Val
         | TokenType::Var
         | TokenType::Wire
-        | TokenType::Reg => Some(Category::StorageType),
+        | TokenType::Reg
+        | TokenType::Ref
+        | TokenType::Deref => Some(Category::StorageType),
         // storage modifiers
         TokenType::External => Some(Category::StorageModifier),
         // literals

@@ -68,7 +68,7 @@ impl ReferenceWrapper {
         Ok(ReferenceWrapper { module, inner })
     }
 
-    pub fn inner(&self, ctx: &CompileItemContext, span: Span) -> DiagResult<&Reference> {
+    pub fn get(&self, ctx: &CompileItemContext, span: Span) -> DiagResult<&Reference> {
         if ctx.curr_module != Some(self.module) {
             let diags = ctx.refs.diags;
             Err(diags.report_error_internal(span, "trying to use reference outside its original module"))
@@ -77,7 +77,7 @@ impl ReferenceWrapper {
         }
     }
 
-    pub fn inner_for_diagnostic(&self) -> &Reference {
+    pub fn get_unchecked(&self) -> &Reference {
         &self.inner
     }
 }

@@ -896,7 +896,7 @@ pub enum BinaryOpLevel {
     In,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum AssignBinaryOp {
     Add,
     Sub,
@@ -909,11 +909,13 @@ pub enum AssignBinaryOp {
     BitXor,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum UnaryOp {
     Plus,
     Neg,
     Not,
+    Ref,
+    Deref,
 }
 
 impl Identifier {
@@ -1069,6 +1071,8 @@ impl UnaryOp {
             UnaryOp::Plus => TokenType::Plus,
             UnaryOp::Neg => TokenType::Minus,
             UnaryOp::Not => TokenType::Bang,
+            UnaryOp::Ref => TokenType::Ref,
+            UnaryOp::Deref => TokenType::Deref,
         }
     }
 }

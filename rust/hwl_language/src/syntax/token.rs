@@ -597,6 +597,8 @@ declare_tokens! {
         Var("var", TC::Keyword),
         Wire("wire", TC::Keyword),
         Reg("reg", TC::Keyword),
+        Ref("ref", TC::Keyword),
+        Deref("deref", TC::Keyword),
         In("in", TC::Keyword),
         Out("out", TC::Keyword),
         Async("async", TC::Keyword),

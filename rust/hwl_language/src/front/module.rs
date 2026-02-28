@@ -1690,7 +1690,7 @@ impl BodyContext {
 
                 let (value_interface, value_domain, value_signals) = match value {
                     Value::Simple(SimpleCompileValue::Reference(reference)) => {
-                        match reference.inner(ctx, value_expr.span)? {
+                        match reference.get(ctx, value_expr.span)? {
                             &Reference::Interface(intf, _elab_intf) => {
                                 match intf {
                                     Signal::Port(port_interface) => {

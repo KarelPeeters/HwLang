@@ -489,63 +489,115 @@ impl<'a> CompileItemContext<'a, '_> {
                 array_literal_combine_values(refs, flow, &mut self.large, expr.span, values)?
             }
 
-            &ExpressionKind::UnaryOp(op, operand) => match op.inner {
-                UnaryOp::Plus => {
-                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
-                    let _ = check_type_is_int(
-                        diags,
-                        elab,
-                        TypeContainsReason::Operator(op.span),
-                        operand.clone().map_inner(ValueWithImplications::into_value),
-                    )?;
-                    return Ok(operand.inner);
-                }
-                UnaryOp::Neg => {
-                    let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
-                    let operand_int = check_type_is_int(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
+            &ExpressionKind::UnaryOp(op, operand) => {
+                match op.inner {
+                    UnaryOp::Plus => {
+                        let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
+                        let _ = check_type_is_int(
+                            diags,
+                            elab,
+                            TypeContainsReason::Operator(op.span),
+                            operand.clone().map_inner(ValueWithImplications::into_value),
+                        )?;
+                        return Ok(operand.inner);
+                    }
+                    UnaryOp::Neg => {
+                        let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
+                        let operand_int =
+                            check_type_is_int(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
-                    match operand_int {
-                        MaybeCompile::Compile(c) => Value::new_int(-c),
-                        MaybeCompile::Hardware(v) => {
-                            let range = multi_range_unary_neg(&v.ty);
-                            let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
-                                IrIntArithmeticOp::Sub,
-                                range.enclosing_range().cloned(),
-                                IrExpression::Int(BigInt::ZERO),
-                                v.expr,
-                            ));
+                        match operand_int {
+                            MaybeCompile::Compile(c) => Value::new_int(-c),
+                            MaybeCompile::Hardware(v) => {
+                                let range = multi_range_unary_neg(&v.ty);
+                                let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
+                                    IrIntArithmeticOp::Sub,
+                                    range.enclosing_range().cloned(),
+                                    IrExpression::Int(BigInt::ZERO),
+                                    v.expr,
+                                ));
 
-                            let result = HardwareValue {
-                                ty: HardwareType::Int(range),
-                                domain: v.domain,
-                                expr: result_expr,
-                            };
-                            Value::Hardware(result)
+                                let result = HardwareValue {
+                                    ty: HardwareType::Int(range),
+                                    domain: v.domain,
+                                    expr: result_expr,
+                                };
+                                Value::Hardware(result)
+                            }
                         }
                     }
-                }
-                UnaryOp::Not => {
-                    let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
-                    let operand_bool = check_type_is_bool(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
+                    UnaryOp::Not => {
+                        let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
+                        let operand_bool =
+                            check_type_is_bool(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
-                    match operand_bool {
-                        MaybeCompile::Compile(c) => Value::new_bool(!c),
-                        MaybeCompile::Hardware(v) => {
-                            let result = HardwareValue {
-                                ty: HardwareType::Bool,
-                                domain: v.value.domain,
-                                expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
-                            };
-                            let result_with_implications = HardwareValueWithImplications {
-                                value: result,
-                                version: None,
-                                implications: v.implications.invert(),
-                            };
-                            return Ok(Value::Hardware(result_with_implications));
+                        match operand_bool {
+                            MaybeCompile::Compile(c) => Value::new_bool(!c),
+                            MaybeCompile::Hardware(v) => {
+                                let result = HardwareValue {
+                                    ty: HardwareType::Bool,
+                                    domain: v.value.domain,
+                                    expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
+                                };
+                                let result_with_implications = HardwareValueWithImplications {
+                                    value: result,
+                                    version: None,
+                                    implications: v.implications.invert(),
+                                };
+                                return Ok(Value::Hardware(result_with_implications));
+                            }
                         }
                     }
+                    UnaryOp::Ref => {
+                        let id = match refs.get_expr(operand) {
+                            &ExpressionKind::Id(id) => self.eval_general_id(scope, flow, id)?,
+                            _ => return Err(diags.report_error_todo(expr.span, "reference to general expression")),
+                        };
+                        let id = id.as_ref().map_inner(ArcOrRef::as_ref);
+
+                        let id_eval = self.eval_named_or_value(scope, id)?;
+                        let signal = match id_eval.inner {
+                            NamedOrValue::Named(value) => {
+                                match value {
+                                    NamedValue::Signal(signal) => signal,
+                                    NamedValue::Variable(_) => {
+                                        return Err(diags.report_error_todo(expr.span, "reference to variable"));
+                                    }
+                                    NamedValue::Interface(_) => {
+                                        let diag = DiagnosticError::new("cannot take reference to interface", expr.span, "trying to take reference here")
+                                            .add_info(id_eval.span, "interface declared here")
+                                            .add_footer_hint("interface are already references, there's no need to take a reference to them")
+                                            .report(diags);
+                                        return Err(diag);
+                                    }
+                                }
+                            }
+                            NamedOrValue::ItemValue(_) => {
+                                let diag = DiagnosticError::new(
+                                    "cannot take reference to item",
+                                    expr.span,
+                                    "trying to take reference here",
+                                )
+                                .add_info(id_eval.span, "item declared here")
+                                .report(diags);
+                                return Err(diag);
+                            }
+                        };
+
+                        let signal_ty = signal.expect_ty(self, id.span)?;
+
+                        let rf = Reference::Signal(signal, Arc::new(signal_ty.inner.clone()));
+                        let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                        return Ok(Value::Simple(SimpleCompileValue::Reference(rf)));
+                    }
+                    UnaryOp::Deref => {
+                        let signal = self.eval_deref_operator(scope, flow, expr.span, op.span, operand)?;
+
+                        let flow = flow.require_hardware(op.span, "signal read")?;
+                        return flow.signal_eval(self, Spanned::new(expr.span, signal));
+                    }
                 }
-            },
+            }
             &ExpressionKind::BinaryOp(op, left, right) => {
                 let left = self.eval_expression_with_implications(scope, flow, &Type::Any, left);
                 let right = self.eval_expression_with_implications(scope, flow, &Type::Any, right);
@@ -849,10 +901,10 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // interface fields
         if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base_eval {
-            let rf = rf.inner(self, base.span)?;
+            let rf = rf.get(self, base.span)?;
             if let &Reference::Interface(intf, _elab_intf) = rf {
                 let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
-                let flow = flow.require_hardware(expr_span, "port access")?;
+                let flow = flow.require_hardware(expr_span, "signal read")?;
                 return flow.signal_eval(self, Spanned::new(expr_span, signal));
             }
         }
@@ -1402,6 +1454,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     },
                 }
             }
+            ExpressionKind::UnaryOp(op, operand) if op.inner == UnaryOp::Deref => {
+                let signal = self.eval_deref_operator(scope, flow, expr.span, op.span, operand)?;
+                AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
+            }
             ExpressionKind::ArrayIndex {
                 span_brackets,
                 base,
@@ -1483,6 +1539,53 @@ impl<'a> CompileItemContext<'a, '_> {
             span: expr.span,
             inner: result,
         })
+    }
+
+    fn eval_deref_operator(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        expr_span: Span,
+        deref_span: Span,
+        operand: Expression,
+    ) -> DiagResult<Signal> {
+        let diags = self.refs.diags;
+        let elab = &self.refs.shared.elaboration_arenas;
+
+        let reason = Spanned::new(deref_span, "dereference operand");
+        let operand = self.eval_expression_as_compile(scope, flow, &Type::Any, operand, reason)?;
+
+        match operand.inner {
+            CompileValue::Simple(SimpleCompileValue::Reference(rf)) => {
+                let rf = rf.get(self, operand.span)?;
+                match rf {
+                    &Reference::Signal(signal, _) => Ok(signal),
+                    Reference::Interface(_, _) => {
+                        let diag = DiagnosticError::new(
+                            "cannot dereference interface instance",
+                            expr_span,
+                            "trying to dereference interface here",
+                        )
+                        .add_footer_hint("to access signals, use dot indexing directly")
+                        .report(diags);
+                        Err(diag)
+                    }
+                }
+            }
+            v => {
+                let diag = DiagnosticError::new(
+                    "cannot dereference non-reference value",
+                    expr_span,
+                    "trying to dereference non-reference here",
+                )
+                .add_info(
+                    operand.span,
+                    format!("operand is has type `{}`", v.ty().value_string(elab)),
+                )
+                .report(diags);
+                Err(diag)
+            }
+        }
     }
 
     pub fn eval_expression_as_domain_signal(

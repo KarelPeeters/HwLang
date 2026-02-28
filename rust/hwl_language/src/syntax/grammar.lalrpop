@@ -40,6 +40,8 @@ extern {
         "var" => TokenType::Var,
         "wire" => TokenType::Wire,
         "reg" => TokenType::Reg,
+        "ref" => TokenType::Ref,
+        "deref" => TokenType::Deref,
         "in" => TokenType::In,
         "out" => TokenType::Out,
         "async" => TokenType::Async,
@@ -709,6 +711,10 @@ ExprLevelUnary: ExpressionKind = {
         ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Neg }, inner),
     <op:Span<"!">> <inner:SpannedPushArena<ExprLevelPower>> =>
         ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
+    <op:Span<"ref">> <inner:SpannedPushArena<ExprLevelPower>> =>
+            ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Ref }, inner),
+    <op:Span<"deref">> <inner:SpannedPushArena<ExprLevelPower>> =>
+            ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Deref }, inner),
     ExprLevelPower,
 }
 
