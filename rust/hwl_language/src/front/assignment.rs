@@ -416,7 +416,7 @@ impl CompileItemContext<'_, '_> {
                     )
                         .add_info(signal_decl_span, format!("{signal_kind} declared here"))
                         .add_footer_hint(
-                            format!("to mark the {signal_kind} as a register, add `reg {signal_kind} <name> = <reset>;` to the body of the process"),
+                            format!("to mark the {signal_kind} as a register, add `reg wire <name> = <reset>;` to the body of the process"),
                         )
                         .add_footer_hint(
                             format!("to drive the {signal_kind} combinatorially, use a combinatorial process or an instance port"),
