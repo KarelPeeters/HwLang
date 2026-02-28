@@ -490,11 +490,14 @@ impl SimpleCompileValue {
             SimpleCompileValue::Reference(rf) => match *rf.inner_for_diagnostic() {
                 Reference::Signal(signal, ref ty) => {
                     let kind_str = signal.kind_str();
-                    format!("<ref {kind_str} {}>", ty.value_string(elab))
+                    format!("<ref {kind_str} signal with type `{}`>", ty.value_string(elab))
                 }
                 Reference::Interface(signal, intf) => {
                     let kind_str = signal.kind_str();
-                    format!("<ref {kind_str} {}>", elab.interface_info(intf).debug_info_name)
+                    format!(
+                        "<ref {kind_str} instance of interface `{}`>",
+                        elab.interface_info(intf).debug_info_name
+                    )
                 }
             },
         }

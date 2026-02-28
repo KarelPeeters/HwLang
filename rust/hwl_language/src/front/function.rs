@@ -77,16 +77,6 @@ pub enum FunctionBody {
     ItemBody(FunctionItemBody),
 }
 
-impl FunctionBody {
-    pub fn params_must_be_compile(&self) -> bool {
-        match self {
-            // TODO add optional marker to functions that can only be used with compare args
-            FunctionBody::FunctionBodyBlock { .. } => false,
-            FunctionBody::ItemBody(_) => true,
-        }
-    }
-}
-
 // TODO move this into the scope module
 // TODO avoid repeated hashing of this potentially large type
 // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
@@ -142,7 +132,7 @@ impl<'a> ParamArgMacher<'a> {
         refs: CompileRefs<'a, 'a>,
         params_span: Span,
         args: &'a EvaluatedArgs,
-        args_must_be_compile: bool,
+        args_must_be_compile_without_ref: bool,
         args_must_be_named: NamedRule,
     ) -> DiagResult<Self> {
         let diags = refs.diags;
@@ -153,15 +143,30 @@ impl<'a> ParamArgMacher<'a> {
         let mut positional_count: usize = 0;
         let mut any_err_args = Ok(());
         for (arg_index, arg) in enumerate(&args.inner) {
-            if args_must_be_compile && CompileValue::try_from(&arg.value.inner).is_err() {
-                let diag = DiagnosticError::new(
-                    "call target only supports compile-time arguments",
-                    arg.value.span,
-                    "hardware value passed here",
-                )
-                .add_info(params_span, "parameters defined here")
-                .report(diags);
-                any_err_args = Err(diag);
+            if args_must_be_compile_without_ref {
+                match CompileValue::try_from(&arg.value.inner) {
+                    Ok(arg_compile) => {
+                        if arg_compile.contains_reference() {
+                            let diag = DiagnosticError::new(
+                                "item parameters cannot contain references",
+                                arg.value.span,
+                                "argument containing reference passed here",
+                            ).add_footer_info("references must stay inside the module they belong to, they cannot escape into other items")
+                                .report(diags);
+                            any_err_args = Err(diag);
+                        }
+                    }
+                    Err(NotCompile) => {
+                        let diag = DiagnosticError::new(
+                            "call target only supports compile-time parameters",
+                            arg.value.span,
+                            "argument containing hardware value passed here",
+                        )
+                        .add_info(params_span, "parameters defined here")
+                        .report(diags);
+                        any_err_args = Err(diag);
+                    }
+                }
             }
 
             match (&arg.name, args_must_be_named) {
@@ -512,8 +517,17 @@ impl CompileItemContext<'_, '_> {
         let mut scope = scope_captured.new_child(span_scope);
         let mut param_values = vec![];
 
-        let compile = body.inner.params_must_be_compile();
-        let mut matcher = ParamArgMacher::new(self.refs, params.span, &args, compile, NamedRule::PositionalAndNamed)?;
+        let args_must_be_compile_without_ref = match body.inner {
+            FunctionBody::ItemBody(_) => true,
+            FunctionBody::FunctionBodyBlock { .. } => false,
+        };
+        let mut matcher = ParamArgMacher::new(
+            self.refs,
+            params.span,
+            &args,
+            args_must_be_compile_without_ref,
+            NamedRule::PositionalAndNamed,
+        )?;
 
         self.elaborate_extra_list(&mut scope, flow, &params.items, &mut |slf, scope, flow, param| {
             let &Parameter {

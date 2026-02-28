@@ -549,6 +549,31 @@ impl ValueCommon for HardwareValue {
     }
 }
 
+impl CompileValue {
+    pub fn contains_reference(&self) -> bool {
+        match self {
+            CompileValue::Simple(v) => match v {
+                SimpleCompileValue::Reference(_) => true,
+                SimpleCompileValue::Array(v) => v.iter().any(CompileValue::contains_reference),
+                SimpleCompileValue::Type(_)
+                | SimpleCompileValue::Bool(_)
+                | SimpleCompileValue::Int(_)
+                | SimpleCompileValue::Function(_)
+                | SimpleCompileValue::Module(_)
+                | SimpleCompileValue::Interface(_)
+                | SimpleCompileValue::InterfaceView(_) => false,
+            },
+            CompileValue::Compound(v) => match v {
+                CompileCompoundValue::Tuple(v) => v.iter().any(CompileValue::contains_reference),
+                CompileCompoundValue::Struct(v) => v.fields.iter().any(CompileValue::contains_reference),
+                CompileCompoundValue::Enum(v) => v.payload.as_ref().is_some_and(|p| p.contains_reference()),
+                CompileCompoundValue::String(_) | CompileCompoundValue::Range(_) => false,
+            },
+            CompileValue::Hardware(never) => never.unreachable(),
+        }
+    }
+}
+
 fn internal_err_hw_type_mismatch(
     refs: CompileRefs,
     span: Span,

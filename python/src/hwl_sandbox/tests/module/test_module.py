@@ -142,3 +142,16 @@ def test_undef_expression():
     }
     """
     compile_custom(src).resolve("top.top")
+
+
+def test_interface_escape():
+    src = """
+    interface foo { x: bool } 
+    module top ports() {
+        wire w: interface foo;
+        instance child(w) ports();
+    }
+    module child(a: any) ports() {}
+    """
+    with pytest.raises(hwl.DiagnosticException, match="item parameters cannot contain references"):
+        compile_custom(src).resolve("top.top")
