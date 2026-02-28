@@ -12,8 +12,8 @@ module top ports(
     wire w1: bool;
 
     clocked(clk, async rst) {
-        reg port y = 0;
-        reg port z = 0;
+        reg wire y = 0;
+        reg wire z = 0;
         reg wire w0 = false;
 
         reg r: bool = false;

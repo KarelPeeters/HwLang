@@ -24,8 +24,8 @@ pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
     }
 
     clocked(clk, async rst) {
-        reg buffer = undef;
-        reg level = 0;
+        reg wire buffer = undef;
+        reg wire level = 0;
 
         // handle input
         // TODO use input_ready port here? but then the level type may overflow

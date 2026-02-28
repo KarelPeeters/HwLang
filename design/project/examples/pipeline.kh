@@ -13,7 +13,7 @@ pub module pipeline(N: uint, T: [N + 1]type, F: [N]any) ports(
         pub wire id_from_str(id_next): T[i];
 
         clocked(clk) {
-            reg id_from_str(id_next): T[i] = undef;
+            reg wire id_from_str(id_next) = undef;
             id_from_str(id_next) = (F[i])(id_from_str(id_prev));
         }
     }

@@ -18,9 +18,9 @@ pub module convcode_encoder(length: natural, generator: Generator(length)) ports
 ) {
     clocked(clk, async rst) {
         reg delay_line: [length - 1]bool = [false] * (length - 1);
-        reg port output_data_0 = false;
-        reg port output_data_1 = false;
-        reg port output_valid = false;
+        reg wire output_data_0 = false;
+        reg wire output_data_1 = false;
+        reg wire output_valid = false;
 
         if (input_valid) {
             // update delay line
@@ -78,8 +78,8 @@ pub module convcode_decoder(length: natural, generator: Generator(length), analo
     clocked(clk, async rst) {
         reg half_probs: t_half_probs = [0] * (num_states / 2);
         reg half_paths: t_half_paths = half_paths_reset;
-        reg port output_data = false;
-        reg port output_valid = false;
+        reg wire output_data = false;
+        reg wire output_valid = false;
 
         if (input_valid) {
             // calculate output
