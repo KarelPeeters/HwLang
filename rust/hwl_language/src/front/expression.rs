@@ -27,8 +27,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
-    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, PortDirection, RangeLiteral,
-    SyncDomain, UnaryOp,
+    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::throw;
@@ -1396,19 +1395,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     NamedOrValue::ItemValue(_) => return Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
-                        NamedValue::Signal(signal) => {
-                            // check direction
-                            // TODO this will have to be moved once we allow taking references
-                            match signal {
-                                Signal::Port(port) => match self.ports[port].direction.inner {
-                                    PortDirection::Input => return Err(build_err("input port")),
-                                    PortDirection::Output => {}
-                                },
-                                Signal::Wire(_) => {}
-                            }
-
-                            AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
-                        }
+                        NamedValue::Signal(signal) => AssignmentTarget::simple(Spanned::new(expr.span, signal.into())),
                         NamedValue::Interface(_) => {
                             return Err(build_err("interface instance"));
                         }
@@ -1448,62 +1435,47 @@ impl<'a> CompileItemContext<'a, '_> {
                     array_steps: inner_array_steps,
                 }
             }
-            ExpressionKind::DotIndex(base, index) => {
-                match index {
-                    DotIndexKind::Id(index) => {
-                        let index_str = index.str(self.refs.fixed.source);
+            ExpressionKind::DotIndex(base, index) => match index {
+                DotIndexKind::Id(index) => {
+                    let index_str = index.str(self.refs.fixed.source);
 
-                        match self.refs.get_expr(base) {
-                            &ExpressionKind::Id(base) => {
-                                let base = self.eval_general_id(scope, flow, base)?;
-                                let base = base.as_ref().map_inner(ArcOrRef::as_ref);
+                    match self.refs.get_expr(base) {
+                        &ExpressionKind::Id(base) => {
+                            let base = self.eval_general_id(scope, flow, base)?;
+                            let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
-                                match self.eval_named_or_value(scope, base)?.inner {
-                                    NamedOrValue::Named(NamedValue::Interface(intf)) => {
-                                        let signal = self.interface_get_signal(
-                                            base.span,
-                                            intf,
-                                            Spanned::new(index.span, index_str),
-                                        )?;
+                            match self.eval_named_or_value(scope, base)?.inner {
+                                NamedOrValue::Named(NamedValue::Interface(intf)) => {
+                                    let signal = self.interface_get_signal(
+                                        base.span,
+                                        intf,
+                                        Spanned::new(index.span, index_str),
+                                    )?;
 
-                                        // check direction
-                                        // TODO this will have to be moved once we allow taking references
-                                        match signal {
-                                            Signal::Port(port) => {
-                                                let direction = self.ports[port].direction;
-                                                match direction.inner {
-                                                    PortDirection::Input => return Err(build_err("input port")),
-                                                    PortDirection::Output => {}
-                                                }
-                                            }
-                                            Signal::Wire(_) => {}
-                                        }
-
-                                        AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
-                                    }
-                                    _ => {
-                                        return Err(diags.report_error_simple(
-                                            "dot index is only allowed on port/wire interfaces",
-                                            base.span,
-                                            "got other named value here",
-                                        ));
-                                    }
+                                    AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
+                                }
+                                _ => {
+                                    return Err(diags.report_error_simple(
+                                        "dot index is only allowed on port/wire interfaces",
+                                        base.span,
+                                        "got other named value here",
+                                    ));
                                 }
                             }
-                            _ => {
-                                return Err(diags.report_error_simple(
-                                    "dot index is only allowed on port/wire interfaces",
-                                    base.span,
-                                    "got other expression here",
-                                ));
-                            }
+                        }
+                        _ => {
+                            return Err(diags.report_error_simple(
+                                "dot index is only allowed on port/wire interfaces",
+                                base.span,
+                                "got other expression here",
+                            ));
                         }
                     }
-                    DotIndexKind::Int { span: _ } => {
-                        return Err(diags.report_error_todo(expr.span, "assignment target dot int index"))?;
-                    }
                 }
-            }
+                DotIndexKind::Int { span: _ } => {
+                    return Err(diags.report_error_todo(expr.span, "assignment target dot int index"))?;
+                }
+            },
             _ => return Err(build_err("other expression")),
         };
 

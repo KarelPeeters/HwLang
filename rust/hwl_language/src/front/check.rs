@@ -3,12 +3,13 @@ use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::item::ElaborationArenas;
+use crate::front::signal::PortInfo;
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
     MixedString, SimpleCompileValue, Value,
 };
-use crate::syntax::ast::SyncDomain;
+use crate::syntax::ast::{PortDirection, SyncDomain};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
 use crate::util::big_int::{BigInt, BigUint};
@@ -482,5 +483,24 @@ pub fn check_type_is_range_compile(
             Err(diags.report_error_internal(value.span, "expected range value"))
         }
         CompileValue::Hardware(never) => never.unreachable(),
+    }
+}
+
+pub fn check_port_is_output(
+    diags: &Diagnostics,
+    port_info: &PortInfo,
+    span: Span,
+    title: &str,
+    msg: &str,
+) -> DiagResult {
+    match port_info.direction.inner {
+        PortDirection::Input => {
+            let diag = DiagnosticError::new(title, span, msg)
+                .add_info(port_info.span, "port declared here")
+                .add_info(port_info.direction.span, "port direction set here")
+                .report(diags);
+            Err(diag)
+        }
+        PortDirection::Output => Ok(()),
     }
 }

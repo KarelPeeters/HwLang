@@ -139,3 +139,18 @@ def test_reg_decl_in_function(tmp_dir: Path):
         expected = ([-1] * 2 + list(values))[i:i + 3]
         actual = [ports.y3.value, ports.y2.value, ports.y1.value]
         assert expected == actual
+
+
+def test_reg_input_port():
+    src = """
+    module top ports(
+        clk: in clock,
+        x: in sync(clk) uint(8),
+    ) {
+        clocked(clk) {
+            reg wire x = undef;    
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="cannot drive an input port with a register"):
+        _ = compile_custom(src).resolve("top.top")

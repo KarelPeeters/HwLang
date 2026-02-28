@@ -1,5 +1,5 @@
 use crate::front::check::{
-    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
+    TypeContainsReason, check_port_is_output, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
@@ -506,6 +506,21 @@ impl CompileItemContext<'_, '_> {
                             },
                             ScopedEntry::Item(_) => return err_entry_kind("item"),
                         };
+
+                        // check direction
+                        match signal {
+                            Signal::Port(port) => {
+                                let port_info = &self.ports[port];
+                                check_port_is_output(
+                                    diags,
+                                    port_info,
+                                    id.span,
+                                    "cannot drive an input port with a register",
+                                    "declaring a register for an input port here",
+                                )?;
+                            }
+                            Signal::Wire(_) => {}
+                        }
 
                         // check that this is the first register declaration in this block with this signal
                         if let Some(prev_info) = registers.get(&signal) {

@@ -1,4 +1,4 @@
-use crate::front::check::{TypeContainsReason, check_type_contains_value};
+use crate::front::check::{TypeContainsReason, check_port_is_output, check_type_contains_value};
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, ValueDomain};
@@ -127,6 +127,21 @@ impl CompileItemContext<'_, '_> {
             SignalOrVariable::Signal(target_base_signal) => {
                 let target_base = Spanned::new(target_base.span, target_base_signal);
                 let flow = flow.require_hardware(stmt.span, "signal assignment")?;
+
+                // check direction
+                match target_base.inner {
+                    Signal::Port(port) => {
+                        let port_info = &self.ports[port];
+                        check_port_is_output(
+                            diags,
+                            port_info,
+                            target_base.span,
+                            "cannot assign to input port",
+                            "assigning to input port here",
+                        )?;
+                    }
+                    Signal::Wire(_) => {}
+                }
 
                 // suggest domain
                 let flow_block_kind = self.check_block_kind_and_driver_type(flow, target_base)?;
