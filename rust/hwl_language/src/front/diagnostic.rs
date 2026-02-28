@@ -364,7 +364,7 @@ impl DiagnosticContent {
             let span_snippet = offsets.expand_span(span);
             let start_line_0 = span_snippet.start.line_0.saturating_sub(settings.snippet_context_lines);
             let end_line_0 = min(
-                span_snippet.end.line_0 + settings.snippet_context_lines,
+                span_snippet.end.line_0 + settings.snippet_context_lines + 1,
                 offsets.line_count() - 1,
             );
             let start_byte = offsets.line_start(start_line_0);
