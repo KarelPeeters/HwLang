@@ -13,7 +13,7 @@ pub module top ports(
 
     clocked(clk, async rst) {
         reg d0: int(0..256) = 0;
-        reg d1 = 0:
+        reg wire d1 = 0;
         reg wire t = false;
 
         if (enable) {
