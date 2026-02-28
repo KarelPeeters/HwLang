@@ -1,6 +1,6 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{FailedCaptureReason, Variable};
-use crate::front::signal::{Port, PortInterface, Wire, WireInterface};
+use crate::front::signal::{PortInterface, Signal, WireInterface};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
@@ -48,10 +48,8 @@ pub enum ScopedEntry {
 #[derive(Debug, Copy, Clone)]
 pub enum NamedValue {
     Variable(Variable),
-    Port(Port),
-    PortInterface(PortInterface),
-    Wire(Wire),
-    WireInterface(WireInterface),
+    Signal(Signal),
+    Interface(Signal<PortInterface, WireInterface>),
 }
 
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,

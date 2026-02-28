@@ -102,7 +102,7 @@ impl CompileRefs<'_, '_> {
         } = &self.fixed.parsed[ast_ref];
 
         // rebuild params scope
-        let mut ctx = CompileItemContext::new_empty(self, None);
+        let mut ctx = CompileItemContext::new_empty(self, None, None);
         let flow_root = FlowRoot::new(diags);
         let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
         let scope_params = scope_params.to_scope(self, &mut flow, span)?;

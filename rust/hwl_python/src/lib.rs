@@ -465,7 +465,7 @@ impl Compile {
         };
 
         // eval item and elaborate any necessary items
-        let mut item_ctx = CompileItemContext::new_empty(refs, None);
+        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
         let value = item_ctx.eval_item(item).cloned();
         refs.run_elaboration_loop();
 
@@ -721,7 +721,7 @@ fn call_impl(
             should_stop: &|| false,
         };
 
-        let mut item_ctx = CompileItemContext::new_empty(refs, None);
+        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
         let flow_root = FlowRoot::new(&diags);
         let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
 

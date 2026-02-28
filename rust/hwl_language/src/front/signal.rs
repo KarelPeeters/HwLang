@@ -18,6 +18,7 @@ new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
 new_index_type!(pub WireInterface);
 
+// TODO rename to PortOrWire and set Signal=PortOrWire<Port, Wire>
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Signal<P = Port, W = Wire> {
     Port(P),
@@ -345,6 +346,15 @@ impl Polarized<Signal> {
         match inverted {
             false => signal_str.to_owned(),
             true => format!("(!{signal_str})"),
+        }
+    }
+}
+
+impl<P, W> Signal<P, W> {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Signal::Port(_) => "port",
+            Signal::Wire(_) => "wire",
         }
     }
 }

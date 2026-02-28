@@ -57,6 +57,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
             }
             SimpleCompileValue::Interface(_) => fallback(),
             SimpleCompileValue::InterfaceView(_) => fallback(),
+            SimpleCompileValue::Reference(_) => fallback(),
         },
         CompileValue::Compound(value) => match value {
             CompileCompoundValue::String(x) => x.as_str().into_py_any(py),

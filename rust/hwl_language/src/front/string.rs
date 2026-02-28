@@ -3,10 +3,10 @@ use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
 use crate::front::scope::Scope;
-use crate::front::types::{HardwareType, Type};
+use crate::front::types::{HardwareType, ReferenceType, Type};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString, RangeValue,
-    SimpleCompileValue, StructValue, Value,
+    Reference, SimpleCompileValue, StructValue, Value,
 };
 use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
@@ -471,7 +471,7 @@ impl SimpleCompileValue {
                 let content = v.iter().map(|e| e.value_string(elab)).format(", ");
                 format!("[{}]", content)
             }
-            // TODO include names for function/module
+            // TODO include names for function/module/references
             // TODO include import path for debug names?
             SimpleCompileValue::Function(_) => "<function>".to_owned(),
             SimpleCompileValue::Module(_) => "<module>".to_owned(),
@@ -487,6 +487,16 @@ impl SimpleCompileValue {
                     info.debug_info_name, view_info.debug_info_name
                 )
             }
+            SimpleCompileValue::Reference(rf) => match *rf.inner_for_diagnostic() {
+                Reference::Signal(signal, ref ty) => {
+                    let kind_str = signal.kind_str();
+                    format!("<ref {kind_str} {}>", ty.value_string(elab))
+                }
+                Reference::Interface(signal, intf) => {
+                    let kind_str = signal.kind_str();
+                    format!("<ref {kind_str} {}>", elab.interface_info(intf).debug_info_name)
+                }
+            },
         }
     }
 }
@@ -548,6 +558,14 @@ impl Type {
             Type::Module => "<type_module>".to_string(),
             Type::Interface => "<type_interface>".to_string(),
             Type::InterfaceView => "<type_interface_view>".to_string(),
+            Type::Reference(rf) => match rf {
+                ReferenceType::Signal(ty) => {
+                    format!("<type ref signal {}>", ty.value_string(elab))
+                }
+                &ReferenceType::Interface(ty) => {
+                    format!("<type ref interface {}>", elab.interface_info(ty).debug_info_name)
+                }
+            },
         }
     }
 }

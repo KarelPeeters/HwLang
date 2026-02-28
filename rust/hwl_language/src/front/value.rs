@@ -1,11 +1,12 @@
-use crate::front::compile::CompileRefs;
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
 use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
-use crate::front::types::{HardwareType, Type, TypeBool, Typed};
+use crate::front::signal::{PortInterface, Signal, WireInterface};
+use crate::front::types::{HardwareType, ReferenceType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;
@@ -40,6 +41,45 @@ pub enum SimpleCompileValue {
     Module(ElaboratedModule),
     Interface(ElaboratedInterface),
     InterfaceView(ElaboratedInterfaceView),
+    Reference(ReferenceWrapper),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ReferenceWrapper {
+    /// The module this reference belongs to. References are never valid outside their original module,
+    /// this field serves as an extra check to avoid more tricky compiler errors.
+    module: ElaboratedModule,
+    inner: Reference,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum Reference {
+    Signal(Signal, Arc<HardwareType>),
+    Interface(Signal<PortInterface, WireInterface>, ElaboratedInterface),
+}
+
+impl ReferenceWrapper {
+    pub fn new(ctx: &CompileItemContext, inner: Reference, span: Span) -> DiagResult<Self> {
+        let module = ctx.curr_module.ok_or_else(|| {
+            let diags = ctx.refs.diags;
+            diags.report_error_internal(span, "cannot create reference outside of a module")
+        })?;
+
+        Ok(ReferenceWrapper { module, inner })
+    }
+
+    pub fn inner(&self, ctx: &CompileItemContext, span: Span) -> DiagResult<&Reference> {
+        if ctx.curr_module != Some(self.module) {
+            let diags = ctx.refs.diags;
+            Err(diags.report_error_internal(span, "trying to use reference outside its original module"))
+        } else {
+            Ok(&self.inner)
+        }
+    }
+
+    pub fn inner_for_diagnostic(&self) -> &Reference {
+        &self.inner
+    }
 }
 
 // TODO allow storing versions and implications in the inner values?
@@ -232,7 +272,8 @@ impl ValueCommon for SimpleCompileValue {
             SimpleCompileValue::Function(_)
             | SimpleCompileValue::Module(_)
             | SimpleCompileValue::Interface(_)
-            | SimpleCompileValue::InterfaceView(_) => Err(err_type()),
+            | SimpleCompileValue::InterfaceView(_)
+            | SimpleCompileValue::Reference(_) => Err(err_type()),
         }
     }
 }
@@ -771,6 +812,13 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Module(_) => Type::Module,
             SimpleCompileValue::Interface(_) => Type::Interface,
             SimpleCompileValue::InterfaceView(_) => Type::InterfaceView,
+            SimpleCompileValue::Reference(rf) => {
+                let ty = match &rf.inner {
+                    Reference::Signal(_, ty) => ReferenceType::Signal(Arc::clone(ty)),
+                    &Reference::Interface(_, ty) => ReferenceType::Interface(ty),
+                };
+                Type::Reference(ty)
+            }
         }
     }
 }

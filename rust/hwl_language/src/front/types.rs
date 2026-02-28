@@ -1,6 +1,8 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
-use crate::front::item::{ElaboratedEnum, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo};
+use crate::front::item::{
+    ElaboratedEnum, ElaboratedInterface, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo,
+};
 use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
 use crate::util::big_int::{BigInt, BigUint};
@@ -34,6 +36,13 @@ pub enum Type {
     Module,
     Interface,
     InterfaceView,
+    Reference(ReferenceType),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum ReferenceType {
+    Signal(Arc<HardwareType>),
+    Interface(ElaboratedInterface),
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
@@ -202,6 +211,23 @@ impl Type {
                     Type::Any
                 }
             }
+            (Type::Reference(a), Type::Reference(b)) => match (a, b) {
+                (ReferenceType::Signal(a), ReferenceType::Signal(b)) => {
+                    if a == b {
+                        Type::Reference(ReferenceType::Signal(Arc::clone(a)))
+                    } else {
+                        Type::Any
+                    }
+                }
+                (&ReferenceType::Interface(a), &ReferenceType::Interface(b)) => {
+                    if a == b {
+                        Type::Reference(ReferenceType::Interface(a))
+                    } else {
+                        Type::Any
+                    }
+                }
+                (ReferenceType::Signal(_) | ReferenceType::Interface(_), _) => Type::Any,
+            },
 
             // simple mismatches (we list all of them out manually here to force exhaustiveness checking)
             (
@@ -217,7 +243,8 @@ impl Type {
                 | Type::Tuple(_)
                 | Type::Array(_, _)
                 | Type::Struct(_)
-                | Type::Enum(_),
+                | Type::Enum(_)
+                | Type::Reference(_),
                 _,
             ) => Type::Any,
         }
@@ -274,7 +301,8 @@ impl Type {
             | Type::Function
             | Type::Module
             | Type::Interface
-            | Type::InterfaceView => Err(NonHardwareType),
+            | Type::InterfaceView
+            | Type::Reference(_) => Err(NonHardwareType),
         }
     }
 }

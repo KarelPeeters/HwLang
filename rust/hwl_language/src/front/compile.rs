@@ -13,7 +13,7 @@ use crate::mid::graph::ir_modules_check_no_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
-use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
+use crate::syntax::parsed::{AstRefItem, AstRefItemKind, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
@@ -78,7 +78,7 @@ pub fn compile(
             should_stop,
         };
         find_top_module(diags, fixed, &shared, manifest_span).and_then(|top_item| {
-            let mut ctx = CompileItemContext::new_empty(refs, None);
+            let mut ctx = CompileItemContext::new_empty(refs, None, None);
             let result = ctx.eval_item(top_item.item())?;
 
             match result {
@@ -189,7 +189,7 @@ impl<'a> CompileRefs<'a, '_> {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
-                        let mut ctx = CompileItemContext::new_empty(self, Some(item));
+                        let mut ctx = CompileItemContext::new_empty(self, Some(item), None);
                         ctx.eval_item_new(item)
                     });
                 }
@@ -284,6 +284,8 @@ pub struct CompileItemContext<'a, 's> {
     pub wire_interfaces: Arena<WireInterface, WireInterfaceInfo>,
     pub large: IrLargeArena,
 
+    pub curr_module: Option<ElaboratedModule>,
+
     pub origin: Option<AstRefItem>,
     pub call_stack: Vec<StackEntry>,
 }
@@ -310,13 +312,18 @@ impl StackEntry {
 }
 
 impl<'a, 's> CompileItemContext<'a, 's> {
-    pub fn new_empty(refs: CompileRefs<'a, 's>, origin: Option<AstRefItem>) -> Self {
-        Self::new_restore(refs, origin, Arena::new(), Arena::new())
+    pub fn new_empty(
+        refs: CompileRefs<'a, 's>,
+        origin: Option<AstRefItem>,
+        curr_module: Option<ElaboratedModule>,
+    ) -> Self {
+        Self::new_restore(refs, origin, curr_module, Arena::new(), Arena::new())
     }
 
     pub fn new_restore(
         refs: CompileRefs<'a, 's>,
         origin: Option<AstRefItem>,
+        curr_module: Option<ElaboratedModule>,
         ports: ArenaPorts,
         port_interfaces: ArenaPortInterfaces,
     ) -> Self {
@@ -328,6 +335,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
             wire_interfaces: Arena::new(),
             large: IrLargeArena::new(),
             origin,
+            curr_module,
             call_stack: vec![],
         }
     }
@@ -355,7 +363,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         self.recurse(stack_entry, |s| {
             let origin = s.origin.map(|origin| (origin, s.call_stack.clone()));
             let f_compute = || {
-                let mut ctx = CompileItemContext::new_empty(s.refs, Some(item));
+                let mut ctx = CompileItemContext::new_empty(s.refs, Some(item), None);
                 ctx.eval_item_new(item)
             };
             let f_cycle = |stack: Vec<&StackEntry>| cycle_diagnostic(stack).report(s.refs.diags);

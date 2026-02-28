@@ -6,7 +6,7 @@ use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind, ImplicationContradiction};
 use crate::front::implication::ValueWithImplications;
 use crate::front::scope::{NamedValue, Scope};
-use crate::front::signal::{Signal, SignalOrVariable};
+use crate::front::signal::SignalOrVariable;
 use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MaybeCompile, NotCompile, Value};
@@ -72,17 +72,10 @@ impl CompileItemContext<'_, '_> {
                 NamedValue::Variable(var) => {
                     flow.type_of(self, Spanned::new(id.span, SignalOrVariable::Variable(var)))?
                 }
-                NamedValue::Port(port) => flow.type_of(
-                    self,
-                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Port(port))),
-                )?,
-                NamedValue::Wire(wire) => flow.type_of(
-                    self,
-                    Spanned::new(id.span, SignalOrVariable::Signal(Signal::Wire(wire))),
-                )?,
-                NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
-                    return Err(diags.report_error_todo(expr_span, "typeof for interfaces"));
+                NamedValue::Signal(signal) => {
+                    flow.type_of(self, Spanned::new(id.span, SignalOrVariable::Signal(signal)))?
                 }
+                NamedValue::Interface(_) => return Err(diags.report_error_todo(expr_span, "typeof for interfaces")),
             },
         };
         Ok(ty)

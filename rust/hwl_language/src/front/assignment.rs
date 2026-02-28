@@ -388,9 +388,10 @@ impl CompileItemContext<'_, '_> {
                 registers,
             } => {
                 if !registers.contains_key(&target_base_signal.inner) {
-                    let (signal_kind, signal_decl_span) = match target_base_signal.inner {
-                        Signal::Port(signal) => ("port", self.ports[signal].span),
-                        Signal::Wire(signal) => ("wire", self.wires[signal].decl_span()),
+                    let signal_kind = target_base_signal.inner.kind_str();
+                    let signal_decl_span = match target_base_signal.inner {
+                        Signal::Port(signal) => self.ports[signal].span,
+                        Signal::Wire(signal) => self.wires[signal].decl_span(),
                     };
 
                     return Err(DiagnosticError::new(

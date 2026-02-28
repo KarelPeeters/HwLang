@@ -50,6 +50,7 @@ impl<C> ResultNeverExt<C> for ControlFlow<Never, C> {
     }
 }
 
+// TODO remove this
 #[macro_export]
 macro_rules! throw {
     ($e:expr) => {

@@ -3,7 +3,7 @@ use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext,
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
-use crate::front::expression::{NamedOrValue, ValueInner};
+use crate::front::expression::NamedOrValue;
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{
     Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent, HardwareProcessKind,
@@ -18,7 +18,7 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeUndefined, SimpleCompileValue, ValueCommon};
+use crate::front::value::{CompileValue, MaybeUndefined, Reference, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
@@ -33,7 +33,7 @@ use crate::syntax::ast::{
     ClockedProcess, CombinatorialProcess, DomainKind, Identifier, ModulePortItem, ModulePortSingle, PortConnection,
     SyncDomain, WireDeclaration,
 };
-use crate::syntax::parsed::{AstRefModuleExternal, AstRefModuleInternal};
+use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
@@ -75,8 +75,10 @@ enum ConnectorKind {
 
 #[derive(Debug)]
 pub struct ElaboratedModuleHeader<A> {
-    pub ast_ref: A,
+    ast_ref: A,
+    elab_module: ElaboratedModule,
     debug_info_params: Option<Vec<(String, String)>>,
+
     ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
@@ -104,10 +106,11 @@ pub struct ElaboratedModuleExternalInfo {
 }
 
 impl CompileRefs<'_, '_> {
-    pub fn elaborate_module_ports_new<A>(
+    pub fn elaborate_module_ports_new<A: AstRefItemKind>(
         self,
         ast_ref: A,
         def_span: Span,
+        elab_module: ElaboratedModule,
         params: ElaboratedItemParams,
         captured_scope_params: CapturedScope,
         ports: &Spanned<ExtraList<ModulePortItem>>,
@@ -118,7 +121,7 @@ impl CompileRefs<'_, '_> {
         } = params;
 
         // reconstruct header scope
-        let mut ctx = CompileItemContext::new_empty(self, None);
+        let mut ctx = CompileItemContext::new_empty(self, None, Some(elab_module));
         let flow_root = FlowRoot::new(self.diags);
         let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
         let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
@@ -143,6 +146,7 @@ impl CompileRefs<'_, '_> {
 
         let flow = flow.into_content();
         let header = ElaboratedModuleHeader {
+            elab_module,
             ast_ref,
             debug_info_params,
             ports: ctx.ports,
@@ -159,9 +163,10 @@ impl CompileRefs<'_, '_> {
 
     pub fn elaborate_module_body_new(
         self,
-        header: ElaboratedModuleHeader<AstRefModuleInternal>,
+        ports: ElaboratedModuleHeader<AstRefModuleInternal>,
     ) -> DiagResult<IrModuleInfo> {
         let ElaboratedModuleHeader {
+            elab_module: elab,
             ast_ref,
             debug_info_params,
             ports,
@@ -171,7 +176,7 @@ impl CompileRefs<'_, '_> {
             scope_ports,
             flow_root,
             flow,
-        } = header;
+        } = ports;
         let &ast::ItemDefModuleInternal {
             span: def_span,
             vis: _,
@@ -184,7 +189,7 @@ impl CompileRefs<'_, '_> {
         self.check_should_stop(def_id.span())?;
 
         // rebuild scopes
-        let mut ctx = CompileItemContext::new_restore(self, None, ports, port_interfaces);
+        let mut ctx = CompileItemContext::new_restore(self, None, Some(elab), ports, port_interfaces);
         let flow_root = FlowRoot::restore(self.diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
 
@@ -231,14 +236,15 @@ impl CompileRefs<'_, '_> {
                 continue;
             }
 
-            let (decl_span, diag_str, kind_str) = match signal {
+            let kind_str = signal.kind_str();
+            let (decl_span, diag_str) = match signal {
                 Signal::Port(signal) => {
                     let info = &ctx.ports[signal];
-                    (info.span, info.name.as_str(), "port")
+                    (info.span, info.name.as_str())
                 }
                 Signal::Wire(signal) => {
                     let info = &ctx.wires[signal];
-                    (info.decl_span(), info.diagnostic_str(), "wire")
+                    (info.decl_span(), info.diagnostic_str())
                 }
             };
 
@@ -535,7 +541,7 @@ fn push_connector_single(
             single,
         };
 
-        let entry = ScopedEntry::Named(NamedValue::Port(port));
+        let entry = ScopedEntry::Named(NamedValue::Signal(Signal::Port(port)));
         (kind, entry)
     });
 
@@ -618,7 +624,7 @@ fn push_connector_interface(
             singles,
         };
 
-        let entry = ScopedEntry::Named(NamedValue::PortInterface(port_interface));
+        let entry = ScopedEntry::Named(NamedValue::Interface(Signal::Port(port_interface)));
         Ok((kind, entry))
     });
 
@@ -863,7 +869,7 @@ impl BodyContext {
                     }
                 }
 
-                NamedValue::Wire(wire)
+                NamedValue::Signal(Signal::Wire(wire))
             }
             WireDeclarationKind::Interface {
                 domain,
@@ -955,7 +961,7 @@ impl BodyContext {
                 wire_interface_info.wires = wires;
                 wire_interface_info.ir_wires = ir_wires;
 
-                NamedValue::WireInterface(wire_interface)
+                NamedValue::Interface(Signal::Wire(wire_interface))
             }
         };
 
@@ -1583,33 +1589,35 @@ impl BodyContext {
                                 let named = ctx.eval_named_or_value(scope, id)?;
 
                                 let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
-                                    NamedOrValue::Named(NamedValue::Wire(wire)) => {
-                                        let wire_info = &mut ctx.wires[wire];
+                                    NamedOrValue::Named(NamedValue::Signal(signal)) => match signal {
+                                        Signal::Port(port) => {
+                                            let port_info = &ctx.ports[port];
+                                            (
+                                                IrSignal::Port(port_info.ir),
+                                                Signal::Port(port),
+                                                port_info.domain.map_inner(ValueDomain::from_port_domain),
+                                                port_info.ty.as_ref(),
+                                            )
+                                        }
+                                        Signal::Wire(wire) => {
+                                            let wire_info = &mut ctx.wires[wire];
 
-                                        let wire_domain =
-                                            wire_info.suggest_domain(&mut ctx.wire_interfaces, connector_domain);
-                                        let wire_ty = wire_info.suggest_ty(
-                                            refs,
-                                            &ctx.wire_interfaces,
-                                            &mut self.ir_wires,
-                                            ty.as_ref(),
-                                        );
+                                            let wire_domain =
+                                                wire_info.suggest_domain(&mut ctx.wire_interfaces, connector_domain);
+                                            let wire_ty = wire_info.suggest_ty(
+                                                refs,
+                                                &ctx.wire_interfaces,
+                                                &mut self.ir_wires,
+                                                ty.as_ref(),
+                                            );
 
-                                        let wire_domain = wire_domain?;
-                                        let wire_ty = wire_ty?;
+                                            let wire_domain = wire_domain?;
+                                            let wire_ty = wire_ty?;
 
-                                        (IrSignal::Wire(wire_ty.ir), Signal::Wire(wire), wire_domain, wire_ty.ty)
-                                    }
-                                    NamedOrValue::Named(NamedValue::Port(port)) => {
-                                        let port_info = &ctx.ports[port];
-                                        (
-                                            IrSignal::Port(port_info.ir),
-                                            Signal::Port(port),
-                                            port_info.domain.map_inner(ValueDomain::from_port_domain),
-                                            port_info.ty.as_ref(),
-                                        )
-                                    }
-                                    _ => throw!(build_error()),
+                                            (IrSignal::Wire(wire_ty.ir), Signal::Wire(wire), wire_domain, wire_ty.ty)
+                                        }
+                                    },
+                                    _ => return Err(build_error()),
                                 };
 
                                 // check type
@@ -1673,36 +1681,41 @@ impl BodyContext {
                 let mut flow_connection = flow_parent.new_child_isolated();
                 let value = ctx.eval_expression_inner(scope, &mut flow_connection, &Type::Any, value_expr)?;
 
-                // unwrap interface
-                // TODO avoid cloning signals vec here
-                let (value_interface, value_domain, value_signals) = match value {
-                    ValueInner::PortInterface(port_interface) => {
-                        let info = &ctx.port_interfaces[port_interface];
-                        let port_interface = info.view.map_inner(|v| v.interface);
-                        let port_domain = info
-                            .domain
-                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port))));
-                        let port_signals = Signal::Port(&info.ports);
-                        (port_interface, port_domain, port_signals)
-                    }
-                    ValueInner::WireInterface(wire_interface) => {
-                        let info = &mut ctx.wire_interfaces[wire_interface];
-                        let wire_domain = info.suggest_domain(connector_domain)?;
-                        // reborrow immutably
-                        let info = &ctx.wire_interfaces[wire_interface];
-                        let wire_signals = Signal::Wire((&info.wires, &info.ir_wires));
-                        (info.interface, wire_domain, wire_signals)
-                    }
-                    ValueInner::Value(_) => {
-                        let diag = DiagnosticError::new(
-                            "expected interface value",
-                            value_expr.span,
-                            "got non-interface expression",
-                        )
+                // expect interface
+                let build_err_not_interface = || {
+                    DiagnosticError::new("expected interface value", value_expr.span, "got non-interface value")
                         .add_info(connector_id.span, "port defined as interface here")
-                        .report(diags);
-                        return Err(diag);
+                        .report(diags)
+                };
+
+                let (value_interface, value_domain, value_signals) = match value {
+                    Value::Simple(SimpleCompileValue::Reference(reference)) => {
+                        match reference.inner(ctx, value_expr.span)? {
+                            &Reference::Interface(intf, _elab_intf) => {
+                                match intf {
+                                    Signal::Port(port_interface) => {
+                                        let info = &ctx.port_interfaces[port_interface];
+                                        let port_interface = info.view.map_inner(|v| v.interface);
+                                        let port_domain = info.domain.map_inner(|d| {
+                                            ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))
+                                        });
+                                        let port_signals = Signal::Port(&info.ports);
+                                        (port_interface, port_domain, port_signals)
+                                    }
+                                    Signal::Wire(wire_interface) => {
+                                        let info = &mut ctx.wire_interfaces[wire_interface];
+                                        let wire_domain = info.suggest_domain(connector_domain)?;
+                                        // reborrow immutably
+                                        let info = &ctx.wire_interfaces[wire_interface];
+                                        let wire_signals = Signal::Wire((&info.wires, &info.ir_wires));
+                                        (info.interface, wire_domain, wire_signals)
+                                    }
+                                }
+                            }
+                            Reference::Signal(_, _) => return Err(build_err_not_interface()),
+                        }
                     }
+                    _ => return Err(build_err_not_interface()),
                 };
 
                 // check interface match (including generics)

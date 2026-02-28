@@ -19,7 +19,7 @@ use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArrayS
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue,
-    NotCompile, RangeValue, SimpleCompileValue, Value, ValueCommon,
+    NotCompile, RangeValue, Reference, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
@@ -49,14 +49,6 @@ use crate::util::store::ArcOrRef;
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
-
-// TODO better name
-#[derive(Debug)]
-pub enum ValueInner {
-    Value(ValueWithImplications),
-    PortInterface(PortInterface),
-    WireInterface(WireInterface),
-}
 
 // TODO rename/remove
 #[derive(Debug)]
@@ -143,30 +135,17 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
-        let value = self.eval_expression_inner(scope, flow, expected_ty, expr)?;
-        match value {
-            ValueInner::Value(v) => Ok(Spanned::new(expr.span, v)),
-            ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => Err(self.refs.diags.report_error_simple(
-                "interface instance expression not allowed here",
-                expr.span,
-                "this expression evaluates to an interface instance",
-            )),
-        }
+        self.eval_expression_inner(scope, flow, expected_ty, expr)
+            .map(|value| Spanned::new(expr.span, value))
     }
 
-    // TODO return COW to save some allocations?
-    // TODO maybe this should return an abstract expression value,
-    //   that can then be written (as target), read (as value), typeof-ed, gotten implications, ...
-    //   that's awkward for expressions that create statements though, eg. calls
-    //   maybe those should push their statements to virtual blocks, and only actually add them once read?
-    // TODO rename the other one to `eval_expression_value`, and this one to `eval_expression`
     pub fn eval_expression_inner(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
-    ) -> DiagResult<ValueInner> {
+    ) -> DiagResult<ValueWithImplications> {
         let refs = self.refs;
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
@@ -208,7 +187,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::TypeFunction => Value::new_ty(Type::Function),
             &ExpressionKind::Builtin { span_keyword, ref args } => {
                 let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
-                return Ok(ValueInner::Value(ValueWithImplications::simple(value)));
+                return Ok(Value::simple(value));
             }
             &ExpressionKind::Wrapped(inner) => {
                 return self.eval_expression_inner(scope, flow, expected_ty, inner);
@@ -233,27 +212,26 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
                     NamedOrValue::ItemValue(value) => {
-                        return Ok(ValueInner::Value(ValueWithImplications::simple(Value::from(value))));
+                        return Ok(Value::simple(Value::from(value)));
                     }
                     NamedOrValue::Named(value) => match value {
                         NamedValue::Variable(var) => {
                             flow.var_eval(refs, &mut self.large, Spanned::new(expr.span, var))?
                         }
-                        NamedValue::Port(port) => {
-                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Port(port)))?
-                        }
-                        NamedValue::Wire(wire) => {
-                            flow.signal_eval(self, Spanned::new(expr.span, Signal::Wire(wire)))?
-                        }
-                        NamedValue::PortInterface(interface) => {
-                            return Ok(ValueInner::PortInterface(interface));
-                        }
-                        NamedValue::WireInterface(interface) => {
-                            return Ok(ValueInner::WireInterface(interface));
+                        NamedValue::Signal(signal) => flow.signal_eval(self, Spanned::new(expr.span, signal))?,
+                        NamedValue::Interface(intf) => {
+                            let elab_intf = match intf {
+                                Signal::Port(intf) => self.port_interfaces[intf].view.inner.interface,
+                                Signal::Wire(intf) => self.wire_interfaces[intf].interface.inner,
+                            };
+
+                            let rf = Reference::Interface(intf, elab_intf);
+                            let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                            Value::Simple(SimpleCompileValue::Reference(rf))
                         }
                     },
                 };
-                return Ok(ValueInner::Value(result));
+                return Ok(result);
             }
             ExpressionKind::IntLiteral(pattern) => {
                 // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
@@ -492,7 +470,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         index.span(),
                         VariableId::Id(index),
                         span_keyword,
-                        Ok(ValueWithImplications::simple(index_value)),
+                        Ok(Value::simple(index_value)),
                     )?;
 
                     let scope_span = body.span().join(index.span());
@@ -521,7 +499,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         TypeContainsReason::Operator(op.span),
                         operand.clone().map_inner(ValueWithImplications::into_value),
                     )?;
-                    return Ok(ValueInner::Value(operand.inner));
+                    return Ok(operand.inner);
                 }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
@@ -564,7 +542,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 version: None,
                                 implications: v.implications.invert(),
                             };
-                            return Ok(ValueInner::Value(Value::Hardware(result_with_implications)));
+                            return Ok(Value::Hardware(result_with_implications));
                         }
                     }
                 }
@@ -573,7 +551,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let left = self.eval_expression_with_implications(scope, flow, &Type::Any, left);
                 let right = self.eval_expression_with_implications(scope, flow, &Type::Any, right);
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
-                return Ok(ValueInner::Value(result));
+                return Ok(result);
             }
             &ExpressionKind::ArrayIndex {
                 span_brackets,
@@ -674,19 +652,19 @@ impl<'a> CompileItemContext<'a, '_> {
 
                     // TODO use common step logic once that supports tuple indexing
                     match base_eval {
-                        ValueInner::Value(Value::Compound(MixedCompoundValue::Tuple(inner))) => {
+                        Value::Compound(MixedCompoundValue::Tuple(inner)) => {
                             let index = index_int
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
                             inner[index].clone()
                         }
-                        ValueInner::Value(Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner))))) => {
+                        Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner)))) => {
                             let index = index_int
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
                             Value::new_ty(inner[index].clone())
                         }
-                        ValueInner::Value(Value::Hardware(value)) => {
+                        Value::Hardware(value) => {
                             let value = value.value;
                             match value.ty {
                                 HardwareType::Tuple(inner_tys) => {
@@ -707,10 +685,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 _ => return Err(err_not_tuple(&value.ty.value_string(elab))),
                             }
                         }
-                        ValueInner::Value(v) => return Err(err_not_tuple(&v.ty().value_string(elab))),
-                        ValueInner::PortInterface(_) | ValueInner::WireInterface(_) => {
-                            return Err(err_not_tuple("interface instance"));
-                        }
+                        v => return Err(err_not_tuple(&v.ty().value_string(elab))),
                     }
                 }
             },
@@ -729,7 +704,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     Value::Simple(SimpleCompileValue::Type(Type::Type)) => {
                         // typeof operator
                         let ty = self.eval_type_of(scope, flow, expr.span, args)?;
-                        return Ok(ValueInner::Value(ValueWithImplications::new_ty(ty)));
+                        return Ok(ValueWithImplications::new_ty(ty));
                     }
                     _ => {
                         // fallthrough into normal call logic
@@ -809,7 +784,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
         };
 
-        Ok(ValueInner::Value(ValueWithImplications::simple(result_simple)))
+        Ok(Value::simple(result_simple))
     }
 
     pub fn eval_call(
@@ -862,7 +837,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expr_span: Span,
         base: Expression,
         index: Identifier,
-    ) -> DiagResult<ValueInner> {
+    ) -> DiagResult<ValueWithImplications> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
         // TODO add array.len, type.int_start, type.int_end, type.int_ranges
 
@@ -874,58 +849,14 @@ impl<'a> CompileItemContext<'a, '_> {
         let index_str = index.str(refs.fixed.source);
 
         // interface fields
-        let base_eval = match base_eval {
-            ValueInner::PortInterface(port_interface) => {
-                // get the underlying port
-                let port_interface_info = &self.port_interfaces[port_interface];
-                let interface_info = self
-                    .refs
-                    .shared
-                    .elaboration_arenas
-                    .interface_info(port_interface_info.view.inner.interface);
-
-                let port_index = interface_info.signals.get_index_of(index_str).ok_or_else(|| {
-                    DiagnosticError::new(
-                        format!("port `{index_str}` not found on interface"),
-                        index.span,
-                        "attempt to access port here",
-                    )
-                    .add_info(port_interface_info.view.span, "port interface set here")
-                    .add_info(interface_info.id.span(), "interface declared here")
-                    .report(diags)
-                })?;
-                let port = port_interface_info.ports[port_index];
-
+        if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base_eval {
+            let rf = rf.inner(self, base.span)?;
+            if let &Reference::Interface(intf, _elab_intf) = rf {
+                let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
                 let flow = flow.require_hardware(expr_span, "port access")?;
-                let port_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Port(port)))?;
-                return Ok(ValueInner::Value(port_eval));
+                return flow.signal_eval(self, Spanned::new(expr_span, signal));
             }
-            ValueInner::WireInterface(wire_interface) => {
-                let wire_interface_info = &self.wire_interfaces[wire_interface];
-                let interface_info = self
-                    .refs
-                    .shared
-                    .elaboration_arenas
-                    .interface_info(wire_interface_info.interface.inner);
-
-                let wire_index = interface_info.signals.get_index_of(index_str).ok_or_else(|| {
-                    DiagnosticError::new(
-                        format!("port `{index_str}` not found on interface"),
-                        index.span,
-                        "attempt to access port here",
-                    )
-                    .add_info(wire_interface_info.interface.span, "wire interface set here")
-                    .add_info(interface_info.id.span(), "interface declared here")
-                    .report(diags)
-                })?;
-                let wire = wire_interface_info.wires[wire_index];
-
-                let flow = flow.require_hardware(expr_span, "wire access")?;
-                let wire_eval = flow.signal_eval(self, Spanned::new(expr_span, Signal::Wire(wire)))?;
-                return Ok(ValueInner::Value(wire_eval));
-            }
-            ValueInner::Value(base_eval) => base_eval,
-        };
+        }
 
         // interface views
         if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base_eval {
@@ -936,8 +867,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 interface: base_interface,
                 view_index,
             };
-            let result = Value::Simple(SimpleCompileValue::InterfaceView(interface_view));
-            return Ok(ValueInner::Value(result));
+            return Ok(Value::Simple(SimpleCompileValue::InterfaceView(interface_view)));
         }
 
         // common type attributes
@@ -946,8 +876,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 "size_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let width = ty_hw.as_ir(refs).size_bits();
-                    let result = Value::new_int(width.into());
-                    return Ok(ValueInner::Value(result));
+                    return Ok(Value::new_int(width.into()));
                 }
                 // TODO all of these should return functions with a single params,
                 //   without the need for scope capturing
@@ -957,8 +886,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         ty_hw,
                         kind: FunctionBitsKind::ToBits,
                     };
-                    let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func)));
-                    return Ok(ValueInner::Value(result));
+                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
                 }
                 "from_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
@@ -979,8 +907,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         ty_hw,
                         kind: FunctionBitsKind::FromBits { is_unsafe: false },
                     };
-                    let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func)));
-                    return Ok(ValueInner::Value(result));
+                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
                 }
                 "from_bits_unsafe" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
@@ -988,8 +915,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         ty_hw,
                         kind: FunctionBitsKind::FromBits { is_unsafe: true },
                     };
-                    let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func)));
-                    return Ok(ValueInner::Value(result));
+                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
                 }
                 _ => {}
             }
@@ -998,13 +924,11 @@ impl<'a> CompileItemContext<'a, '_> {
             if let Type::Array(ty_inner, ty_len) = ty {
                 match index_str {
                     "inner" => {
-                        let result = Value::new_ty((**ty_inner).clone());
-                        return Ok(ValueInner::Value(result));
+                        return Ok(Value::new_ty((**ty_inner).clone()));
                     }
                     "len" => {
                         return if let Some(ty_len) = ty_len {
-                            let result = Value::new_int(BigInt::from(ty_len));
-                            Ok(ValueInner::Value(result))
+                            Ok(Value::new_int(BigInt::from(ty_len)))
                         } else {
                             let diag = DiagnosticError::new(
                                 "cannot get length of array type with unknown length",
@@ -1025,8 +949,8 @@ impl<'a> CompileItemContext<'a, '_> {
         if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base_eval
             && index_str == "new"
         {
-            let result = Value::Simple(SimpleCompileValue::Function(FunctionValue::StructNew(elab)));
-            return Ok(ValueInner::Value(result));
+            let func = FunctionValue::StructNew(elab);
+            return Ok(Value::Simple(SimpleCompileValue::Function(func)));
         }
 
         let base_item_function = match &base_eval {
@@ -1040,8 +964,7 @@ impl<'a> CompileItemContext<'a, '_> {
             && index_str == "new"
         {
             let func = FunctionValue::StructNewInfer(unique);
-            let result = Value::Simple(SimpleCompileValue::Function(func));
-            return Ok(ValueInner::Value(result));
+            return Ok(Value::Simple(SimpleCompileValue::Function(func)));
         }
 
         // enum variants
@@ -1061,7 +984,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     variant_index,
                 ))),
             };
-            Ok(ValueInner::Value(result))
+            Ok(result)
         };
 
         if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base_eval {
@@ -1084,7 +1007,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 // TODO this is indeed confusing, eg. print(Option.None) is a function,
                 //   this gets especially confusing when merging into a hardware value
                 let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.to_owned()));
-                Ok(ValueInner::Value(Value::Simple(SimpleCompileValue::Function(func))))
+                Ok(Value::Simple(SimpleCompileValue::Function(func)))
             };
         }
 
@@ -1131,7 +1054,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             };
 
-            return Ok(ValueInner::Value(ValueWithImplications::simple(result)));
+            return Ok(Value::simple(result));
         }
 
         // array length
@@ -1139,8 +1062,7 @@ impl<'a> CompileItemContext<'a, '_> {
             && index_str == "len"
         {
             return if let Some(value_len) = value_len {
-                let result = Value::new_int(BigInt::from(value_len));
-                Ok(ValueInner::Value(result))
+                Ok(Value::new_int(BigInt::from(value_len)))
             } else {
                 Err(diags.report_error_internal(expr_span, "value has type with unknown array length"))
             };
@@ -1155,6 +1077,45 @@ impl<'a> CompileItemContext<'a, '_> {
         .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
         .report(diags);
         Err(diag)
+    }
+
+    fn interface_get_signal(
+        &self,
+        base_span: Span,
+        intf: Signal<PortInterface, WireInterface>,
+        index: Spanned<&str>,
+    ) -> DiagResult<Signal> {
+        let (elab_intf, base_intf_span) = match intf {
+            Signal::Port(intf) => {
+                let info = &self.port_interfaces[intf];
+                (info.view.inner.interface, info.view.span)
+            }
+            Signal::Wire(intf) => {
+                let info = &self.wire_interfaces[intf];
+                (info.interface.inner, info.interface.span)
+            }
+        };
+        let info = self.refs.shared.elaboration_arenas.interface_info(elab_intf);
+
+        let signal_index = info.signals.get_index_of(index.inner).ok_or_else(|| {
+            let interface_str =
+                SimpleCompileValue::Interface(elab_intf).value_string(&self.refs.shared.elaboration_arenas);
+            DiagnosticError::new(
+                format!("signal `{}` not found on interface", index.inner),
+                index.span,
+                "attempt to access signal here",
+            )
+            .add_info(base_span, format!("base is instance of `{interface_str}`"))
+            .add_info(base_intf_span, "interface set here")
+            .add_info(info.id.span(), "interface declared here")
+            .report(self.refs.diags)
+        })?;
+
+        let signal = match intf {
+            Signal::Port(intf) => Signal::Port(self.port_interfaces[intf].ports[signal_index]),
+            Signal::Wire(intf) => Signal::Wire(self.wire_interfaces[intf].wires[signal_index]),
+        };
+        Ok(signal)
     }
 
     fn eval_array_literal(
@@ -1435,20 +1396,22 @@ impl<'a> CompileItemContext<'a, '_> {
                     NamedOrValue::ItemValue(_) => return Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
-                        NamedValue::Port(port) => {
+                        NamedValue::Signal(signal) => {
                             // check direction
-                            let direction = self.ports[port].direction;
-                            match direction.inner {
-                                PortDirection::Input => return Err(build_err("input port")),
-                                PortDirection::Output => {}
+                            // TODO this will have to be moved once we allow taking references
+                            match signal {
+                                Signal::Port(port) => match self.ports[port].direction.inner {
+                                    PortDirection::Input => return Err(build_err("input port")),
+                                    PortDirection::Output => {}
+                                },
+                                Signal::Wire(_) => {}
                             }
 
-                            AssignmentTarget::simple(Spanned::new(expr.span, port.into()))
+                            AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
                         }
-                        NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
+                        NamedValue::Interface(_) => {
                             return Err(build_err("interface instance"));
                         }
-                        NamedValue::Wire(w) => AssignmentTarget::simple(Spanned::new(expr.span, w.into())),
                     },
                 }
             }
@@ -1488,46 +1451,35 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::DotIndex(base, index) => {
                 match index {
                     DotIndexKind::Id(index) => {
+                        let index_str = index.str(self.refs.fixed.source);
+
                         match self.refs.get_expr(base) {
                             &ExpressionKind::Id(base) => {
                                 let base = self.eval_general_id(scope, flow, base)?;
                                 let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
                                 match self.eval_named_or_value(scope, base)?.inner {
-                                    NamedOrValue::Named(NamedValue::PortInterface(base)) => {
-                                        // get port
-                                        let port_interface_info = &self.port_interfaces[base];
-                                        let interface_info = self
-                                            .refs
-                                            .shared
-                                            .elaboration_arenas
-                                            .interface_info(port_interface_info.view.inner.interface);
-                                        let (port_index, _) =
-                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                                        let port = port_interface_info.ports[port_index];
+                                    NamedOrValue::Named(NamedValue::Interface(intf)) => {
+                                        let signal = self.interface_get_signal(
+                                            base.span,
+                                            intf,
+                                            Spanned::new(index.span, index_str),
+                                        )?;
 
                                         // check direction
-                                        let direction = self.ports[port].direction;
-                                        match direction.inner {
-                                            PortDirection::Input => return Err(build_err("input port")),
-                                            PortDirection::Output => {}
+                                        // TODO this will have to be moved once we allow taking references
+                                        match signal {
+                                            Signal::Port(port) => {
+                                                let direction = self.ports[port].direction;
+                                                match direction.inner {
+                                                    PortDirection::Input => return Err(build_err("input port")),
+                                                    PortDirection::Output => {}
+                                                }
+                                            }
+                                            Signal::Wire(_) => {}
                                         }
 
-                                        AssignmentTarget::simple(Spanned::new(expr.span, port.into()))
-                                    }
-                                    NamedOrValue::Named(NamedValue::WireInterface(base)) => {
-                                        // get port
-                                        let wire_interface_info = &self.wire_interfaces[base];
-                                        let interface_info = self
-                                            .refs
-                                            .shared
-                                            .elaboration_arenas
-                                            .interface_info(wire_interface_info.interface.inner);
-                                        let (wire_index, _) =
-                                            interface_info.get_port(diags, self.refs.fixed.source, index)?;
-                                        let wire = wire_interface_info.wires[wire_index];
-
-                                        AssignmentTarget::simple(Spanned::new(expr.span, wire.into()))
+                                        AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
                                     }
                                     _ => {
                                         return Err(diags.report_error_simple(
@@ -1603,12 +1555,9 @@ impl<'a> CompileItemContext<'a, '_> {
                 match value.inner {
                     NamedOrValue::ItemValue(_) => Err(build_err("item")),
                     NamedOrValue::Named(s) => match s {
+                        NamedValue::Signal(s) => Ok(Polarized::new(s)),
                         NamedValue::Variable(_) => Err(build_err("variable")),
-                        NamedValue::Port(p) => Ok(Polarized::new(Signal::Port(p))),
-                        NamedValue::PortInterface(_) | NamedValue::WireInterface(_) => {
-                            Err(build_err("interface instance"))
-                        }
-                        NamedValue::Wire(w) => Ok(Polarized::new(Signal::Wire(w))),
+                        NamedValue::Interface(_) => Err(build_err("interface instance")),
                     },
                 }
             }
@@ -2408,7 +2357,7 @@ pub fn eval_binary_expression(
         BinaryOp::BitXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
     };
 
-    Ok(ValueWithImplications::simple(result_simple))
+    Ok(Value::simple(result_simple))
 }
 
 fn eval_binary_bool(

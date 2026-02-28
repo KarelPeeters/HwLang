@@ -500,23 +500,17 @@ impl CompileItemContext<'_, '_> {
 
                         let signal = match found.value {
                             ScopedEntry::Named(value) => match value {
-                                NamedValue::Port(port) => Signal::Port(port),
-                                NamedValue::Wire(wire) => Signal::Wire(wire),
+                                NamedValue::Signal(signal) => signal,
                                 NamedValue::Variable(_) => return err_entry_kind("variable"),
-                                NamedValue::PortInterface(_) => return err_entry_kind("port interface"),
-                                NamedValue::WireInterface(_) => return err_entry_kind("wire interface"),
+                                NamedValue::Interface(_) => return err_entry_kind("interface instance"),
                             },
                             ScopedEntry::Item(_) => return err_entry_kind("item"),
-                        };
-                        let kind_str = match signal {
-                            Signal::Port(_) => "port",
-                            Signal::Wire(_) => "wire",
                         };
 
                         // check that this is the first register declaration in this block with this signal
                         if let Some(prev_info) = registers.get(&signal) {
                             let diag = DiagnosticError::new(
-                                format!("{kind_str} already marked as a register in this process"),
+                                format!("{} already marked as a register in this process", signal.kind_str()),
                                 stmt_span,
                                 "trying to mark as register here",
                             )
@@ -566,7 +560,8 @@ impl CompileItemContext<'_, '_> {
                         }
 
                         // declare in scope
-                        scope.declare(diags, Ok(id), Ok(ScopedEntry::Named(NamedValue::Wire(wire))));
+                        let entry = ScopedEntry::Named(NamedValue::Signal(wire.into()));
+                        scope.declare(diags, Ok(id), Ok(entry));
 
                         Signal::Wire(wire)
                     }

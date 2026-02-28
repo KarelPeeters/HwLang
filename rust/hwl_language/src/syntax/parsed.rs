@@ -59,6 +59,13 @@ impl AstRefItem {
     }
 }
 
+pub trait AstRefItemKind: Copy {
+    fn item(self) -> AstRefItem;
+    fn file(self) -> FileId {
+        self.item().file()
+    }
+}
+
 macro_rules! impl_ast_ref_alias {
     ($ref_name:ident, $item_path:path, $ast_path:path) => {
         #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -66,25 +73,17 @@ macro_rules! impl_ast_ref_alias {
             item: AstRefItem,
         }
 
+        impl AstRefItemKind for $ref_name {
+            fn item(self) -> AstRefItem {
+                self.item
+            }
+        }
+
         impl $ref_name {
             pub fn new_unchecked(item: AstRefItem, item_ref: &$ast_path) -> Self {
                 // just for some soft extra checking
                 let _ = item_ref;
                 Self { item }
-            }
-
-            pub fn item(self) -> AstRefItem {
-                self.item
-            }
-
-            pub fn file(self) -> FileId {
-                self.item.file()
-            }
-        }
-
-        impl From<$ref_name> for AstRefItem {
-            fn from(item: $ref_name) -> Self {
-                item.item
             }
         }
 

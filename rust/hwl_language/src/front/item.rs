@@ -149,11 +149,15 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
         self.id_to_info.get(&id).unwrap().as_ref_ok().unwrap()
     }
 
+    /// Elaborate a given item if necessary, or return the existing result if it exists.
+    ///
+    /// The function `f` gets the resulting id already, but it not not yet valid,
+    /// so it should only be used as an equality key, not for looking up elaborated results.
     pub fn elaborate(
         &self,
         params: ElaboratedItemParams,
         e: impl FnOnce(usize) -> E,
-        f: impl FnOnce(ElaboratedItemParams) -> DiagResult<F>,
+        f: impl FnOnce(E, ElaboratedItemParams) -> DiagResult<F>,
     ) -> DiagResult<(E, &F)> {
         let key = params.cache_key();
 
@@ -161,7 +165,7 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
             let index = self.next_id.fetch_add(1, Ordering::Relaxed);
             let id = e(index);
 
-            let info = f(params);
+            let info = f(id, params);
 
             self.id_to_info.set(id, info).unwrap();
             id
@@ -591,7 +595,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_internal.elaborate(
                     item_params,
                     ElaboratedModuleInternal,
-                    |item_params| {
+                    |result_id, item_params| {
                         // elaborate ports
                         let scope_captured = CapturedScope::from_scope(scope_params, flow);
 
@@ -600,6 +604,7 @@ impl CompileItemContext<'_, '_> {
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
+                            ElaboratedModule::Internal(result_id),
                             item_params,
                             scope_captured,
                             &ast.ports,
@@ -634,7 +639,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_external.elaborate(
                     item_params,
                     ElaboratedModuleExternal,
-                    |item_params| {
+                    |result_id, item_params| {
                         // save generic args for later
                         let generic_args = item_params
                             .params
@@ -671,6 +676,7 @@ impl CompileItemContext<'_, '_> {
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
+                            ElaboratedModule::External(result_id),
                             item_params,
                             scope_captured,
                             &ast.ports,
@@ -705,7 +711,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
                     item_params,
                     ElaboratedInterface,
-                    |item_params| refs.elaborate_interface_new(ast_ref, scope_params, unique, &item_params.params),
+                    |_, item_params| refs.elaborate_interface_new(ast_ref, scope_params, unique, &item_params.params),
                 )?;
 
                 Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
@@ -716,7 +722,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
-                    |item_params| {
+                    |_, item_params| {
                         self.elaborate_struct_new(scope_params, flow, unique, &item_params.params, body.span, fields)
                     },
                 )?;
@@ -728,7 +734,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
                     item_params,
                     ElaboratedEnum,
-                    |item_params| {
+                    |_, item_params| {
                         self.elaborate_enum_new(scope_params, flow, unique, &item_params.params, body.span, variants)
                     },
                 )?;
