@@ -4,9 +4,9 @@ use crate::syntax::ast::{
     CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration,
     EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement,
     FunctionDeclaration, GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
-    InterfaceListItem, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal,
-    MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance,
-    ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal,
+    ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier,
+    ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
     ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
     PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
     ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
@@ -371,10 +371,14 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                 self.visit_extra_list(&mut scope_body, body, &mut |slf, scope_body, item| {
                     match item {
-                        &InterfaceListItem::PortType { port_id, port_ty } => {
-                            slf.visitor.report_range(port_id.span.join(port_ty.span), None);
-                            slf.visit_expression(scope_body, port_ty)?;
-                            slf.scope_declare(&mut scope_ports, Conditional::No, port_id.into())?;
+                        &InterfaceListItem::Signal(signal) => {
+                            let InterfaceSignal {
+                                id: signal_id,
+                                ty: signal_ty,
+                            } = signal;
+                            slf.visitor.report_range(signal_id.span.join(signal_ty.span), None);
+                            slf.visit_expression(scope_body, signal_ty)?;
+                            slf.scope_declare(&mut scope_ports, Conditional::No, signal_id.into())?;
                         }
                         InterfaceListItem::View(view) => {
                             let &InterfaceView {

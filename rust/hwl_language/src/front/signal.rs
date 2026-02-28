@@ -194,7 +194,7 @@ impl WireInfo {
                     .interface_info(wire_interface.interface.inner);
 
                 Ok(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ty: elab_interface.signals[slf.index].ty.as_ref_ok()?.as_ref(),
                     ir: slf.ir,
                 })
             }
@@ -219,7 +219,7 @@ impl WireInfo {
                     .interface_info(wire_interface.interface.inner);
 
                 Ok(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ty: elab_interface.signals[slf.index].ty.as_ref_ok()?.as_ref(),
                     ir: slf.ir,
                 })
             }
@@ -244,7 +244,7 @@ impl WireInfo {
                     .interface_info(wire_interface.interface.inner);
 
                 Ok(Some(WireInfoTyped {
-                    ty: elab_interface.ports[slf.index].ty.as_ref_ok()?.as_ref(),
+                    ty: elab_interface.signals[slf.index].ty.as_ref_ok()?.as_ref(),
                     ir: slf.ir,
                 }))
             }

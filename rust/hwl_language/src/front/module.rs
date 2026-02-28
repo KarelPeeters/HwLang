@@ -10,7 +10,7 @@ use crate::front::flow::{
     RegisterInfo,
 };
 use crate::front::function::CapturedScope;
-use crate::front::interface::ElaboratedInterfacePortInfo;
+use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
 use crate::front::signal::{
@@ -159,7 +159,7 @@ impl CompileRefs<'_, '_> {
 
     pub fn elaborate_module_body_new(
         self,
-        ports: ElaboratedModuleHeader<AstRefModuleInternal>,
+        header: ElaboratedModuleHeader<AstRefModuleInternal>,
     ) -> DiagResult<IrModuleInfo> {
         let ElaboratedModuleHeader {
             ast_ref,
@@ -171,7 +171,7 @@ impl CompileRefs<'_, '_> {
             scope_ports,
             flow_root,
             flow,
-        } = ports;
+        } = header;
         let &ast::ItemDefModuleInternal {
             span: def_span,
             vis: _,
@@ -570,7 +570,7 @@ fn push_connector_interface(
         let mut singles = vec![];
 
         // TODO rework interface port names, to ensure unique but still readable names
-        for (port_index, (_, port)) in enumerate(&interface.ports) {
+        for (port_index, (_, port)) in enumerate(&interface.signals) {
             let id_str = id.str(source);
             let port_id_str = port.id.str(source);
             let name = format!("{id_str}.{port_id_str}");
@@ -922,8 +922,8 @@ impl BodyContext {
                 let interface_info = elab.interface_info(interface.inner);
                 let mut wires = vec![];
                 let mut ir_wires = vec![];
-                for (port_index, (port_name, port_info)) in enumerate(&interface_info.ports) {
-                    let ElaboratedInterfacePortInfo { id, ty } = port_info;
+                for (port_index, (port_name, port_info)) in enumerate(&interface_info.signals) {
+                    let ElaboratedInterfaceSignalInfo { id, ty } = port_info;
                     let ty = ty.as_ref_ok()?;
 
                     let diagnostic_str = format!("{}.{}", id_owned.diagnostic_str(), port_name);
@@ -1738,7 +1738,7 @@ impl BodyContext {
 
                 let mut result_connections = vec![];
 
-                for port_index in 0..interface_info.ports.len() {
+                for port_index in 0..interface_info.signals.len() {
                     let (_, connector_dir) = &view_info.port_dirs.as_ref_ok()?[port_index];
 
                     // check direction
@@ -1759,7 +1759,7 @@ impl BodyContext {
                         let diag = DiagnosticError::new(
                             format!(
                                 "direction mismatch for interface port `{}`",
-                                interface_info.ports[port_index].id.str(source)
+                                interface_info.signals[port_index].id.str(source)
                             ),
                             value_expr.span,
                             format!("got direction `{}`", value_dir.inner.diagnostic_string()),

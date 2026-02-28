@@ -884,7 +884,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .elaboration_arenas
                     .interface_info(port_interface_info.view.inner.interface);
 
-                let port_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
+                let port_index = interface_info.signals.get_index_of(index_str).ok_or_else(|| {
                     DiagnosticError::new(
                         format!("port `{index_str}` not found on interface"),
                         index.span,
@@ -908,7 +908,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     .elaboration_arenas
                     .interface_info(wire_interface_info.interface.inner);
 
-                let wire_index = interface_info.ports.get_index_of(index_str).ok_or_else(|| {
+                let wire_index = interface_info.signals.get_index_of(index_str).ok_or_else(|| {
                     DiagnosticError::new(
                         format!("port `{index_str}` not found on interface"),
                         index.span,

@@ -6,7 +6,7 @@ use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
 use crate::front::types::HardwareType;
 use crate::front::value::CompileValue;
 use crate::syntax::ast::{
-    Identifier, InterfaceListItem, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection,
+    Identifier, InterfaceListItem, InterfaceSignal, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection,
 };
 use crate::syntax::parsed::AstRefInterface;
 use crate::syntax::pos::{HasSpan, Spanned};
@@ -20,7 +20,7 @@ use indexmap::map::Entry;
 pub struct ElaboratedInterfaceInfo {
     pub id: MaybeIdentifier,
     pub debug_info_name: String,
-    pub ports: IndexMap<String, ElaboratedInterfacePortInfo>,
+    pub signals: IndexMap<String, ElaboratedInterfaceSignalInfo>,
     pub views: IndexMap<String, ElaboratedInterfaceViewInfo>,
 }
 
@@ -30,8 +30,8 @@ impl ElaboratedInterfaceInfo {
         diags: &Diagnostics,
         source: &SourceDatabase,
         index: Identifier,
-    ) -> DiagResult<(usize, &ElaboratedInterfacePortInfo)> {
-        match self.ports.get_index_of(index.str(source)) {
+    ) -> DiagResult<(usize, &ElaboratedInterfaceSignalInfo)> {
+        match self.signals.get_index_of(index.str(source)) {
             None => Err(DiagnosticError::new(
                 "dot index does not match any interface port",
                 index.span,
@@ -39,7 +39,7 @@ impl ElaboratedInterfaceInfo {
             )
             .add_info(self.id.span(), "interface declared here")
             .report(diags)),
-            Some(index) => Ok((index, &self.ports[index])),
+            Some(index) => Ok((index, &self.signals[index])),
         }
     }
 
@@ -63,7 +63,7 @@ impl ElaboratedInterfaceInfo {
 }
 
 #[derive(Debug)]
-pub struct ElaboratedInterfacePortInfo {
+pub struct ElaboratedInterfaceSignalInfo {
     pub id: Identifier,
     pub ty: DiagResult<Spanned<HardwareType>>,
 }
@@ -115,29 +115,33 @@ impl CompileRefs<'_, '_> {
 
         ctx.elaborate_extra_list(&mut scope_body, &mut flow, body, &mut |ctx, scope, flow, item| {
             match item {
-                &InterfaceListItem::PortType { port_id, port_ty } => {
+                &InterfaceListItem::Signal(signal) => {
+                    let InterfaceSignal {
+                        id: signal_id,
+                        ty: signal_ty,
+                    } = signal;
                     let ty_eval = ctx
-                        .eval_expression_as_ty(scope.as_scope(), flow, port_ty)
+                        .eval_expression_as_ty(scope.as_scope(), flow, signal_ty)
                         .and_then(|ty| match ty.inner.as_hardware_type(elab) {
                             Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
                             Err(_) => Err(diags.report_error_simple(
-                                "interface ports must have hardware types",
+                                "interface signals must have hardware types",
                                 ty.span,
                                 format!("got non-hardware type `{}`", ty.inner.value_string(elab)),
                             )),
                         });
 
-                    match port_map.entry(port_id.str(source).to_owned()) {
+                    match port_map.entry(signal_id.str(source).to_owned()) {
                         Entry::Occupied(mut entry) => {
-                            let prev: &mut ElaboratedInterfacePortInfo = entry.get_mut();
-                            let e = DiagnosticError::new("port declared twice", port_id.span, "redeclared here")
+                            let prev: &mut ElaboratedInterfaceSignalInfo = entry.get_mut();
+                            let e = DiagnosticError::new("signal declared twice", signal_id.span, "redeclared here")
                                 .add_info(prev.id.span, "previously declared here")
                                 .report(diags);
                             prev.ty = Err(e);
                         }
                         Entry::Vacant(entry) => {
-                            entry.insert(ElaboratedInterfacePortInfo {
-                                id: port_id,
+                            entry.insert(ElaboratedInterfaceSignalInfo {
+                                id: signal_id,
                                 ty: ty_eval,
                             });
                         }
@@ -253,7 +257,7 @@ impl CompileRefs<'_, '_> {
         Ok(ElaboratedInterfaceInfo {
             id: *interface_id,
             debug_info_name,
-            ports: port_map,
+            signals: port_map,
             views: view_map,
         })
     }

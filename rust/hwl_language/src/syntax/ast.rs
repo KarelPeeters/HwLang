@@ -163,8 +163,14 @@ pub struct ItemDefInterface {
 
 #[derive(Debug, Clone)]
 pub enum InterfaceListItem {
-    PortType { port_id: Identifier, port_ty: Expression },
+    Signal(InterfaceSignal),
     View(InterfaceView),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct InterfaceSignal {
+    pub id: Identifier,
+    pub ty: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -1346,10 +1352,10 @@ impl HasSpan for DotIndexKind {
 impl HasSpan for InterfaceListItem {
     fn span(&self) -> Span {
         match self {
-            InterfaceListItem::PortType {
-                port_id: id,
-                port_ty: ty,
-            } => id.span.join(ty.span),
+            InterfaceListItem::Signal(signal) => {
+                let InterfaceSignal { id, ty } = signal;
+                id.span.join(ty.span)
+            }
             InterfaceListItem::View(view) => view.span,
         }
     }

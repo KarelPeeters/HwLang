@@ -158,13 +158,13 @@ Item: Item = {
 }
 
 InterfacePortType: InterfaceListItem = {
-    <port_id:Id> ":" <port_ty:Expr> => InterfaceListItem::PortType { port_id, port_ty },
+    <id:Id> ":" <ty:Expr> =>
+        InterfaceListItem::Signal(InterfaceSignal { id, ty }),
 }
 
 InterfaceView: InterfaceListItem = {
-    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> => {
-        InterfaceListItem::View(InterfaceView { id, port_dirs, span: ctx.span(start, end) })
-    }
+    <start:@L> "interface" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> =>
+        InterfaceListItem::View(InterfaceView { id, port_dirs, span: ctx.span(start, end) }),
 }
 
 InterfacePortDir: (Identifier, Spanned<PortDirection>) = {

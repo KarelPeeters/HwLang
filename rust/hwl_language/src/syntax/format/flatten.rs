@@ -4,10 +4,10 @@ use crate::syntax::ast::{
     CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
     ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList,
     ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier,
-    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceView, Item,
-    ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern,
-    MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
-    ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
+    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceSignal,
+    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch,
+    MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock,
+    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
     ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
     RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement, StringPiece,
     StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement,
@@ -420,8 +420,12 @@ impl Context<'_> {
 
         // TODO force newline between items of different kinds?
         let body_node = self.fmt_extra_list(SurroundKind::Curly, true, body, &|item| match item {
-            &InterfaceListItem::PortType { port_id, port_ty } => {
-                let node = HNode::Sequence(vec![self.fmt_id(port_id), wrapping_type(self.fmt_expr(port_ty))]);
+            &InterfaceListItem::Signal(signal) => {
+                let InterfaceSignal {
+                    id: signal_id,
+                    ty: port_id,
+                } = signal;
+                let node = HNode::Sequence(vec![self.fmt_id(signal_id), wrapping_type(self.fmt_expr(port_id))]);
                 HNodeAndComma { node, comma: true }
             }
             InterfaceListItem::View(view) => {
