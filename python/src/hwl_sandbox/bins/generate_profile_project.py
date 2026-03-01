@@ -21,8 +21,8 @@ module passthrough_{i}(w: int) ports(
 ) {{"""
         if i == 0:
             result += f"""
-    reg out data_out = undef;
     clocked(clk, async rst) {{
+        reg wire data_out = undef;
         data_out = select_{i}([w]bool, select, data_a, data_b);
     }}
 """
