@@ -2,7 +2,6 @@ const {
     _;
     undef;
     type;
-    fn;
 
     (false);
     {

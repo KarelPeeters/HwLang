@@ -1,72 +1,21 @@
-// TODO allow signature declarations for everything, even types!
-// TODO switch to consistent capital for types, lowercase for variables/signals?
-
-// Basic types
 pub type any = __builtin("type", "any");
-
-// TODO bool should be an enum :)
 pub type bool = __builtin("type", "bool");
 pub type str = __builtin("type", "str");
-
-pub type Range = __builtin("type", "Range");
-pub type Tuple = __builtin("type", "Tuple");
-
-// TODO what is the difference if anything between "type" and "const" for types?
-//const bool: type = __builtin("type", );
-
-//pub type my_array(T: type) = Array(T, n);
-//function my_array(T: type) -> type {
-//    return Array(T, n);
-//}
-
-// Signature overloading, even for types!
-// TODO allow separate optional min and max? then uint is just int(0..)
-// TODO is there a nice way to make "unsigned" the default?
-
-// Usages:
-// x: int -> infinitely sized
-// x: int(0..), x: int(2..17) -> partially constrained halfopen ranges
-// x: int(0..=7), x: int(..=8) -> partially constrained closed ranges
-// x: uint -> simple alias for a positive integer
-// TODO do we want to allow uint to take ranges?
-
-// Utility
-//pub enum Option(T: type) {
-//    None,
-//    Some(T),
-//}
-
-// TODO go back to a more user-accessible struct
-//pub type Range = __builtin("type", "Range");
-//struct Range(L: type, H: type) {
-//    min: L,
-//    max: H,
-//}
 
 pub type int = __builtin("type", "int");
 pub type uint = int(0..);
 pub type natural = int(1..);
 
-// Containers
-//pub type List(T: type) = __builtin("type", "List", T);
+pub type Tuple = __builtin("type", "Tuple");
 
-// TODO should this just be an alias for an potentially infinitely long array of booleans?
-// TODO do we want an infinite-width bits type, mostly for bitwise operators?
-//   (ideally we don't define bitwise operators on uint)
-//   maybe we can allow infinite-width arrays?
-//pub type bits_inf = __builtin("type", "bits_inf");
-//pub type bits(n: uint) = bool[n];
+pub type Range = __builtin("type", "Range");
+pub type Function = __builtin("type", "Function");
+pub type Module = __builtin("type", "Module");
+pub type Interface = __builtin("type", "Interface");
+pub type InterfaceView = __builtin("type", "InterfaceView");
 
-// Operators
-// TODO move operators to different file
-// TODO operator bodies? implement in std or in compiler?
-// TODO allow multiline calculations for output type?
-// operator "+"(
-//     left: integer(left_range),
-//     right: integer(right_range),
-// ) -> integer() {
-//
-// }
+pub type RefSignal(T: type) = __builtin("type", "RefSignal", T);
+pub type RefInterface(T: Interface) = __builtin("type", "RefInterface", T);
 
 pub enum Option(T: type) {
     None,

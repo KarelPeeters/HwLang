@@ -668,7 +668,6 @@ pub enum ExpressionKind {
     Dummy,
     Undefined,
     Type,
-    TypeFunction,
     Builtin {
         span_keyword: Span,
         args: Spanned<Vec<Expression>>,

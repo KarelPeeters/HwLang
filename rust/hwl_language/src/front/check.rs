@@ -96,8 +96,6 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-// TODO turn this into a lambda
-// TODO do we really need this many variants?
 #[derive(Debug, Copy, Clone)]
 pub enum TypeContainsReason {
     Assignment {
@@ -114,7 +112,8 @@ pub enum TypeContainsReason {
         span_connection_signal_id: Span,
         span_signal_ty: Span,
     },
-    Interface(Span),
+    InterfacePortView(Span),
+    InterfaceWire(Span),
     Return {
         span_keyword: Span,
         span_return_ty: Span,
@@ -152,9 +151,10 @@ impl TypeContainsReason {
             TypeContainsReason::InstanceModule(span) => {
                 diag.add_info(span, format!("module instance requires type `{target_ty_str}`"))
             }
-            TypeContainsReason::Interface(span) => {
-                diag.add_info(span, format!("interface requires type `{target_ty_str}`"))
+            TypeContainsReason::InterfacePortView(span) => {
+                diag.add_info(span, "interface port requires interface view")
             }
+            TypeContainsReason::InterfaceWire(span) => diag.add_info(span, "interface wire requires interface"),
             TypeContainsReason::InstancePortInput {
                 span_connection_port_id,
                 span_port_ty,

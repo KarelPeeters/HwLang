@@ -1223,7 +1223,6 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             ExpressionKind::Dummy
             | ExpressionKind::Undefined
             | ExpressionKind::Type
-            | ExpressionKind::TypeFunction
             | ExpressionKind::IntLiteral(_)
             | ExpressionKind::BoolLiteral(_) => {}
         }

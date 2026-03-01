@@ -371,7 +371,7 @@ impl CompileRefs<'_, '_> {
                             scope_ports.declare_root(diags, Ok(id.spanned_str(source)), entry);
                         }
                         ModulePortSingleKind::Interface {
-                            span_keyword: _,
+                            span_keyword,
                             domain,
                             interface,
                         } => {
@@ -384,15 +384,22 @@ impl CompileRefs<'_, '_> {
                                     interface,
                                     Spanned::new(interface.span, "interface view"),
                                 )
-                                .and_then(|view| match view.inner {
-                                    CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
-                                        Ok(Spanned::new(view.span, inner))
+                                .and_then(|view| {
+                                    let reason = TypeContainsReason::InterfacePortView(span_keyword);
+                                    check_type_contains_value(
+                                        diags,
+                                        elab,
+                                        reason,
+                                        &Type::InterfaceView,
+                                        view.as_ref(),
+                                    )?;
+
+                                    match view.inner {
+                                        CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
+                                            Ok(Spanned::new(view.span, inner))
+                                        }
+                                        _ => Err(diags.report_error_internal(view.span, "expected interface view")),
                                     }
-                                    value => Err(diags.report_error_simple(
-                                        "expected interface view",
-                                        view.span,
-                                        format!("got other value with type `{}`", value.ty().value_string(elab)),
-                                    )),
                                 });
 
                             let entry = push_connector_interface(
@@ -898,24 +905,17 @@ impl BodyContext {
                         flow_parent,
                         &Type::Interface,
                         interface,
-                        Spanned::new(interface.span, "wire interface"),
+                        Spanned::new(span_keyword, "wire interface"),
                     )
-                    .and_then(|interface| match interface.inner {
-                        CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
-                            Ok(Spanned::new(interface.span, interface_inner))
-                        }
-                        _ => {
-                            let diag = DiagnosticError::new(
-                                "expected interface value",
-                                interface.span,
-                                "got non-interface expression",
-                            )
-                            .add_info(
-                                span_keyword,
-                                "expected an interface because of this wire interface declaration",
-                            )
-                            .report(diags);
-                            Err(diag)
+                    .and_then(|interface| {
+                        let reason = TypeContainsReason::InterfaceWire(span_keyword);
+                        check_type_contains_value(diags, elab, reason, &Type::Interface, interface.as_ref())?;
+
+                        match interface.inner {
+                            CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
+                                Ok(Spanned::new(interface.span, interface_inner))
+                            }
+                            _ => Err(diags.report_error_internal(interface.span, "expected interface")),
                         }
                     });
 

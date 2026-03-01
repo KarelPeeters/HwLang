@@ -1011,7 +1011,6 @@ impl Context<'_> {
             ExpressionKind::Dummy => token(TT::Underscore),
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),
-            ExpressionKind::TypeFunction => token(TT::Fn),
             ExpressionKind::Builtin { span_keyword: _, args } => {
                 fmt_call_like(token(TT::Builtin), &args.inner, |&arg| self.fmt_expr(arg))
             }

@@ -60,7 +60,7 @@ def test_type_recursive_struct_generic():
 
 def test_type_function():
     src = """
-    fn f() -> fn {
+    fn f() -> Function {
         return f;
     }
     """

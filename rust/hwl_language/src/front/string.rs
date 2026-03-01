@@ -3,7 +3,7 @@ use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
 use crate::front::scope::Scope;
-use crate::front::types::{HardwareType, ReferenceType, Type};
+use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString, RangeValue,
     Reference, SimpleCompileValue, StructValue, Value,
@@ -556,19 +556,17 @@ impl Type {
             Type::Enum(ty) => {
                 format!("<enum {}>", elab.enum_info(*ty).debug_info_name)
             }
-            Type::Range => "<type_range>".to_string(),
-            Type::Function => "<type_function>".to_string(),
-            Type::Module => "<type_module>".to_string(),
-            Type::Interface => "<type_interface>".to_string(),
-            Type::InterfaceView => "<type_interface_view>".to_string(),
-            Type::Reference(rf) => match rf {
-                ReferenceType::Signal(ty) => {
-                    format!("<type ref signal {}>", ty.value_string(elab))
-                }
-                &ReferenceType::Interface(ty) => {
-                    format!("<type ref interface {}>", elab.interface_info(ty).debug_info_name)
-                }
-            },
+            Type::Range => "Range".to_string(),
+            Type::Function => "Function".to_string(),
+            Type::Module => "Module".to_string(),
+            Type::Interface => "Interface".to_string(),
+            Type::InterfaceView => "InterfaceView".to_string(),
+            Type::RefSignal(ty) => {
+                format!("RefSignal({})", ty.value_string(elab))
+            }
+            Type::RefInterface(intf) => {
+                format!("RefInterface({})", elab.interface_info(*intf).debug_info_name)
+            }
         }
     }
 }

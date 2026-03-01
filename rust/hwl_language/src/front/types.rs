@@ -36,14 +36,9 @@ pub enum Type {
     Module,
     Interface,
     InterfaceView,
-    Reference(ReferenceType),
-}
 
-// TODO think about reference types, start from what users will actually write
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReferenceType {
-    Signal(Arc<HardwareType>),
-    Interface(ElaboratedInterface),
+    RefSignal(Arc<HardwareType>),
+    RefInterface(ElaboratedInterface),
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
@@ -212,23 +207,20 @@ impl Type {
                     Type::Any
                 }
             }
-            (Type::Reference(a), Type::Reference(b)) => match (a, b) {
-                (ReferenceType::Signal(a), ReferenceType::Signal(b)) => {
-                    if a == b {
-                        Type::Reference(ReferenceType::Signal(Arc::clone(a)))
-                    } else {
-                        Type::Any
-                    }
+            (Type::RefSignal(a), Type::RefSignal(b)) => {
+                if a == b {
+                    Type::RefSignal(Arc::clone(a))
+                } else {
+                    Type::Any
                 }
-                (&ReferenceType::Interface(a), &ReferenceType::Interface(b)) => {
-                    if a == b {
-                        Type::Reference(ReferenceType::Interface(a))
-                    } else {
-                        Type::Any
-                    }
+            }
+            (&Type::RefInterface(a), &Type::RefInterface(b)) => {
+                if a == b {
+                    Type::RefInterface(a)
+                } else {
+                    Type::Any
                 }
-                (ReferenceType::Signal(_) | ReferenceType::Interface(_), _) => Type::Any,
-            },
+            }
 
             // simple mismatches (we list all of them out manually here to force exhaustiveness checking)
             (
@@ -245,7 +237,8 @@ impl Type {
                 | Type::Array(_, _)
                 | Type::Struct(_)
                 | Type::Enum(_)
-                | Type::Reference(_),
+                | Type::RefSignal(_)
+                | Type::RefInterface(_),
                 _,
             ) => Type::Any,
         }
@@ -303,7 +296,8 @@ impl Type {
             | Type::Module
             | Type::Interface
             | Type::InterfaceView
-            | Type::Reference(_) => Err(NonHardwareType),
+            | Type::RefSignal(_)
+            | Type::RefInterface(_) => Err(NonHardwareType),
         }
     }
 }

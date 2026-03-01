@@ -806,7 +806,6 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     // misc
     <id:GeneralId> => ExpressionKind::Id(id),
     "type" => ExpressionKind::Type,
-    "fn" => ExpressionKind::TypeFunction,
     // TODO this should maybe not be an expression kind after all, there's only a few specific places it's allowed in
     "_" => ExpressionKind::Dummy,
     // literals

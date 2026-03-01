@@ -191,7 +191,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
-            ExpressionKind::TypeFunction => Value::new_ty(Type::Function),
             &ExpressionKind::Builtin { span_keyword, ref args } => {
                 let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
                 return Ok(Value::simple(value));

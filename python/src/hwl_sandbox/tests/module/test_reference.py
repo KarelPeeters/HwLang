@@ -57,22 +57,22 @@ def test_ref_interface():
     src = """
     interface Pair {
         x: uint(8), y: uint(8),
-        interface mixed { x: in, y: out }
+        interface Mixed { x: in, y: out }
     }
-    module top_basic ports(p: interface async Pair.mixed) {
+    module top_basic ports(p: interface async Pair.Mixed) {
         comb {
             val _ = p.x;
             p.y = 0;
         }
     }
-    module top_ref ports(p: interface async Pair.mixed) {
+    module top_ref ports(p: interface async Pair.Mixed) {
         comb {
             val v = ref p;
             val _ = (deref v).x;
             (deref v).y = 0;
         }
     }
-    module top_wrong ports(p: interface async Pair.mixed) {
+    module top_wrong ports(p: interface async Pair.Mixed) {
         comb {
             val v = p;
         }
@@ -84,3 +84,33 @@ def test_ref_interface():
     _ = c.resolve("top.top_ref")
     with pytest.raises(hwl.DiagnosticException, match="cannot evaluate interface as value"):
         _ = c.resolve("top.top_wrong")
+
+
+def test_ref_ty():
+    src = """
+    interface Data {
+        x: uint(8),
+        interface View { x: in }
+    }
+    module top_correct ports(p_single: in async uint(8), p_intf: interface async Data.View) {
+        comb {
+            val r_single: RefSignal(uint(8)) = ref p_single;
+            val r_intf: RefInterface(Data) = ref p_intf;
+        }
+    }
+    module top_wrong_single ports(p_single: in async uint(8), p_intf: interface async Data.View) {
+        comb {
+            val r_single: uint(8) = ref p_single;
+        }
+    }
+    module top_wrong_intf ports(p_single: in async uint(8), p_intf: interface async Data.View) {
+        comb {
+            val r_single: uint(8) = ref p_intf;
+        }
+    }
+    """
+    compile_custom(src).resolve("top.top_correct")
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        compile_custom(src).resolve("top.top_wrong_single")
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        compile_custom(src).resolve("top.top_wrong_intf")

@@ -6,7 +6,7 @@ use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
 use crate::front::signal::{Interface, Signal};
-use crate::front::types::{HardwareType, ReferenceType, Type, TypeBool, Typed};
+use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::StringPiece;
 use crate::syntax::pos::Span;
@@ -837,13 +837,10 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Module(_) => Type::Module,
             SimpleCompileValue::Interface(_) => Type::Interface,
             SimpleCompileValue::InterfaceView(_) => Type::InterfaceView,
-            SimpleCompileValue::Reference(rf) => {
-                let ty = match &rf.inner {
-                    Reference::Signal(_, ty) => ReferenceType::Signal(Arc::clone(ty)),
-                    &Reference::Interface(_, ty) => ReferenceType::Interface(ty),
-                };
-                Type::Reference(ty)
-            }
+            SimpleCompileValue::Reference(rf) => match &rf.inner {
+                Reference::Signal(_, ty) => Type::RefSignal(Arc::clone(ty)),
+                &Reference::Interface(_, ty) => Type::RefInterface(ty),
+            },
         }
     }
 }

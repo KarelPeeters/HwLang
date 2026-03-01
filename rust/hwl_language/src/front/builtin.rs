@@ -9,7 +9,7 @@ use crate::front::scope::{NamedValue, Scope};
 use crate::front::signal::SignalOrVariable;
 use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{HardwareValue, MaybeCompile, NotCompile, Value};
+use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value};
 use crate::mid::ir::{IrExpression, IrStatement};
 use crate::syntax::ast::{Arg, Args, Expression, ExpressionKind, StringPiece};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -121,13 +121,33 @@ impl CompileItemContext<'_, '_> {
 
         // handle the different builtins
         match (arg_0.as_str(), arg_1.as_str(), args_rest) {
-            // basic types
+            // types
             ("type", "any", &[]) => Ok(Value::new_ty(Type::Any)),
             ("type", "bool", &[]) => Ok(Value::new_ty(Type::Bool)),
             ("type", "str", &[]) => Ok(Value::new_ty(Type::String)),
-            ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
-            ("type", "Tuple", &[]) => Ok(Value::new_ty(Type::Tuple(None))),
             ("type", "int", &[]) => Ok(Value::new_ty(Type::Int(MultiRange::open()))),
+            ("type", "Tuple", &[]) => Ok(Value::new_ty(Type::Tuple(None))),
+            ("type", "Range", &[]) => Ok(Value::new_ty(Type::Range)),
+            ("type", "Function", &[]) => Ok(Value::new_ty(Type::Function)),
+            ("type", "Module", &[]) => Ok(Value::new_ty(Type::Module)),
+            ("type", "Interface", &[]) => Ok(Value::new_ty(Type::Interface)),
+            ("type", "InterfaceView", &[]) => Ok(Value::new_ty(Type::InterfaceView)),
+            ("type", "RefSignal", &[ty]) => {
+                let ty_inner = self.eval_expression_as_ty_hardware(scope, flow, ty, "signal reference inner type")?;
+                let ty = Type::RefSignal(Arc::new(ty_inner.inner));
+                Ok(Value::new_ty(ty))
+            }
+            ("type", "RefInterface", &[intf]) => {
+                let reason = Spanned::new(expr_span, "interface reference inner type");
+                let intf = self.eval_expression_as_compile(scope, flow, &Type::Interface, intf, reason)?;
+
+                if let CompileValue::Simple(SimpleCompileValue::Interface(intf)) = intf.inner {
+                    let ty = Type::RefInterface(intf);
+                    Ok(Value::new_ty(ty))
+                } else {
+                    Err(diags.report_error_internal(intf.span, "expected interface"))
+                }
+            }
 
             // print
             ("fn", "print", &[msg]) => {
