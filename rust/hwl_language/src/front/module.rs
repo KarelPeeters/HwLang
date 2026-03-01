@@ -218,7 +218,6 @@ impl CompileRefs<'_, '_> {
         // (wires without inferred types are fine if they're not actually used or driven)
         // TODO add warning for unused signals / input ports
         let signals_that_need_drivers = chain(
-            ctx.wires.keys().map(Signal::Wire),
             ctx.ports
                 .iter()
                 .filter_map(|(p, info)| match info.direction.inner {
@@ -226,6 +225,7 @@ impl CompileRefs<'_, '_> {
                     PortDirection::Output => Some(p),
                 })
                 .map(Signal::Port),
+            ctx.wires.keys().map(Signal::Wire),
         );
 
         let mut drivers = ctx_body.drivers;
