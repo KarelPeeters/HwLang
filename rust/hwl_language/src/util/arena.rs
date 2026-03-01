@@ -195,7 +195,7 @@ impl<K: IndexType, T> Arena<K, T> {
                 index,
                 check: self.check,
             });
-            Some((k, &self[k]))
+            Some((k, self.values[index].as_ref()?))
         } else {
             None
         }
