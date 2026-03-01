@@ -48,6 +48,10 @@ const {
     foo(a=false, b=true);
 
     unsafe_value_with_domain(a, sync(clk, async rst));
+
+    _ = ref a;
+    _ = deref a;
+    deref a = _;
 }
 
 // force dummy variants of identifiers
