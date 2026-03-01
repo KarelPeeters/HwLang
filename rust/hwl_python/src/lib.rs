@@ -6,6 +6,7 @@ use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_verilator::{
     SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
 };
+use hwl_language::front::compile::CompileSettings;
 use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
@@ -15,7 +16,6 @@ use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintH
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::{CompileValue as RustCompileValue, CompileValue, NotCompile, SimpleCompileValue};
-use hwl_language::mid::cleanup::cleanup_module;
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
@@ -365,6 +365,8 @@ impl Source {
     }
 }
 
+const COMPILE_SETTINGS: CompileSettings = CompileSettings { do_ir_cleanup: true };
+
 #[pymethods]
 impl Parsed {
     fn compile(slf: Py<Self>, py: Python) -> PyResult<Compile> {
@@ -373,6 +375,7 @@ impl Parsed {
             let parsed = slf.borrow(py);
             let source = parsed.source.borrow(py);
             let fixed = CompileFixed {
+                settings: &COMPILE_SETTINGS,
                 source: &source.source,
                 hierarchy: &source.hierarchy,
                 parsed: &parsed.parsed,
@@ -454,6 +457,7 @@ impl Compile {
         let print_handler = slf_ref.start_collect_prints();
         let refs = CompileRefs {
             fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
                 source,
                 hierarchy,
                 parsed,
@@ -711,6 +715,7 @@ fn call_impl(
         // prepare context
         let refs = CompileRefs {
             fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
                 source,
                 hierarchy,
                 parsed,
@@ -927,11 +932,7 @@ impl Module {
         // TODO rework the IrDatabase API, this is a mess
         let diags = Diagnostics::new();
         let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
-        let mut ir_database = map_diag_error(py, &diags, source, ir_database)?;
-
-        for (_, info) in &mut ir_database.ir_modules {
-            cleanup_module(info);
-        }
+        let ir_database = map_diag_error(py, &diags, source, ir_database)?;
 
         if cfg!(debug_assertions) {
             let validate_result = ir_database.validate(&diags);

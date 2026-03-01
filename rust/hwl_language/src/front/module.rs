@@ -19,6 +19,7 @@ use crate::front::signal::{
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeUndefined, Reference, SimpleCompileValue, Value, ValueCommon};
+use crate::mid::cleanup::cleanup_module;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
@@ -290,7 +291,7 @@ impl CompileRefs<'_, '_> {
             None => "unknown".to_string(),
             Some(steps) => steps.join(","),
         };
-        Ok(IrModuleInfo {
+        let mut module_ir = IrModuleInfo {
             ports: ctx_body.ir_ports,
             wires: ctx_body.ir_wires,
             large: ctx.large,
@@ -298,7 +299,14 @@ impl CompileRefs<'_, '_> {
             debug_info_location,
             debug_info_id: def_id.spanned_string(self.fixed.source),
             debug_info_generic_args: debug_info_params,
-        })
+        };
+
+        // cleanup
+        if self.fixed.settings.do_ir_cleanup {
+            cleanup_module(&mut module_ir);
+        }
+
+        Ok(module_ir)
     }
 
     fn elaborate_module_ports_impl<'p, F: Flow>(

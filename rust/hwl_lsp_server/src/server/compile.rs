@@ -4,7 +4,7 @@ use crate::server::vfs::{Vfs, VfsResult};
 use crate::util::encode::span_to_lsp;
 use crate::util::sender::SendErrorOr;
 use crate::util::uri::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
-use hwl_language::front::compile::{ElaborationSet, compile};
+use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
 use hwl_language::front::diagnostic::{
     DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
 };
@@ -88,8 +88,14 @@ impl ServerState {
                     should_stop_new || should_stop_old
                 };
 
+                let settings = CompileSettings {
+                    // we will discard the IR anyway, so no need to spend time cleaning it up
+                    do_ir_cleanup: false,
+                };
+
                 let _: DiagResult<IrDatabase> = compile(
                     &diags,
+                    &settings,
                     source,
                     hierarchy,
                     &parsed,

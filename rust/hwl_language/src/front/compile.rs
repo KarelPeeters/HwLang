@@ -45,6 +45,7 @@ const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 // TODO make this flexible enough to serve as the driver for the python API
 pub fn compile(
     diags: &Diagnostics,
+    settings: &CompileSettings,
     source: &SourceDatabase,
     hierarchy: &SourceHierarchy,
     parsed: &ParsedDatabase,
@@ -55,6 +56,7 @@ pub fn compile(
     manifest_span: Span,
 ) -> DiagResult<IrDatabase> {
     let fixed = CompileFixed {
+        settings,
         source,
         hierarchy,
         parsed,
@@ -214,9 +216,15 @@ impl<'a> CompileRefs<'a, '_> {
 /// globally shared, constant state
 #[derive(Copy, Clone)]
 pub struct CompileFixed<'a> {
+    pub settings: &'a CompileSettings,
     pub source: &'a SourceDatabase,
     pub hierarchy: &'a SourceHierarchy,
     pub parsed: &'a ParsedDatabase,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompileSettings {
+    pub do_ir_cleanup: bool,
 }
 
 #[derive(Debug)]
@@ -440,6 +448,7 @@ pub enum CompileStackEntry {
 
 fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
     let CompileFixed {
+        settings: _,
         source,
         hierarchy,
         parsed,
@@ -659,11 +668,6 @@ fn find_top_module(
 
 impl CompileShared {
     pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
-        let CompileFixed {
-            source: _,
-            hierarchy,
-            parsed,
-        } = fixed;
         let file_scopes = populate_file_scopes(diags, fixed);
 
         // pass over all items, to:
@@ -672,8 +676,8 @@ impl CompileShared {
         // TODO make also skip trivial items already, eg. functions and generic modules
         let mut items = vec![];
         let mut external_modules: IndexMap<String, Vec<Span>> = IndexMap::new();
-        for file in hierarchy.files() {
-            if let Ok(file_ast) = &parsed[file] {
+        for file in fixed.hierarchy.files() {
+            if let Ok(file_ast) = &fixed.parsed[file] {
                 for (item_ref, item) in file_ast.items_with_ref() {
                     if !matches!(item, ast::Item::Import(_)) {
                         items.push(item_ref);

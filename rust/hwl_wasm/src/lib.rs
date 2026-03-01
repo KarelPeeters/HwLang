@@ -1,6 +1,6 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{ElaborationSet, compile};
+use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::syntax::collect::add_std_sources;
@@ -45,6 +45,7 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 #[wasm_bindgen]
 pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     let diags = Diagnostics::new();
+    let settings = CompileSettings { do_ir_cleanup: true };
     let mut source = SourceDatabase::new();
     let hierarchy_file = build_source(&diags, &mut source, top_src);
 
@@ -59,6 +60,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
 
         compile(
             &diags,
+            &settings,
             &source,
             hierarchy,
             &parsed,

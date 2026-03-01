@@ -1,23 +1,12 @@
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrForStatement,
-    IrIfStatement, IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
+    IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
     IrStringSubstitution, IrTargetStep, IrVariable, IrVariables, ValueAccess,
 };
 use indexmap::{IndexMap, IndexSet};
 use itertools::chain;
 
 // TODO also remove signal->var copies
-pub fn cleanup(db: &mut IrDatabase) {
-    let IrDatabase {
-        top_module: _,
-        modules,
-        external_modules: _,
-    } = db;
-    for (_, m) in modules {
-        cleanup_module(m);
-    }
-}
-
 pub fn cleanup_module(ir: &mut IrModuleInfo) {
     let IrModuleInfo {
         ports: _,

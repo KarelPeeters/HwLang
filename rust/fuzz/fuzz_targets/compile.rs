@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::front::compile::{ElaborationSet, compile};
+use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::hierarchy::SourceHierarchy;
@@ -26,8 +26,10 @@ fn target(data: String) {
     let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
 
     // TODO don't require top module?
+    let settings = CompileSettings { do_ir_cleanup: true };
     let _ = compile(
         &diags,
+        &settings,
         &source,
         &hierarchy,
         &parsed,
