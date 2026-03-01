@@ -149,7 +149,7 @@ def test_interface_escape():
     interface foo { x: bool } 
     module top ports() {
         wire w: interface foo;
-        instance child(w) ports();
+        instance child(ref w) ports();
     }
     module child(a: any) ports() {}
     """
@@ -165,3 +165,28 @@ def test_diamond_instantiation():
     """
     m = compile_custom(src).resolve("top.a")
     print(m.as_verilog().source)
+
+
+def test_interface_chain(tmp_dir: Path):
+    src = """
+    interface foo {
+        d: uint(8),
+        interface input { d: in }
+        interface output { d: out }
+    }
+    module top ports(x: interface async foo.input, y: interface async foo.output) {
+        wire w: interface foo;
+        instance pass ports(x=x, y=w);  
+        instance pass ports(x=w, y=y);  
+    }
+    module pass ports(x: interface async foo.input, y: interface async foo.output) {
+        comb { y.d = x.d; } 
+    }
+    """
+    m: hwl.Module = compile_custom(src).resolve("top.top")
+    inst = m.as_verilated(tmp_dir).instance()
+
+    for v in [0, 1, 2, 3]:
+        inst.ports.x_d.value = v
+        inst.step(1)
+        assert inst.ports.y_d.value == v

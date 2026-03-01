@@ -89,6 +89,15 @@ pub struct WireInterfaceInfo {
     pub ir_wires: Vec<IrWire>,
 }
 
+impl Signal<PortInterface, WireInterface> {
+    pub fn elab_interface(self, ctx: &CompileItemContext) -> Spanned<ElaboratedInterface> {
+        match self {
+            Signal::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
+            Signal::Wire(intf) => ctx.wire_interfaces[intf].interface,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct WireInfoTyped<T> {
     pub ty: Spanned<T>,

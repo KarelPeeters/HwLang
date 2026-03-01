@@ -1402,7 +1402,7 @@ impl BodyContext {
             expr: value_expr,
         } = &connection;
 
-        let value_expr = value_expr.expr();
+        let value = value_expr.expr();
 
         let ConnectorInfo { id: connector_id, kind } = &connectors[connector];
 
@@ -1450,13 +1450,13 @@ impl BodyContext {
         };
 
         // always try to evaluate as signal for domain replacing purposes
-        let signal = match &refs.get_expr(value_expr) {
-            ExpressionKind::Dummy => ConnectionSignal::Dummy(value_expr.span),
+        let signal = match &refs.get_expr(value) {
+            ExpressionKind::Dummy => ConnectionSignal::Dummy(value.span),
             _ => {
                 let mut flow_domain = flow_parent.new_child_isolated();
-                match ctx.try_eval_expression_as_domain_signal(scope, &mut flow_domain, value_expr, |_| ()) {
+                match ctx.try_eval_expression_as_domain_signal(scope, &mut flow_domain, value, |_| ()) {
                     Ok(signal) => ConnectionSignal::Signal(signal.inner),
-                    Err(Either::Left(())) => ConnectionSignal::Expression(value_expr.span),
+                    Err(Either::Left(())) => ConnectionSignal::Expression(value.span),
                     Err(Either::Right(e)) => throw!(e),
                 }
             }
@@ -1482,10 +1482,10 @@ impl BodyContext {
                 let ir_connection = match direction.inner {
                     PortDirection::Input => {
                         // better dummy port error message
-                        if let ExpressionKind::Dummy = refs.get_expr(value_expr) {
+                        if let ExpressionKind::Dummy = refs.get_expr(value) {
                             let diag = DiagnosticError::new(
                                 "dummy connections are only allowed for output ports",
-                                value_expr.span,
+                                value.span,
                                 "dummy connection used here",
                             )
                             .add_info(direction.span, "port declared as input here")
@@ -1497,10 +1497,9 @@ impl BodyContext {
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection_span,
                         };
-                        let mut flow =
-                            FlowHardwareRoot::new(flow_parent, value_expr.span, flow_kind, &mut self.ir_wires);
+                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_wires);
                         let connection_value =
-                            ctx.eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value_expr)?;
+                            ctx.eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value)?;
                         let (ir_vars, mut ir_block) = flow.finish();
 
                         // check type
@@ -1536,13 +1535,10 @@ impl BodyContext {
                         let connection_value_ir_raw = connection_value
                             .as_ref()
                             .map_inner(|v| {
-                                Ok(v.as_hardware_value_unchecked(
-                                    refs,
-                                    &mut ctx.large,
-                                    value_expr.span,
-                                    ty.inner.clone(),
-                                )?
-                                .expr)
+                                Ok(
+                                    v.as_hardware_value_unchecked(refs, &mut ctx.large, value.span, ty.inner.clone())?
+                                        .expr,
+                                )
                             })
                             .transpose()?;
 
@@ -1584,12 +1580,12 @@ impl BodyContext {
                         let build_error = || {
                             diags.report_error_simple(
                                 "output port must be connected to wire or port",
-                                value_expr.span,
+                                value.span,
                                 "other value",
                             )
                         };
 
-                        match refs.get_expr(value_expr) {
+                        match refs.get_expr(value) {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
                             &ExpressionKind::Id(id) => {
                                 let id = ctx.eval_general_id(scope, flow_parent, id)?;
@@ -1631,7 +1627,7 @@ impl BodyContext {
                                 // check type
                                 let mut any_err = Ok(());
                                 let reason = TypeContainsReason::InstancePortOutput {
-                                    span_connection_signal_id: value_expr.span,
+                                    span_connection_signal_id: value.span,
                                     span_signal_ty: signal_ty.span,
                                 };
                                 any_err = any_err.and(check_type_contains_type(
@@ -1654,7 +1650,7 @@ impl BodyContext {
                                 ));
 
                                 // report driver
-                                self.report_driver(signal_target, DriverKind::InstanceOutputPort, value_expr.span);
+                                self.report_driver(signal_target, DriverKind::InstanceOutputPort, value.span);
 
                                 // success, build connection
                                 any_err?;
@@ -1687,18 +1683,23 @@ impl BodyContext {
 
                 // eval expr
                 let mut flow_connection = flow_parent.new_child_isolated();
-                let value = ctx.eval_expression_inner(scope, &mut flow_connection, &Type::Any, value_expr)?;
+                let value = ctx.eval_expression_with_implications_allow_interface_ref(
+                    scope,
+                    &mut flow_connection,
+                    &Type::Any,
+                    value,
+                )?;
 
                 // expect interface
                 let build_err_not_interface = || {
-                    DiagnosticError::new("expected interface value", value_expr.span, "got non-interface value")
+                    DiagnosticError::new("expected interface value", value.span, "got non-interface value")
                         .add_info(connector_id.span, "port defined as interface here")
                         .report(diags)
                 };
 
-                let (value_interface, value_domain, value_signals) = match value {
+                let (value_interface, value_domain, value_signals) = match value.inner {
                     Value::Simple(SimpleCompileValue::Reference(reference)) => {
-                        match reference.get(ctx, value_expr.span)? {
+                        match reference.get(ctx, value.span)? {
                             &Reference::Interface(intf, _elab_intf) => {
                                 match intf {
                                     Signal::Port(port_interface) => {
@@ -1728,7 +1729,7 @@ impl BodyContext {
 
                 // check interface match (including generics)
                 if value_interface.inner != connector_view.inner.interface {
-                    let diag = DiagnosticError::new("interface mismatch", value_expr.span, "got mismatching interface")
+                    let diag = DiagnosticError::new("interface mismatch", value.span, "got mismatching interface")
                         .add_info(
                             connector_view.span,
                             format!(
@@ -1782,7 +1783,7 @@ impl BodyContext {
                                 "direction mismatch for interface port `{}`",
                                 interface_info.signals[port_index].id.str(source)
                             ),
-                            value_expr.span,
+                            value.span,
                             format!("got direction `{}`", value_dir.inner.diagnostic_string()),
                         )
                         .add_info(
@@ -1804,7 +1805,7 @@ impl BodyContext {
                         }
                         PortDirection::Output => {
                             any_output = true;
-                            self.report_driver(value_signal, DriverKind::InstanceOutputPort, value_expr.span);
+                            self.report_driver(value_signal, DriverKind::InstanceOutputPort, value.span);
                             IrPortConnection::Output(Some(value_ir))
                         }
                     };

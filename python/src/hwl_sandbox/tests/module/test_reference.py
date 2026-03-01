@@ -40,7 +40,7 @@ def test_ref_port_write(tmp_dir: Path):
         assert inst.ports.y.value == v
 
 
-def test_ref_port_write_input_error(tmp_dir: Path):
+def test_ref_port_write_input_error():
     src = """
     module top ports(x: in async uint(8), y: in async uint(8)) {
         comb {
@@ -51,3 +51,36 @@ def test_ref_port_write_input_error(tmp_dir: Path):
     """
     with pytest.raises(hwl.DiagnosticException, match="cannot assign to input port"):
         compile_custom(src).resolve("top.top")
+
+
+def test_ref_interface():
+    src = """
+    interface Pair {
+        x: uint(8), y: uint(8),
+        interface mixed { x: in, y: out }
+    }
+    module top_basic ports(p: interface async Pair.mixed) {
+        comb {
+            val _ = p.x;
+            p.y = 0;
+        }
+    }
+    module top_ref ports(p: interface async Pair.mixed) {
+        comb {
+            val v = ref p;
+            val _ = (deref v).x;
+            (deref v).y = 0;
+        }
+    }
+    module top_wrong ports(p: interface async Pair.mixed) {
+        comb {
+            val v = p;
+        }
+    }
+    """
+    c = compile_custom(src)
+
+    _ = c.resolve("top.top_basic")
+    _ = c.resolve("top.top_ref")
+    with pytest.raises(hwl.DiagnosticException, match="cannot evaluate interface as value"):
+        _ = c.resolve("top.top_wrong")
