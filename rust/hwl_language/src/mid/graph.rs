@@ -4,14 +4,14 @@ use crate::util::data::NonEmptyVec;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 
 pub fn ir_modules_topological_sort(modules: &IrModules, top: impl IntoIterator<Item = IrModule>) -> Vec<IrModule> {
     let mut seen = IndexSet::new();
-    let mut todo = top.into_iter().collect_vec();
+    let mut todo: VecDeque<IrModule> = top.into_iter().collect();
 
-    while let Some(module) = todo.pop() {
+    while let Some(module) = todo.pop_front() {
         if !seen.insert(module) {
             continue;
         }
@@ -19,7 +19,7 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: impl IntoIterator<I
         for child in &modules[module].children {
             match &child.inner {
                 IrModuleChild::ModuleInternalInstance(inst) => {
-                    todo.push(inst.module);
+                    todo.push_back(inst.module);
                 }
                 IrModuleChild::ModuleExternalInstance(_)
                 | IrModuleChild::ClockedProcess(_)

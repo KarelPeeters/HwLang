@@ -155,3 +155,13 @@ def test_interface_escape():
     """
     with pytest.raises(hwl.DiagnosticException, match="item parameters cannot contain references"):
         compile_custom(src).resolve("top.top")
+
+
+def test_diamond_instantiation():
+    src = """
+    module a ports() { instance b ports(); instance c ports(); }
+    module b ports() { instance c ports(); }
+    module c ports() {}
+    """
+    m = compile_custom(src).resolve("top.a")
+    print(m.as_verilog().source)
