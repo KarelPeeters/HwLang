@@ -758,7 +758,7 @@ fn lower_combinatorial_process(
     ctx.lower_block(block)?;
 
     // combine and write to final string
-    declare_temporaries(&mut f_decl, &mut f_init, indent, indent, temporaries);
+    declare_temporaries(&mut f_decl, &mut f_init, indent, temporaries);
 
     swriteln!(f_module, "{I}always @(*) begin: comb_{child_index}");
     write_line_separated_strings(f_module, &[&f_decl, &f_init, &f_stmt]);
@@ -919,7 +919,7 @@ fn lower_clocked_process(
         ),
     }
 
-    declare_temporaries(&mut f_decl, &mut f_init, Indent::new(2), indent_clocked, temporaries);
+    declare_temporaries(&mut f_decl, &mut f_init, Indent::new(2), temporaries);
     write_line_separated_strings(f_module, &[&f_decl, &f_init, &f_body]);
     swriteln!(f_module, "{I}end");
 
@@ -953,7 +953,7 @@ fn declare_and_init_variables(
                 let debug_info_id = Spanned::new(debug_info_span, debug_info_id.as_ref().map(String::as_str));
                 let name = name_scope.make_unique_maybe_id(diags, debug_info_id)?;
 
-                declare_local(f_decl, f_init, indent, indent, ty_verilog, &name);
+                declare_local(f_decl, f_init, indent, ty_verilog, &name);
                 Ok(name)
             }
             Err(ZeroWidth) => Err(ZeroWidth),
@@ -1005,32 +1005,19 @@ fn declare_shadow_signals(
     Ok(shadowing_reg_name_map)
 }
 
-fn declare_temporaries(
-    f_decl: &mut String,
-    f_init: &mut String,
-    indent_decl: Indent,
-    indent_init: Indent,
-    temporaries: GrowVec<TemporaryInfo>,
-) {
+fn declare_temporaries(f_decl: &mut String, f_init: &mut String, indent: Indent, temporaries: GrowVec<TemporaryInfo>) {
     for tmp in temporaries.into_vec() {
         let TemporaryInfo { name, ty } = *tmp;
-        declare_local(f_decl, f_init, indent_decl, indent_init, ty, &name);
+        declare_local(f_decl, f_init, indent, ty, &name);
     }
 }
 
-fn declare_local(
-    f_decl: &mut String,
-    f_init: &mut String,
-    indent_decl: Indent,
-    indent_init: Indent,
-    ty: VerilogType,
-    name: &LoweredName,
-) {
+fn declare_local(f_decl: &mut String, f_init: &mut String, indent: Indent, ty: VerilogType, name: &LoweredName) {
     // x-initialize all locals to avoid inferring latches
     let ty_prefix = ty.prefix();
     let ty_size_bits = ty.size_bits();
-    swriteln!(f_decl, "{indent_decl}reg {ty_prefix}{name};");
-    swriteln!(f_init, "{indent_init}{name} = {ty_size_bits}'bx;");
+    swriteln!(f_decl, "{indent}reg {ty_prefix}{name};");
+    swriteln!(f_init, "{indent}{name} = {ty_size_bits}'bx;");
 }
 
 #[derive(Debug, Copy, Clone, Default)]
