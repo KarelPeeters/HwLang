@@ -715,7 +715,7 @@ pub fn check_range_slice(
         return Err(DiagnosticError::new(
             "array slice start out of bounds",
             slice_start.span,
-            format!("slice start of `{}` is out out of bounds", slice_str()),
+            format!("slice start of `{}` is out of bounds", slice_str()),
         )
         .add_info(array_len.span, info_array_length(array_len.inner))
         .report(diags));
@@ -733,7 +733,7 @@ pub fn check_range_slice(
                 return Err(DiagnosticError::new(
                     "array slice end out of bounds",
                     slice_len.span,
-                    format!("slice end of `{}` is out out of bounds", slice_str()),
+                    format!("slice end of `{}` is out of bounds", slice_str()),
                 )
                 .add_info(array_len.span, info_array_length(Some(array_len_inner)))
                 .report(diags));

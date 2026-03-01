@@ -888,7 +888,7 @@ fn lower_clocked_process(
 
                 let value = unwrap_zero_width(ctx_reset.lower_expression(reset.span, value)?);
 
-                // use blocking assignment to match other register writes
+                // use non-blocking assignment to match other register writes
                 swriteln!(ctx_reset.f, "{indent_reset}{reg_name_raw} <= {value};");
             }
 
@@ -2152,7 +2152,7 @@ impl MaybeBool {
 
     fn is_negative(v: &impl Display, r: ClosedRange<&BigInt>) -> MaybeBool {
         let can_be_neg = r.start.is_negative();
-        let can_be_non_neg = !r.end.is_negative();
+        let can_be_non_neg = r.end.is_positive();
 
         if can_be_neg && can_be_non_neg {
             MaybeBool::Runtime(format!("({v} < 0)"))
