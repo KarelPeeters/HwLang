@@ -22,7 +22,6 @@ use crate::syntax::ast::{
     VariableDeclaration, WhileStatement,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::throw;
 use crate::util::data::{IndexMapExt, VecExt};
 use itertools::{Either, enumerate};
 use unwrap_match::unwrap_match;
@@ -831,9 +830,11 @@ impl CompileItemContext<'_, '_> {
                 check_type_contains_value(diags, elab, reason, &Type::Bool, cond.as_ref())?;
                 let cond = match &cond.inner {
                     &CompileValue::Simple(SimpleCompileValue::Bool(b)) => b,
-                    _ => throw!(
-                        diags.report_error_internal(cond.span, "expected bool, should have been checked already")
-                    ),
+                    _ => {
+                        let diag =
+                            diags.report_error_internal(cond.span, "expected bool, should have been checked already");
+                        return Err(diag);
+                    }
                 };
 
                 // check condition

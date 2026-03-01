@@ -1,6 +1,5 @@
 use clap::Parser;
 use crossbeam_channel::{RecvError, TryRecvError, bounded};
-use hwl_language::throw;
 use hwl_lsp_server::server::settings::Settings;
 use hwl_lsp_server::server::state::{HandleMessageOutcome, RequestError, ServerState};
 use hwl_lsp_server::util::logger::Logger;
@@ -144,7 +143,7 @@ fn main_inner() -> Result<(), TopError> {
                 state.log("finished background work");
             }
             Err(e) => match e {
-                SendErrorOr::SendError(e) => throw!(e),
+                SendErrorOr::SendError(e) => return Err(e.into()),
                 SendErrorOr::Other(e) => {
                     state.sender.send_notification_error(e, "background work")?;
                 }

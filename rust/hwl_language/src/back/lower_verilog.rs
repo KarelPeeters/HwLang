@@ -12,13 +12,13 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
+use crate::try_inner;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
-use crate::{throw, try_inner};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, enumerate};
@@ -118,7 +118,7 @@ impl<'p> LoweredNameScope<'p> {
     pub fn exact_for_new_id(&mut self, diags: &Diagnostics, span: Span, id: &str) -> DiagResult<LoweredName> {
         check_identifier_valid(diags, Spanned { span, inner: id })?;
         if self.is_used(id) {
-            throw!(diags.report_error_internal(span, format!("lowered identifier `{id}` already used its scope")))
+            return Err(diags.report_error_internal(span, format!("lowered identifier `{id}` already used its scope")));
         }
         self.local_used.insert(id.to_owned());
         Ok(LoweredName(id.to_owned()))
@@ -167,9 +167,9 @@ impl<'p> LoweredNameScope<'p> {
             buffer.truncate(valid_len + 1);
         }
 
-        throw!(diags.report_error_internal(
+        Err(diags.report_error_internal(
             span,
-            format!("failed to generate unique lowered identifier for `{string_raw}`")
+            format!("failed to generate unique lowered identifier for `{string_raw}`"),
         ))
     }
 
@@ -194,27 +194,27 @@ fn check_identifier_valid(diags: &Diagnostics, id: Spanned<&str>) -> DiagResult 
     let s = id.inner;
 
     if s.is_empty() {
-        throw!(diags.report_error_simple(
+        return Err(diags.report_error_simple(
             "invalid verilog identifier: identifier cannot be empty",
             id.span,
-            "identifier used here"
-        ))
+            "identifier used here",
+        ));
     }
     let first = s.chars().next().unwrap();
     if !(first.is_ascii_alphabetic() || first == '_') {
-        throw!(diags.report_error_simple(
+        return Err(diags.report_error_simple(
             "invalid verilog identifier: first character must be alphabetic or underscore",
             id.span,
-            "identifier used here"
-        ))
+            "identifier used here",
+        ));
     }
     for c in s.chars() {
         if !(c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '$' || c == '_') {
-            throw!(diags.report_error_simple(
+            return Err(diags.report_error_simple(
                 format!("invalid verilog identifier: character `{c}` not allowed in identifier"),
                 id.span,
-                "identifier used here"
-            ))
+                "identifier used here",
+            ));
         }
     }
 

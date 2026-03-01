@@ -2,7 +2,6 @@ use crate::handlers::dispatch::NotificationHandler;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use crate::server::vfs::VfsError;
 use crate::util::uri::uri_to_path;
-use hwl_language::throw;
 use hwl_util::io::IoErrorExt;
 use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
@@ -24,9 +23,9 @@ impl NotificationHandler<DidOpenTextDocument> for ServerState {
         } = text_document;
 
         if !self.open_files.insert(uri.clone()) {
-            throw!(RequestError::Invalid(format!(
+            return Err(RequestError::Invalid(format!(
                 "trying to open file {uri:?} which is already open"
-            )))
+            )));
         }
 
         let path = uri_to_path(&uri)?;
@@ -42,9 +41,9 @@ impl NotificationHandler<DidCloseTextDocument> for ServerState {
         let TextDocumentIdentifier { uri } = text_document;
 
         if !self.open_files.swap_remove(&uri) {
-            throw!(RequestError::Invalid(format!(
+            return Err(RequestError::Invalid(format!(
                 "trying to close file {uri:?} which is not open"
-            )))
+            )));
         }
 
         // leave the file content in the VFS
@@ -61,9 +60,9 @@ impl NotificationHandler<DidChangeTextDocument> for ServerState {
         let VersionedTextDocumentIdentifier { uri, version: _ } = text_document;
 
         if !self.open_files.contains(&uri) {
-            throw!(RequestError::Invalid(format!(
+            return Err(RequestError::Invalid(format!(
                 "trying to change file {uri:?} which is not open"
-            )))
+            )));
         }
 
         // TODO support incremental changes
@@ -102,9 +101,11 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
                     let path = uri_to_path(&uri)?;
                     self.vfs.delete(&path)?;
                 }
-                _ => throw!(RequestError::Invalid(format!(
-                    "unknown file change type {typ:?} for uri {uri:?}"
-                ))),
+                _ => {
+                    return Err(RequestError::Invalid(format!(
+                        "unknown file change type {typ:?} for uri {uri:?}"
+                    )));
+                }
             };
         }
 

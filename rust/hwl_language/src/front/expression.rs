@@ -30,7 +30,6 @@ use crate::syntax::ast::{
     ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::throw;
 use crate::util::big_int::{AnyInt, BigInt, BigUint};
 use crate::util::data::{VecExt, vec_concat};
 
@@ -1804,11 +1803,11 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
             }
             _ => {
-                throw!(diags.report_error_simple(
+                return Err(diags.report_error_simple(
                     "invalid for loop iterator type, must be range or array",
                     iter.span,
-                    format!("iterator has type `{}`", iter.inner.ty().value_string(elab))
-                ))
+                    format!("iterator has type `{}`", iter.inner.ty().value_string(elab)),
+                ));
             }
         };
 

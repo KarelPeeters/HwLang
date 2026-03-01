@@ -25,6 +25,7 @@ use crate::mid::ir::{
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
     IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrStatement, IrWire, IrWireInfo,
 };
+use crate::new_index_type;
 use crate::syntax::ast::{
     self, ClockedProcessReset, ExpressionKind, ExtraList, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
     ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection,
@@ -41,7 +42,6 @@ use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
-use crate::{new_index_type, throw};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, chain, enumerate};
@@ -1418,9 +1418,11 @@ impl BodyContext {
                 DomainKind::Async => DomainKind::Async,
                 DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|raw_port| {
                     let mapped_port = match prev_single_to_signal.get(&raw_port.signal) {
-                        None => throw!(
-                            diags.report_error_internal(connection_span, "failed to get signal for previous port")
-                        ),
+                        None => {
+                            return Err(
+                                diags.report_error_internal(connection_span, "failed to get signal for previous port")
+                            );
+                        }
                         Some(&ConnectionSignal::Dummy(dummy_span)) => {
                             let diag = DiagnosticError::new_todo(
                                 "dummy port connections that are used in the domain of other ports",
@@ -1457,7 +1459,7 @@ impl BodyContext {
                 match ctx.try_eval_expression_as_domain_signal(scope, &mut flow_domain, value, |_| ()) {
                     Ok(signal) => ConnectionSignal::Signal(signal.inner),
                     Err(Either::Left(())) => ConnectionSignal::Expression(value.span),
-                    Err(Either::Right(e)) => throw!(e),
+                    Err(Either::Right(e)) => return Err(e),
                 }
             }
         };
@@ -1656,7 +1658,7 @@ impl BodyContext {
                                 any_err?;
                                 IrPortConnection::Output(Some(signal_ir))
                             }
-                            _ => throw!(build_error()),
+                            _ => return Err(build_error()),
                         }
                     }
                 };

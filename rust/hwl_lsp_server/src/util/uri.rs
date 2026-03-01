@@ -1,7 +1,6 @@
 use crate::server::vfs::{VfsError, VfsResult};
 use fluent_uri::HostData;
 use fluent_uri::enc::EStr;
-use hwl_language::throw;
 use lsp_types::{FileSystemWatcher, GlobPattern, OneOf, RelativePattern, Uri};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -34,7 +33,7 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
         && uri.fragment().is_none();
 
     if !uri_ok {
-        throw!(VfsError::InvalidPathUri(uri.clone()));
+        return Err(VfsError::InvalidPathUri(uri.clone()));
     }
     // TODO always do decoding or only for some LSP clients? does the protocol really not specify this?
     let path = uri.path().as_estr().decode().into_string().unwrap();
@@ -43,7 +42,7 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
     let path = if cfg!(windows) {
         match path.strip_prefix('/') {
             Some(path) => path,
-            None => throw!(VfsError::InvalidPathUri(uri.clone())),
+            None => return Err(VfsError::InvalidPathUri(uri.clone())),
         }
     } else {
         &*path
@@ -56,7 +55,7 @@ pub fn uri_to_path(uri: &Uri) -> Result<PathBuf, VfsError> {
 // TODO remove this?
 pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
     if !path.is_absolute() {
-        throw!(VfsError::ExpectedAbsolutePath(path.to_owned()));
+        return Err(VfsError::ExpectedAbsolutePath(path.to_owned()));
     }
 
     let path_str = path.to_str().unwrap();
