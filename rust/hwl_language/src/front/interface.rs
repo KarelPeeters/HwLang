@@ -107,10 +107,10 @@ impl CompileRefs<'_, '_> {
         let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
         let scope_params = scope_params.to_scope(self, &mut flow, span)?;
 
-        // elaborate extra list, collect port types and view directions immediately,
-        //   then later actually whether the views ports match the actual ports
+        // elaborate extra list, collect signal types and view directions immediately,
+        //   then later actually whether the views signals match the actual signals
         let mut scope_body = scope_params.new_child(span_body);
-        let mut port_map = IndexMap::new();
+        let mut signal_map = IndexMap::new();
         let mut views_partial: Vec<InterfaceViewPartialElab> = vec![];
 
         ctx.elaborate_extra_list(&mut scope_body, &mut flow, body, &mut |ctx, scope, flow, item| {
@@ -131,7 +131,7 @@ impl CompileRefs<'_, '_> {
                             )),
                         });
 
-                    match port_map.entry(signal_id.str(source).to_owned()) {
+                    match signal_map.entry(signal_id.str(source).to_owned()) {
                         Entry::Occupied(mut entry) => {
                             let prev: &mut ElaboratedInterfaceSignalInfo = entry.get_mut();
                             let e = DiagnosticError::new("signal declared twice", signal_id.span, "redeclared here")
@@ -179,11 +179,11 @@ impl CompileRefs<'_, '_> {
             } = view;
 
             let mut port_dir_vec: Vec<Option<DiagResult<(Identifier, Spanned<PortDirection>)>>> =
-                vec![None; port_map.len()];
+                vec![None; signal_map.len()];
             let mut any_view_err = Ok(());
 
             for (port_id, port_dir) in ports_dirs {
-                if let Some(port_index) = port_map.get_index_of(port_id.str(source)) {
+                if let Some(port_index) = signal_map.get_index_of(port_id.str(source)) {
                     let slot = &mut port_dir_vec[port_index];
                     if let Some(prev) = &*slot {
                         if let Ok((prev_id, _)) = prev {
@@ -210,7 +210,7 @@ impl CompileRefs<'_, '_> {
                     .enumerate()
                     .map(|(port_index, dir)| {
                         dir.ok_or_else(|| {
-                            let port_id = &port_map.get_index(port_index).unwrap().1.id;
+                            let port_id = &signal_map.get_index(port_index).unwrap().1.id;
                             DiagnosticError::new(
                                 format!("missing direction for port `{}`", port_id.str(source)),
                                 interface_id.span(),
@@ -231,7 +231,7 @@ impl CompileRefs<'_, '_> {
                 port_dirs: port_dir_vec,
             };
             if let MaybeIdentifier::Identifier(view_id) = view_id {
-                if let Some(prev) = port_map.get(view_id.str(source)) {
+                if let Some(prev) = signal_map.get(view_id.str(source)) {
                     let _ =
                         DiagnosticError::new("view name conflicts with port name", view_id.span, "view declared here")
                             .add_info(prev.id.span, "port declared here")
@@ -257,7 +257,7 @@ impl CompileRefs<'_, '_> {
         Ok(ElaboratedInterfaceInfo {
             id: *interface_id,
             debug_info_name,
-            signals: port_map,
+            signals: signal_map,
             views: view_map,
         })
     }
