@@ -5,7 +5,7 @@ use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
-use crate::front::signal::{PortInterface, Signal, WireInterface};
+use crate::front::signal::{Interface, Signal};
 use crate::front::types::{HardwareType, ReferenceType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::StringPiece;
@@ -55,7 +55,7 @@ pub struct ReferenceWrapper {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Reference {
     Signal(Signal, Arc<HardwareType>),
-    Interface(Signal<PortInterface, WireInterface>, ElaboratedInterface),
+    Interface(Interface, ElaboratedInterface),
 }
 
 impl ReferenceWrapper {

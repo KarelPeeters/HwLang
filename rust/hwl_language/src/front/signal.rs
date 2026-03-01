@@ -18,9 +18,11 @@ new_index_type!(pub PortInterface);
 new_index_type!(pub Wire);
 new_index_type!(pub WireInterface);
 
-// TODO rename to PortOrWire and set Signal=PortOrWire<Port, Wire>
+pub type Signal = PortOrWire<Port, Wire>;
+pub type Interface = PortOrWire<PortInterface, WireInterface>;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Signal<P = Port, W = Wire> {
+pub enum PortOrWire<P = Port, W = Wire> {
     Port(P),
     Wire(W),
 }
@@ -89,11 +91,11 @@ pub struct WireInterfaceInfo {
     pub ir_wires: Vec<IrWire>,
 }
 
-impl Signal<PortInterface, WireInterface> {
+impl Interface {
     pub fn elab_interface(self, ctx: &CompileItemContext) -> Spanned<ElaboratedInterface> {
         match self {
-            Signal::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
-            Signal::Wire(intf) => ctx.wire_interfaces[intf].interface,
+            PortOrWire::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
+            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].interface,
         }
     }
 }
@@ -359,11 +361,11 @@ impl Polarized<Signal> {
     }
 }
 
-impl<P, W> Signal<P, W> {
+impl<P, W> PortOrWire<P, W> {
     pub fn kind_str(&self) -> &'static str {
         match self {
-            Signal::Port(_) => "port",
-            Signal::Wire(_) => "wire",
+            PortOrWire::Port(_) => "port",
+            PortOrWire::Wire(_) => "wire",
         }
     }
 }

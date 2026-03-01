@@ -14,7 +14,7 @@ use crate::front::function::{
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
-use crate::front::signal::{Polarized, Port, PortInterface, Signal, WireInterface};
+use crate::front::signal::{Interface, Polarized, Port, Signal};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
@@ -1152,18 +1152,13 @@ impl<'a> CompileItemContext<'a, '_> {
         Err(diag)
     }
 
-    fn interface_get_signal(
-        &self,
-        base_span: Span,
-        intf: Signal<PortInterface, WireInterface>,
-        index: Spanned<&str>,
-    ) -> DiagResult<Signal> {
+    fn interface_get_signal(&self, base_span: Span, intf: Interface, index: Spanned<&str>) -> DiagResult<Signal> {
         let (elab_intf, base_intf_span) = match intf {
-            Signal::Port(intf) => {
+            Interface::Port(intf) => {
                 let info = &self.port_interfaces[intf];
                 (info.view.inner.interface, info.view.span)
             }
-            Signal::Wire(intf) => {
+            Interface::Wire(intf) => {
                 let info = &self.wire_interfaces[intf];
                 (info.interface.inner, info.interface.span)
             }
@@ -1185,8 +1180,8 @@ impl<'a> CompileItemContext<'a, '_> {
         })?;
 
         let signal = match intf {
-            Signal::Port(intf) => Signal::Port(self.port_interfaces[intf].ports[signal_index]),
-            Signal::Wire(intf) => Signal::Wire(self.wire_interfaces[intf].wires[signal_index]),
+            Interface::Port(intf) => Signal::Port(self.port_interfaces[intf].ports[signal_index]),
+            Interface::Wire(intf) => Signal::Wire(self.wire_interfaces[intf].wires[signal_index]),
         };
         Ok(signal)
     }
@@ -1579,7 +1574,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expr_span: Span,
         deref_span: Span,
         operand: Expression,
-    ) -> DiagResult<Either<Signal, Signal<PortInterface, WireInterface>>> {
+    ) -> DiagResult<Either<Signal, Interface>> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 

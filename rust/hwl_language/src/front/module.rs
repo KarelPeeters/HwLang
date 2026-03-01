@@ -14,8 +14,8 @@ use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
 use crate::front::signal::{
-    Polarized, Port, PortInfo, PortInterfaceInfo, Signal, WireInfo, WireInfoInInterface, WireInfoSingle,
-    WireInterfaceInfo,
+    Interface, Polarized, Port, PortInfo, PortInterfaceInfo, PortOrWire, Signal, WireInfo, WireInfoInInterface,
+    WireInfoSingle, WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeUndefined, Reference, SimpleCompileValue, Value, ValueCommon};
@@ -632,7 +632,7 @@ fn push_connector_interface(
             singles,
         };
 
-        let entry = ScopedEntry::Named(NamedValue::Interface(Signal::Port(port_interface)));
+        let entry = ScopedEntry::Named(NamedValue::Interface(Interface::Port(port_interface)));
         Ok((kind, entry))
     });
 
@@ -969,7 +969,7 @@ impl BodyContext {
                 wire_interface_info.wires = wires;
                 wire_interface_info.ir_wires = ir_wires;
 
-                NamedValue::Interface(Signal::Wire(wire_interface))
+                NamedValue::Interface(Interface::Wire(wire_interface))
             }
         };
 
@@ -1704,21 +1704,21 @@ impl BodyContext {
                         match reference.get(ctx, value.span)? {
                             &Reference::Interface(intf, _elab_intf) => {
                                 match intf {
-                                    Signal::Port(port_interface) => {
+                                    Interface::Port(port_interface) => {
                                         let info = &ctx.port_interfaces[port_interface];
                                         let port_interface = info.view.map_inner(|v| v.interface);
                                         let port_domain = info.domain.map_inner(|d| {
                                             ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))
                                         });
-                                        let port_signals = Signal::Port(&info.ports);
+                                        let port_signals = PortOrWire::Port(&info.ports);
                                         (port_interface, port_domain, port_signals)
                                     }
-                                    Signal::Wire(wire_interface) => {
+                                    Interface::Wire(wire_interface) => {
                                         let info = &mut ctx.wire_interfaces[wire_interface];
                                         let wire_domain = info.suggest_domain(connector_domain)?;
                                         // reborrow immutably
                                         let info = &ctx.wire_interfaces[wire_interface];
-                                        let wire_signals = Signal::Wire((&info.wires, &info.ir_wires));
+                                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
                                         (info.interface, wire_domain, wire_signals)
                                     }
                                 }
@@ -1767,12 +1767,12 @@ impl BodyContext {
 
                     // check direction
                     let (value_dir, value_signal, value_ir) = match value_signals {
-                        Signal::Port(ports) => {
+                        PortOrWire::Port(ports) => {
                             let port = ports[port_index];
                             let info = &ctx.ports[port];
                             (Some(info.direction), Signal::Port(port), IrSignal::Port(info.ir))
                         }
-                        Signal::Wire((wires, ir_wires)) => {
+                        PortOrWire::Wire((wires, ir_wires)) => {
                             let wire = wires[port_index];
                             (None, Signal::Wire(wire), IrSignal::Wire(ir_wires[port_index]))
                         }
