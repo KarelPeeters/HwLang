@@ -134,6 +134,13 @@ def test_div_tricky(tmp_dir: Path, op: str):
     assert_div_or_mod(e, op, 2106, -6, -351, 0)
 
 
+def test_div_overflow(tmp_dir: Path):
+    e = compare_expression(["int(-2**33..2**33)", "int(1..2**33)"], "int(-2**33..2**33)", "a0 / a1", tmp_dir)
+    a = -2 ** 33
+    b = 2 ** 33 - 1
+    e.eval_assert([a, b], a // b)
+
+
 def test_compare_signed(tmp_dir: Path):
     e = compare_expression(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmp_dir)
     e.eval_assert([-1, 1], True)

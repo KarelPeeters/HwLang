@@ -1,4 +1,5 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::range_arithmetic::{range_binary_add, range_binary_sub};
 use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
@@ -1681,11 +1682,22 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         let range_a = a.ty(self.module, self.locals).unwrap_int();
         let range_b = b.ty(self.module, self.locals).unwrap_int();
+
+        // TODO these ranges could be tighter in many cases
+        let range_adj_one = ClosedNonEmptyRange {
+            start: &BigInt::NEG_ONE,
+            end: &BigInt::TWO,
+        };
+        let range_adj = range_binary_add(range_b.as_ref(), range_adj_one);
+        let range_a_adj = range_binary_sub(range_a.as_ref(), range_adj.as_ref());
         let range_all = result_range
             .range()
             .as_ref()
             .union(range_a.as_ref())
             .union(range_b.as_ref())
+            .union(range_adj_one)
+            .union(range_adj.as_ref())
+            .union(range_a_adj.as_ref())
             .cloned();
         let range_all = NonZeroWidthRange::new(range_all).expect("result range is non-zero, so the union is too");
 
