@@ -154,3 +154,35 @@ def test_reg_input_port():
     """
     with pytest.raises(hwl.DiagnosticException, match="cannot drive an input port with a register"):
         _ = compile_custom(src).resolve("top.top")
+
+
+def test_reg_interface_port():
+    src = """
+    interface Data { x: uint(8), interface Output { x: out } }
+    module top ports (
+        clk: in clock,
+        data: interface sync(clk) Data.Output,
+    ) {
+        clocked(clk) {
+            reg wire data.x = undef;
+            data.x = 4;
+        }
+    }
+    """
+    _ = compile_custom(src).resolve("top.top")
+
+
+def test_reg_deref():
+    src = """
+    module top ports (
+        clk: in clock,
+        data: out sync(clk) uint(8),
+    ) {
+        clocked(clk) {
+            val v = ref data;
+            reg wire deref v = undef;
+            data = 5;
+        }
+    }
+    """
+    _ = compile_custom(src).resolve("top.top")

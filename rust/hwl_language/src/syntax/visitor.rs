@@ -9,8 +9,8 @@ use crate::syntax::ast::{
     ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
     ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
     PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    RegisterDeclarationWire, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
+    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
@@ -864,16 +864,18 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 let &RegisterDeclaration {
                     span_keyword: _,
                     kind,
-                    id,
                     reset,
                 } = decl;
 
                 match kind {
-                    RegisterDeclarationKind::Existing(_span) => {
-                        self.visit_id_usage(scope, MaybeIdentifier::Identifier(id))?;
+                    RegisterDeclarationKind::Wire(RegisterDeclarationWire {
+                        span_keyword_wire: _,
+                        target,
+                    }) => {
+                        self.visit_expression(scope, target)?;
                         self.visit_expression(scope, reset)?;
                     }
-                    RegisterDeclarationKind::New(RegisterDeclarationNew { ty }) => {
+                    RegisterDeclarationKind::New(RegisterDeclarationNew { id, ty }) => {
                         self.visit_id_decl(scope, MaybeIdentifier::Identifier(id))?;
                         if let Some(ty) = ty {
                             self.visit_expression(scope, ty)?;

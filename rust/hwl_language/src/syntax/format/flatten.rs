@@ -9,9 +9,9 @@ use crate::syntax::ast::{
     MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock,
     ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
     ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
-    RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, ReturnStatement, StringPiece,
-    StructDeclaration, StructField, SyncDomain, TypeDeclaration, UnaryOp, VariableDeclaration, Visibility,
-    WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, UnaryOp,
+    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -747,22 +747,28 @@ impl Context<'_> {
                 let &RegisterDeclaration {
                     span_keyword: _,
                     kind,
-                    id,
                     reset,
                 } = decl;
 
-                let (kind, ty) = match kind {
-                    RegisterDeclarationKind::Existing(_span) => (
-                        HNode::Sequence(vec![token(TT::Reg), HNode::Space, token(TT::Wire)]),
-                        None,
-                    ),
+                let (kind, target, ty) = match kind {
+                    RegisterDeclarationKind::Wire(kind) => {
+                        let RegisterDeclarationWire {
+                            span_keyword_wire: _,
+                            target,
+                        } = kind;
+                        (
+                            HNode::Sequence(vec![token(TT::Reg), HNode::Space, token(TT::Wire)]),
+                            self.fmt_expr(target),
+                            None,
+                        )
+                    }
                     RegisterDeclarationKind::New(kind) => {
-                        let RegisterDeclarationNew { ty } = kind;
-                        (token(TT::Reg), ty)
+                        let RegisterDeclarationNew { id, ty } = kind;
+                        (token(TT::Reg), self.fmt_general_id(id), ty)
                     }
                 };
 
-                self.fmt_variable_decl(kind, self.fmt_general_id(id), ty, Some(reset))
+                self.fmt_variable_decl(kind, target, ty, Some(reset))
             }
             BlockStatementKind::Assignment(stmt) => {
                 let &Assignment {

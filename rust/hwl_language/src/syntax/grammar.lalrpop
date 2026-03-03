@@ -296,14 +296,14 @@ BlockStatementKind: BlockStatementKind = {
     <VariableDeclaration> => BlockStatementKind::VariableDeclaration(<>),
 
     // register
-    <span_keyword:Span<"reg">> <span_wire:Span<"wire">> <id:GeneralId> "=" <reset:Expr> ";" => {
-        let kind = RegisterDeclarationKind::Existing(span_wire);
-        let decl = RegisterDeclaration { span_keyword, kind, id, reset };
+    <span_keyword:Span<"reg">> <span_keyword_wire:Span<"wire">> <target:Expr> "=" <reset:Expr> ";" => {
+        let kind = RegisterDeclarationKind::Wire(RegisterDeclarationWire { span_keyword_wire, target });
+        let decl = RegisterDeclaration { span_keyword, kind, reset };
         BlockStatementKind::RegisterDeclaration(decl)
     },
     <span_keyword:Span<"reg">> <id:GeneralId> <ty:(":" <Expr>)?> "=" <reset:Expr> ";" => {
-        let kind = RegisterDeclarationKind::New(RegisterDeclarationNew { ty });
-        let decl = RegisterDeclaration { span_keyword, kind, id, reset };
+        let kind = RegisterDeclarationKind::New(RegisterDeclarationNew { id, ty });
+        let decl = RegisterDeclaration { span_keyword, kind, reset };
         BlockStatementKind::RegisterDeclaration(decl)
     },
 

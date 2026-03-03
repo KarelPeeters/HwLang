@@ -541,19 +541,24 @@ pub struct VariableDeclaration {
 pub struct RegisterDeclaration {
     pub span_keyword: Span,
     pub kind: RegisterDeclarationKind,
-    // TODO allow arbitrary assignment target, eg. `reg data[0..4].field = undef;`
-    pub id: GeneralIdentifier,
     pub reset: Expression,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum RegisterDeclarationKind {
-    Existing(Span),
+    Wire(RegisterDeclarationWire),
     New(RegisterDeclarationNew),
 }
 
 #[derive(Debug, Copy, Clone)]
+pub struct RegisterDeclarationWire {
+    pub span_keyword_wire: Span,
+    pub target: Expression,
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct RegisterDeclarationNew {
+    pub id: GeneralIdentifier,
     pub ty: Option<Expression>,
 }
 
