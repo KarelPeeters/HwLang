@@ -211,6 +211,16 @@ impl<'a> CompileRefs<'a, '_> {
     pub fn get_expr(&self, expr: Expression) -> &'a ExpressionKind {
         self.fixed.parsed.get_expr(expr)
     }
+
+    pub fn get_expr_inner(&self, expr: Expression) -> &'a ExpressionKind {
+        let mut curr = expr;
+        loop {
+            match self.get_expr(curr) {
+                &ExpressionKind::Wrapped(inner) => curr = inner,
+                kind => break kind,
+            }
+        }
+    }
 }
 
 /// globally shared, constant state

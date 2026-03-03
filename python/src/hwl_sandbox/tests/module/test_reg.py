@@ -180,7 +180,7 @@ def test_reg_deref():
     ) {
         clocked(clk) {
             val v = ref data;
-            reg wire deref v = undef;
+            reg wire (deref v) = undef;
             data = 5;
         }
     }

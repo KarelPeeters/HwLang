@@ -1260,7 +1260,7 @@ impl<'a> CompileItemContext<'a, '_> {
             op_span,
             start,
             length: len,
-        }) = self.refs.get_expr(index)
+        }) = self.refs.get_expr_inner(index)
         {
             let reason = TypeContainsReason::Operator(op_span);
             let start = self
@@ -1454,7 +1454,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let build_err =
             |actual: &str| diags.report_error_simple("expected assignment target", expr.span, format!("got {actual}"));
 
-        let result = match *self.refs.get_expr(expr) {
+        let result = match *self.refs.get_expr_inner(expr) {
             ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
@@ -1522,15 +1522,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 DotIndexKind::Id(index) => {
                     let index_str = index.str(self.refs.fixed.source);
 
-                    let mut base = base;
-                    while let ExpressionKind::Wrapped(inner) = *self.refs.get_expr(base) {
-                        base = inner;
-                    }
-
                     let err_todo_non_intf =
                         || diags.report_error_todo(base.span, "assignment target dot index on non-interface");
 
-                    let intf = match *self.refs.get_expr(base) {
+                    let intf = match *self.refs.get_expr_inner(base) {
                         ExpressionKind::Id(base) => {
                             let base = self.eval_general_id(scope, flow, base)?;
                             let base = base.as_ref().map_inner(ArcOrRef::as_ref);
@@ -1625,7 +1620,7 @@ impl<'a> CompileItemContext<'a, '_> {
         build_err: impl Fn(&str) -> E,
     ) -> Result<Spanned<DomainSignal>, Either<E, DiagError>> {
         // TODO expand to allow general expressions again (which then probably create implicit signals)?
-        let result = match *self.refs.get_expr(expr) {
+        let result = match *self.refs.get_expr_inner(expr) {
             ExpressionKind::UnaryOp(
                 Spanned {
                     span: _,

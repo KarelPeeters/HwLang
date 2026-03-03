@@ -601,7 +601,7 @@ impl CompileItemContext<'_, '_> {
                 self.check_valid_domain_crossing(span_keyword, domain_signal, domain, "register driving signal")?;
 
                 // eval reset value, possibly suggesting a type
-                let reset_value = match self.refs.get_expr(reset) {
+                let reset_value = match self.refs.get_expr_inner(reset) {
                     ExpressionKind::Undefined => MaybeUndefined::Undefined,
                     _ => {
                         // figure out expected type
