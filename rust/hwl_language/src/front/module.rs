@@ -18,7 +18,7 @@ use crate::front::signal::{
     WireInfoSingle, WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeUndefined, Reference, SimpleCompileValue, Value, ValueCommon};
+use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
@@ -123,7 +123,7 @@ impl CompileRefs<'_, '_> {
 
         // reconstruct header scope
         let mut ctx = CompileItemContext::new_empty(self, None, Some(elab_module));
-        let flow_root = FlowRoot::new(self.diags);
+        let flow_root = FlowRoot::new(self.diags, &self.shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
         let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
 
@@ -1701,8 +1701,8 @@ impl BodyContext {
 
                 let (value_interface, value_domain, value_signals) = match value.inner {
                     Value::Simple(SimpleCompileValue::Reference(reference)) => {
-                        match reference.get(ctx, value.span)? {
-                            &Reference::Interface(intf, _elab_intf) => {
+                        match reference.get(ctx, &flow_connection, value.span)? {
+                            ReferenceInner::Interface(intf, _elab_intf) => {
                                 match intf {
                                     Interface::Port(port_interface) => {
                                         let info = &ctx.port_interfaces[port_interface];
@@ -1723,7 +1723,7 @@ impl BodyContext {
                                     }
                                 }
                             }
-                            Reference::Signal(_, _) => return Err(build_err_not_interface()),
+                            _ => return Err(build_err_not_interface()),
                         }
                     }
                     _ => return Err(build_err_not_interface()),

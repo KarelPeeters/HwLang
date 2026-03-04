@@ -14,7 +14,7 @@ pub type Module = __builtin("type", "Module");
 pub type Interface = __builtin("type", "Interface");
 pub type InterfaceView = __builtin("type", "InterfaceView");
 
-pub type RefSignal(T: type) = __builtin("type", "RefSignal", T);
+pub type Ref(T: type) = __builtin("type", "Ref", T);
 pub type RefInterface(T: Interface) = __builtin("type", "RefInterface", T);
 
 pub enum Option(T: type) {

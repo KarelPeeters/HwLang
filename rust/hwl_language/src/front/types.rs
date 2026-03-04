@@ -37,7 +37,7 @@ pub enum Type {
     Interface,
     InterfaceView,
 
-    RefSignal(Arc<HardwareType>),
+    Ref(Arc<Type>),
     RefInterface(ElaboratedInterface),
 }
 
@@ -207,9 +207,9 @@ impl Type {
                     Type::Any
                 }
             }
-            (Type::RefSignal(a), Type::RefSignal(b)) => {
+            (Type::Ref(a), Type::Ref(b)) => {
                 if a == b {
-                    Type::RefSignal(Arc::clone(a))
+                    Type::Ref(Arc::clone(a))
                 } else {
                     Type::Any
                 }
@@ -237,7 +237,7 @@ impl Type {
                 | Type::Array(_, _)
                 | Type::Struct(_)
                 | Type::Enum(_)
-                | Type::RefSignal(_)
+                | Type::Ref(_)
                 | Type::RefInterface(_),
                 _,
             ) => Type::Any,
@@ -296,7 +296,7 @@ impl Type {
             | Type::Module
             | Type::Interface
             | Type::InterfaceView
-            | Type::RefSignal(_)
+            | Type::Ref(_)
             | Type::RefInterface(_) => Err(NonHardwareType),
         }
     }

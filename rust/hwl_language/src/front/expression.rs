@@ -14,12 +14,12 @@ use crate::front::function::{
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
-use crate::front::signal::{Interface, Polarized, Port, Signal};
+use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue,
-    NotCompile, RangeValue, Reference, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
+    NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
@@ -229,8 +229,14 @@ impl<'a> CompileItemContext<'a, '_> {
                             let elab_intf = intf.elab_interface(self);
 
                             if allow_interface_ref {
-                                let rf = Reference::Interface(intf, elab_intf.inner);
-                                let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                                let module = self.curr_module.ok_or_else(|| {
+                                    diags.report_error_internal(
+                                        expr.span,
+                                        "reference to interface instance outside module",
+                                    )
+                                })?;
+
+                                let rf = ReferenceWrapper::new_interface(module, intf, elab_intf.inner);
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             } else {
                                 return Err(error_cannot_eval_interface_as(
@@ -568,20 +574,40 @@ impl<'a> CompileItemContext<'a, '_> {
                     let id_eval = self.eval_named_or_value(scope, id)?;
                     match id_eval.inner {
                         NamedOrValue::Named(value) => match value {
-                            NamedValue::Signal(signal) => {
-                                let signal_ty = signal.expect_ty(self, id.span)?;
+                            NamedValue::Variable(var) => {
+                                // Reference types are invariant, since they can be read and written to.
+                                // Variables without any type can contain and accept any type,
+                                //   so their type as a reference must be `Ref(any)` too.
+                                let var_info = flow.var_info(Spanned::new(id.span, var))?;
+                                let var_ty = var_info.ty.as_ref().map_or(Type::Any, |ty| ty.inner.clone());
 
-                                let rf = Reference::Signal(signal, Arc::new(signal_ty.inner.clone()));
-                                let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                                let flow_id = flow.root_id();
+
+                                let rf = ReferenceWrapper::new_variable(flow_id, var, var_ty);
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             }
-                            NamedValue::Variable(_) => {
-                                return Err(diags.report_error_todo(expr.span, "reference to variable"));
+                            NamedValue::Signal(signal) => {
+                                let module = self.curr_module.ok_or_else(|| {
+                                    diags.report_error_internal(
+                                        expr.span,
+                                        "reference to interface instance outside module",
+                                    )
+                                })?;
+
+                                let signal_ty = signal.expect_ty(self, id.span)?;
+                                let rf = ReferenceWrapper::new_signal(module, signal, signal_ty.inner.clone());
+                                Value::Simple(SimpleCompileValue::Reference(rf))
                             }
                             NamedValue::Interface(intf) => {
+                                let module = self.curr_module.ok_or_else(|| {
+                                    diags.report_error_internal(
+                                        expr.span,
+                                        "reference to interface instance outside module",
+                                    )
+                                })?;
+
                                 let elab_intf = intf.elab_interface(self).inner;
-                                let rf = Reference::Interface(intf, elab_intf);
-                                let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                                let rf = ReferenceWrapper::new_interface(module, intf, elab_intf);
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             }
                         },
@@ -600,15 +626,24 @@ impl<'a> CompileItemContext<'a, '_> {
                 UnaryOp::Deref => {
                     let deref = self.eval_deref_operator(scope, flow, expr.span, op.span, operand)?;
                     match deref {
-                        Either::Left(signal) => {
+                        Either::Left(SignalOrVariable::Variable(var)) => {
+                            return flow.var_eval(refs, &mut self.large, Spanned::new(expr.span, var));
+                        }
+                        Either::Left(SignalOrVariable::Signal(signal)) => {
                             let flow = flow.require_hardware(op.span, "signal read")?;
                             return flow.signal_eval(self, Spanned::new(expr.span, signal));
                         }
                         Either::Right(intf) => {
                             if allow_interface_ref {
+                                let module = self.curr_module.ok_or_else(|| {
+                                    diags.report_error_internal(
+                                        expr.span,
+                                        "reference to interface instance outside module",
+                                    )
+                                })?;
+
                                 let elab_intf = intf.elab_interface(self).inner;
-                                let rf = Reference::Interface(intf, elab_intf);
-                                let rf = ReferenceWrapper::new(self, rf, expr.span)?;
+                                let rf = ReferenceWrapper::new_interface(module, intf, elab_intf);
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             } else {
                                 return Err(error_cannot_eval_interface_as(
@@ -922,8 +957,8 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // interface fields
         if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base.inner {
-            let rf = rf.get(self, base.span)?;
-            if let &Reference::Interface(intf, _elab_intf) = rf {
+            let rf = rf.get(self, flow, base.span)?;
+            if let ReferenceInner::Interface(intf, _) = rf {
                 let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
                 let flow = flow.require_hardware(expr_span, "signal read")?;
                 return flow.signal_eval(self, Spanned::new(expr_span, signal));
@@ -1473,7 +1508,7 @@ impl<'a> CompileItemContext<'a, '_> {
             ExpressionKind::UnaryOp(op, operand) if op.inner == UnaryOp::Deref => {
                 let deref = self.eval_deref_operator(scope, flow, expr.span, op.span, operand);
                 match deref? {
-                    Either::Left(signal) => AssignmentTarget::simple(Spanned::new(expr.span, signal.into())),
+                    Either::Left(target) => AssignmentTarget::simple(Spanned::new(expr.span, target)),
                     Either::Right(intf) => {
                         let intf_span = intf.elab_interface(self).span;
                         return Err(error_cannot_eval_interface_as(
@@ -1568,7 +1603,7 @@ impl<'a> CompileItemContext<'a, '_> {
         expr_span: Span,
         deref_span: Span,
         operand: Expression,
-    ) -> DiagResult<Either<Signal, Interface>> {
+    ) -> DiagResult<Either<SignalOrVariable, Interface>> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1576,13 +1611,11 @@ impl<'a> CompileItemContext<'a, '_> {
         let operand = self.eval_expression_as_compile(scope, flow, &Type::Any, operand, reason)?;
 
         match operand.inner {
-            CompileValue::Simple(SimpleCompileValue::Reference(rf)) => {
-                let rf = rf.get(self, operand.span)?;
-                match *rf {
-                    Reference::Signal(signal, _) => Ok(Either::Left(signal)),
-                    Reference::Interface(intf, _) => Ok(Either::Right(intf)),
-                }
-            }
+            CompileValue::Simple(SimpleCompileValue::Reference(rf)) => match rf.get(self, flow, operand.span)? {
+                ReferenceInner::Variable(var, _) => Ok(Either::Left(var.into())),
+                ReferenceInner::Signal(signal, _) => Ok(Either::Left(signal.into())),
+                ReferenceInner::Interface(intf, _) => Ok(Either::Right(intf)),
+            },
             v => {
                 let diag = DiagnosticError::new(
                     "cannot dereference non-reference value",

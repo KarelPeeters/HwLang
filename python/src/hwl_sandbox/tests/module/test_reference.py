@@ -94,7 +94,7 @@ def test_ref_ty():
     }
     module top_correct ports(p_single: in async uint(8), p_intf: interface async Data.View) {
         comb {
-            val r_single: RefSignal(uint(8)) = ref p_single;
+            val r_single: Ref(uint(8)) = ref p_single;
             val r_intf: RefInterface(Data) = ref p_intf;
         }
     }
@@ -114,3 +114,48 @@ def test_ref_ty():
         compile_custom(src).resolve("top.top_wrong_single")
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         compile_custom(src).resolve("top.top_wrong_intf")
+
+
+def test_ref_var():
+    src = """
+    fn f(x: uint) -> uint {
+        var v = 0;
+        val w = ref v;
+        deref w = x;
+        return v;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(4) == 4
+
+
+def test_ref_var_read_dropped():
+    src = """
+    fn f(x: uint) -> uint {
+        val w;
+        if (true) {
+            var v = x;
+            w = ref v;
+        }
+        return deref w;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="TODO"):
+        f(4)
+
+
+def test_ref_var_write_dropped():
+    src = """
+    fn f(x: uint) -> uint {
+        val w;
+        if (true) {
+            var v = x;
+            w = ref v;
+        }
+        deref w = 4;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="TODO"):
+        f(4)

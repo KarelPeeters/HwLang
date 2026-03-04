@@ -1,5 +1,6 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::DomainSignal;
+use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
@@ -254,6 +255,7 @@ pub struct CompileShared {
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
     pub ir_database: Mutex<PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>>,
+    pub next_flow_root_id: NextFlowRootId,
 }
 
 #[derive(Debug, Clone)]
@@ -741,6 +743,7 @@ impl CompileShared {
                 ir_modules: Arena::new(),
                 external_modules,
             }),
+            next_flow_root_id: NextFlowRootId::default(),
         }
     }
 

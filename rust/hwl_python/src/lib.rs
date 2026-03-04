@@ -65,7 +65,7 @@ struct Parsed {
 struct Compile {
     #[pyo3(get)]
     parsed: Py<Parsed>,
-    state: CompileShared,
+    shared: CompileShared,
     capture_prints: Option<Py<CapturePrints>>,
 }
 
@@ -93,7 +93,7 @@ struct Value {
 #[pymethods]
 impl Value {
     fn __repr__(&self, py: Python) -> String {
-        let elab = &self.compile.borrow(py).state.elaboration_arenas;
+        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
         self.value.value_string(elab)
     }
 }
@@ -370,7 +370,7 @@ const COMPILE_SETTINGS: CompileSettings = CompileSettings { do_ir_cleanup: true 
 #[pymethods]
 impl Parsed {
     fn compile(slf: Py<Self>, py: Python) -> PyResult<Compile> {
-        let state = {
+        let shared = {
             let diags = Diagnostics::new();
             let parsed = slf.borrow(py);
             let source = parsed.source.borrow(py);
@@ -381,15 +381,15 @@ impl Parsed {
                 parsed: &parsed.parsed,
             };
 
-            let state = CompileShared::new(&diags, fixed, false, NON_ZERO_USIZE_ONE);
+            let shared = CompileShared::new(&diags, fixed, false, NON_ZERO_USIZE_ONE);
             check_diags(py, &source.source, &diags)?;
 
-            state
+            shared
         };
 
         Ok(Compile {
             parsed: slf,
-            state,
+            shared,
             capture_prints: None,
         })
     }
@@ -402,7 +402,7 @@ impl Compile {
         // TODO move this somewhere common, the commandline will also need this
         // unwrap self
         let slf_ref = &mut *slf.borrow_mut(py);
-        let state = &slf_ref.state;
+        let shared = &slf_ref.shared;
 
         let parsed_ref = slf_ref.parsed.borrow(py);
         let parsed = &parsed_ref.parsed;
@@ -429,9 +429,12 @@ impl Compile {
             })?;
         }
         let file = curr_node.file.ok_or_else(|| {
-            ResolveException::new_err(format!("path `{}` does not point to a file", steps.iter().join(".")))
+            ResolveException::new_err(format!(
+                "steps `{}` do not point to a file (in full path `{path}`)",
+                steps.iter().join(".")
+            ))
         })?;
-        let scope = state.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
+        let scope = shared.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
 
         // look up the item
         let diags = Diagnostics::new();
@@ -462,7 +465,7 @@ impl Compile {
                 hierarchy,
                 parsed,
             },
-            shared: state,
+            shared,
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
@@ -588,7 +591,7 @@ impl Type {
     }
 
     fn __str__(&self, py: Python) -> String {
-        let elab = &self.compile.borrow(py).state.elaboration_arenas;
+        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
         self.ty.value_string(elab)
     }
 }
@@ -700,7 +703,7 @@ fn call_impl(
         let compile_ref = &mut *compile.borrow_mut(py);
         let print_handler = compile_ref.start_collect_prints();
 
-        let state = &mut compile_ref.state;
+        let shared = &mut compile_ref.shared;
         let parsed_ref = compile_ref.parsed.borrow(py);
         let parsed = &parsed_ref.parsed;
         let source_ref = parsed_ref.source.borrow(py);
@@ -720,14 +723,14 @@ fn call_impl(
                 hierarchy,
                 parsed,
             },
-            shared: state,
+            shared,
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
         };
 
         let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
-        let flow_root = FlowRoot::new(&diags);
+        let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
 
         // call the function and run any elaboration that is needed
@@ -926,12 +929,12 @@ impl Module {
                 ));
             }
         };
-        let ir_module = compile.state.elaboration_arenas.module_internal_info(module).module_ir;
+        let ir_module = compile.shared.elaboration_arenas.module_internal_info(module).module_ir;
 
         // create temporary ir database
         // TODO rework the IrDatabase API, this is a mess
         let diags = Diagnostics::new();
-        let ir_database = compile.state.finish_ir_database_ref(&diags, dummy_span);
+        let ir_database = compile.shared.finish_ir_database_ref(&diags, dummy_span);
         let ir_database = map_diag_error(py, &diags, source, ir_database)?;
 
         if cfg!(debug_assertions) {
@@ -1065,7 +1068,7 @@ impl VerilatedPort {
         let parsed = compile.parsed.borrow(py);
         let source = parsed.source.borrow(py);
 
-        let elab = &compile.state.elaboration_arenas;
+        let elab = &compile.shared.elaboration_arenas;
         let dummy_span = source.dummy_span;
 
         let diags = Diagnostics::new();

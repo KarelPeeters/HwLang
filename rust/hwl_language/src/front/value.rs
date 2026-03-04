@@ -1,6 +1,7 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
+use crate::front::flow::{Flow, FlowRootId, Variable};
 use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
@@ -44,41 +45,71 @@ pub enum SimpleCompileValue {
     Reference(ReferenceWrapper),
 }
 
+// TODO rework, for vars only store FlowRootId, for signal/interface only store module
+/// Wrapper around [Reference] that checks that the reference is actually valid in the current context.
+///
+/// This should never fail, because items elaboration already checks that references never cross between items.
+/// This additional check only exists because [Variable], [Signal] and [Interface] are all newtyped indices
+///   that are only unique within their original context, and accidentally using them in different contexts
+///   would result in hard to debug issues.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ReferenceWrapper {
-    /// The module this reference belongs to. References are never valid outside their original module,
-    /// this field serves as an extra check to avoid more tricky compiler errors.
-    module: ElaboratedModule,
-    inner: Reference,
+pub struct ReferenceWrapper(ReferenceWrapperInner);
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum ReferenceWrapperInner {
+    Variable(FlowRootId, Variable, Arc<Type>),
+    Signal(ElaboratedModule, Signal, Arc<HardwareType>),
+    Interface(ElaboratedModule, Interface, ElaboratedInterface),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum Reference {
-    Signal(Signal, Arc<HardwareType>),
+pub enum ReferenceInner<'a> {
+    Variable(Variable, &'a Arc<Type>),
+    Signal(Signal, &'a Arc<HardwareType>),
     Interface(Interface, ElaboratedInterface),
 }
 
 impl ReferenceWrapper {
-    pub fn new(ctx: &CompileItemContext, inner: Reference, span: Span) -> DiagResult<Self> {
-        let module = ctx.curr_module.ok_or_else(|| {
-            let diags = ctx.refs.diags;
-            diags.report_error_internal(span, "cannot create reference outside of a module")
-        })?;
-
-        Ok(ReferenceWrapper { module, inner })
+    pub fn new_variable(id: FlowRootId, var: Variable, ty: Type) -> Self {
+        ReferenceWrapper(ReferenceWrapperInner::Variable(id, var, Arc::new(ty)))
     }
 
-    pub fn get(&self, ctx: &CompileItemContext, span: Span) -> DiagResult<&Reference> {
-        if ctx.curr_module != Some(self.module) {
-            let diags = ctx.refs.diags;
-            Err(diags.report_error_internal(span, "trying to use reference outside its original module"))
-        } else {
-            Ok(&self.inner)
+    pub fn new_signal(module: ElaboratedModule, signal: Signal, ty: HardwareType) -> Self {
+        ReferenceWrapper(ReferenceWrapperInner::Signal(module, signal, Arc::new(ty)))
+    }
+
+    pub fn new_interface(module: ElaboratedModule, interface: Interface, ty: ElaboratedInterface) -> Self {
+        ReferenceWrapper(ReferenceWrapperInner::Interface(module, interface, ty))
+    }
+
+    pub fn get(&self, ctx: &CompileItemContext, flow: &impl Flow, span: Span) -> DiagResult<ReferenceInner<'_>> {
+        let diags = ctx.refs.diags;
+        match self.0 {
+            ReferenceWrapperInner::Variable(id, _, _) => {
+                if id != flow.root_id() {
+                    return Err(diags.report_error_internal(span, "using var ref outside its original root flow"));
+                }
+            }
+            ReferenceWrapperInner::Signal(module, _, _) => {
+                if ctx.curr_module != Some(module) {
+                    return Err(diags.report_error_internal(span, "using signal ref outside its original module"));
+                }
+            }
+            ReferenceWrapperInner::Interface(module, _, _) => {
+                if ctx.curr_module != Some(module) {
+                    return Err(diags.report_error_internal(span, "using interface reg outside its original module"));
+                }
+            }
         }
+        Ok(self.get_unchecked())
     }
 
-    pub fn get_unchecked(&self) -> &Reference {
-        &self.inner
+    pub fn get_unchecked(&self) -> ReferenceInner<'_> {
+        match self.0 {
+            ReferenceWrapperInner::Variable(_, var, ref ty) => ReferenceInner::Variable(var, ty),
+            ReferenceWrapperInner::Signal(_, signal, ref ty) => ReferenceInner::Signal(signal, ty),
+            ReferenceWrapperInner::Interface(_, intf, elab) => ReferenceInner::Interface(intf, elab),
+        }
     }
 }
 
@@ -837,9 +868,10 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Module(_) => Type::Module,
             SimpleCompileValue::Interface(_) => Type::Interface,
             SimpleCompileValue::InterfaceView(_) => Type::InterfaceView,
-            SimpleCompileValue::Reference(rf) => match &rf.inner {
-                Reference::Signal(_, ty) => Type::RefSignal(Arc::clone(ty)),
-                &Reference::Interface(_, ty) => Type::RefInterface(ty),
+            SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
+                ReferenceInner::Variable(_, ty) => Type::Ref(Arc::clone(ty)),
+                ReferenceInner::Signal(_, ty) => Type::Ref(Arc::new(ty.as_type())),
+                ReferenceInner::Interface(_, elab) => Type::RefInterface(elab),
             },
         }
     }

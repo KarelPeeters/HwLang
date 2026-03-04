@@ -103,7 +103,7 @@ impl CompileRefs<'_, '_> {
 
         // rebuild params scope
         let mut ctx = CompileItemContext::new_empty(self, None, None);
-        let flow_root = FlowRoot::new(diags);
+        let flow_root = FlowRoot::new(diags, &self.shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
         let scope_params = scope_params.to_scope(self, &mut flow, span)?;
 

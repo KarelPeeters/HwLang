@@ -321,7 +321,7 @@ impl CompileItemContext<'_, '_> {
                 Err(diags.report_error_internal(item_inner.span, reason))
             }
             Item::CommonDeclaration(decl) => {
-                let flow_root = FlowRoot::new(diags);
+                let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, decl.span, "item declaration");
 
                 let eval = self.eval_declaration(&file_scope, &mut flow, &decl.inner)?;
@@ -347,7 +347,7 @@ impl CompileItemContext<'_, '_> {
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::ModuleInternal(unique, item);
 
-                let flow_root = FlowRoot::new(diags);
+                let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
                 self.eval_maybe_generic_item(id.span(), body_span, &file_scope, &mut flow, params, body)
             }
@@ -370,7 +370,7 @@ impl CompileItemContext<'_, '_> {
                     .next_unique_declaration(MaybeIdentifier::Identifier(id));
                 let body = FunctionItemBody::ModuleExternal(unique, item);
 
-                let flow_root = FlowRoot::new(diags);
+                let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
                 self.eval_maybe_generic_item(id.span, body_span, &file_scope, &mut flow, params, body)
             }
@@ -389,7 +389,7 @@ impl CompileItemContext<'_, '_> {
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let body = FunctionItemBody::Interface(unique, item);
 
-                let flow_root = FlowRoot::new(diags);
+                let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, interface.span, "item declaration");
                 self.eval_maybe_generic_item(id.span(), *span_body, &file_scope, &mut flow, params, body)
             }

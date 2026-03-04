@@ -29,16 +29,25 @@ use indexmap::{IndexMap, IndexSet};
 use itertools::{Itertools, zip_eq};
 use std::cell::Cell;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub enum FlowKind<C, H> {
     Compile(C),
     Hardware(H),
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct FlowRootId(usize);
+
+#[derive(Debug, Default)]
+pub struct NextFlowRootId(AtomicUsize);
+
 #[derive(Debug)]
 pub struct FlowRoot<'d> {
     // TODO maybe this should be refs, instead having an extra parameter for a couple of functions
     diags: &'d Diagnostics,
+
+    id: FlowRootId,
     check: RandomCheck,
 
     next_var_index: Cell<NonZeroUsize>,
@@ -47,6 +56,7 @@ pub struct FlowRoot<'d> {
 
 #[derive(Debug)]
 pub struct FlowRootContent {
+    id: FlowRootId,
     check: RandomCheck,
 
     next_var_index: Cell<NonZeroUsize>,
@@ -312,6 +322,10 @@ const VAR_EVAL_HW_REASON: &str = "accessing a hardware variable";
 
 #[allow(private_bounds)]
 pub trait Flow: FlowPrivate {
+    fn root_id(&self) -> FlowRootId {
+        self.root().id
+    }
+
     #[allow(clippy::needless_lifetimes)]
     fn new_child_compile<'s>(&'s mut self, span: Span, reason: &'static str) -> FlowCompile<'s>;
 
@@ -322,6 +336,7 @@ pub trait Flow: FlowPrivate {
 
     fn var_new(&mut self, info: VariableInfo) -> Variable;
 
+    // TODO make this not report internal errors, instead report error that var scope has ended
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
         assert_eq!(var.inner.check, self.root().check);
         self.var_info_option(var.inner.index).ok_or_else(|| {
@@ -698,10 +713,11 @@ pub trait Flow: FlowPrivate {
 ///   so we can always safely use 1 as the first version for values that have not yet been assigned.
 const VERSION_INITIAL: VersionIndex = VersionIndex(NON_ZERO_USIZE_ONE);
 
-impl FlowRoot<'_> {
-    pub fn new(diags: &Diagnostics) -> FlowRoot<'_> {
+impl<'d> FlowRoot<'d> {
+    pub fn new(diags: &'d Diagnostics, next: &NextFlowRootId) -> FlowRoot<'d> {
         FlowRoot {
             diags,
+            id: FlowRootId(next.0.fetch_add(1, Ordering::Relaxed)),
             check: RandomCheck::new(),
             next_var_index: Cell::new(NON_ZERO_USIZE_ONE),
             next_version: Cell::new(NON_ZERO_USIZE_TWO),
@@ -710,6 +726,7 @@ impl FlowRoot<'_> {
 
     pub fn into_content(self) -> FlowRootContent {
         FlowRootContent {
+            id: self.id,
             check: self.check,
             next_var_index: self.next_var_index,
             next_version: self.next_version,
@@ -717,16 +734,12 @@ impl FlowRoot<'_> {
     }
 
     pub fn restore(diags: &Diagnostics, content: FlowRootContent) -> FlowRoot<'_> {
-        let FlowRootContent {
-            check,
-            next_var_index,
-            next_version,
-        } = content;
         FlowRoot {
             diags,
-            check,
-            next_var_index,
-            next_version,
+            id: content.id,
+            check: content.check,
+            next_var_index: content.next_var_index,
+            next_version: content.next_version,
         }
     }
 

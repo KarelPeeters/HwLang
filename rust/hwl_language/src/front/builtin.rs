@@ -132,9 +132,9 @@ impl CompileItemContext<'_, '_> {
             ("type", "Module", &[]) => Ok(Value::new_ty(Type::Module)),
             ("type", "Interface", &[]) => Ok(Value::new_ty(Type::Interface)),
             ("type", "InterfaceView", &[]) => Ok(Value::new_ty(Type::InterfaceView)),
-            ("type", "RefSignal", &[ty]) => {
-                let ty_inner = self.eval_expression_as_ty_hardware(scope, flow, ty, "signal reference inner type")?;
-                let ty = Type::RefSignal(Arc::new(ty_inner.inner));
+            ("type", "Ref", &[ty]) => {
+                let ty_inner = self.eval_expression_as_ty(scope, flow, ty)?;
+                let ty = Type::Ref(Arc::new(ty_inner.inner));
                 Ok(Value::new_ty(ty))
             }
             ("type", "RefInterface", &[intf]) => {

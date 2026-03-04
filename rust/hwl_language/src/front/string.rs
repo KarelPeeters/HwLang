@@ -6,7 +6,7 @@ use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString, RangeValue,
-    Reference, SimpleCompileValue, StructValue, Value,
+    ReferenceInner, SimpleCompileValue, StructValue, Value,
 };
 use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
@@ -487,15 +487,18 @@ impl SimpleCompileValue {
                     info.debug_info_name, view_info.debug_info_name
                 )
             }
-            SimpleCompileValue::Reference(rf) => match *rf.get_unchecked() {
-                Reference::Signal(signal, ref ty) => {
-                    let kind_str = signal.kind_str();
-                    format!("<ref {kind_str} signal with type `{}`>", ty.value_string(elab))
+            SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
+                ReferenceInner::Variable(_, ty) => {
+                    format!("<ref to var with type `{}`>", ty.value_string(elab))
                 }
-                Reference::Interface(signal, intf) => {
+                ReferenceInner::Signal(signal, ty) => {
+                    let kind_str = signal.kind_str();
+                    format!("<ref to {kind_str} with type `{}`>", ty.value_string(elab))
+                }
+                ReferenceInner::Interface(signal, intf) => {
                     let kind_str = signal.kind_str();
                     format!(
-                        "<ref {kind_str} instance of interface `{}`>",
+                        "<ref to {kind_str} instance of interface `{}`>",
                         elab.interface_info(intf).debug_info_name
                     )
                 }
@@ -561,8 +564,8 @@ impl Type {
             Type::Module => "Module".to_string(),
             Type::Interface => "Interface".to_string(),
             Type::InterfaceView => "InterfaceView".to_string(),
-            Type::RefSignal(ty) => {
-                format!("RefSignal({})", ty.value_string(elab))
+            Type::Ref(ty) => {
+                format!("Ref({})", ty.value_string(elab))
             }
             Type::RefInterface(intf) => {
                 format!("RefInterface({})", elab.interface_info(*intf).debug_info_name)
