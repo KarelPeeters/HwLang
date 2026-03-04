@@ -57,21 +57,21 @@ pub struct ReferenceWrapper(ReferenceWrapperInner);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 enum ReferenceWrapperInner {
-    Variable(FlowRootId, Variable, Arc<Type>),
+    Variable(FlowRootId, Variable, Arc<Type>, Span),
     Signal(ElaboratedModule, Signal, Arc<HardwareType>),
     Interface(ElaboratedModule, Interface, ElaboratedInterface),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ReferenceInner<'a> {
-    Variable(Variable, &'a Arc<Type>),
+    Variable(Variable, &'a Arc<Type>, Span),
     Signal(Signal, &'a Arc<HardwareType>),
     Interface(Interface, ElaboratedInterface),
 }
 
 impl ReferenceWrapper {
-    pub fn new_variable(id: FlowRootId, var: Variable, ty: Type) -> Self {
-        ReferenceWrapper(ReferenceWrapperInner::Variable(id, var, Arc::new(ty)))
+    pub fn new_variable(id: FlowRootId, var: Variable, ty: Type, span_decl: Span) -> Self {
+        ReferenceWrapper(ReferenceWrapperInner::Variable(id, var, Arc::new(ty), span_decl))
     }
 
     pub fn new_signal(module: ElaboratedModule, signal: Signal, ty: HardwareType) -> Self {
@@ -85,7 +85,7 @@ impl ReferenceWrapper {
     pub fn get(&self, ctx: &CompileItemContext, flow: &impl Flow, span: Span) -> DiagResult<ReferenceInner<'_>> {
         let diags = ctx.refs.diags;
         match self.0 {
-            ReferenceWrapperInner::Variable(id, _, _) => {
+            ReferenceWrapperInner::Variable(id, _, _, _) => {
                 if id != flow.root_id() {
                     return Err(diags.report_error_internal(span, "using var ref outside its original root flow"));
                 }
@@ -106,7 +106,7 @@ impl ReferenceWrapper {
 
     pub fn get_unchecked(&self) -> ReferenceInner<'_> {
         match self.0 {
-            ReferenceWrapperInner::Variable(_, var, ref ty) => ReferenceInner::Variable(var, ty),
+            ReferenceWrapperInner::Variable(_, var, ref ty, span_decl) => ReferenceInner::Variable(var, ty, span_decl),
             ReferenceWrapperInner::Signal(_, signal, ref ty) => ReferenceInner::Signal(signal, ty),
             ReferenceWrapperInner::Interface(_, intf, elab) => ReferenceInner::Interface(intf, elab),
         }
@@ -869,7 +869,7 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Interface(_) => Type::Interface,
             SimpleCompileValue::InterfaceView(_) => Type::InterfaceView,
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
-                ReferenceInner::Variable(_, ty) => Type::Ref(Arc::clone(ty)),
+                ReferenceInner::Variable(_, ty, _) => Type::Ref(Arc::clone(ty)),
                 ReferenceInner::Signal(_, ty) => Type::Ref(Arc::new(ty.as_type())),
                 ReferenceInner::Interface(_, elab) => Type::RefInterface(elab),
             },

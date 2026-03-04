@@ -336,13 +336,19 @@ pub trait Flow: FlowPrivate {
 
     fn var_new(&mut self, info: VariableInfo) -> Variable;
 
-    // TODO make this not report internal errors, instead report error that var scope has ended
+    fn var_still_exists(&self, var: Variable) -> bool {
+        let root = self.root();
+        assert_eq!(var.check, root.check);
+        assert!(var.index.0 < root.next_var_index.get());
+        self.var_info_option(var.index).is_some()
+    }
+
     fn var_info(&self, var: Spanned<Variable>) -> DiagResult<&VariableInfo> {
         assert_eq!(var.inner.check, self.root().check);
         self.var_info_option(var.inner.index).ok_or_else(|| {
             self.root()
                 .diags
-                .report_error_internal(var.span, "failed to find variable")
+                .report_error_internal(var.span, "hit root before finding variable info")
         })
     }
 

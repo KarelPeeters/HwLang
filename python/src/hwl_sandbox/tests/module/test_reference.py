@@ -141,7 +141,7 @@ def test_ref_var_read_dropped():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="TODO"):
+    with pytest.raises(hwl.DiagnosticException, match="cannot access variable after its scope has ended"):
         f(4)
 
 
@@ -157,5 +157,5 @@ def test_ref_var_write_dropped():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="TODO"):
+    with pytest.raises(hwl.DiagnosticException, match="cannot access variable after its scope has ended"):
         f(4)

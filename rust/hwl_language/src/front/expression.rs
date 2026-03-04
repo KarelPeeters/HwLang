@@ -583,7 +583,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                                 let flow_id = flow.root_id();
 
-                                let rf = ReferenceWrapper::new_variable(flow_id, var, var_ty);
+                                let rf = ReferenceWrapper::new_variable(flow_id, var, var_ty, var_info.span_decl);
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             }
                             NamedValue::Signal(signal) => {
@@ -1612,7 +1612,19 @@ impl<'a> CompileItemContext<'a, '_> {
 
         match operand.inner {
             CompileValue::Simple(SimpleCompileValue::Reference(rf)) => match rf.get(self, flow, operand.span)? {
-                ReferenceInner::Variable(var, _) => Ok(Either::Left(var.into())),
+                ReferenceInner::Variable(var, _, span_decl) => {
+                    if !flow.var_still_exists(var) {
+                        let err = DiagnosticError::new(
+                            "cannot access variable after its scope has ended",
+                            expr_span,
+                            "trying to deference here",
+                        )
+                        .add_info(span_decl, "variable declared here")
+                        .report(diags);
+                        return Err(err);
+                    }
+                    Ok(Either::Left(var.into()))
+                }
                 ReferenceInner::Signal(signal, _) => Ok(Either::Left(signal.into())),
                 ReferenceInner::Interface(intf, _) => Ok(Either::Right(intf)),
             },

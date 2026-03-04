@@ -488,7 +488,7 @@ impl SimpleCompileValue {
                 )
             }
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
-                ReferenceInner::Variable(_, ty) => {
+                ReferenceInner::Variable(_, ty, _) => {
                     format!("<ref to var with type `{}`>", ty.value_string(elab))
                 }
                 ReferenceInner::Signal(signal, ty) => {
