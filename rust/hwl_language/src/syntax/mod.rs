@@ -121,7 +121,16 @@ pub fn parse_file_content_with_recovery(file: FileId, src: &str) -> Result<FileC
                 errors: ctx.errors,
             })
         }
-        Err(e) => Err(e.map_location(|byte| Pos { file, byte })),
+        Err(e) => {
+            // make sure we return the first recovered error if any,
+            //   without this explicit check we would return confusing secondary errors
+            if let Some(e) = ctx.errors.into_iter().next() {
+                return Err(e);
+            }
+
+            // otherwise return the unrecoverable error
+            Err(e.map_location(|byte| Pos { file, byte }))
+        }
     }
 }
 
