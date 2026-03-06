@@ -473,9 +473,19 @@ impl CompileItemContext<'_, '_> {
             debug_info_name: _,
             ref payload_ty,
         } = &enum_info.variants[variant_index];
-        let payload_ty = payload_ty
-            .as_ref()
-            .expect("enum new only exists for variants with payloads");
+        let payload_ty = match payload_ty.as_ref() {
+            Some(payload_ty) => payload_ty,
+            None => {
+                return Err(DiagnosticError::new(
+                    "enum variant has no payload",
+                    span_call,
+                    "this variant cannot be called as a constructor",
+                )
+                .add_info(variant_id.span(), "variant declared without payload here")
+                .add_footer_hint("to construct this variant, use it directly without calling it as a function")
+                .report(self.refs.diags));
+            }
+        };
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
         let payload = matcher
