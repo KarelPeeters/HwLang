@@ -143,6 +143,10 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
         }
     }
 
+    pub fn count(&self) -> usize {
+        self.next_id.load(Ordering::Relaxed)
+    }
+
     pub fn get(&self, id: E) -> &F {
         // The key only gets out if the computation was successful,
         //   so we can safely unwrap here (twice).
@@ -591,6 +595,20 @@ impl CompileItemContext<'_, '_> {
             FunctionItemBody::ModuleInternal(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
+
+                // Check module elaboration count limit to prevent infinite generic recursion.
+                const MAX_MODULE_ELABORATIONS: usize = 1_000;
+                let current_count = refs.shared.elaboration_arenas.elaborated_modules_internal.count();
+                if current_count >= MAX_MODULE_ELABORATIONS {
+                    return Err(diags.report_error_simple(
+                        format!(
+                            "too many unique module elaborations ({current_count}), \
+                             possible infinite generic module instantiation"
+                        ),
+                        body.span,
+                        "elaboration limit reached here",
+                    ));
+                }
 
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_internal.elaborate(
                     item_params,

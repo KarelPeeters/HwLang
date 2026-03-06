@@ -42,8 +42,17 @@ pub fn ir_modules_check_no_cycles(diags: &Diagnostics, modules: &IrModules) -> D
         })
     });
 
-    // keep only non-trivial components
-    components.retain(|c| c.len() > 1);
+    // keep only non-trivial components (cycles of 2+ modules) or self-loops (module instantiates itself)
+    components.retain(|c| {
+        if c.len() > 1 {
+            return true;
+        }
+        // Single-element SCC: check if it has a self-loop (module instantiates itself)
+        let m = *c.first();
+        modules[m].children.iter().any(|child| {
+            matches!(&child.inner, IrModuleChild::ModuleInternalInstance(inst) if inst.module == m)
+        })
+    });
 
     // sort to ensure deterministic diagnostics
     components

@@ -1946,6 +1946,29 @@ fn eval_int_ty_call(
                 )
             })?;
 
+            // Check bitwidth is within a practical limit to prevent OOM or panics when computing 2^width.
+            // This matches the limit enforced by the Verilog backend.
+            let max_bitwidth = u64::from(u32::MAX);
+            let width_exceeds_max = match u64::try_from(&width) {
+                Ok(w) => w > max_bitwidth,
+                Err(_) => true, // width doesn't fit in u64, so it definitely exceeds u32::MAX
+            };
+            if width_exceeds_max {
+                // Avoid printing extremely large numbers in the error message.
+                let width_display = if width.size_bits() <= 64 {
+                    format!("`{width}`")
+                } else {
+                    format!("(a number with {} bits)", width.size_bits())
+                };
+                return Err(diags.report_error_simple(
+                    format!(
+                        "integer bitwidth {width_display} is too large, maximum allowed is `{max_bitwidth}`"
+                    ),
+                    arg.span,
+                    "bitwidth too large",
+                ));
+            }
+
             let range = if target_signed {
                 let width_m1 = BigUint::try_from(width - 1u8).map_err(|_| {
                     diags.report_error_simple(

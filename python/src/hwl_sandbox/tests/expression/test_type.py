@@ -89,3 +89,19 @@ def test_type_array():
         assert g([True]) == 1
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         assert g([0, 1]) == 3
+
+
+def test_type_uint_too_large():
+    """A very large uint bitwidth should give a clear error, not hang or panic."""
+    src = "fn f() -> uint(99999999999999999999) { return undef; }"
+    with pytest.raises(hwl.DiagnosticException, match="bitwidth.*too large"):
+        compile_custom(src).resolve("top.f")()
+
+
+def test_type_uint_computed_too_large():
+    """A computed uint bitwidth that is too large should give a clear error, not panic."""
+    src = """
+    fn f() -> uint(2 ** 1000000) { return undef; }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="bitwidth.*too large"):
+        compile_custom(src).resolve("top.f")()

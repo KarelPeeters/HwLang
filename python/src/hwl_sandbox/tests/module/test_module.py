@@ -190,3 +190,30 @@ def test_interface_chain(tmp_dir: Path):
         inst.ports.x_d.value = v
         inst.step(1)
         assert inst.ports.y_d.value == v
+
+
+def test_self_cyclic_instantiation():
+    """A module that instantiates itself should give a 'cyclic module instantiation' error, not panic."""
+    src = """
+    module top ports() {
+        instance top ports();
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
+        c.resolve("top.top").as_verilog()
+
+
+def test_infinite_generic_recursion():
+    """Infinite generic recursion should give an error about too many elaborations, not hang."""
+    src = """
+    module inner(n: uint) ports() {
+        instance inner(n+1) ports();
+    }
+    module top ports() {
+        instance inner(0) ports();
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="too many unique module elaborations"):
+        c.resolve("top.top").as_verilog()
