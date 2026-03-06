@@ -467,15 +467,27 @@ impl CompileItemContext<'_, '_> {
         variant_index: usize,
         args: &EvaluatedArgs,
     ) -> DiagResult<Value> {
+        let diags = self.refs.diags;
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
             id: variant_id,
-            debug_info_name: _,
+            debug_info_name: ref variant_name,
             ref payload_ty,
         } = &enum_info.variants[variant_index];
-        let payload_ty = payload_ty
-            .as_ref()
-            .expect("enum new only exists for variants with payloads");
+        let payload_ty = match payload_ty.as_ref() {
+            Some(ty) => ty,
+            None => {
+                // This variant has no payload, so it cannot be called as a function.
+                return Err(diags.report_error_simple(
+                    format!(
+                        "enum variant `{}` takes no arguments and cannot be called as a function",
+                        variant_name
+                    ),
+                    span_call,
+                    "attempted call here",
+                ));
+            }
+        };
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
         let payload = matcher

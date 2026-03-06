@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import hwl
+import pytest
+
 from hwl_sandbox.common.compare import compare_body
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_enum_construction_and_match(tmp_dir: Path):
@@ -30,3 +34,28 @@ def test_enum_construction_and_match(tmp_dir: Path):
     e.eval_assert([2, True], (2, True))
     e.eval_assert([3, False], (3, True))
     e.eval_assert([3, True], (3, False))
+
+
+def test_calling_no_payload_variant_as_function():
+    """Calling a no-payload enum variant as a function should give a clear error, not panic."""
+    # Without args
+    src = """
+    enum Option(T: type) { None, Some(T) }
+    fn test() -> Option(bool) {
+        val x: Option(bool) = Option.None();
+        return x;
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="takes no arguments and cannot be called"):
+        compile_custom(src).resolve("top.test")()
+
+    # With args
+    src2 = """
+    enum Option(T: type) { None, Some(T) }
+    fn test() -> Option(bool) {
+        val x: Option(bool) = Option.None(true);
+        return x;
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="takes no arguments and cannot be called"):
+        compile_custom(src2).resolve("top.test")()
