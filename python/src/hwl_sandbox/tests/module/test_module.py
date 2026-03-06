@@ -190,3 +190,14 @@ def test_interface_chain(tmp_dir: Path):
         inst.ports.x_d.value = v
         inst.step(1)
         assert inst.ports.y_d.value == v
+
+
+def test_self_instance():
+    src = """
+    module top ports() {
+        instance top ports();
+    }
+    """
+    c = compile_custom(src)
+    with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
+        c.resolve("top.top").as_verilog()

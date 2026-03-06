@@ -1,6 +1,7 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::mid::ir::{IrModule, IrModuleChild, IrModules};
 use crate::util::data::NonEmptyVec;
+use crate::util::iter::IterExt;
 use indexmap::IndexSet;
 use itertools::Itertools;
 use std::collections::hash_map::Entry;
@@ -33,17 +34,23 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: impl IntoIterator<I
 
 pub fn ir_modules_check_no_cycles(diags: &Diagnostics, modules: &IrModules) -> DiagResult {
     // find connected components
-    let mut components = find_strongly_connected_components(modules.keys(), |module| {
-        modules[module].children.iter().filter_map(|c| match &c.inner {
-            IrModuleChild::ModuleInternalInstance(c) => Some(c.module),
-            IrModuleChild::ClockedProcess(_)
-            | IrModuleChild::CombinatorialProcess(_)
-            | IrModuleChild::ModuleExternalInstance(_) => None,
-        })
-    });
+    let mut components =
+        find_strongly_connected_components(modules.keys(), |module| module_child_modules(modules, module));
 
-    // keep only non-trivial components
-    components.retain(|c| c.len() > 1);
+    // keep only non-trivial components (including self-loops)
+    components.retain(|c| {
+        if c.len() > 1 {
+            return true;
+        }
+
+        if let Some(&c) = c.iter().single() {
+            if module_child_modules(modules, c).contains(&c) {
+                return true;
+            }
+        }
+
+        false
+    });
 
     // sort to ensure deterministic diagnostics
     components
@@ -57,6 +64,15 @@ pub fn ir_modules_check_no_cycles(diags: &Diagnostics, modules: &IrModules) -> D
         any_err = Err(component_to_diagnostic(modules, c).report(diags));
     }
     any_err
+}
+
+fn module_child_modules(modules: &IrModules, module: IrModule) -> impl Iterator<Item = IrModule> + '_ {
+    modules[module].children.iter().filter_map(|c| match &c.inner {
+        IrModuleChild::ModuleInternalInstance(c) => Some(c.module),
+        IrModuleChild::ClockedProcess(_)
+        | IrModuleChild::CombinatorialProcess(_)
+        | IrModuleChild::ModuleExternalInstance(_) => None,
+    })
 }
 
 fn component_to_diagnostic(modules: &IrModules, component: NonEmptyVec<IrModule>) -> DiagnosticError {
