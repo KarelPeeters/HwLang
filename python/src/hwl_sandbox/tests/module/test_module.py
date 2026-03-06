@@ -200,4 +200,4 @@ def test_self_instance():
     """
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
-        c.resolve("top.top").as_verilog()
+        c.resolve("top.top")

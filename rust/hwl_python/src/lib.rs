@@ -476,7 +476,16 @@ impl Compile {
         let value = item_ctx.eval_item(item).cloned();
         refs.run_elaboration_loop();
 
+        // build ir database to run final checks
+        let ir_database = if value.is_ok() {
+            shared.finish_ir_database_ref(&diags, dummy_span).map(|_| ())
+        } else {
+            Ok(())
+        };
+
+        // propagate errors
         let value = map_diag_error(py, &diags, source, value);
+        let database = map_diag_error(py, &diags, source, ir_database);
         let result_diags = check_diags(py, source, &diags);
 
         drop(source_ref);
@@ -484,7 +493,9 @@ impl Compile {
         slf_ref.finish_collect_prints(py, print_handler);
 
         let value = value?;
+        database?;
         result_diags?;
+
         compile_value_to_py(py, &slf, &value)
     }
 
