@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Tuple
 
 import pytest
 
@@ -67,6 +68,51 @@ def test_unary_plus(tmp_dir: Path):
     e = compare_expression(["int(-4..16)"], "int(-4..16)", "+a0", tmp_dir)
     for i in range(-4, 16):
         e.eval_assert([i], i)
+
+
+def test_mul(tmp_dir: Path):
+    e = compare_expression(["int(-8..8)", "int(-8..8)"], "int(-64..=64)", "a0 * a1", tmp_dir)
+    for a in [-7, -4, -1, 0, 1, 4, 7]:
+        for b in [-7, -4, -1, 0, 1, 4, 7]:
+            e.eval_assert([a, b], a * b)
+
+
+def test_pow(tmp_dir: Path):
+    e = compare_expression(["int(-8..=8)", "uint(1..=3)"], "int(-512..=512)", "a0 ** a1", tmp_dir)
+    for base in range(-8, 9):
+        for exp in range(1, 4):
+            e.eval_assert([base, exp], base ** exp)
+
+
+def test_pow_zero(tmp_dir: Path):
+    e = compare_expression(["int(1..=8)", "uint(0..=3)"], "int(-512..=512)", "a0 ** a1", tmp_dir)
+    for base in range(1, 9):
+        for exp in range(4):
+            e.eval_assert([base, exp], base ** exp)
+
+
+def test_compare_simple_signed(tmp_dir: Path):
+    e = compare_expression(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmp_dir)
+    e.eval_assert([-1, 1], True)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        ("<", "__lt__"),
+        ("<=", "__le__"),
+        (">", "__gt__"),
+        (">=", "__ge__"),
+        ("==", "__eq__"),
+        ("!=", "__ne__"),
+    ]
+)
+def test_compare(op: Tuple[str, str], tmp_dir: Path):
+    op_str, op_py = op
+    e = compare_expression(["int(-4..4)", "int(-8..8)"], "bool", f"a0 {op_str} a1", tmp_dir / op_str)
+    for a in range(-4, 4):
+        for b in range(-8, 8):
+            e.eval_assert([a, b], getattr(a, op_py)(b))
 
 
 def assert_div_or_mod(e: CompiledCompare, op: str, a: int, b: int, c_div: int, c_mod: int):
@@ -139,11 +185,6 @@ def test_div_overflow(tmp_dir: Path):
     a = -2 ** 33
     b = 2 ** 33 - 1
     e.eval_assert([a, b], a // b)
-
-
-def test_compare_signed(tmp_dir: Path):
-    e = compare_expression(["int(-16..16)", "int(-16..16)"], "bool", "a0 < a1", tmp_dir)
-    e.eval_assert([-1, 1], True)
 
 
 def test_shift_left_pos(tmp_dir: Path):
