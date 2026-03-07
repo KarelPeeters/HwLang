@@ -706,6 +706,10 @@ impl BodyContext {
         stmt: &ModuleStatement,
     ) -> DiagResult {
         match &stmt.inner {
+            ModuleStatementKind::ParseError(_) => Err(ctx
+                .refs
+                .diags
+                .report_error_internal(stmt.span, "encountered parse error")),
             ModuleStatementKind::WireDeclaration(decl) => {
                 self.elaborate_wire_declaration(ctx, scope, flow, Spanned::new(stmt.span, decl))
             }

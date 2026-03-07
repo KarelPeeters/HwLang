@@ -30,13 +30,13 @@
 
 use crate::front::diagnostic::{DiagError, DiagResult, Diagnostics};
 use crate::syntax::ast::FileContent;
-use crate::syntax::format::flatten::{EncounteredParseError, ast_to_node};
+use crate::syntax::format::flatten::ast_to_node;
 use crate::syntax::format::high::{HNode, lower_nodes};
 use crate::syntax::format::low::{LNode, LNodeSimple, StringsStats, node_to_string};
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
-use crate::syntax::{parse_error_to_diagnostic, parse_file_content_without_recovery};
+use crate::syntax::{RecoveredParseError, parse_error_to_diagnostic, parse_file_content_without_recovery};
 
 mod common;
 mod flatten;
@@ -109,8 +109,9 @@ pub fn format_file<'s>(
         .map_err(|e| FormatError::Syntax(parse_error_to_diagnostic(e).report(diags)))?;
 
     // flatten the ast to high-level nodes
-    let node_high = ast_to_node(&old_ast)
-        .unwrap_or_else(|_: EncounteredParseError| unreachable!("we already flattened errors away"));
+    let node_high = ast_to_node(&old_ast).unwrap_or_else(|_: RecoveredParseError| {
+        unreachable!("parsed without recovery, should never encounter parse errors")
+    });
 
     // lower the high-level nodes to low-level nodes
     let node_low = lower_nodes(old_content, old_offsets, &old_tokens, &node_high).map_err(|e| {

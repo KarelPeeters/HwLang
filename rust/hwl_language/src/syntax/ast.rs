@@ -1,4 +1,4 @@
-use crate::syntax::ReportedParseError;
+use crate::syntax::RecoveredParseError;
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
@@ -443,6 +443,8 @@ pub type BlockStatement = Spanned<BlockStatementKind>;
 
 #[derive(Debug, Clone)]
 pub enum ModuleStatementKind {
+    ParseError(RecoveredParseError),
+
     WireDeclaration(WireDeclaration),
 
     CombinatorialProcess(CombinatorialProcess),
@@ -730,8 +732,7 @@ pub type Expression = Spanned<ExpressionKindIndex>;
 
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
-    // Error recovery
-    ParseError(ReportedParseError),
+    ParseError(RecoveredParseError),
 
     // Miscellaneous
     Dummy,

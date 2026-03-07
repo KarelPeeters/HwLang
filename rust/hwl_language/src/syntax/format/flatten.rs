@@ -1,3 +1,4 @@
+use crate::syntax::RecoveredParseError;
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
@@ -19,10 +20,7 @@ use crate::util::iter::IterExt;
 use itertools::Either;
 use std::cell::Cell;
 
-#[derive(Debug)]
-pub struct EncounteredParseError;
-
-pub fn ast_to_node(file: &FileContent) -> Result<HNode, EncounteredParseError> {
+pub fn ast_to_node(file: &FileContent) -> Result<HNode, RecoveredParseError> {
     let FileContent {
         span: _,
         items,
@@ -31,12 +29,12 @@ pub fn ast_to_node(file: &FileContent) -> Result<HNode, EncounteredParseError> {
 
     let mut ctx = Context {
         arena_expressions,
-        any_error: Cell::new(false),
+        any_parse_error: Cell::new(None),
     };
     let result = ctx.fmt_file_items(items);
 
-    if ctx.any_error.get() {
-        Err(EncounteredParseError)
+    if let Some(e) = ctx.any_parse_error.into_inner() {
+        Err(e)
     } else {
         Ok(result)
     }
@@ -44,12 +42,13 @@ pub fn ast_to_node(file: &FileContent) -> Result<HNode, EncounteredParseError> {
 
 struct Context<'a> {
     arena_expressions: &'a ArenaExpressions,
-    any_error: Cell<bool>,
+    any_parse_error: Cell<Option<RecoveredParseError>>,
 }
 
 impl Context<'_> {
-    fn report_error(&self) {
-        self.any_error.set(true);
+    fn report_parse_error(&self, e: RecoveredParseError) -> HNode {
+        self.any_parse_error.set(Some(e));
+        HNode::EMPTY
     }
 
     fn fmt_file_items(&mut self, items: &[Item]) -> HNode {
@@ -578,6 +577,7 @@ impl Context<'_> {
 
     fn fmt_module_statement(&self, stmt: &ModuleStatement) -> HNode {
         match &stmt.inner {
+            &ModuleStatementKind::ParseError(e) => self.report_parse_error(e),
             ModuleStatementKind::WireDeclaration(decl) => {
                 let &WireDeclaration {
                     vis,
@@ -1014,10 +1014,7 @@ impl Context<'_> {
 
     fn fmt_expr(&self, expr: Expression) -> HNode {
         match &self.arena_expressions[expr.inner] {
-            ExpressionKind::ParseError(_) => {
-                self.report_error();
-                HNode::EMPTY
-            }
+            &ExpressionKind::ParseError(e) => self.report_parse_error(e),
             ExpressionKind::Dummy => token(TT::Underscore),
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),

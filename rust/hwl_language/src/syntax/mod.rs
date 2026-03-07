@@ -38,7 +38,7 @@ pub struct ParseContext {
 /// Token that proves that a parse error has been reported, intentionally not constructible outside this module.
 /// Similar to [crate::front::diagnostic::DiagError].
 #[derive(Debug, Copy, Clone)]
-pub struct ReportedParseError(());
+pub struct RecoveredParseError(());
 
 impl ParseContext {
     pub fn span(&self, start_byte: usize, end_byte: usize) -> Span {
@@ -56,14 +56,14 @@ impl ParseContext {
     pub fn push_error(
         &mut self,
         recovery: lalrpop_util::ErrorRecovery<usize, TokenType, TokenError>,
-    ) -> ReportedParseError {
+    ) -> RecoveredParseError {
         // we don't need the dropped tokens for now, so we drop them here
         let lalrpop_util::ErrorRecovery {
             error,
             dropped_tokens: _,
         } = recovery;
         self.errors.push(error.map_location(|x| self.pos(x)));
-        ReportedParseError(())
+        RecoveredParseError(())
     }
 }
 

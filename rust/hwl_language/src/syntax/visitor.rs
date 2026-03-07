@@ -947,6 +947,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     ) -> ControlFlow<V::Break> {
         self.visitor.report_range(stmt.span, None);
         match &stmt.inner {
+            ModuleStatementKind::ParseError(_) => {
+                // do nothing
+            }
             ModuleStatementKind::WireDeclaration(decl) => {
                 let &WireDeclaration {
                     vis,

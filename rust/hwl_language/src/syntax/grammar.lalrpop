@@ -210,10 +210,7 @@ BlockStatement: BlockStatement = Spanned<BlockStatementKind>;
 
 ModuleStatementKind: ModuleStatementKind = {
     // error recovery
-//    ! => {
-//        ctx.push_error(<>);
-//        ModuleStatementKind::ParseError
-//    },
+    ! => ModuleStatementKind::ParseError(ctx.push_error(<>)),
 
     // declarations
     <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
