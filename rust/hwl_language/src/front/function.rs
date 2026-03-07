@@ -477,12 +477,12 @@ impl CompileItemContext<'_, '_> {
             Some(payload_ty) => payload_ty,
             None => {
                 return Err(DiagnosticError::new(
-                    "enum variant has no payload",
+                    "cannot call enum variant with no payload as a constructor",
                     span_call,
-                    "this variant cannot be called as a constructor",
+                    "this variant has no payload and cannot be called",
                 )
                 .add_info(variant_id.span(), "variant declared without payload here")
-                .add_footer_hint("to construct this variant, use it directly without calling it as a function")
+                .add_footer_hint("use this variant directly without parentheses")
                 .report(self.refs.diags));
             }
         };
