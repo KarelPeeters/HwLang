@@ -31,14 +31,20 @@ pub fn run_file_tests(file_name: &str) {
     let src = std::fs::read_to_string(format!("src/tests/test_format/{file_name}")).unwrap();
     assert_formatted(&src);
 
-    // format the file with different max line lengths to trigger wrapping edge cases
-    // TODO speed this up with bisect instead of this brute forcing
-    let max_line_len = src.lines().map(str::len).max().unwrap_or(0);
-    for len in (0..max_line_len).rev() {
+    // initial format with unlimited line length, to determine the max line length the formatter wants to use
+    let settings_inf = FormatSettings {
+        max_line_length: usize::MAX,
+        ..Default::default()
+    };
+    let result_inf = assert_format_valid("dummy_inf.kh", &src, &settings_inf);
+    let max_line_length = result_inf.lines().map(str::len).max().unwrap_or(0);
+
+    // format with different line lengths to trigger wrapping edge cases
+    for len in (0..max_line_length).rev() {
         let settings = FormatSettings {
             max_line_length: len,
             ..Default::default()
         };
-        assert_format_valid(&format!("dummy_{len}"), &src, &settings);
+        assert_format_valid(&format!("dummy_{len}.kh"), &src, &settings);
     }
 }

@@ -331,7 +331,15 @@ impl<'f> StringBuilder<'f> {
     }
 
     fn line_overflows(&mut self, line: Line) -> bool {
-        let end = line.start + self.settings.max_line_length + 1;
+        // protect against overflow when max_line_length is set very large
+        let end = line
+            .start
+            .checked_add(self.settings.max_line_length)
+            .and_then(|x| x.checked_add(1));
+        let Some(end) = end else {
+            return false;
+        };
+
         if end <= self.buffer.len() {
             !self.buffer[line.start..end].contains(LineOffsets::LINE_ENDING_CHARS)
         } else {
