@@ -5,16 +5,10 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
-
-from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces, compile_rust_module
-
-enable_rust_backtraces()
-compile_rust_module()
-
 import hwl
 import time
-
 from hwl_sandbox.common.compare import compare_body, compare_get_type, compare_codegen
+from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
 
 def sample_range_edge(rng: random.Random, max_abs: Optional[int]) -> int:
@@ -347,4 +341,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_rust_backtraces()
     main()

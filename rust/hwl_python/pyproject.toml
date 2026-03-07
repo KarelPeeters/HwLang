@@ -11,3 +11,12 @@ build-backend = "maturin"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+profile = "dev"
+
+[tool.uv]
+cache-keys = [
+    { file = "../**/*.toml" },
+    { file = "../**/*.rs" },
+    { file = "../**/*.kh" },
+    { file = "../**/*.lalrpop" }
+]
