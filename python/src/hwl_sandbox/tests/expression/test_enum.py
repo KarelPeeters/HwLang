@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import hwl
+import pytest
+
 from hwl_sandbox.common.compare import compare_body
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_enum_construction_and_match(tmp_dir: Path):
@@ -30,3 +34,22 @@ def test_enum_construction_and_match(tmp_dir: Path):
     e.eval_assert([2, True], (2, True))
     e.eval_assert([3, False], (3, True))
     e.eval_assert([3, True], (3, False))
+
+
+def test_enum_infer_different():
+    src = """
+    enum Foo(T: type) {
+        None,
+        Some(T),
+    }
+    enum Bar(T: type) {
+        None,
+        Some(bool),
+    }
+    fn f() {
+        val v: Foo(bool) = Bar.Some(true);
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="enum expected type mismatch"):
+        f()

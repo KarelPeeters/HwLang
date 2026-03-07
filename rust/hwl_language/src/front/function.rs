@@ -419,14 +419,26 @@ impl CompileItemContext<'_, '_> {
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
                 self.call_enum_new(span_call, enum_elab, variant_index, &args)
             }
-            &FunctionValue::EnumNewInfer(unique, ref variant_str) => match expected_ty {
-                &Type::Enum(elab) => {
-                    let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-                    let variant_index = info.find_variant(diags, Spanned::new(span_target, variant_str))?;
-                    self.call_enum_new(span_call, elab, variant_index, &args)
+            &FunctionValue::EnumNewInfer(func_unique, ref variant_str) => match expected_ty {
+                &Type::Enum(expected_elab) => {
+                    let expected_info = self.refs.shared.elaboration_arenas.enum_info(expected_elab);
+
+                    if expected_info.unique == func_unique {
+                        let variant_index =
+                            expected_info.find_variant(diags, Spanned::new(span_target, variant_str))?;
+                        self.call_enum_new(span_call, expected_elab, variant_index, &args)
+                    } else {
+                        Err(error_unique_mismatch(
+                            "enum",
+                            span_target,
+                            expected_info.unique.id().span(),
+                            func_unique.id().span(),
+                        )
+                        .report(diags))
+                    }
                 }
                 Type::Any => Err(err_infer_any("enum")),
-                _ => Err(err_infer_mismatch("enum", unique.id().span())),
+                _ => Err(err_infer_mismatch("enum", func_unique.id().span())),
             },
         }
     }
