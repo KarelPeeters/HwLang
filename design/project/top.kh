@@ -1,13 +1,1 @@
-module inner ports(
-    x: in async uint(8),
-    y: out async uint(8),
-) {
-    comb { y = x; }
-}
-
-module top ports(
-    a: in async uint(8),
-    b: out async uint(8),
-) {
-    instance inner ports(x=a, y=b);
-}
+module top ports() {}
