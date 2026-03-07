@@ -1229,6 +1229,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, value)?;
                 self.visit_domain(scope, domain)?;
             }
+            &ExpressionKind::Ref(_, inner) | &ExpressionKind::Deref(_, inner) => {
+                self.visit_expression(scope, inner)?;
+            }
             ExpressionKind::Dummy
             | ExpressionKind::Undefined
             | ExpressionKind::Type

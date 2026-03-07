@@ -172,15 +172,15 @@ def test_reg_interface_port():
     _ = compile_custom(src).resolve("top.top")
 
 
-def test_reg_deref():
+def test_reg_decl_deref():
     src = """
     module top ports (
         clk: in clock,
         data: out sync(clk) uint(8),
     ) {
         clocked(clk) {
-            val v = ref data;
-            reg wire (deref v) = undef;
+            val v = ref(data);
+            reg wire deref(v) = undef;
             data = 5;
         }
     }

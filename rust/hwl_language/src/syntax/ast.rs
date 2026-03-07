@@ -746,6 +746,7 @@ pub enum ExpressionKind {
     /// Wrapped just means an expression that's surrounded by parenthesis.
     /// It has to be a dedicated expression to ensure it gets a separate span.
     Wrapped(Expression),
+
     Block(BlockExpression),
     Id(GeneralIdentifier),
 
@@ -780,6 +781,8 @@ pub enum ExpressionKind {
     // Calls
     Call(Expression, Args),
     UnsafeValueWithDomain(Expression, Spanned<DomainKind<Expression>>),
+    Ref(Span, Expression),
+    Deref(Span, Expression),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -983,8 +986,6 @@ pub enum UnaryOp {
     Plus,
     Neg,
     Not,
-    Ref,
-    Deref,
 }
 
 impl Identifier {
@@ -1140,8 +1141,6 @@ impl UnaryOp {
             UnaryOp::Plus => TokenType::Plus,
             UnaryOp::Neg => TokenType::Minus,
             UnaryOp::Not => TokenType::Bang,
-            UnaryOp::Ref => TokenType::Ref,
-            UnaryOp::Deref => TokenType::Deref,
         }
     }
 }

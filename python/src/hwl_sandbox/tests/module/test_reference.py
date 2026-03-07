@@ -10,8 +10,8 @@ def test_ref_port_read(tmp_dir: Path):
     src = """
     module top ports(x: in async uint(8), y: out async uint(8)) {
         comb {
-            val r = ref x;
-            y = deref r;            
+            val r = ref(x);
+            y = deref(r);            
         }
     }
     """
@@ -27,8 +27,8 @@ def test_ref_port_write(tmp_dir: Path):
     src = """
     module top ports(x: in async uint(8), y: out async uint(8)) {
         comb {
-            val r = ref y;
-            deref r = x;            
+            val r = ref(y);
+            deref(r) = x;            
         }
     }
     """
@@ -44,8 +44,8 @@ def test_ref_port_write_input_error():
     src = """
     module top ports(x: in async uint(8), y: in async uint(8)) {
         comb {
-            val r = ref y;
-            deref r = x;
+            val r = ref(y);
+            deref(r) = x;
         }
     }
     """
@@ -67,9 +67,9 @@ def test_ref_interface():
     }
     module top_ref ports(p: interface async Pair.Mixed) {
         comb {
-            val v = ref p;
-            val _ = (deref v).x;
-            (deref v).y = 0;
+            val v = ref(p);
+            val _ = deref(v).x;
+            deref(v).y = 0;
         }
     }
     module top_wrong ports(p: interface async Pair.Mixed) {
@@ -94,18 +94,18 @@ def test_ref_ty():
     }
     module top_correct ports(p_single: in async uint(8), p_intf: interface async Data.View) {
         comb {
-            val r_single: Ref(uint(8)) = ref p_single;
-            val r_intf: RefInterface(Data) = ref p_intf;
+            val r_single: Ref(uint(8)) = ref(p_single);
+            val r_intf: RefInterface(Data) = ref(p_intf);
         }
     }
     module top_wrong_single ports(p_single: in async uint(8), p_intf: interface async Data.View) {
         comb {
-            val r_single: uint(8) = ref p_single;
+            val r_single: uint(8) = ref(p_single);
         }
     }
     module top_wrong_intf ports(p_single: in async uint(8), p_intf: interface async Data.View) {
         comb {
-            val r_single: uint(8) = ref p_intf;
+            val r_single: uint(8) = ref(p_intf);
         }
     }
     """
@@ -120,8 +120,8 @@ def test_ref_var():
     src = """
     fn f(x: uint) -> uint {
         var v = 0;
-        val w = ref v;
-        deref w = x;
+        val w = ref(v);
+        deref(w) = x;
         return v;
     }
     """
@@ -135,9 +135,9 @@ def test_ref_var_read_dropped():
         val w;
         if (true) {
             var v = x;
-            w = ref v;
+            w = ref(v);
         }
-        return deref w;
+        return deref(w);
     }
     """
     f = compile_custom(src).resolve("top.f")
@@ -151,9 +151,9 @@ def test_ref_var_write_dropped():
         val w;
         if (true) {
             var v = x;
-            w = ref v;
+            w = ref(v);
         }
-        deref w = 4;
+        deref(w) = 4;
     }
     """
     f = compile_custom(src).resolve("top.f")

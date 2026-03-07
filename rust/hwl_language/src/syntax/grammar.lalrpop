@@ -708,10 +708,6 @@ ExprLevelUnary: ExpressionKind = {
         ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Neg }, inner),
     <op:Span<"!">> <inner:SpannedPushArena<ExprLevelPower>> =>
         ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Not }, inner),
-    <op:Span<"ref">> <inner:SpannedPushArena<ExprLevelPower>> =>
-            ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Ref }, inner),
-    <op:Span<"deref">> <inner:SpannedPushArena<ExprLevelPower>> =>
-            ExpressionKind::UnaryOp(Spanned { span: op, inner: UnaryOp::Deref }, inner),
     ExprLevelPower,
 }
 
@@ -760,10 +756,14 @@ ExprLevelCall<allow_block>: ExpressionKind = {
         => ExpressionKind::Call(target, args),
 
     // builtins
-    <span_keyword:Span<"__builtin">> "(" <args:Spanned<Separated<Expr,",">>> ")"
-        => ExpressionKind::Builtin { span_keyword, args },
-    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")"
-        => ExpressionKind::UnsafeValueWithDomain(value, domain),
+    <span_keyword:Span<"__builtin">> "(" <args:Spanned<Separated<Expr,",">>> ")" =>
+        ExpressionKind::Builtin { span_keyword, args },
+    "unsafe_value_with_domain" "(" <value:Expr> "," <domain:Spanned<DomainKind>> ","? ")" =>
+        ExpressionKind::UnsafeValueWithDomain(value, domain),
+    <op:Span<"ref">> "(" <inner:SpannedPushArena<ExprLevelPower>> ","? ")" =>
+        ExpressionKind::Ref(op, inner),
+    <op:Span<"deref">> "(" <inner:SpannedPushArena<ExprLevelPower>> ","? ")" =>
+        ExpressionKind::Deref(op, inner),
 
     ExprLevelDot<allow_block>,
 }

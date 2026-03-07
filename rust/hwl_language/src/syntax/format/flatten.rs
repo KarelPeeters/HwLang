@@ -11,8 +11,8 @@ use crate::syntax::ast::{
     ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
     ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
     RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, UnaryOp,
-    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -1128,18 +1128,7 @@ impl Context<'_> {
 
                 surrounded_group_indent(SurroundKind::Square, HNode::Sequence(seq))
             }
-            &ExpressionKind::UnaryOp(op, inner) => {
-                let needs_space = match op.inner {
-                    UnaryOp::Plus | UnaryOp::Neg | UnaryOp::Not => false,
-                    UnaryOp::Ref | UnaryOp::Deref => true,
-                };
-                let mut seq = vec![token(op.inner.token())];
-                if needs_space {
-                    seq.push(HNode::Space);
-                }
-                seq.push(self.fmt_expr(inner));
-                HNode::Sequence(seq)
-            }
+            &ExpressionKind::UnaryOp(op, inner) => HNode::Sequence(vec![token(op.inner.token()), self.fmt_expr(inner)]),
             &ExpressionKind::BinaryOp(op, _, _) => {
                 let mut seq = vec![];
                 let leftmost = self.collect_binary_expr::<LeftmostYes>(&mut seq, op.inner.level(), expr);
@@ -1222,6 +1211,12 @@ impl Context<'_> {
                     Either::Right(domain) => self.fmt_domain(domain.inner),
                 },
             ),
+            &ExpressionKind::Ref(_span, inner) => {
+                fmt_call_like(token(TT::Ref), &[inner], |&inner| self.fmt_expr(inner))
+            }
+            &ExpressionKind::Deref(_span, inner) => {
+                fmt_call_like(token(TT::Deref), &[inner], |&inner| self.fmt_expr(inner))
+            }
         }
     }
 

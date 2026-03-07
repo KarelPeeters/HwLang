@@ -149,7 +149,7 @@ def test_interface_escape():
     interface foo { x: bool } 
     module top ports() {
         wire w: interface foo;
-        instance child(ref w) ports();
+        instance child(ref(w)) ports();
     }
     module child(a: any) ports() {}
     """
