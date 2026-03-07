@@ -208,8 +208,8 @@ pub enum FunctionItemBody {
     ModuleInternal(UniqueDeclaration, AstRefModuleInternal),
     ModuleExternal(UniqueDeclaration, AstRefModuleExternal),
     Interface(UniqueDeclaration, AstRefInterface),
-    Struct(UniqueDeclaration, ExtraList<StructField>),
-    Enum(UniqueDeclaration, ExtraList<EnumVariant>),
+    Struct(UniqueDeclaration, Arc<GenericStructInfo>),
+    Enum(UniqueDeclaration, Arc<GenericEnumInfo>),
 }
 
 /// Newtype wrapper that promises that the fields are representable in hardware.
@@ -228,7 +228,12 @@ impl<T: Copy> HardwareChecked<T> {
     }
 }
 
-// TODO rename away from "elaborated", maybe just "resolved"
+#[derive(Debug)]
+pub struct GenericStructInfo {
+    // TODO replace with AstRef
+    fields: ExtraList<StructField>,
+}
+
 #[derive(Debug)]
 pub struct ElaboratedStructInfo {
     pub unique: UniqueDeclaration,
@@ -241,6 +246,21 @@ pub struct ElaboratedStructInfo {
 #[derive(Debug, Copy, Clone)]
 pub struct NonHardwareStruct {
     pub first_failing_field: usize,
+}
+
+/// Information that can be collected about an enum declaration before filling in generic parameters.
+#[derive(Debug)]
+pub struct GenericEnumInfo {
+    pub span_body: Span,
+    // TODO replace with AstRef
+    pub variants: ExtraList<EnumVariant>,
+    pub generic_variants: IndexMap<String, GenericVariantInfo>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct GenericVariantInfo {
+    pub span_first_decl: Span,
+    pub has_payload: bool,
 }
 
 #[derive(Debug)]
@@ -273,11 +293,25 @@ pub struct HardwareEnumInfo {
     pub max_payload_size: usize,
 }
 
+impl GenericEnumInfo {
+    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<&GenericVariantInfo> {
+        self.generic_variants.get(variant.inner).ok_or_else(|| {
+            DiagnosticError::new(
+                format!("enum variant `{}` not found", variant.inner),
+                variant.span,
+                "attempt to access variant here",
+            )
+            .add_info(self.span_body, "enum variants declared here")
+            .report(diags)
+        })
+    }
+}
+
 impl ElaboratedEnumInfo {
     pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
         self.variants.get_index_of(variant.inner).ok_or_else(|| {
             DiagnosticError::new(
-                format!("variant `{}` not found on enum", variant.inner),
+                format!("enum variant `{}` not found", variant.inner),
                 variant.span,
                 "attempt to access variant here",
             )
@@ -476,7 +510,9 @@ impl CompileItemContext<'_, '_> {
                 } = decl;
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
-                let body = FunctionItemBody::Struct(unique, fields.clone());
+                let generic_info = GenericStructInfo { fields: fields.clone() };
+                let body = FunctionItemBody::Struct(unique, Arc::new(generic_info));
+
                 let value = self.eval_maybe_generic_item(id.span(), span_body, scope, flow, params, body)?;
                 Ok(EvaluatedDeclaration { span, id, value })
             }
@@ -488,8 +524,59 @@ impl CompileItemContext<'_, '_> {
                     ref variants,
                 } = decl;
 
+                // check payload consistency
+                let mut generic_variants: IndexMap<String, GenericVariantInfo> = IndexMap::new();
+                let mut any_err = Ok(());
+                variants.for_each_leaf(&mut |variant| {
+                    let &EnumVariant {
+                        span: variant_span,
+                        id,
+                        payload,
+                    } = variant;
+                    let id_str = id.str(self.refs.fixed.source);
+
+                    match generic_variants.get(id_str) {
+                        None => {
+                            generic_variants.insert(
+                                id_str.to_owned(),
+                                GenericVariantInfo {
+                                    span_first_decl: variant_span,
+                                    has_payload: payload.is_some(),
+                                },
+                            );
+                        }
+                        Some(&GenericVariantInfo {
+                            span_first_decl,
+                            has_payload,
+                        }) => {
+                            let kind_str = |has_payload: bool| if has_payload { "with" } else { "without" };
+                            if has_payload != payload.is_some() {
+                                let diag = DiagnosticError::new(
+                                    "enum variant payload must be consistent between generic instantiations",
+                                    variant_span,
+                                    format!("redeclared here {} payload", kind_str(payload.is_some())),
+                                )
+                                .add_info(
+                                    span_first_decl,
+                                    format!("previously declared here {} payload", kind_str(has_payload)),
+                                )
+                                .add_footer_info("this would make type inference for enum variants too difficult")
+                                .report(diags);
+                                any_err = Err(diag);
+                            }
+                        }
+                    }
+                });
+                any_err?;
+
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
-                let body = FunctionItemBody::Enum(unique, variants.clone());
+                let generic_info = GenericEnumInfo {
+                    span_body: variants.span,
+                    variants: variants.clone(),
+                    generic_variants,
+                };
+                let body = FunctionItemBody::Enum(unique, Arc::new(generic_info));
+
                 let value = self.eval_maybe_generic_item(id.span(), span, scope, flow, params, body)?;
                 Ok(EvaluatedDeclaration { span, id, value })
             }
@@ -716,14 +803,21 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
             }
-            FunctionItemBody::Struct(unique, ref fields) => {
+            FunctionItemBody::Struct(unique, ref generic_info) => {
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
                     |_, item_params| {
-                        self.elaborate_struct_new(scope_params, flow, unique, &item_params.params, body.span, fields)
+                        self.elaborate_struct_new(
+                            scope_params,
+                            flow,
+                            unique,
+                            &item_params.params,
+                            body.span,
+                            generic_info,
+                        )
                     },
                 )?;
                 Ok(CompileValue::new_ty(Type::Struct(result_id)))
@@ -751,11 +845,12 @@ impl CompileItemContext<'_, '_> {
         unique: UniqueDeclaration,
         params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
-        fields: &ExtraList<StructField>,
+        generic_info: &GenericStructInfo,
     ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
         let elab = &self.refs.shared.elaboration_arenas;
+        let GenericStructInfo { fields } = generic_info;
 
         // TODO generalize this indexmap "already defined" structure
         let mut fields_eval = IndexMap::new();
@@ -815,11 +910,16 @@ impl CompileItemContext<'_, '_> {
         unique: UniqueDeclaration,
         params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
-        variants: &ExtraList<EnumVariant>,
+        generic_info: &GenericEnumInfo,
     ) -> DiagResult<ElaboratedEnumInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
         let elab = &self.refs.shared.elaboration_arenas;
+        let GenericEnumInfo {
+            span_body: _,
+            variants,
+            generic_variants: _,
+        } = generic_info;
 
         // evaluate variants
         let mut variants_eval = IndexMap::new();
@@ -827,7 +927,11 @@ impl CompileItemContext<'_, '_> {
 
         let mut visit_variant =
             |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, variant: &EnumVariant| {
-                let &EnumVariant { span: _, id, content } = variant;
+                let &EnumVariant {
+                    span: _,
+                    id,
+                    payload: content,
+                } = variant;
 
                 let id_string = id.str(source).to_owned();
 

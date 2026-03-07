@@ -184,8 +184,8 @@ ImportEntry: ImportEntry = {
 }
 
 EnumVariant: EnumVariant = {
-    <start:@L> <id:Id> <content:("(" <Expr> ")")?> <end:@R>
-        => EnumVariant { id, content, span: ctx.span(start, end) },
+    <start:@L> <id:Id> <payload:("(" <Expr> ")")?> <end:@R>
+        => EnumVariant { id, payload, span: ctx.span(start, end) },
 }
 
 StructField: StructField = {

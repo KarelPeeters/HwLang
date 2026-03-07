@@ -371,15 +371,8 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        let err_infer_any = |kind: &str| {
-            DiagnosticError::new(
-                format!("cannot infer {kind} params"),
-                span_target,
-                format!("this {kind} has unbound generic parameters"),
-            )
-            .add_info(span_call, "no expected type")
-            .add_footer_hint("either set an expected type or use the full type before calling new")
-            .report(self.refs.diags)
+        let err_infer_any = |kind: &str, decl_span: Span| {
+            error_cannot_infer_generic_params(kind, span_target, span_call, decl_span).report(diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {
             DiagnosticError::new(
@@ -413,7 +406,7 @@ impl CompileItemContext<'_, '_> {
                         .report(diags))
                     }
                 }
-                Type::Any => Err(err_infer_any("struct")),
+                Type::Any => Err(err_infer_any("struct", func_unique.id().span())),
                 _ => Err(err_infer_mismatch("struct", func_unique.id().span())),
             },
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
@@ -437,7 +430,7 @@ impl CompileItemContext<'_, '_> {
                         .report(diags))
                     }
                 }
-                Type::Any => Err(err_infer_any("enum")),
+                Type::Any => Err(err_infer_any("enum", func_unique.id().span())),
                 _ => Err(err_infer_mismatch("enum", func_unique.id().span())),
             },
         }
@@ -485,9 +478,16 @@ impl CompileItemContext<'_, '_> {
             debug_info_name: _,
             ref payload_ty,
         } = &enum_info.variants[variant_index];
-        let payload_ty = payload_ty
-            .as_ref()
-            .expect("enum new only exists for variants with payloads");
+
+        let payload_ty = payload_ty.as_ref().ok_or_else(|| {
+            DiagnosticError::new(
+                "trying to call enum variant without payload",
+                span_call,
+                "calling enum variant here",
+            )
+            .add_info(variant_id.span, "enum variant declared without payload here")
+            .report(self.refs.diags)
+        })?;
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
         let payload = matcher
@@ -1076,7 +1076,6 @@ impl Hash for FunctionValue {
 }
 
 pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span, actual_span: Span) -> DiagnosticError {
-    // TODO include struct/enum name
     DiagnosticError::new(
         format!("{kind} expected type mismatch"),
         target_span,
@@ -1084,4 +1083,20 @@ pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span,
     )
     .add_info(expected_span, format!("expected {kind} type declared here"))
     .add_info(actual_span, format!("actual {kind} type defined here"))
+}
+
+pub fn error_cannot_infer_generic_params(
+    kind: &str,
+    span_target: Span,
+    span_call: Span,
+    decl_span: Span,
+) -> DiagnosticError {
+    DiagnosticError::new(
+        format!("cannot infer {kind} parameters"),
+        span_target,
+        format!("this {kind} has unbound generic parameters"),
+    )
+    .add_info(span_call, "no expected type")
+    .add_info(decl_span, format!("{kind} declared with generic parameters here"))
+    .add_footer_hint("either set an expected type or use the full type")
 }

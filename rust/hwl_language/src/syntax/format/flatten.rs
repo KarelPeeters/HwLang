@@ -289,7 +289,11 @@ impl Context<'_> {
                         }
                         seq.push(HNode::Space);
                         seq.push(self.fmt_extra_list(SurroundKind::Curly, true, variants, &|variant| {
-                            let &EnumVariant { span: _, id, content } = variant;
+                            let &EnumVariant {
+                                span: _,
+                                id,
+                                payload: content,
+                            } = variant;
 
                             let node_id = self.fmt_id(id);
                             let node = match content {

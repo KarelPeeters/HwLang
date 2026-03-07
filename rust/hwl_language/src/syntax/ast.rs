@@ -117,7 +117,7 @@ pub struct EnumDeclaration {
 pub struct EnumVariant {
     pub span: Span,
     pub id: Identifier,
-    pub content: Option<Expression>,
+    pub payload: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +224,70 @@ pub enum ExtraListItem<T> {
 impl<T> ExtraList<T> {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    pub fn for_each_leaf(&self, f: &mut impl FnMut(&T)) {
+        fn visit_items<T>(items: &[ExtraListItem<T>], f: &mut impl FnMut(&T)) {
+            for item in items {
+                match item {
+                    ExtraListItem::Leaf(item) => f(item),
+                    ExtraListItem::Declaration(_) => {}
+                    ExtraListItem::If(stmt) => {
+                        let IfStatement {
+                            span: _,
+                            initial_if,
+                            else_ifs,
+                            final_else,
+                        } = stmt;
+                        let mut visit_pair = |pair: &IfCondBlockPair<ExtraListBlock<T>>| {
+                            let IfCondBlockPair {
+                                span: _,
+                                span_if: _,
+                                cond: _,
+                                block,
+                            } = pair;
+                            visit_block(block, f)
+                        };
+                        visit_pair(initial_if);
+                        for else_if in else_ifs {
+                            visit_pair(else_if);
+                        }
+                        if let Some(final_else) = final_else {
+                            visit_block(final_else, f);
+                        }
+                    }
+                    ExtraListItem::Match(stmt) => {
+                        let MatchStatement {
+                            span_keyword: _,
+                            target: _,
+                            branches,
+                            pos_end: _,
+                        } = stmt;
+                        for branch in branches {
+                            let MatchBranch { pattern: _, block } = branch;
+                            visit_block(block, f);
+                        }
+                    }
+                    ExtraListItem::For(stmt) => {
+                        let ForStatement {
+                            span_keyword: _,
+                            index: _,
+                            index_ty: _,
+                            iter: _,
+                            body,
+                        } = stmt;
+                        visit_block(body, f);
+                    }
+                }
+            }
+        }
+        fn visit_block<T>(block: &ExtraListBlock<T>, f: &mut impl FnMut(&T)) {
+            let ExtraListBlock { span: _, items } = block;
+            visit_items(items, f)
+        }
+
+        let ExtraList { span: _, items } = self;
+        visit_items(items, f)
     }
 }
 

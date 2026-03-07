@@ -53,3 +53,86 @@ def test_enum_infer_different():
     f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="enum expected type mismatch"):
         f()
+
+
+def test_enum_cannot_infer():
+    src = """
+    enum Foo(T: type) {
+        None,
+        Some(T),
+    }
+    fn f() {
+        val v = Foo.None;
+    }
+    fn g() {
+        val v = Foo.Some(false);
+    }
+    """
+    c = compile_custom(src)
+    f = c.resolve("top.f")
+    g = c.resolve("top.g")
+    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+        f()
+    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+        g()
+
+
+def test_enum_infer_no_payload():
+    src = """
+    enum Foo(T: type) {
+        None,
+        Some(T),
+    }
+    fn f() {
+        val v: Foo(bool) = Foo.None(false);
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+        f()
+
+
+def test_enum_infer_non_existing():
+    src = """
+    enum Foo(T: type) {
+        None,
+        Some(T),
+    }
+    fn f() {
+        val v = Foo.NonExisting;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="enum variant `NonExisting` not found"):
+        f()
+
+
+def test_enum_infer_maybe_existing():
+    src = """
+    enum Foo(T: type, c: bool) {
+        None,
+        Some(T),
+        if (c) {
+            MaybeExisting(T),
+        }
+    }
+    fn f() {
+        val v = Foo.MaybeExisting;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    f()
+
+
+def test_enum_mixed_payload():
+    src = """
+    enum Foo(c: bool) {
+        if (c) {
+            Var,
+        } else {
+            Var(bool),
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="payload must be consistent"):
+        _ = compile_custom(src).resolve("top.Foo")

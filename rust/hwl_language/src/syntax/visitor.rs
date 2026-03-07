@@ -565,7 +565,11 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         }
 
                         self.visit_extra_list(&mut scope_params, variants, &mut |slf, scope_params, variant| {
-                            let &EnumVariant { span, id: _, content } = variant;
+                            let &EnumVariant {
+                                span,
+                                id: _,
+                                payload: content,
+                            } = variant;
                             slf.visitor.report_range(span, None);
 
                             // TODO declare variant name

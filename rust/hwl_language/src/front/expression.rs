@@ -9,7 +9,8 @@ use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnosti
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ValueVersion, VariableId};
 use crate::front::function::{
-    EvaluatedArgs, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_unique_mismatch,
+    EvaluatedArgs, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_cannot_infer_generic_params,
+    error_unique_mismatch,
 };
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
@@ -953,13 +954,13 @@ impl<'a> CompileItemContext<'a, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
 
         let base = self.eval_expression_with_implications_allow_interface_ref(scope, flow, &Type::Any, base)?;
-        let index_str = index.str(refs.fixed.source);
+        let index_str = index.spanned_str(refs.fixed.source);
 
         // interface fields
         if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base.inner {
             let rf = rf.get(self, flow, base.span)?;
             if let ReferenceInner::Interface(intf, _) = rf {
-                let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
+                let signal = self.interface_get_signal(base.span, intf, index_str)?;
                 let flow = flow.require_hardware(expr_span, "signal read")?;
                 return flow.signal_eval(self, Spanned::new(expr_span, signal));
             }
@@ -979,7 +980,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // common type attributes
         if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
-            match index_str {
+            match index_str.inner {
                 "size_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let width = ty_hw.as_ir(refs).size_bits();
@@ -1029,7 +1030,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             // array type attributes
             if let Type::Array(ty_inner, ty_len) = ty {
-                match index_str {
+                match index_str.inner {
                     "inner" => {
                         return Ok(Value::new_ty((**ty_inner).clone()));
                     }
@@ -1054,7 +1055,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // struct new
         if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner
-            && index_str == "new"
+            && index_str.inner == "new"
         {
             let func = FunctionValue::StructNew(elab);
             return Ok(Value::Simple(SimpleCompileValue::Function(func)));
@@ -1068,7 +1069,7 @@ impl<'a> CompileItemContext<'a, '_> {
             _ => None,
         };
         if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
-            && index_str == "new"
+            && index_str.inner == "new"
         {
             let func = FunctionValue::StructNewInfer(unique);
             return Ok(Value::Simple(SimpleCompileValue::Function(func)));
@@ -1077,7 +1078,7 @@ impl<'a> CompileItemContext<'a, '_> {
         // enum variants
         let eval_enum = |elab| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            let variant_index = info.find_variant(diags, Spanned::new(index.span, index_str))?;
+            let variant_index = info.find_variant(diags, index_str)?;
             let variant_info = &info.variants[variant_index];
 
             let result = match &variant_info.payload_ty {
@@ -1097,7 +1098,7 @@ impl<'a> CompileItemContext<'a, '_> {
         if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
             return eval_enum(elab);
         }
-        if let Some(&FunctionItemBody::Enum(unique, _)) = base_item_function {
+        if let Some(&FunctionItemBody::Enum(unique, ref generic_info)) = base_item_function {
             return if let &Type::Enum(expected) = expected_ty {
                 let expected_info = self.refs.shared.elaboration_arenas.enum_info(expected);
                 if expected_info.unique == unique {
@@ -1109,12 +1110,16 @@ impl<'a> CompileItemContext<'a, '_> {
                     )
                 }
             } else {
-                // TODO check if there is any possible variant for this index string,
-                //   otherwise we'll get confusing and delayed error messages
-                // TODO this is indeed confusing, eg. print(Option.None) is a function,
-                //   this gets especially confusing when merging into a hardware value
-                let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.to_owned()));
-                Ok(Value::Simple(SimpleCompileValue::Function(func)))
+                let generic_variant = generic_info.find_variant(diags, index_str)?;
+                if generic_variant.has_payload {
+                    // delay type inference until payload construction/call time
+                    let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.inner.to_owned()));
+                    Ok(Value::Simple(SimpleCompileValue::Function(func)))
+                } else {
+                    // non-payload variant, we need to know the type now
+                    let err = error_cannot_infer_generic_params("enum", base.span, expr_span, unique.id().span());
+                    return Err(err.report(diags));
+                }
             };
         }
 
@@ -1122,7 +1127,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let base_ty = base.inner.ty();
         if let Type::Struct(base_ty_struct) = base_ty {
             let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
-            let field_index = info.fields.get_index_of(index_str).ok_or_else(|| {
+            let field_index = info.fields.get_index_of(index_str.inner).ok_or_else(|| {
                 DiagnosticError::new(
                     "field not found",
                     index.span,
@@ -1166,7 +1171,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // array length
         if let Type::Array(_, value_len) = &base_ty
-            && index_str == "len"
+            && index_str.inner == "len"
         {
             return if let Some(value_len) = value_len {
                 Ok(Value::new_int(BigInt::from(value_len)))
@@ -1179,7 +1184,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let diag = DiagnosticError::new(
             "invalid dot index expression",
             index.span,
-            format!("no attribute found with name `{index_str}`"),
+            format!("no attribute found with name `{}`", index_str.inner),
         )
         .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
         .report(diags);
