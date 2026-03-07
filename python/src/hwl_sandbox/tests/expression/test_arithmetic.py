@@ -195,3 +195,49 @@ def test_shift_right_type(tmp_dir: Path):
     e.eval_assert([2], 1)
     e.eval_assert([3], 1)
     e.eval_assert([4], 2)
+
+
+def test_mul_pos(tmp_dir: Path):
+    e = compare_expression(["int(0..16)", "int(0..16)"], "int(0..256)", "a0 * a1", tmp_dir)
+    for a in [0, 1, 3, 15]:
+        for b in [0, 1, 3, 15]:
+            e.eval_assert([a, b], a * b)
+
+
+def test_mul_neg_pos(tmp_dir: Path):
+    e = compare_expression(["int(-8..8)", "int(0..8)"], "int(-64..64)", "a0 * a1", tmp_dir)
+    for a in [-7, -4, -1, 0, 1, 4, 7]:
+        for b in [0, 1, 4, 7]:
+            e.eval_assert([a, b], a * b)
+
+
+def test_mul_neg_neg(tmp_dir: Path):
+    e = compare_expression(["int(-8..8)", "int(-8..8)"], "int(-64..65)", "a0 * a1", tmp_dir)
+    for a in [-7, -4, -1, 0, 1, 4, 7]:
+        for b in [-7, -4, -1, 0, 1, 4, 7]:
+            e.eval_assert([a, b], a * b)
+
+
+def test_pow_pos(tmp_dir: Path):
+    e = compare_expression(["int(1..=8)", "uint(0..=3)"], "int(1..=512)", "a0 ** a1", tmp_dir)
+    for base in [1, 2, 4, 8]:
+        for exp in [0, 1, 2, 3]:
+            e.eval_assert([base, exp], base ** exp)
+
+
+def test_pow_neg_base(tmp_dir: Path):
+    # int(-4..0) covers -4, -3, -2, -1
+    e = compare_expression(["int(-4..0)", "uint(1..=3)"], "int(-64..=64)", "a0 ** a1", tmp_dir)
+    for base in [-4, -3, -2, -1]:
+        for exp in [1, 2, 3]:
+            e.eval_assert([base, exp], base ** exp)
+
+
+def test_compare_all_ops(tmp_dir: Path):
+    values = [-7, -4, -1, 0, 1, 4, 7]
+    ops = [("<", "__lt__"), ("<=", "__le__"), (">", "__gt__"), (">=", "__ge__"), ("==", "__eq__"), ("!=", "__ne__")]
+    for op_sym, op_name in ops:
+        e = compare_expression(["int(-8..8)", "int(-8..8)"], "bool", f"a0 {op_sym} a1", tmp_dir / op_name)
+        for a in values:
+            for b in values:
+                e.eval_assert([a, b], getattr(a, op_name)(b))
