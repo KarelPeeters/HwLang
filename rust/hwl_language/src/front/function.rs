@@ -821,6 +821,7 @@ pub fn check_function_return_type_and_set_value(
                 ty.span,
                 format!("function return type `{}` declared here", ty.inner.value_string(elab)),
             )
+            .add_footer_hint("either return a value or remove the return type")
             .report(diags);
             return Err(diag);
         }
@@ -831,6 +832,9 @@ pub fn check_function_return_type_and_set_value(
                 "return value here",
             )
             .add_info(entry.span_function_decl, "function declared without return type here")
+            .add_footer_hint(
+                "either remove the returned value or add a return type using `-> <type>` after the parameter list",
+            )
             .report(diags);
             return Err(diag);
         }
