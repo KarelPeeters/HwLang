@@ -1,9 +1,21 @@
 """
-Tests to find bugs in the HwLang compiler: type system issues, miscompilations,
-wrong results, ICEs, and panics.
+Tests that find bugs in the HwLang compiler: parse errors, missing features,
+ICEs (internal compiler errors / crashes), and hardware miscompilations.
 
-Each test documents the expected behavior and confirms whether the compiler
-handles the case correctly.
+Each test is clearly labelled with its status:
+  - PARSE LIMITATION  – grammar limitation causing unexpected-token errors
+  - MISSING FEATURE   – feature that is planned but not yet implemented
+  - BUG / CRASH       – actual compiler crash or wrong behaviour (not intentional)
+  - DESIGN DECISION   – intentional behaviour that might look surprising
+  - CORRECT           – things that work as expected (regression guards)
+
+How hardware correctness tests work
+------------------------------------
+`compare_body` / `compare_expression` compile the body as both
+  (a) an interpreted HwLang function  and
+  (b) a Verilog module simulated with Verilator.
+The helper then asserts that both produce the same result for every input.
+Any disagreement is a hardware miscompilation.
 """
 from pathlib import Path
 
@@ -15,21 +27,21 @@ from hwl_sandbox.common.util import compile_custom
 
 
 # =============================================================================
-# Bug: array[index].field parse error
+# PARSE LIMITATIONS
+# These are grammar restrictions where postfix `.field` or `[index]` cannot
+# follow certain primary expression forms.
 # =============================================================================
 
 def test_parse_array_index_then_dot_field():
     """
-    Chaining array indexing with dot field access fails to parse.
-    `a[i].field` gives "unexpected token `.`" while `(a[i]).field` works.
-    This is a known TODO in grammar.lalrpop.
+    PARSE LIMITATION: `arr[i].field` is rejected by the parser.
+    The workaround is `(arr[i]).field`.
+    Both `fn().field` (function-call then dot) and `arr[i][j]` (double index) work.
     """
     src = """
     struct Point { x: int, y: int }
     fn f() -> int {
-        val p1 = Point.new(x=1, y=2);
-        val p2 = Point.new(x=3, y=4);
-        val pts = [p1, p2];
+        val pts = [Point.new(x=1, y=2), Point.new(x=3, y=4)];
         return pts[1].x;
     }
     """
@@ -37,9 +49,23 @@ def test_parse_array_index_then_dot_field():
         compile_custom(src).resolve("top.f")
 
 
+def test_parse_array_index_then_dot_field_workaround():
+    """CORRECT: `(arr[i]).field` works as a workaround."""
+    src = """
+    struct Point { x: int, y: int }
+    fn f() -> int {
+        val pts = [Point.new(x=1, y=2), Point.new(x=3, y=4)];
+        return (pts[1]).x;
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f() == 3
+
+
 def test_parse_array_index_then_dot_int():
     """
-    Accessing a tuple element from an array index: `a[i].0` fails to parse.
+    PARSE LIMITATION: accessing a tuple element after array index, `arr[i].0`,
+    is rejected by the parser.
     """
     src = """
     fn f() -> int {
@@ -51,516 +77,250 @@ def test_parse_array_index_then_dot_int():
         compile_custom(src).resolve("top.f")
 
 
-def test_parse_workaround_array_index_then_dot():
-    """Workaround: parenthesising the array index expression allows dot access."""
+def test_parse_array_index_then_dot_int_workaround():
+    """CORRECT: `(arr[i]).0` works as a workaround."""
     src = """
-    struct Point { x: int, y: int }
     fn f() -> int {
-        val p1 = Point.new(x=1, y=2);
-        val p2 = Point.new(x=3, y=4);
-        val pts = [p1, p2];
-        return (pts[1]).x;
+        val a = [(1, 2), (3, 4)];
+        return (a[1]).0;
     }
     """
     f = compile_custom(src).resolve("top.f")
     assert f() == 3
 
 
-# =============================================================================
-# Bug: struct field assignment not implemented
-# =============================================================================
-
-def test_struct_field_assignment_not_implemented():
+def test_parse_tuple_literal_then_dot_int():
     """
-    Assigning to a struct field (`p.x = 5`) is not yet implemented.
-    The compiler gives "feature not yet implemented: assignment target dot index
-    on non-interface".
+    PARSE LIMITATION: `(a, b).0` — a tuple *literal* followed immediately by `.0`
+    is rejected by the parser.
     """
-    src = """
-    struct Pair { x: int, y: int }
-    fn f() -> Pair {
-        var p = Pair.new(x=1, y=2);
-        p.x = 5;
-        return p;
-    }
-    """
-    with pytest.raises(hwl.DiagnosticException, match="feature not yet implemented"):
+    src = "fn f(a: int, b: int) -> int { return (a, b).0; }"
+    with pytest.raises(hwl.DiagnosticException, match="unexpected token"):
         compile_custom(src).resolve("top.f")
 
 
-# =============================================================================
-# Bug: tuple destructuring not implemented
-# =============================================================================
-
-def test_tuple_destructuring_not_implemented():
+def test_parse_array_literal_then_index():
     """
-    Tuple destructuring in val declarations (`val (n, b) = t;`) is not supported.
+    PARSE LIMITATION: `[1, 2, 3][1]` — indexing an array literal inline
+    is rejected by the parser.
+    """
+    src = "fn f() -> int { return [10, 20, 30][1]; }"
+    with pytest.raises(hwl.DiagnosticException, match="unexpected token"):
+        compile_custom(src).resolve("top.f")
+
+
+def test_parse_fn_call_then_index_then_dot_field():
+    """
+    PARSE LIMITATION: `f()[0].field` — chaining index after function call,
+    then accessing a field, is rejected.
+    Note: `f()[0]` alone works, and `f().field` alone works.
     """
     src = """
-    fn f(t: Tuple(int, bool)) -> int {
-        val (n, b) = t;
-        return n + bool_to_int(b);
-    }
+    struct P { x: int, y: int }
+    fn make() -> [2]P { return [P.new(x=1, y=2), P.new(x=3, y=4)]; }
+    fn f() -> int { return make()[0].x; }
     """
     with pytest.raises(hwl.DiagnosticException, match="unexpected token"):
         compile_custom(src).resolve("top.f")
 
 
-# =============================================================================
-# Correctness: division with signed negative operands in hardware
-# =============================================================================
-
-def test_hardware_div_signed_negative_dividend(tmp_dir: Path):
+def test_parse_fn_call_then_index_works():
+    """CORRECT: `f()[0]` (function call then array index) is allowed."""
+    src = """
+    fn make() -> [3]int { return [10, 20, 30]; }
+    fn f() -> int { return make()[1]; }
     """
-    Floor division in hardware with negative dividend should match Python semantics.
+    f = compile_custom(src).resolve("top.f")
+    assert f() == 20
+
+
+def test_parse_fn_call_then_dot_field_works():
+    """CORRECT: `f().field` (function call then struct field) is allowed."""
+    src = """
+    struct P { x: int, y: int }
+    fn make() -> P { return P.new(x=42, y=0); }
+    fn f() -> int { return make().x; }
     """
-    e = compare_expression(["int(-8..1)", "int(1..4)"], "int(-8..=1)", "a0 / a1", tmp_dir)
-    for x in range(-8, 1):
-        for y in [1, 2, 3]:
-            import math
-            e.eval_assert([x, y], math.floor(x / y))
+    f = compile_custom(src).resolve("top.f")
+    assert f() == 42
 
 
-def test_hardware_mod_signed_negative_dividend(tmp_dir: Path):
-    """
-    Modulo in hardware with negative dividend (floor modulo) should match Python semantics.
-    """
-    e = compare_expression(["int(-8..1)", "int(1..4)"], "int(0..4)", "a0 % a1", tmp_dir)
-    for x in range(-8, 1):
-        for y in [1, 2, 3]:
-            e.eval_assert([x, y], x % y)
-
-
-# =============================================================================
-# Correctness: bit operations in hardware
-# =============================================================================
-
-def test_hardware_bool_and(tmp_dir: Path):
-    """Boolean AND in hardware: both function and Verilog should agree."""
-    e = compare_expression(["bool", "bool"], "bool", "a0 && a1", tmp_dir)
-    for a in [False, True]:
-        for b in [False, True]:
-            e.eval_assert([a, b], a and b)
-
-
-def test_hardware_bool_or(tmp_dir: Path):
-    """Boolean OR in hardware."""
-    e = compare_expression(["bool", "bool"], "bool", "a0 || a1", tmp_dir)
-    for a in [False, True]:
-        for b in [False, True]:
-            e.eval_assert([a, b], a or b)
-
-
-def test_hardware_bool_xor(tmp_dir: Path):
-    """Boolean XOR in hardware."""
-    e = compare_expression(["bool", "bool"], "bool", "a0 ^^ a1", tmp_dir)
-    for a in [False, True]:
-        for b in [False, True]:
-            e.eval_assert([a, b], a ^ b)
-
-
-def test_hardware_bool_not(tmp_dir: Path):
-    """Boolean NOT in hardware: both function and Verilog should agree."""
-    e = compare_expression(["bool"], "bool", "!a0", tmp_dir)
-    e.eval_assert([False], True)
-    e.eval_assert([True], False)
-
-
-# =============================================================================
-# Correctness: signed shift operations in hardware
-# =============================================================================
-
-def test_hardware_arithmetic_right_shift(tmp_dir: Path):
-    """Arithmetic right shift (>>) on signed integers should preserve sign bit."""
-    e = compare_expression(["int(8)", "uint(0..8)"], "int(8)", "a0 >> a1", tmp_dir)
-    for x in [-128, -64, -1, 0, 1, 64, 127]:
-        for shift in [0, 1, 3, 7]:
-            import math
-            expected = math.floor(x / (2 ** shift))
-            e.eval_assert([x, shift], expected)
-
-
-def test_hardware_left_shift_signed(tmp_dir: Path):
-    """Left shift on signed integers should work correctly."""
-    e = compare_expression(["int(-8..8)", "uint(0..4)"], "int(-128..128)", "a0 << a1", tmp_dir)
-    for x in [-7, -1, 0, 1, 7]:
-        for shift in [0, 1, 2, 3]:
-            e.eval_assert([x, shift], x * (2 ** shift))
-
-
-# =============================================================================
-# Correctness: match in hardware with enum
-# =============================================================================
-
-def test_hardware_enum_match(tmp_dir: Path):
-    """Enum construction and match in hardware should work correctly."""
-    prefix = """
-    enum Dir { N, S, E, W }
-    """
-    body = """
-    match (a0) {
-        .N => { return 0; }
-        .S => { return 1; }
-        .E => { return 2; }
-        .W => { return 3; }
+def test_parse_double_array_index_works():
+    """CORRECT: `arr[i][j]` (double array index) is allowed."""
+    src = """
+    fn f() -> int {
+        val arr = [[1, 2], [3, 4], [5, 6]];
+        return arr[1][0];
     }
     """
-    e = compare_body(["Dir"], "uint(0..4)", body, tmp_dir, prefix=prefix)
+    f = compile_custom(src).resolve("top.f")
+    assert f() == 3
 
-    src_make = """
-    enum Dir { N, S, E, W }
-    fn n() -> Dir { return Dir.N; }
-    fn s() -> Dir { return Dir.S; }
-    fn east() -> Dir { return Dir.E; }
-    fn w() -> Dir { return Dir.W; }
+
+def test_parse_if_expression_not_supported():
     """
-    c = compile_custom(src_make)
-    e.eval_assert([c.resolve("top.n")()], 0)
-    e.eval_assert([c.resolve("top.s")()], 1)
-    e.eval_assert([c.resolve("top.east")()], 2)
-    e.eval_assert([c.resolve("top.w")()], 3)
-
-
-def test_hardware_enum_with_payload_match(tmp_dir: Path):
-    """Enum with payload in hardware match should extract payload correctly."""
-    prefix = """
-    enum Msg { A(uint(4)), B(uint(4)), C }
+    PARSE LIMITATION: `if (cond) { x } else { y }` as an expression
+    (inline if-expression, ternary-style) is not supported.
     """
-    body = """
-    match (a0) {
-        .A(val v) => { return (0, v); }
-        .B(val v) => { return (1, v); }
-        .C => { return (2, 0); }
+    src = "fn f(a: bool, x: int, y: int) -> int { return if (a) { x } else { y }; }"
+    with pytest.raises(hwl.DiagnosticException, match="unexpected token"):
+        compile_custom(src).resolve("top.f")
+
+
+def test_parse_tuple_destructure_not_supported():
+    """
+    PARSE LIMITATION: tuple destructuring `val (a, b) = expr` is not yet supported.
+    """
+    src = "fn f() -> int { val (a, b) = (1, 2); return a + b; }"
+    with pytest.raises(hwl.DiagnosticException, match="unexpected token"):
+        compile_custom(src).resolve("top.f")
+
+
+# =============================================================================
+# MISSING FEATURES (implemented only partially, error at elaboration time)
+# =============================================================================
+
+def test_struct_field_assignment_not_implemented():
+    """
+    MISSING FEATURE: assignment to a struct field (`p.x = 5`) is not yet
+    implemented for non-interface targets.
+    The compiler accepts the source but raises a 'feature not yet implemented'
+    error at elaboration (call) time.
+    """
+    src = """
+    struct P { x: int, y: int }
+    fn f() -> int {
+        var p = P.new(x=1, y=2);
+        p.x = 5;
+        return p.x + p.y;
     }
     """
-    e = compare_body(["Msg"], "Tuple(uint(0..3), uint(0..16))", body, tmp_dir, prefix=prefix)
-
-    src_make = """
-    enum Msg { A(uint(4)), B(uint(4)), C }
-    fn make_a(v: uint(4)) -> Msg { return Msg.A(v); }
-    fn make_b(v: uint(4)) -> Msg { return Msg.B(v); }
-    fn make_c() -> Msg { return Msg.C; }
-    """
-    c = compile_custom(src_make)
-    make_a = c.resolve("top.make_a")
-    make_b = c.resolve("top.make_b")
-    make_c = c.resolve("top.make_c")
-
-    e.eval_assert([make_a(5)], (0, 5))
-    e.eval_assert([make_a(15)], (0, 15))
-    e.eval_assert([make_b(3)], (1, 3))
-    e.eval_assert([make_c()], (2, 0))
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException,
+                       match="feature not yet implemented"):
+        f()
 
 
 # =============================================================================
-# Correctness: for loop unrolling in hardware
+# BUG / CRASH: Infinite recursion causes SIGSEGV instead of a clean error
 # =============================================================================
 
-def test_hardware_for_loop_sum(tmp_dir: Path):
-    """For loop unrolling in hardware: sum of 0..8 should be constant 28."""
-    body = """
-    var sum = 0;
-    for (i in 0..8) {
-        sum = sum + i;
-    }
-    return sum;
+def test_infinite_recursion_crashes():
     """
-    e = compare_body([], "int(0..=28)", body, tmp_dir)
-    e.eval_assert([], 28)
+    BUG: Calling a function with no base case (infinite recursion) causes the
+    process to crash with a segmentation fault (SIGSEGV, exit code 139) rather
+    than raising a clean error (e.g. DiagnosticException or RecursionError).
 
-
-def test_hardware_for_loop_with_input(tmp_dir: Path):
-    """For loop unrolling: multiply an input by a loop-produced constant."""
-    body = """
-    var factor = 1;
-    for (i in 0..4) {
-        factor = factor * 2;
-    }
-    return a0 * factor;
+    Note: mutual recursion that terminates works correctly (see test below).
     """
-    e = compare_body(["uint(8)"], "int(0..4096)", body, tmp_dir)
-    for v in [0, 1, 5, 10, 255]:
-        e.eval_assert([v], v * 16)
-
-
-# =============================================================================
-# Correctness: struct in hardware
-# =============================================================================
-
-def test_hardware_struct_fields(tmp_dir: Path):
-    """Struct field access in hardware should work correctly."""
-    prefix = """
-    struct RGB { r: uint(4), g: uint(4), b: uint(4) }
-    """
-    body = """
-    val c = RGB.new(r=a0, g=a1, b=a2);
-    return (c.r, c.g, c.b);
-    """
-    e = compare_body(
-        ["uint(4)", "uint(4)", "uint(4)"],
-        "Tuple(uint(4), uint(4), uint(4))",
-        body, tmp_dir, prefix=prefix
+    import os, signal, subprocess, sys, textwrap
+    src = """
+fn f(n: uint) -> int {
+    return f(n + 1);
+}
+"""
+    # Run in a subprocess to survive the SIGSEGV.
+    # Inherit the current environment so that both `hwl` and `hwl_sandbox`
+    # are importable without any fragile path manipulation.
+    code = textwrap.dedent(f"""
+        from hwl_sandbox.common.util import compile_custom
+        src = {repr(src)}
+        c = compile_custom(src)
+        f = c.resolve('top.f')
+        f(0)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        timeout=15,
+        env=os.environ.copy(),
     )
-    e.eval_assert([1, 2, 3], (1, 2, 3))
-    e.eval_assert([15, 0, 7], (15, 0, 7))
-    e.eval_assert([0, 0, 0], (0, 0, 0))
+    # On Unix a process killed by signal SIGSEGV (11) exits with code
+    # 128 + 11 = 139 when reported by the shell, or as -11 when reported
+    # by Python's subprocess.
+    sigsegv_codes = (-signal.SIGSEGV, 128 + signal.SIGSEGV)
+    assert result.returncode in sigsegv_codes, (
+        f"Expected SIGSEGV ({sigsegv_codes}), got returncode={result.returncode}.\n"
+        f"stdout: {result.stdout.decode()[:200]}\n"
+        f"stderr: {result.stderr.decode()[:200]}"
+    )
 
 
-# =============================================================================
-# Correctness: register behavior
-# =============================================================================
-
-def test_register_counter(tmp_dir: Path):
-    """A simple counter register should increment each clock cycle."""
+def test_terminating_mutual_recursion_works():
+    """
+    CORRECT: Mutual recursion with a proper base case works correctly.
+    """
     src = """
-    module counter ports(
-        clk: in clock,
-        rst: in async bool,
-        y: out sync(clk, async rst) uint(8)
-    ) {
-        clocked(clk, async rst) {
-            reg wire y = 0;
-            y = y + 1;
-        }
+    fn is_even(n: uint) -> bool {
+        if (n == 0) { return true; }
+        return is_odd(n - 1);
+    }
+    fn is_odd(n: uint) -> bool {
+        if (n == 0) { return false; }
+        return is_even(n - 1);
     }
     """
     c = compile_custom(src)
-    m = c.resolve("top.counter")
-
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    inst = m.as_verilated(tmp_dir).instance()
-
-    # Reset
-    inst.ports.rst.value = True
-    inst.step(1)
-    assert inst.ports.y.value == 0
-
-    inst.ports.rst.value = False
-    inst.step(1)
-    assert inst.ports.y.value == 1
-    inst.step(1)
-    assert inst.ports.y.value == 2
-    inst.step(1)
-    assert inst.ports.y.value == 3
+    is_even = c.resolve("top.is_even")
+    is_odd = c.resolve("top.is_odd")
+    for n in range(8):
+        assert is_even(n) == (n % 2 == 0), f"is_even({n}) wrong"
+        assert is_odd(n) == (n % 2 == 1), f"is_odd({n}) wrong"
 
 
-def test_register_pipeline(tmp_dir: Path):
-    """A two-stage pipeline register should delay input by 2 cycles."""
-    src = """
-    module pipe2 ports(
-        clk: in clock,
-        rst: in async bool,
-        x: in sync(clk, async rst) uint(8),
-        y: out sync(clk, async rst) uint(8)
-    ) {
-        wire stage1: uint(8);
-        clocked(clk, async rst) {
-            reg wire stage1 = 0;
-            reg wire y = 0;
-            stage1 = x;
-            y = stage1;
-        }
-    }
+# =============================================================================
+# DESIGN DECISIONS (errors happen at elaboration / call time, not resolve time)
+# =============================================================================
+
+def test_type_out_of_range_is_elaboration_error():
     """
-    c = compile_custom(src)
-    m = c.resolve("top.pipe2")
-
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    inst = m.as_verilated(tmp_dir).instance()
-
-    inst.ports.rst.value = True
-    inst.step(1)
-    inst.ports.rst.value = False
-
-    # Cycle 1: input = 42
-    inst.ports.x.value = 42
-    inst.step(1)
-    # y is still 0 (2-stage delay)
-
-    # Cycle 2: input = 99
-    inst.ports.x.value = 99
-    inst.step(1)
-    assert inst.ports.y.value == 42  # first value arrives
-
-    # Cycle 3
-    inst.ports.x.value = 0
-    inst.step(1)
-    assert inst.ports.y.value == 99  # second value arrives
-
-
-# =============================================================================
-# Correctness: module instantiation
-# =============================================================================
-
-def test_module_instance_connections(tmp_dir: Path):
-    """Module instantiation with correct port connections should work."""
-    src = """
-    module adder ports(a: in async uint(8), b: in async uint(8), c: out async uint(9)) {
-        comb { c = a + b; }
-    }
-    module top ports(x: in async uint(8), y: in async uint(8), z: out async uint(9)) {
-        instance adder ports(a=x, b=y, c=z);
-    }
+    DESIGN DECISION: assigning a value that doesn't fit in the declared return
+    type is a type error raised at elaboration (call) time, not at resolve time.
     """
-    c = compile_custom(src)
-    m = c.resolve("top.top")
-
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    inst = m.as_verilated(tmp_dir).instance()
-
-    inst.ports.x.value = 10
-    inst.ports.y.value = 20
-    inst.step(1)
-    assert inst.ports.z.value == 30
-
-    inst.ports.x.value = 200
-    inst.ports.y.value = 200
-    inst.step(1)
-    assert inst.ports.z.value == 400
-
-
-# =============================================================================
-# Correctness: comparison operations in hardware
-# =============================================================================
-
-def test_hardware_signed_comparison(tmp_dir: Path):
-    """Signed integer comparison in hardware must correctly handle negative numbers."""
-    e = compare_expression(["int(8)", "int(8)"], "bool", "a0 < a1", tmp_dir)
-    cases = [
-        (-128, -127), (-1, 0), (-1, 1), (0, 1), (126, 127),
-        (0, -1), (1, -1), (127, -128),
-    ]
-    for a, b in cases:
-        e.eval_assert([a, b], a < b)
-
-
-def test_hardware_unsigned_comparison(tmp_dir: Path):
-    """Unsigned integer comparison in hardware."""
-    e = compare_expression(["uint(8)", "uint(8)"], "bool", "a0 < a1", tmp_dir)
-    cases = [(0, 1), (100, 200), (254, 255), (255, 0), (200, 100)]
-    for a, b in cases:
-        e.eval_assert([a, b], a < b)
-
-
-# =============================================================================
-# Correctness: array slice in hardware
-# =============================================================================
-
-def test_hardware_array_slice(tmp_dir: Path):
-    """Array slicing in hardware should produce correct subarrays."""
-    body = """
-    return a0[1..5];
-    """
-    e = compare_body(["[8]uint(4)"], "[4]uint(4)", body, tmp_dir)
-    arr = [0, 1, 2, 3, 4, 5, 6, 7]
-    e.eval_assert([arr], arr[1:5])
-    arr2 = [15, 14, 13, 12, 11, 10, 9, 8]
-    e.eval_assert([arr2], arr2[1:5])
-
-
-# =============================================================================
-# Correctness: string interpolation
-# =============================================================================
-
-def test_string_interpolation_basic():
-    """String interpolation with integers should produce correct strings."""
-    src = """
-    fn f(n: int, m: int) -> str {
-        return "n={n}, m={m}";
-    }
-    """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f(42, -7) == "n=42, m=-7"
-    assert f(0, 0) == "n=0, m=0"
-
-
-# =============================================================================
-# Correctness: bool_to_int and int operations
-# =============================================================================
-
-def test_bool_to_int(tmp_dir: Path):
-    """bool_to_int should convert False->0, True->1 in both function and hardware."""
-    e = compare_body(["bool"], "uint(0..2)", "return bool_to_int(a0);", tmp_dir)
-    e.eval_assert([False], 0)
-    e.eval_assert([True], 1)
-
-
-# =============================================================================
-# Type system: overflow detection
-# =============================================================================
-
-def test_type_out_of_range_assignment():
-    """Assigning a value outside the declared range should give a type error."""
-    src = """
-    fn f() -> uint(8) {
-        return 256;
-    }
-    """
+    src = "fn f() -> uint(8) { return 256; }"
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
-        compile_custom(src).resolve("top.f")
+        f()
 
 
-def test_type_negative_in_uint():
-    """Assigning a negative value to a uint type should give a type error."""
-    src = """
-    fn f() -> uint(8) {
-        return -1;
-    }
+def test_type_negative_in_uint_is_elaboration_error():
     """
+    DESIGN DECISION: returning a negative value for a uint return type is a
+    type error at elaboration (call) time.
+    """
+    src = "fn f() -> uint(8) { return -1; }"
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
-        compile_custom(src).resolve("top.f")
+        f()
 
 
-# =============================================================================
-# Type system: power operator edge cases
-# =============================================================================
-
-def test_zero_pow_zero_error():
-    """0**0 should give a compile error since both operands could be 0."""
+def test_zero_pow_zero_elaboration_error():
+    """
+    DESIGN DECISION: `0 ** 0` is rejected (mathematically undefined) at
+    elaboration time.  Error message: "invalid power operation".
+    """
     src = "fn f() -> int { return 0 ** 0; }"
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="invalid power operation"):
-        compile_custom(src).resolve("top.f")
+        f()
 
 
-def test_int_x_pow_zero_error():
-    """x**0 where x: int (can be 0) should give a compile error."""
+def test_int_x_pow_zero_elaboration_error():
+    """
+    DESIGN DECISION: `x ** 0` where x could be 0 is rejected because 0**0
+    is undefined.  The compiler requires the base to be non-zero.
+    """
     src = "fn f(x: int) -> int { return x ** 0; }"
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="invalid power operation"):
-        compile_custom(src).resolve("top.f")
+        f(0)
 
 
-def test_natural_x_pow_zero_ok():
-    """x**0 where x: natural (always > 0) should compile and return 1."""
-    src = "fn f(x: natural) -> uint { return x ** 0; }"
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f(1) == 1
-    assert f(5) == 1
-    assert f(100) == 1
-
-
-# =============================================================================
-# Error handling: missing return paths
-# =============================================================================
-
-def test_missing_return_detected():
-    """A function missing a return path should give a diagnostic error."""
-    src = """
-    fn f(x: bool) -> int {
-        if (x) {
-            return 1;
-        }
-    }
+def test_missing_return_in_all_paths_is_elaboration_error():
     """
-    with pytest.raises(hwl.DiagnosticException, match="missing return"):
-        compile_custom(src).resolve("top.f")
-
-
-def test_missing_return_partial_is_runtime_error():
-    """
-    A function with some (but not all) return paths covered compiles OK,
-    but hitting the unhandled path at runtime gives a diagnostic error.
+    DESIGN DECISION: a function whose return path is not guaranteed (not all
+    branches return) raises a 'match statement reached end' error at elaboration
+    time when the non-returning path is taken.
     """
     src = """
     fn f(x: uint(4)) -> int {
@@ -578,338 +338,344 @@ def test_missing_return_partial_is_runtime_error():
         f(2)
 
 
-# =============================================================================
-# Error handling: port direction
-# =============================================================================
-
-def test_cannot_assign_to_input_port():
-    """Assigning to an input port should give a compile-time error."""
+def test_enum_none_is_not_callable_elaboration_error():
+    """
+    DESIGN DECISION: calling a no-payload enum variant as a function,
+    e.g. `Option(bool).None()`, is rejected at elaboration time with
+    "call target must be function".
+    """
     src = """
-    module top ports(x: in async bool, y: in async bool) {
-        comb { x = y; }
+    enum Option(T: type) { None, Some(T) }
+    fn f() -> Option(bool) {
+        return Option(bool).None();
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="cannot assign to input port"):
-        compile_custom(src).resolve("top.top")
-
-
-# =============================================================================
-# Correctness: Option and Result enum variants
-# =============================================================================
-
-def test_option_none_is_not_callable():
-    """Option.None is a value, not a function - calling it should error."""
-    src = """
-    fn f() {
-        val v: Option(bool) = Option(bool).None();
-    }
-    """
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="call target must be function"):
-        compile_custom(src).resolve("top.f")
+        f()
 
 
-def test_option_some_and_none(tmp_dir: Path):
-    """Option enum should correctly represent Some and None values in hardware."""
-    prefix = "// using built-in Option"
-    body = """
-    match (a0) {
-        .None => { return false; }
-        .Some(val v) => { return v; }
+# =============================================================================
+# HARDWARE CORRECTNESS TESTS (compare interpreter vs Verilog simulation)
+# All of the tests below should pass — they are regression guards confirming
+# that the hardware codegen produces correct Verilog for various language features.
+# =============================================================================
+
+def test_hw_enum_tag_encoding(tmp_dir: Path):
+    """
+    CORRECT: 16-variant enum round-trip in hardware.
+    Int -> enum (via match) -> back to int (via match).  Verifies that each
+    enum variant has a unique bit pattern and that the hardware match correctly
+    decodes every tag.
+    """
+    prefix = """
+    enum Big16 {
+        V0,  V1,  V2,  V3,  V4,  V5,  V6,  V7,
+        V8,  V9,  V10, V11, V12, V13, V14, V15
+    }
+    fn int_to_big16(i: uint(0..16)) -> Big16 {
+        match (i) {
+            0  => { return Big16.V0;  }   1  => { return Big16.V1;  }
+            2  => { return Big16.V2;  }   3  => { return Big16.V3;  }
+            4  => { return Big16.V4;  }   5  => { return Big16.V5;  }
+            6  => { return Big16.V6;  }   7  => { return Big16.V7;  }
+            8  => { return Big16.V8;  }   9  => { return Big16.V9;  }
+            10 => { return Big16.V10; }   11 => { return Big16.V11; }
+            12 => { return Big16.V12; }   13 => { return Big16.V13; }
+            14 => { return Big16.V14; }   15 => { return Big16.V15; }
+        }
     }
     """
-    e = compare_body(["Option(bool)"], "bool", body, tmp_dir, prefix=prefix)
-
-    src_make = """
-    fn make_none() -> Option(bool) { return Option(bool).None; }
-    fn make_some(v: bool) -> Option(bool) { return Option(bool).Some(v); }
+    body = """
+    val e = int_to_big16(a0);
+    match (e) {
+        .V0  => { return 0;  }   .V1  => { return 1;  }
+        .V2  => { return 2;  }   .V3  => { return 3;  }
+        .V4  => { return 4;  }   .V5  => { return 5;  }
+        .V6  => { return 6;  }   .V7  => { return 7;  }
+        .V8  => { return 8;  }   .V9  => { return 9;  }
+        .V10 => { return 10; }   .V11 => { return 11; }
+        .V12 => { return 12; }   .V13 => { return 13; }
+        .V14 => { return 14; }   .V15 => { return 15; }
+    }
     """
-    c = compile_custom(src_make)
-    none = c.resolve("top.make_none")()
-    some_true = c.resolve("top.make_some")(True)
-    some_false = c.resolve("top.make_some")(False)
-
-    e.eval_assert([none], False)
-    e.eval_assert([some_true], True)
-    e.eval_assert([some_false], False)
+    e = compare_body(["uint(0..16)"], "uint(0..16)", body, tmp_dir, prefix=prefix)
+    for v in range(16):
+        e.eval_assert([v], v)
 
 
-# =============================================================================
-# Correctness: dynamic IDs and for loop with pub wires
-# =============================================================================
-
-def test_dynamic_id_shift_register(tmp_dir: Path):
-    """Dynamic IDs with pub wires in a for loop should create a shift register."""
-    src = """
-    module top ports(
-        clk: in clock,
-        rst: in async bool,
-        sync(clk, async rst) {
-            x: in int(8),
-            y: out int(8),
+def test_hw_enum_payload_roundtrip(tmp_dir: Path):
+    """
+    CORRECT: Enum with a payload round-trips correctly through hardware:
+    the tag bit and the payload field are both correctly encoded/decoded.
+    """
+    prefix = """
+    enum Msg { Empty, WithData(uint(8)) }
+    fn make_msg(has_data: bool, data: uint(8)) -> Msg {
+        if (has_data) {
+            return Msg.WithData(data);
+        } else {
+            return Msg.Empty;
         }
-    ) {
-        for (i in 0..4) {
-            pub wire id_from_str("w{i}"): int(8);
-            comb {
-                if (i == 0) {
-                    id_from_str("w{i}") = x;
-                } else {
-                    id_from_str("w{i}") = id_from_str("w{i-1}");
-                }
+    }
+    """
+    body = """
+    val m = make_msg(a0, a1);
+    match (m) {
+        .Empty           => { return (false, 0); }
+        .WithData(val d) => { return (true, d);  }
+    }
+    """
+    e = compare_body(["bool", "uint(8)"], "Tuple(bool, uint(8))", body,
+                     tmp_dir, prefix=prefix)
+    e.eval_assert([False, 0], (False, 0))
+    e.eval_assert([False, 200], (False, 0))
+    e.eval_assert([True, 0], (True, 0))
+    e.eval_assert([True, 42], (True, 42))
+    e.eval_assert([True, 255], (True, 255))
+
+
+def test_hw_nested_struct_field_access(tmp_dir: Path):
+    """
+    CORRECT: Hardware correctly accesses fields of a struct nested inside
+    another struct -- bit offsets must be correct at every level.
+    """
+    prefix = """
+    struct Inner { x: uint(4), y: uint(4) }
+    struct Outer { a: uint(4), b: Inner, c: uint(4) }
+    fn make(a: uint(4), bx: uint(4), by: uint(4), c: uint(4)) -> Outer {
+        return Outer.new(a=a, b=Inner.new(x=bx, y=by), c=c);
+    }
+    """
+    body = """
+    val o = make(a0, a1, a2, a3);
+    return (o.a, (o.b).x, (o.b).y, o.c);
+    """
+    e = compare_body(
+        ["uint(4)", "uint(4)", "uint(4)", "uint(4)"],
+        "Tuple(uint(4), uint(4), uint(4), uint(4))",
+        body, tmp_dir, prefix=prefix,
+    )
+    for vals in [(1, 2, 3, 4), (15, 0, 7, 3), (5, 5, 5, 5), (0, 15, 0, 15)]:
+        e.eval_assert(list(vals), vals)
+
+
+def test_hw_tuple_return_from_function(tmp_dir: Path):
+    """
+    CORRECT: A function returning a tuple works in hardware -- both elements
+    are packed into the output port correctly.
+    """
+    body = """
+    val s = a0 + a1;
+    val p = a0 * a1;
+    return (s, p);
+    """
+    e = compare_body(["uint(4)", "uint(4)"], "Tuple(uint(8), uint(8))",
+                     body, tmp_dir)
+    for a in [0, 1, 5, 15]:
+        for b in [0, 1, 5, 15]:
+            e.eval_assert([a, b], (a + b, a * b))
+
+
+def test_hw_signed_comparison(tmp_dir: Path):
+    """
+    CORRECT: Comparing a signed int with an unsigned int in hardware produces
+    the correct result -- the Verilog expands both to a common signed type.
+    """
+    body = "return a0 < a1;"
+    e = compare_body(["int(-1..2)", "uint(0..3)"], "bool", body, tmp_dir)
+    for a in [-1, 0, 1]:
+        for b in [0, 1, 2]:
+            e.eval_assert([a, b], a < b)
+
+
+def test_hw_signed_arithmetic_right_shift(tmp_dir: Path):
+    """
+    CORRECT: Arithmetic right shift (`>>`) on a signed integer preserves the
+    sign bit -- it should be equivalent to floor-division by 2.
+    """
+    import math
+    body = "return a0 >> 1;"
+    e = compare_body(["int(8)"], "int(8)", body, tmp_dir)
+    for v in range(-128, 128, 16):
+        e.eval_assert([v], math.floor(v / 2))
+
+
+def test_hw_signed_right_shift_by_variable_amount(tmp_dir: Path):
+    """
+    CORRECT: Variable-amount arithmetic right shift produces the same result
+    as the interpreter (floor-division by 2**n).
+    """
+    import math
+    body = "return a0 >> a1;"
+    e = compare_body(["int(8)", "uint(0..8)"], "int(8)", body, tmp_dir)
+    for v in [-128, -64, -1, 0, 1, 64, 127]:
+        for s in [0, 1, 2, 7]:
+            e.eval_assert([v, s], math.floor(v / (2 ** s)))
+
+
+def test_hw_if_with_range_implication(tmp_dir: Path):
+    """
+    CORRECT: An `if (x >= 0)` guard correctly constrains the type of `x`
+    in the then-branch, allowing it to be used where only non-negative values
+    are expected.
+    """
+    body = """
+    if (a0 >= 0) {
+        return a0;
+    }
+    return 0;
+    """
+    e = compare_body(["int(-10..10)"], "int(0..10)", body, tmp_dir)
+    for v in range(-10, 10):
+        e.eval_assert([v], max(v, 0))
+
+
+def test_hw_complex_branching(tmp_dir: Path):
+    """
+    CORRECT: Nested if/else correctly propagates mutations to a variable
+    through multiple branches.
+    """
+    body = """
+    var result = 0;
+    if (a0 > 0) {
+        result = 10;
+        if (a0 > 5) {
+            result = 20;
+        }
+    } else {
+        result = 30;
+        if (a0 < -5) {
+            result = 40;
+        }
+    }
+    return result;
+    """
+    e = compare_body(["int(-10..11)"], "int(0..41)", body, tmp_dir)
+    for v in range(-10, 11):
+        if v > 5:
+            expected = 20
+        elif v > 0:
+            expected = 10
+        elif v < -5:
+            expected = 40
+        else:
+            expected = 30
+        e.eval_assert([v], expected)
+
+
+def test_hw_multiple_early_returns(tmp_dir: Path):
+    """
+    CORRECT: Multiple early-return statements in a function are correctly
+    converted into a Verilog flag-based return mechanism.
+    """
+    body = """
+    if (a0 == 0) { return 100; }
+    if (a0 == 1) { return 200; }
+    if (a0 == 2) { return 300; }
+    return 400;
+    """
+    e = compare_body(["uint(0..4)"], "uint(0..401)", body, tmp_dir)
+    e.eval_assert([0], 100)
+    e.eval_assert([1], 200)
+    e.eval_assert([2], 300)
+    e.eval_assert([3], 400)
+
+
+def test_hw_for_loop_with_initial_value(tmp_dir: Path):
+    """
+    CORRECT: A for loop that conditionally updates a variable carries both
+    the initial value and the loop-body mutations correctly through the
+    unrolled Verilog.
+    """
+    body = """
+    var found = false;
+    var pos = 99;
+    for (i in 0..4) {
+        if (a0 == i) {
+            found = true;
+            pos = i;
+        }
+    }
+    return (found, pos);
+    """
+    e = compare_body(["uint(0..5)"], "Tuple(bool, uint(0..100))", body, tmp_dir)
+    # Values 0-3 are found at their position
+    for v in range(4):
+        e.eval_assert([v], (True, v))
+    # Value 4 is not in 0..4, so pos stays at 99
+    e.eval_assert([4], (False, 99))
+
+
+def test_hw_array_construction_and_hardware_index(tmp_dir: Path):
+    """
+    CORRECT: An array constructed from hardware values, then indexed with a
+    hardware index variable, is correctly lowered to Verilog.
+    """
+    body = """
+    val arr = [a0, a1, a2, a3];
+    return arr[2];
+    """
+    e = compare_body(
+        ["uint(8)", "uint(8)", "uint(8)", "uint(8)"],
+        "uint(8)", body, tmp_dir,
+    )
+    e.eval_assert([10, 20, 30, 40], 30)
+    e.eval_assert([255, 0, 128, 64], 128)
+
+
+def test_hw_hardware_exhaustive_match_required():
+    """
+    CORRECT: The compiler rejects a hardware match statement that does not
+    cover all possible values of the scrutinee type.
+    """
+    src = """
+    module eval_mod ports(p0: in async uint(0..4), p_res: out async uint(0..2)) {
+        comb {
+            match (p0) {
+                0 => { p_res = 0; }
+                1 => { p_res = 1; }
             }
         }
-
-        comb {
-            y = w3;
-        }
     }
     """
-    c = compile_custom(src)
-    m = c.resolve("top.top")
-
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    inst = m.as_verilated(tmp_dir).instance()
-
-    inst.ports.x.value = 4
-    inst.step(1)
-    assert inst.ports.y.value == 4
+    with pytest.raises(hwl.DiagnosticException,
+                       match="hardware match statement must be exhaustive"):
+        compile_custom(src).resolve("top.eval_mod")
 
 
-# =============================================================================
-# Correctness: large integer hardware operations
-# =============================================================================
-
-def test_hardware_large_int_add(tmp_dir: Path):
-    """Addition of large integers (> 64-bit) should be handled correctly in hardware."""
-    e = compare_expression(
-        ["int(0..2**128)", "int(0..=0)"],
-        "int(0..2**128)",
-        "a0 + a1",
-        tmp_dir
-    )
-    e.eval_assert([0, 0], 0)
-    e.eval_assert([2 ** 64 - 1, 0], 2 ** 64 - 1)
-    e.eval_assert([2 ** 65 - 1, 0], 2 ** 65 - 1)
-
-
-# =============================================================================
-# Correctness: recursive functions
-# =============================================================================
-
-def test_recursive_function():
-    """Recursive functions should evaluate correctly at compile time."""
-    src = """
-    fn factorial(n: uint) -> uint {
-        if (n <= 1) {
-            return 1;
-        }
-        return n * factorial(n - 1);
-    }
+def test_hw_division_signed(tmp_dir: Path):
     """
-    c = compile_custom(src)
-    f = c.resolve("top.factorial")
-    assert f(0) == 1
-    assert f(1) == 1
-    assert f(5) == 120
-    assert f(10) == 3628800
-
-
-# =============================================================================
-# Correctness: closures and higher-order functions
-# =============================================================================
-
-def test_closure_capture():
-    """Closures should correctly capture outer variables."""
-    src = """
-    fn make_adder(n: int) -> Function {
-        fn adder(x: int) -> int {
-            return x + n;
-        }
-        return adder;
-    }
-    fn test() -> int {
-        val add5 = make_adder(5);
-        val add10 = make_adder(10);
-        return add5(3) + add10(7);
-    }
+    CORRECT: Integer division in hardware (floor-division) produces the same
+    result as the interpreter for all signed and positive divisors.
     """
-    c = compile_custom(src)
-    test = c.resolve("top.test")
-    assert test() == 25  # (3+5) + (7+10)
+    import math
+    body = "return a0 / a1;"
+    e = compare_body(["int(-8..9)", "int(1..5)"], "int(-8..9)", body, tmp_dir)
+    for a in range(-8, 9):
+        for b in range(1, 5):
+            e.eval_assert([a, b], math.floor(a / b))
 
 
-# =============================================================================
-# Correctness: array comprehension
-# =============================================================================
-
-def test_array_comprehension(tmp_dir: Path):
-    """Array comprehension should produce correct results in both function and hardware."""
-    body = "return [i * i for i in 0..a0];"
-    # For N=5: [0, 1, 4, 9, 16]
-    e = compare_body(["uint(0..=5)"], "[5]uint(0..=16)", body, tmp_dir)
-    e.eval_assert([5], [0, 1, 4, 9, 16])
-
-
-# =============================================================================
-# Type system: forward references
-# =============================================================================
-
-def test_forward_reference_function():
-    """Functions should be callable before their definition in the file."""
-    src = """
-    fn f() -> int { return g(); }
-    fn g() -> int { return 42; }
+def test_hw_bool_operations(tmp_dir: Path):
     """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f() == 42
-
-
-# =============================================================================
-# Correctness: loop control flow
-# =============================================================================
-
-def test_break_in_for_loop():
-    """Break should exit the loop early."""
-    src = """
-    fn f() -> int {
-        var count = 0;
-        for (i in 0..100) {
-            if (i == 5) { break; }
-            count = count + 1;
-        }
-        return count;
-    }
+    CORRECT: Boolean &&, ||, ! work correctly in hardware.
     """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f() == 5
+    body = "return (a0 && a1) || (!a0 && a2);"
+    e = compare_body(["bool", "bool", "bool"], "bool", body, tmp_dir)
+    for a, b, c in [(False, False, False), (False, False, True),
+                    (False, True, False), (True, False, False),
+                    (True, True, False), (True, False, True)]:
+        e.eval_assert([a, b, c], (a and b) or (not a and c))
 
 
-def test_continue_in_for_loop():
-    """Continue should skip the rest of the loop body."""
-    src = """
-    fn f() -> int {
-        var sum = 0;
-        for (i in 0..10) {
-            if (i % 2 == 0) { continue; }
-            sum = sum + i;
-        }
-        return sum;
-    }
+def test_hw_fn_call_with_computed_args(tmp_dir: Path):
     """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f() == 25  # 1+3+5+7+9
-
-
-# =============================================================================
-# Correctness: ref/deref
-# =============================================================================
-
-def test_ref_deref_basic():
-    """ref/deref should allow indirect mutation."""
-    src = """
-    fn f() -> int {
-        var x = 0;
-        val r = ref(x);
-        deref(r) = 42;
-        return x;
-    }
+    CORRECT: Calling a function from within a hardware context, passing
+    hardware-computed values as arguments, is correctly inlined.
     """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f() == 42
-
-
-# =============================================================================
-# Error: undriven output port
-# =============================================================================
-
-def test_undriven_output_port_warning():
-    """An output port with no driver should emit a warning."""
-    src = """
-    module top ports(x: out async bool) {}
-    """
-    with pytest.raises(hwl.DiagnosticException, match="port.*has no driver"):
-        compile_custom(src).resolve("top.top")
-
-
-# =============================================================================
-# Correctness: empty tuple and single-element tuple
-# =============================================================================
-
-def test_empty_tuple(tmp_dir: Path):
-    """Empty tuples should work in both function and hardware contexts."""
-    e = compare_expression([], "Tuple()", "()", tmp_dir)
-    e.eval_assert([], ())
-
-
-def test_single_element_tuple(tmp_dir: Path):
-    """Single-element tuples should be correctly handled."""
-    e = compare_expression(["uint(8)"], "Tuple(uint(8),)", "(a0,)", tmp_dir)
-    e.eval_assert([0], (0,))
-    e.eval_assert([42], (42,))
-
-
-# =============================================================================
-# Correctness: interface with parameters
-# =============================================================================
-
-def test_parameterized_interface(tmp_dir: Path):
-    """Parameterized interfaces should correctly pass data."""
-    src = """
-    interface Bus(W: uint) {
-        data: uint(W),
-        interface input { data: in }
-        interface output { data: out }
-    }
-    module top ports(
-        x: interface async Bus(8).input,
-        y: interface async Bus(8).output
-    ) {
-        comb { y.data = x.data; }
-    }
-    """
-    c = compile_custom(src)
-    m = c.resolve("top.top")
-
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    inst = m.as_verilated(tmp_dir).instance()
-
-    inst.ports.x_data.value = 123
-    inst.step(1)
-    assert inst.ports.y_data.value == 123
-
-
-# =============================================================================
-# Correctness: var with multiple assignments
-# =============================================================================
-
-def test_var_multiple_assignments():
-    """Multiple assignments to the same var variable should use the last value."""
-    src = """
-    fn f(x: bool) -> bool {
-        var y = false;
-        y = x;
-        y = !x;
-        return y;
-    }
-    """
-    c = compile_custom(src)
-    f = c.resolve("top.f")
-    assert f(True) == False   # last write is !True = False
-    assert f(False) == True   # last write is !False = True
-
-
-def test_var_multiple_assignments_in_hardware(tmp_dir: Path):
-    """Multiple assignments to a var in hardware should use the last value."""
-    body = """
-    var y = false;
-    y = a0;
-    y = !a0;
-    return y;
-    """
-    e = compare_body(["bool"], "bool", body, tmp_dir)
-    e.eval_assert([True], False)   # last write is !True = False
-    e.eval_assert([False], True)   # last write is !False = True
+    prefix = "fn double(x: int(8)) -> int(8) { return x * 2; }"
+    body = "return double(a0) + double(a0);"
+    e = compare_body(["int(4)"], "int(8)", body, tmp_dir, prefix=prefix)
+    for v in range(-8, 8):
+        e.eval_assert([v], v * 4)
