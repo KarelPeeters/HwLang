@@ -202,48 +202,33 @@ def test_struct_field_assignment_not_implemented():
 
 
 # =============================================================================
-# BUG / CRASH: Infinite recursion causes SIGSEGV instead of a clean error
+# Infinite recursion raises a clean "stack overflow" diagnostic
 # =============================================================================
 
-def test_infinite_recursion_crashes():
+def test_infinite_recursion_raises_stack_overflow():
     """
-    BUG: Calling a function with no base case (infinite recursion) causes the
-    process to crash with a segmentation fault (SIGSEGV, exit code 139) rather
-    than raising a clean error (e.g. DiagnosticException or RecursionError).
+    CORRECT (after fix): Calling a function with no base case (infinite
+    recursion) raises a clean DiagnosticException with "stack overflow" rather
+    than crashing the process with SIGSEGV.
+
+    Root cause of the previous crash: STACK_OVERFLOW_STACK_LIMIT was 1000,
+    meaning ~500 actual recursive HwLang calls before the check fires.  The
+    Python-binding call path runs on the Python thread whose default stack is
+    only ~8 MB.  At ~500 recursive calls the Rust system stack was exhausted
+    first, producing SIGSEGV.  The limit is now 128 (~64 real recursive calls),
+    which fires well within the 8 MB budget.
 
     Note: mutual recursion that terminates works correctly (see test below).
     """
-    import os, signal, subprocess, sys, textwrap
     src = """
 fn f(n: uint) -> int {
     return f(n + 1);
 }
 """
-    # Run in a subprocess to survive the SIGSEGV.
-    # Inherit the current environment so that both `hwl` and `hwl_sandbox`
-    # are importable without any fragile path manipulation.
-    code = textwrap.dedent(f"""
-        from hwl_sandbox.common.util import compile_custom
-        src = {repr(src)}
-        c = compile_custom(src)
-        f = c.resolve('top.f')
+    c = compile_custom(src)
+    f = c.resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="stack overflow"):
         f(0)
-    """)
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        timeout=15,
-        env=os.environ.copy(),
-    )
-    # On Unix a process killed by signal SIGSEGV (11) exits with code
-    # 128 + 11 = 139 when reported by the shell, or as -11 when reported
-    # by Python's subprocess.
-    sigsegv_codes = (-signal.SIGSEGV, 128 + signal.SIGSEGV)
-    assert result.returncode in sigsegv_codes, (
-        f"Expected SIGSEGV ({sigsegv_codes}), got returncode={result.returncode}.\n"
-        f"stdout: {result.stdout.decode()[:200]}\n"
-        f"stderr: {result.stderr.decode()[:200]}"
-    )
 
 
 def test_terminating_mutual_recursion_works():
