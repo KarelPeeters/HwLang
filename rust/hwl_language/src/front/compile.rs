@@ -361,7 +361,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
     }
 
     pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> DiagResult<R> {
-        if self.call_stack.len() > STACK_OVERFLOW_STACK_LIMIT {
+        if self.call_stack.len() >= STACK_OVERFLOW_STACK_LIMIT {
             return Err(stack_overflow_diagnostic(&self.call_stack).report(self.refs.diags));
         }
 
