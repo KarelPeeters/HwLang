@@ -378,7 +378,7 @@ impl<P, W> PortOrWire<P, W> {
 }
 
 impl Signal {
-    pub fn span_decl<'c>(self, s: &'c CompileItemContext) -> Span {
+    pub fn span_decl(self, s: &CompileItemContext) -> Span {
         match self {
             Signal::Port(port) => s.ports[port].span,
             Signal::Wire(wire) => s.wires[wire].span_decl(),
