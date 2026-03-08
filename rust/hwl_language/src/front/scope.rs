@@ -1,29 +1,31 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
-use crate::front::flow::{FailedCaptureReason, Variable};
+use crate::front::flow::{Flow, Variable};
 use crate::front::signal::{Interface, Signal};
+use crate::front::value::CompileValue;
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::source::FileId;
+use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 #[derive(Debug)]
-pub struct FileScope {
+pub struct FrozenScope {
+    parent: Option<Arc<FrozenScope>>,
     content: ScopeContent,
 }
 
 #[derive(Debug)]
 pub struct Scope<'p> {
-    span: Span,
     parent: ScopeParent<'p>,
     content: RefCell<ScopeContent>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub enum ScopeParent<'p> {
-    File(&'p FileScope),
+    Frozen(Arc<FrozenScope>),
     Normal(&'p Scope<'p>),
 }
 
@@ -35,7 +37,8 @@ pub struct ScopeContent {
     any_id_err: DiagResult,
 }
 
-#[derive(Debug, Copy, Clone)]
+// TODO do we actually still need clone bounds here?
+#[derive(Debug, Clone)]
 pub enum ScopedEntry {
     /// Indirection though an item, the item should be evaluated.
     Item(AstRefItem),
@@ -43,6 +46,8 @@ pub enum ScopedEntry {
     /// These are not fully evaluated immediately, they might be used symbolically
     ///   as assignment targets or in domain expressions.
     Named(NamedValue),
+    /// Captured value, no longer directly connected to the original declaration.
+    Captured(CapturedValue),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -52,50 +57,54 @@ pub enum NamedValue {
     Interface(Interface),
 }
 
+#[derive(Debug, Clone)]
+pub struct CapturedValue {
+    pub span_capture: Span,
+    pub value: Result<Arc<CompileValue>, CaptureFailed>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CaptureFailed {
+    NotCompile,
+    NotFullyInitialized,
+}
+
 // TODO simplify all of this: we might only only need to report errors on the first re-declaration,
 //   which means we can remove that branch entirely
+// TODO we store the span twice, why?
 #[derive(Debug)]
 enum DeclaredValue {
     Once { value: DiagResult<ScopedEntry>, span: Span },
     Multiple { spans: Vec<Span>, err: DiagError },
-    FailedCapture(Span, FailedCaptureReason),
     Error(DiagError),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum DeclaredValueSingle<S = ScopedEntry> {
     Value { span: Span, value: S },
-    FailedCapture(Span, FailedCaptureReason),
     Error(DiagError),
 }
 
 #[derive(Debug)]
 pub struct ScopeFound {
-    pub defining_span: Span,
+    pub span_decl: Span,
     pub value: ScopedEntry,
 }
 
-impl FileScope {
+impl FrozenScope {
     pub fn new(span: Span) -> Self {
-        FileScope {
+        FrozenScope {
+            parent: None,
             content: ScopeContent::new(span),
         }
     }
 
-    pub fn as_scope(&self) -> Scope<'_> {
-        Scope::new(self.file_span(), ScopeParent::File(self))
+    pub fn as_scope(self: Arc<FrozenScope>) -> Scope<'static> {
+        Scope::new(self.content.span, ScopeParent::Frozen(self))
     }
 
-    pub fn new_child(&self, span: Span) -> Scope<'_> {
-        Scope::new(span, ScopeParent::File(self))
-    }
-
-    pub fn file(&self) -> FileId {
-        self.content.span.file
-    }
-
-    pub fn file_span(&self) -> Span {
-        self.content.span
+    pub fn new_child(self: Arc<FrozenScope>, span: Span) -> Scope<'static> {
+        Scope::new(span, ScopeParent::Frozen(self))
     }
 
     pub fn declare(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
@@ -116,12 +125,26 @@ impl FileScope {
     }
 
     pub fn find(&self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound> {
-        self.content
-            .find_step(diags, id)?
-            .ok_or_else(|| error_not_found(self.content.span, id, false).report(diags))
+        self.find_impl(diags, id, self.content.span)
     }
 
-    pub fn for_each_immediate_entry(&self, f: impl FnMut(&str, DeclaredValueSingle<ScopedEntry>)) {
+    fn find_impl(&self, diags: &Diagnostics, id: Spanned<&str>, start_span: Span) -> DiagResult<ScopeFound> {
+        let mut curr = self;
+        loop {
+            if let Some(found) = curr.content.find_step(id)? {
+                return Ok(found);
+            }
+
+            curr = match &curr.parent {
+                Some(parent) => parent,
+                None => break,
+            }
+        }
+
+        Err(error_not_found(start_span, id).report(diags))
+    }
+
+    pub fn for_each_immediate_entry(&self, f: impl FnMut(&str, DeclaredValueSingle<&ScopedEntry>)) {
         self.content.for_each_immediate_entry(f);
     }
 
@@ -137,7 +160,6 @@ impl<'p> Scope<'p> {
 
     fn new(span: Span, parent: ScopeParent<'p>) -> Self {
         Scope {
-            span,
             parent,
             content: RefCell::new(ScopeContent::new(span)),
         }
@@ -145,21 +167,16 @@ impl<'p> Scope<'p> {
 
     pub fn restore_from_content(parent: ScopeParent<'p>, content: ScopeContent) -> Self {
         Scope {
-            span: content.span,
             parent,
             content: RefCell::new(content),
         }
-    }
-
-    pub fn parent(&self) -> ScopeParent<'p> {
-        self.parent
     }
 
     pub fn into_content(self) -> ScopeContent {
         self.content.into_inner()
     }
 
-    pub fn for_each_immediate_entry(&self, f: impl FnMut(&str, DeclaredValueSingle<ScopedEntry>)) {
+    pub fn for_each_immediate_entry(&self, f: impl FnMut(&str, DeclaredValueSingle<&ScopedEntry>)) {
         self.content.borrow().for_each_immediate_entry(f);
     }
 
@@ -229,12 +246,6 @@ impl<'p> Scope<'p> {
                     DeclaredValue::Once { value: _, span } => vec![*span],
                     DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
                     DeclaredValue::Error(_) => return,
-                    DeclaredValue::FailedCapture(_, _) => {
-                        // TODO is this really not reachable in normal code?
-                        let _ = diags
-                            .report_error_internal(id.span, "declaring in scope that already has failed capture value");
-                        return;
-                    }
                 };
 
                 // report error
@@ -268,52 +279,122 @@ impl<'p> Scope<'p> {
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
     pub fn find(&self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound> {
-        self.find_impl(diags, id, true)
-    }
-
-    pub fn find_without_parents(&self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<ScopeFound> {
-        self.find_impl(diags, id, false)
+        let mut curr = self;
+        loop {
+            let content = curr.content.borrow();
+            if let Some(found) = content.find_step(id)? {
+                return Ok(found);
+            }
+            curr = match &curr.parent {
+                ScopeParent::Normal(parent) => parent,
+                ScopeParent::Frozen(parent) => {
+                    return parent.find_impl(diags, id, self.content.borrow().span);
+                }
+            };
+        }
     }
 
     pub fn try_find_for_diagnostic(&self, id: &str) -> DiagResult<Option<Span>> {
         let mut curr = self;
         loop {
-            let content = curr.content.borrow();
-            if let Some(span) = content.try_find_for_diagnostic(id)? {
+            if let Some(span) = curr.content.borrow().try_find_for_diagnostic(id)? {
                 return Ok(Some(span));
             }
 
-            curr = match curr.parent {
-                ScopeParent::File(parent) => return parent.content.try_find_for_diagnostic(id),
+            curr = match &curr.parent {
                 ScopeParent::Normal(parent) => parent,
+                ScopeParent::Frozen(parent) => {
+                    let mut curr = parent;
+                    loop {
+                        if let Some(span) = curr.content.try_find_for_diagnostic(id)? {
+                            return Ok(Some(span));
+                        }
+
+                        curr = match &curr.parent {
+                            Some(parent) => parent,
+                            None => return Ok(None),
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn find_impl(&self, diags: &Diagnostics, id: Spanned<&str>, check_parents: bool) -> DiagResult<ScopeFound> {
+    pub fn capture(&self, flow: &impl Flow, span_capture: Span) -> FrozenScope {
+        // walk up scopes, starting from the current scope up to the root
+        //   try to capture all values that have not yet been shadowed by a child scope
+        let mut captured_values: IndexMap<String, DeclaredValue> = IndexMap::new();
+        let mut any_id_err = Ok(());
+
         let mut curr = self;
-        loop {
-            let content = curr.content.borrow();
-            if let Some(found) = content.find_step(diags, id)? {
-                return Ok(found);
+        let final_parent = loop {
+            let curr_content = curr.content.borrow();
+
+            if let Err(e) = curr_content.any_id_err {
+                any_id_err = Err(e);
             }
 
-            curr = if check_parents {
-                match curr.parent {
-                    ScopeParent::File(parent) => {
-                        if let Some(found) = parent.content.find_step(diags, id)? {
-                            return Ok(found);
-                        }
-                        break;
+            curr_content.for_each_immediate_entry(|id, value| {
+                let child_values_entry = match captured_values.entry(id.to_owned()) {
+                    Entry::Occupied(_) => {
+                        // shadowed by child scope, no need to capture
+                        return;
                     }
-                    ScopeParent::Normal(parent) => parent,
-                }
-            } else {
-                break;
-            };
-        }
+                    Entry::Vacant(child_values_entry) => child_values_entry,
+                };
 
-        Err(error_not_found(self.span, id, check_parents).report(diags))
+                let captured = match value {
+                    DeclaredValueSingle::Value { span, value } => {
+                        let captured_entry = match value {
+                            &ScopedEntry::Item(item) => Ok(ScopedEntry::Item(item)),
+                            &ScopedEntry::Named(named) => match named {
+                                NamedValue::Variable(var) => {
+                                    flow.var_capture(Spanned::new(span_capture, var)).map(|value| {
+                                        ScopedEntry::Captured(CapturedValue {
+                                            span_capture,
+                                            value: value.map(Arc::new),
+                                        })
+                                    })
+                                }
+                                NamedValue::Signal(_) | NamedValue::Interface(_) => {
+                                    Ok(ScopedEntry::Captured(CapturedValue {
+                                        span_capture,
+                                        value: Err(CaptureFailed::NotCompile),
+                                    }))
+                                }
+                            },
+                            // we're re-capturing, discard the original spans
+                            ScopedEntry::Captured(cap) => Ok(ScopedEntry::Captured(CapturedValue {
+                                span_capture,
+                                value: cap.value.clone(),
+                            })),
+                        };
+
+                        DeclaredValue::Once {
+                            span,
+                            value: captured_entry,
+                        }
+                    }
+                    DeclaredValueSingle::Error(e) => DeclaredValue::Error(e),
+                };
+
+                child_values_entry.insert(captured);
+            });
+
+            curr = match &curr.parent {
+                ScopeParent::Frozen(parent) => break parent,
+                ScopeParent::Normal(parent) => parent,
+            };
+        };
+
+        FrozenScope {
+            parent: Some(Arc::clone(final_parent)),
+            content: ScopeContent {
+                span: self.content.borrow().span,
+                values: captured_values,
+                any_id_err,
+            },
+        }
     }
 }
 
@@ -363,12 +444,6 @@ impl ScopeContent {
                     DeclaredValue::Once { value: _, span } => vec![*span],
                     DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
                     DeclaredValue::Error(_) => return,
-                    DeclaredValue::FailedCapture(_, _) => {
-                        // TODO is this really not reachable in normal code?
-                        let _ = diags
-                            .report_error_internal(id.span, "declaring in scope that already has failed capture value");
-                        return;
-                    }
                 };
 
                 // report error
@@ -401,7 +476,6 @@ impl ScopeContent {
             Entry::Vacant(entry) => {
                 let declared = match value {
                     DeclaredValueSingle::Value { value, span } => DeclaredValue::Once { value: Ok(value), span },
-                    DeclaredValueSingle::FailedCapture(span, reason) => DeclaredValue::FailedCapture(span, reason),
                     DeclaredValueSingle::Error(err) => DeclaredValue::Error(err),
                 };
                 entry.insert(declared);
@@ -409,33 +483,20 @@ impl ScopeContent {
         }
     }
 
-    fn find_step(&self, diags: &Diagnostics, id: Spanned<&str>) -> DiagResult<Option<ScopeFound>> {
+    fn find_step(&self, id: Spanned<&str>) -> DiagResult<Option<ScopeFound>> {
         self.any_id_err?;
 
         if let Some(declared) = self.values.get(id.inner) {
-            let (value, defining_span) = match *declared {
-                DeclaredValue::Once { value, span } => (value?, span),
+            let (value, span_decl) = match *declared {
+                DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
                 DeclaredValue::Multiple { spans: _, err } => return Err(err),
                 DeclaredValue::Error(err) => return Err(err),
-                DeclaredValue::FailedCapture(span, reason) => {
-                    let reason_str = match reason {
-                        FailedCaptureReason::NotCompile => "contains a non-compile-time value",
-                        FailedCaptureReason::Reference => {
-                            "contains a reference which is not valid in the current context"
-                        }
-                        FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
-                    };
-                    return Err(DiagnosticError::new(
-                        format!("failed to capture value because it {reason_str}"),
-                        id.span,
-                        "used here",
-                    )
-                    .add_info(span, "value declared here")
-                    .report(diags));
-                }
             };
 
-            Ok(Some(ScopeFound { defining_span, value }))
+            Ok(Some(ScopeFound {
+                span_decl,
+                value: value.clone(),
+            }))
         } else {
             Ok(None)
         }
@@ -446,7 +507,6 @@ impl ScopeContent {
             match value {
                 &DeclaredValue::Once { value: _, span } => Some(span),
                 DeclaredValue::Multiple { spans, err: _ } => Some(spans[0]),
-                &DeclaredValue::FailedCapture(span, _) => Some(span),
                 &DeclaredValue::Error(e) => return Err(e),
             }
         } else {
@@ -455,15 +515,14 @@ impl ScopeContent {
         Ok(result)
     }
 
-    pub fn for_each_immediate_entry(&self, mut f: impl FnMut(&str, DeclaredValueSingle<ScopedEntry>)) {
+    pub fn for_each_immediate_entry(&self, mut f: impl FnMut(&str, DeclaredValueSingle<&ScopedEntry>)) {
         for (k, v) in &self.values {
             let v = match *v {
-                DeclaredValue::Once { value, span } => match value {
+                DeclaredValue::Once { ref value, span } => match value {
                     Ok(value) => DeclaredValueSingle::Value { span, value },
-                    Err(e) => DeclaredValueSingle::Error(e),
+                    &Err(e) => DeclaredValueSingle::Error(e),
                 },
                 DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
-                DeclaredValue::FailedCapture(span, reason) => DeclaredValueSingle::FailedCapture(span, reason),
                 DeclaredValue::Error(err) => DeclaredValueSingle::Error(err),
             };
             f(k.as_str(), v)
@@ -475,15 +534,24 @@ impl ScopeContent {
     }
 }
 
-fn error_not_found(initial_scope_span: Span, id: Spanned<&str>, check_parents: bool) -> DiagnosticError {
+impl<S: Clone> DeclaredValueSingle<&S> {
+    pub fn cloned(&self) -> DeclaredValueSingle<S> {
+        match *self {
+            DeclaredValueSingle::Value { span, value } => {
+                let value = value.clone();
+                DeclaredValueSingle::Value { span, value }
+            }
+            DeclaredValueSingle::Error(e) => DeclaredValueSingle::Error(e),
+        }
+    }
+}
+
+fn error_not_found(initial_scope_span: Span, id: Spanned<&str>) -> DiagnosticError {
     // TODO add fuzzy-matched suggestions as info
     // TODO simplify once we we always have a span, eg. from a top config file, commandline or python callsite
     let title = format!("undeclared identifier `{}`", id.inner);
-    let msg_searched = if check_parents {
-        "searched in the scope starting here and its parents"
-    } else {
-        "searched in the scope starting"
-    };
-    DiagnosticError::new(title, id.span, "identifier not declared")
-        .add_info(Span::empty_at(initial_scope_span.start()), msg_searched)
+    DiagnosticError::new(title, id.span, "identifier not declared").add_info(
+        Span::empty_at(initial_scope_span.start()),
+        "searched in the scope starting here and its parents",
+    )
 }

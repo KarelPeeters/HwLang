@@ -174,12 +174,11 @@ def test_extra_list_scopes():
             b: uint(B),
         }
         
+        // things declared in branches are visible in other branches and in the function body
         if (e) {
-            // we can reuse names in different branches
             const B = 4;
         }
         if (d) {
-            // branches scopes don't leak outside
             const { print(C); } 
         }
     ) -> int {
@@ -199,11 +198,11 @@ def test_extra_list_scopes():
     f(c=False, d=False, e=False, b=2 ** 2 - 1)
 
     # reuse
-    f(c=True, d=False, e=True, b=0)
+    with pytest.raises(hwl.DiagnosticException, match="identifier `B` declared multiple times"):
+        f(c=True, d=False, e=True, b=0)
 
     # no leaking
-    with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
-        f(c=True, d=True, e=False, b=0)
+    f(c=True, d=True, e=False, b=0)
     with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
         f(c=False, d=True, e=False, b=0)
 

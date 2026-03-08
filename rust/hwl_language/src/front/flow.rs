@@ -4,6 +4,7 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationKind, ValueWithImplications,
 };
+use crate::front::scope::CaptureFailed;
 use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
@@ -14,7 +15,6 @@ use crate::mid::ir::{
     IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
-use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::try_inner;
@@ -293,20 +293,6 @@ pub struct ValueVersion {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct VersionIndex(NonZeroUsize);
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum CapturedValue {
-    Item(AstRefItem),
-    Value(CompileValue),
-    FailedCapture(FailedCaptureReason),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum FailedCaptureReason {
-    NotCompile,
-    Reference,
-    NotFullyInitialized,
-}
-
 trait FlowPrivate: Sized {
     fn root(&self) -> &FlowRoot<'_>;
 
@@ -577,15 +563,13 @@ pub trait Flow: FlowPrivate {
         Ok(var)
     }
 
-    fn var_capture(&self, var: Spanned<Variable>) -> DiagResult<CapturedValue> {
+    fn var_capture(&self, var: Spanned<Variable>) -> DiagResult<Result<CompileValue, CaptureFailed>> {
         match self.var_get_content(var)? {
             VariableContent::Assigned(value) => match CompileValue::try_from(&value.inner) {
-                Ok(v) => Ok(CapturedValue::Value(v)),
-                Err(NotCompile) => Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile)),
+                Ok(v) => Ok(Ok(v)),
+                Err(NotCompile) => Ok(Err(CaptureFailed::NotCompile)),
             },
-            VariableContent::NotFullyAssigned(_) => {
-                Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotFullyInitialized))
-            }
+            VariableContent::NotFullyAssigned(_) => Ok(Err(CaptureFailed::NotFullyInitialized)),
             &VariableContent::Error(e) => Err(e),
         }
     }

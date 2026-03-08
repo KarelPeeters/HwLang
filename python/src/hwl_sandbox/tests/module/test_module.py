@@ -21,7 +21,7 @@ def test_port_reg_name(tmpdir: Path):
     m.as_verilated(tmpdir)
 
 
-def test_simple_module_instance(tmp_dir: Path):
+def test_module_instance_simple(tmp_dir: Path):
     src = """
     module parent ports(x: in async bool, y: out async bool) { instance child ports(x, y); }
     module child ports(x: in async bool, y: out async bool) { comb { y = x; } }
@@ -34,6 +34,24 @@ def test_simple_module_instance(tmp_dir: Path):
     parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
 
     for v in [False, True, False, True]:
+        parent_inst.ports.x.value = v
+        parent_inst.step(1)
+        assert parent_inst.ports.y.value == v
+
+
+def test_module_instance_generic(tmp_dir: Path):
+    src = """
+    module parent ports(x: in async uint(4), y: out async uint(4)) { instance child(N=4) ports(x, y); }
+    module child(N: uint) ports(x: in async uint(N), y: out async uint(N)) { comb { y = x; } }
+    """
+
+    c = compile_custom(src)
+    parent: hwl.Module = c.resolve("top.parent")
+    print(parent.as_verilog().source)
+    parent_verilated: hwl.ModuleVerilated = parent.as_verilated(tmp_dir)
+    parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
+
+    for v in range(2 ** 4):
         parent_inst.ports.x.value = v
         parent_inst.step(1)
         assert parent_inst.ports.y.value == v
@@ -218,3 +236,22 @@ def test_self_instance():
     c = compile_custom(src)
     with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
         c.resolve("top.top")
+
+
+def test_module_inner_decls_can_access_outer():
+    # Test that declarations inside the module can access values in parameters and even hardware signals.
+    # This requires that flow/scope/capture handling is implemented at least somewhat correctly.
+
+    src = """
+    module foo(N: uint) ports() {
+        wire w: bool = false;
+    
+        type array(T: type) = [N]T;
+        type foo = type(w);
+        
+        wire w1: array(bool) = [false] * N;
+        wire w2: foo = false;
+    }
+    """
+    foo = compile_custom(src).resolve("top.foo")
+    print(foo(N=4).as_verilog().source)

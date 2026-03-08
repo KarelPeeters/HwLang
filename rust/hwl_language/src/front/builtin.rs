@@ -34,7 +34,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut arg_expr = None;
         let mut scope_args = scope.new_child(args.span());
-        self.elaborate_extra_list(&mut scope_args, flow, args, &mut |_, _, _, arg| {
+        self.elaborate_extra_list(&mut scope_args, flow, args, false, &mut |_, _, _, arg| {
             let &Arg { span: _, name, value } = arg;
 
             if let Some(name) = name {
@@ -67,7 +67,7 @@ impl CompileItemContext<'_, '_> {
 
         // get type
         let ty = match value {
-            NamedOrValue::ItemValue(value) => value.ty(),
+            NamedOrValue::Value(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
                     flow.type_of(self, Spanned::new(id.span, SignalOrVariable::Variable(var)))?

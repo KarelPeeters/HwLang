@@ -5,14 +5,13 @@ use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::Flow;
-use crate::front::flow::{CapturedValue, FailedCaptureReason, FlowKind, VariableId, VariableInfo};
+use crate::front::flow::{FlowKind, VariableId, VariableInfo};
 use crate::front::implication::ValueWithImplications;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
     UniqueDeclaration,
 };
-use crate::front::scope::{DeclaredValueSingle, Scope, ScopeParent};
-use crate::front::scope::{NamedValue, ScopedEntry};
+use crate::front::scope::{FrozenScope, NamedValue, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
     CompileValue, EnumValue, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile, SimpleCompileValue,
@@ -21,14 +20,11 @@ use crate::front::value::{
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{Arg, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::syntax::source::FileId;
+use crate::util::ResultDoubleExt;
 use crate::util::data::VecExt;
-use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, enumerate};
-use std::collections::HashMap;
-use std::collections::hash_map::Entry as HashMapEntry;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -59,11 +55,11 @@ pub enum FunctionBitsKind {
 pub struct UserFunctionValue {
     // only used for uniqueness
     // TODO switch to newer UniqueDeclaration?
-    pub decl_span: Span,
-    pub scope_captured: CapturedScope,
+    pub span_decl: Span,
+    pub scope_captured: Arc<FrozenScope>,
 
     // TODO point into ast instead of storing a clone here
-    pub params: Parameters,
+    pub params: Arc<Parameters>,
     pub body: Spanned<FunctionBody>,
 }
 
@@ -71,31 +67,32 @@ pub struct UserFunctionValue {
 pub enum FunctionBody {
     FunctionBodyBlock {
         // TODO avoid ast clones, just refer to the ast item here
-        body: Block<BlockStatement>,
+        body: Arc<Block<BlockStatement>>,
         ret_ty: Option<Expression>,
     },
     ItemBody(FunctionItemBody),
 }
 
-// TODO move this into the scope module
-// TODO avoid repeated hashing of this potentially large type
-// TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
-//   We only need to check for captures values that could actually be used
-//   this is really hard to known in advance,
-//   but maybe we can a an approximation pre-pass that checks all usages that _could_ happen?
-//   For now users can do this themselves already with a file-level trampoline function
-//   that returns a new function that can only capture the outer params, not a full scope.
-//   As another solution, we could de-duplicate modules after IR generation again.
-// TODO allow capturing hardware values, eg. for functions defined in module bodies or in hardware blocks
-/// The parent scope is kept separate to avoid a hard dependency on all items that are in scope,
-///   now capturing functions still allow graph-based item evaluation.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct CapturedScope {
-    root_file: FileId,
-
-    /// Sorted by name, to get some extra determinism and cache key hits.
-    captured_values: Vec<(String, DiagResult<Spanned<CapturedValue>>)>,
-}
+// // TODO move this into the scope module
+// // TODO avoid repeated hashing of this potentially large type
+// // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
+// //   We only need to check for captures values that could actually be used
+// //   this is really hard to known in advance,
+// //   but maybe we can a an approximation pre-pass that checks all usages that _could_ happen?
+// //   For now users can do this themselves already with a file-level trampoline function
+// //   that returns a new function that can only capture the outer params, not a full scope.
+// //   As another solution, we could de-duplicate modules after IR generation again.
+// // TODO allow capturing hardware values, eg. for functions defined in module bodies or in hardware blocks
+// // TODO replace this with a general FrozenScope we can also use for struct member items?
+// /// The parent scope is kept separate to avoid a hard dependency on all items that are in scope,
+// ///   now capturing functions still allow graph-based item evaluation.
+// #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+// pub struct CapturedScope {
+//     root_file: FileId,
+//
+//     /// Sorted by name, to get some extra determinism and cache key hits.
+//     captured_values: Vec<(String, DiagResult<Spanned<CapturedValue>>)>,
+// }
 
 #[must_use]
 pub struct ParamArgMacher<'a> {
@@ -371,8 +368,8 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        let err_infer_any = |kind: &str, decl_span: Span| {
-            error_cannot_infer_generic_params(kind, span_target, span_call, decl_span).report(diags)
+        let err_infer_any = |kind: &str, span_decl: Span| {
+            error_cannot_infer_generic_params(kind, span_target, span_call, span_decl).report(diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {
             DiagnosticError::new(
@@ -510,20 +507,19 @@ impl CompileItemContext<'_, '_> {
         function: &UserFunctionValue,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let UserFunctionValue {
-            decl_span,
-            scope_captured,
-            params,
-            body,
+        let &UserFunctionValue {
+            span_decl,
+            ref scope_captured,
+            ref params,
+            ref body,
         } = function;
-        let decl_span = *decl_span;
         let diags = self.refs.diags;
 
-        self.refs.check_should_stop(decl_span)?;
+        self.refs.check_should_stop(span_decl)?;
 
         // recreate captured scope
         let span_scope = params.span.join(body.span);
-        let scope_captured = scope_captured.to_scope(self.refs, flow, span_scope)?;
+        let scope_captured = Arc::clone(scope_captured).as_scope();
 
         // map params into scope
         let mut scope = scope_captured.new_child(span_scope);
@@ -541,7 +537,7 @@ impl CompileItemContext<'_, '_> {
             NamedRule::PositionalAndNamed,
         )?;
 
-        self.elaborate_extra_list(&mut scope, flow, &params.items, &mut |slf, scope, flow, param| {
+        self.elaborate_extra_list(&mut scope, flow, &params.items, true, &mut |slf, scope, flow, param| {
             let &Parameter {
                 span: _,
                 id,
@@ -588,7 +584,7 @@ impl CompileItemContext<'_, '_> {
         matcher.finish()?;
 
         // run the body
-        let entry = StackEntry::FunctionRun(decl_span);
+        let entry = StackEntry::FunctionRun(span_decl);
         self.recurse(entry, |slf| {
             match &body.inner {
                 FunctionBody::FunctionBodyBlock { body, ret_ty } => {
@@ -601,7 +597,7 @@ impl CompileItemContext<'_, '_> {
                     let return_entry_kind = match flow.kind_mut() {
                         FlowKind::Compile(_) => ReturnEntryKind::Compile,
                         FlowKind::Hardware(flow) => {
-                            let return_flag = ExitFlag::new(flow, decl_span, EarlyExitKind::Return)?;
+                            let return_flag = ExitFlag::new(flow, span_decl, EarlyExitKind::Return)?;
                             ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
                         }
                     };
@@ -609,7 +605,7 @@ impl CompileItemContext<'_, '_> {
                         && !return_type.inner.is_unit()
                     {
                         let return_var_info = VariableInfo {
-                            span_decl: decl_span,
+                            span_decl,
                             id: VariableId::Custom("return_value"),
                             mutable: false,
                             ty: None,
@@ -620,14 +616,14 @@ impl CompileItemContext<'_, '_> {
                         // As far as the flow is concerned,
                         //   it might look like not all branches are guaranteed to initialize the return value.
                         // To avoid wrong error messages and skipped merging, we always start with an initial value.
-                        flow.var_set_undefined(return_var, decl_span)?;
+                        flow.var_set_undefined(return_var, span_decl)?;
 
                         Some(return_var)
                     } else {
                         None
                     };
                     let return_entry = ReturnEntry {
-                        span_function_decl: decl_span,
+                        span_function_decl: span_decl,
                         return_type: return_type.as_ref().map(Spanned::as_ref),
                         return_var,
                         kind: return_entry_kind,
@@ -898,141 +894,13 @@ fn check_function_end(
     Ok(value.into_value())
 }
 
-impl CapturedScope {
-    pub fn from_file_scope(file: FileId) -> CapturedScope {
-        CapturedScope {
-            root_file: file,
-            captured_values: vec![],
-        }
-    }
-
-    pub fn from_scope(scope: &Scope, flow: &impl Flow) -> CapturedScope {
-        // it's fine to use a hashmap here, this will be sorted into a BTreeMap later
-        let mut captured_values = HashMap::new();
-
-        // walk up scopes, starting from the current scope up to the root
-        //   try to capture all values that have not yet been shadowed by a child scope
-        let mut curr = scope;
-        let root_file = loop {
-            match curr.parent() {
-                ScopeParent::Normal(parent) => {
-                    // this is a non-root scope, capture it
-                    curr.for_each_immediate_entry(|id, value| {
-                        let child_values_entry = match captured_values.entry(id.to_owned()) {
-                            HashMapEntry::Occupied(_) => {
-                                // shadowed by child scope
-                                return;
-                            }
-                            HashMapEntry::Vacant(child_values_entry) => child_values_entry,
-                        };
-
-                        let captured = match value {
-                            DeclaredValueSingle::Value { span, value } => {
-                                let captured = match value {
-                                    ScopedEntry::Item(value) => Ok(CapturedValue::Item(value)),
-                                    ScopedEntry::Named(named) => match named {
-                                        NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)),
-                                        NamedValue::Signal(_) | NamedValue::Interface(_) => {
-                                            // TODO allow capturing by reference?
-                                            Ok(CapturedValue::FailedCapture(FailedCaptureReason::NotCompile))
-                                        }
-                                    },
-                                };
-                                captured.map(|c| Spanned::new(span, c))
-                            }
-                            DeclaredValueSingle::FailedCapture(span, reason) => {
-                                Ok(Spanned::new(span, CapturedValue::FailedCapture(reason)))
-                            }
-                            DeclaredValueSingle::Error(e) => Err(e),
-                        };
-
-                        child_values_entry.insert(captured);
-                    });
-
-                    curr = parent;
-                }
-                ScopeParent::File(parent) => {
-                    // this is the top file scope, no need to capture this
-                    break parent.file();
-                }
-            }
-        };
-
-        // sort captured values
-        // TODO maybe we don't need to sort, they already have a deterministic order anyway
-        let mut captured_values = captured_values.into_iter().collect_vec();
-        captured_values.sort_by(|a, b| a.0.cmp(&b.0));
-
-        CapturedScope {
-            root_file,
-            captured_values,
-        }
-    }
-
-    pub fn to_scope<'s>(
-        &self,
-        refs: CompileRefs<'_, 's>,
-        flow: &mut impl Flow,
-        scope_span: Span,
-    ) -> DiagResult<Scope<'s>> {
-        let CapturedScope {
-            root_file,
-            captured_values,
-        } = self;
-
-        let file_scope = refs
-            .shared
-            .file_scopes
-            .get(root_file)
-            .unwrap()
-            .as_ref_ok()
-            .expect("file scope should be valid since the capturing succeeded");
-        let mut scope = file_scope.new_child(scope_span);
-
-        // TODO we need a span, even for errors
-        for (id, value) in captured_values {
-            let declared = match value {
-                Ok(value) => {
-                    let span = value.span;
-                    match &value.inner {
-                        &CapturedValue::Item(item) => DeclaredValueSingle::Value {
-                            span,
-                            value: ScopedEntry::Item(item),
-                        },
-                        CapturedValue::Value(value) => {
-                            // TODO this can be simplified, identifiers can be stored by value now
-                            let id_recreated = MaybeIdentifier::Identifier(Identifier { span });
-                            let var = flow.var_new_immutable_init(
-                                refs,
-                                id_recreated.span(),
-                                VariableId::Id(id_recreated),
-                                span,
-                                Ok(Value::from(value.clone())),
-                            )?;
-                            DeclaredValueSingle::Value {
-                                span,
-                                value: ScopedEntry::Named(NamedValue::Variable(var)),
-                            }
-                        }
-                        &CapturedValue::FailedCapture(reason) => DeclaredValueSingle::FailedCapture(span, reason),
-                    }
-                }
-                &Err(e) => DeclaredValueSingle::Error(e),
-            };
-            scope.declare_already_checked(id.clone(), declared);
-        }
-
-        Ok(scope)
-    }
-}
-
 impl Eq for FunctionValue {}
 
 impl FunctionValue {
-    pub fn equality_key(&self) -> impl Eq + Hash + '_ {
+    fn equality_key(&self) -> impl Eq + Hash + '_ {
         #[derive(Eq, PartialEq, Hash)]
         enum Key<'a> {
-            User(Span, &'a CapturedScope),
+            User(Span, *const FrozenScope),
             Bits(&'a HardwareType, FunctionBitsKind),
             StructNew(ElaboratedStruct),
             StructNewInfer(UniqueDeclaration),
@@ -1042,17 +910,19 @@ impl FunctionValue {
 
         match self {
             FunctionValue::User(func) => {
-                let UserFunctionValue {
-                    decl_span,
-                    scope_captured,
-                    params,
-                    body,
+                let &UserFunctionValue {
+                    span_decl,
+                    ref scope_captured,
+                    ref params,
+                    ref body,
                 } = &**func;
 
-                // these are both derivable from the decl_span, so redundant
-                // TODO actually remove them from the struct
+                // these are both derivable from the span_decl, so redundant
                 let _ = (params, body);
-                Key::User(*decl_span, scope_captured)
+
+                // deduplicate based on captured scope equality (by pointer)
+                //   we could compare by full contents equality, but that is more expensive and complicated
+                Key::User(span_decl, Arc::as_ptr(scope_captured))
             }
             FunctionValue::Bits(FunctionBits { ty_hw: ty, kind }) => Key::Bits(ty, *kind),
             FunctionValue::StructNew(elab) => Key::StructNew(*elab),
@@ -1089,7 +959,7 @@ pub fn error_cannot_infer_generic_params(
     kind: &str,
     span_target: Span,
     span_call: Span,
-    decl_span: Span,
+    span_decl: Span,
 ) -> DiagnosticError {
     DiagnosticError::new(
         format!("cannot infer {kind} parameters"),
@@ -1097,6 +967,6 @@ pub fn error_cannot_infer_generic_params(
         format!("this {kind} has unbound generic parameters"),
     )
     .add_info(span_call, "no expected type")
-    .add_info(decl_span, format!("{kind} declared with generic parameters here"))
+    .add_info(span_decl, format!("{kind} declared with generic parameters here"))
     .add_footer_hint("either set an expected type or use the full type")
 }

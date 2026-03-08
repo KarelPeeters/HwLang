@@ -2,6 +2,7 @@ use crate::front::block::ElaboratedForHeader;
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::flow::Flow;
+use crate::front::item::EvaluatedDeclaration;
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem, MaybeIdentifier};
 use crate::syntax::pos::{HasSpan, Spanned};
@@ -24,9 +25,12 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
     }
 
     pub fn declare_root(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, entry: DiagResult<ScopedEntry>) {
-        self.scope.declare(diags, id, entry);
+        // slight code duplication to avoid redundant clone but respect order
         if let Some(root_scope) = self.root_scope {
+            self.scope.declare(diags, id, entry.clone());
             root_scope.declare_non_mut(diags, id, entry);
+        } else {
+            self.scope.declare(diags, id, entry);
         }
     }
 
@@ -36,9 +40,12 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
         id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
         entry: DiagResult<ScopedEntry>,
     ) {
-        self.scope.maybe_declare(diags, id, entry);
+        // slight code duplication to avoid redundant clone but respect order
         if let Some(root_scope) = self.root_scope {
+            self.scope.maybe_declare(diags, id, entry.clone());
             root_scope.maybe_declare_non_mut(diags, id, entry);
+        } else {
+            self.scope.maybe_declare(diags, id, entry);
         }
     }
 }
@@ -49,6 +56,7 @@ impl CompileItemContext<'_, '_> {
         scope_parent: &mut Scope,
         flow: &mut F,
         list: &'a ExtraList<T>,
+        common_decl_in_root_scope: bool,
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
         let ExtraList { span: _, items } = list;
@@ -56,7 +64,7 @@ impl CompileItemContext<'_, '_> {
             root_scope: None,
             scope: scope_parent,
         };
-        self.elaborate_extra_list_items(&mut scope_extra, flow, items, f)
+        self.elaborate_extra_list_items(&mut scope_extra, flow, items, common_decl_in_root_scope, f)
     }
 
     pub fn elaborate_extra_list_block<'a, F: Flow, T>(
@@ -64,13 +72,14 @@ impl CompileItemContext<'_, '_> {
         scope_parent: &mut ExtraScope,
         flow: &mut F,
         block: &'a ExtraListBlock<T>,
+        common_decl_in_root_scope: bool,
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
         let &ExtraListBlock { span, ref items } = block;
 
         let mut scope_child = scope_parent.scope.new_child(span);
         let mut scope_child = scope_parent.new_child(&mut scope_child);
-        self.elaborate_extra_list_items(&mut scope_child, flow, items, f)
+        self.elaborate_extra_list_items(&mut scope_child, flow, items, common_decl_in_root_scope, f)
     }
 
     fn elaborate_extra_list_items<'a, F: Flow, T: 'a>(
@@ -78,20 +87,34 @@ impl CompileItemContext<'_, '_> {
         scope: &mut ExtraScope,
         flow: &mut F,
         items: &'a [ExtraListItem<T>],
+        common_decl_in_root_scope: bool,
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
         let refs = self.refs;
+        let diags = refs.diags;
 
         for item in items {
             match item {
                 ExtraListItem::Leaf(leaf) => f(self, scope, flow, leaf)?,
                 ExtraListItem::Declaration(decl) => {
-                    self.eval_and_declare_declaration(scope.as_scope(), flow, decl)?;
+                    let eval = self.eval_declaration(scope.as_scope(), flow, decl)?;
+
+                    if let Some(eval) = eval {
+                        let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
+                        let id_str = id.spanned_str(self.refs.fixed.source);
+                        let entry = eval.value_into_entry(self.refs, flow)?;
+
+                        if common_decl_in_root_scope {
+                            scope.maybe_declare_root(diags, Ok(id_str), Ok(entry));
+                        } else {
+                            scope.as_scope().maybe_declare(diags, Ok(id_str), Ok(entry));
+                        }
+                    }
                 }
                 ExtraListItem::If(stmt) => {
                     let block = self.compile_if_statement_choose_block(scope.as_scope(), flow, stmt)?;
                     if let Some(block) = block {
-                        self.elaborate_extra_list_block(scope, flow, block, f)?;
+                        self.elaborate_extra_list_block(scope, flow, block, common_decl_in_root_scope, f)?;
                     }
                 }
                 ExtraListItem::Match(stmt) => {
@@ -104,7 +127,7 @@ impl CompileItemContext<'_, '_> {
                         declare.declare(refs, scope_child.as_scope(), flow)?;
                     }
 
-                    self.elaborate_extra_list_block(&mut scope_child, flow, block, f)?;
+                    self.elaborate_extra_list_block(&mut scope_child, flow, block, common_decl_in_root_scope, f)?;
                 }
                 ExtraListItem::For(stmt) => {
                     let ElaboratedForHeader { index_ty, iter } =
@@ -124,7 +147,13 @@ impl CompileItemContext<'_, '_> {
                             index_value,
                         )?;
 
-                        self.elaborate_extra_list_block(&mut scope_iter, flow, &stmt.body, f)?;
+                        self.elaborate_extra_list_block(
+                            &mut scope_iter,
+                            flow,
+                            &stmt.body,
+                            common_decl_in_root_scope,
+                            f,
+                        )?;
                     }
                 }
             }

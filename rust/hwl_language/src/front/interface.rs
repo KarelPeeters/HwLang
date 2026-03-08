@@ -1,8 +1,8 @@
-use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
-use crate::front::flow::{FlowCompile, FlowRoot};
-use crate::front::function::CapturedScope;
+use crate::front::flow::FlowCompile;
 use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
+use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
 use crate::front::value::CompileValue;
 use crate::syntax::ast::{
@@ -80,32 +80,28 @@ struct InterfaceViewPartialElab {
     pub ports_dirs: Vec<(Identifier, Spanned<PortDirection>)>,
 }
 
-impl CompileRefs<'_, '_> {
+impl CompileItemContext<'_, '_> {
     pub fn elaborate_interface_new(
-        self,
-        ast_ref: AstRefInterface,
-        scope_params: CapturedScope,
+        &mut self,
+        scope_params: &Scope,
+        flow: &mut FlowCompile,
         unique: UniqueDeclaration,
         params: &Option<Vec<(Identifier, CompileValue)>>,
+        ast_ref: AstRefInterface,
     ) -> DiagResult<ElaboratedInterfaceInfo> {
-        let diags = self.diags;
-        let source = self.fixed.source;
-        let elab = &self.shared.elaboration_arenas;
+        let refs = self.refs;
+        let diags = refs.diags;
+        let source = refs.fixed.source;
+        let elab = &refs.shared.elaboration_arenas;
 
         let &ItemDefInterface {
-            span,
+            span: _,
             vis: _,
             id: ref interface_id,
             params: _,
             span_body,
             ref body,
-        } = &self.fixed.parsed[ast_ref];
-
-        // rebuild params scope
-        let mut ctx = CompileItemContext::new_empty(self, None, None);
-        let flow_root = FlowRoot::new(diags, &self.shared.next_flow_root_id);
-        let mut flow = FlowCompile::new_root(&flow_root, span_body, "item body");
-        let scope_params = scope_params.to_scope(self, &mut flow, span)?;
+        } = &refs.fixed.parsed[ast_ref];
 
         // elaborate extra list, collect signal types and view directions immediately,
         //   then later actually whether the views signals match the actual signals
@@ -113,14 +109,14 @@ impl CompileRefs<'_, '_> {
         let mut signal_map = IndexMap::new();
         let mut views_partial: Vec<InterfaceViewPartialElab> = vec![];
 
-        ctx.elaborate_extra_list(&mut scope_body, &mut flow, body, &mut |ctx, scope, flow, item| {
+        self.elaborate_extra_list(&mut scope_body, flow, body, true, &mut |slf, scope, flow, item| {
             match item {
                 &InterfaceListItem::Signal(signal) => {
                     let InterfaceSignal {
                         id: signal_id,
                         ty: signal_ty,
                     } = signal;
-                    let ty_eval = ctx
+                    let ty_eval = slf
                         .eval_expression_as_ty(scope.as_scope(), flow, signal_ty)
                         .and_then(|ty| match ty.inner.as_hardware_type(elab) {
                             Ok(ty_hw) => Ok(Spanned::new(ty.span, ty_hw)),
@@ -155,7 +151,7 @@ impl CompileRefs<'_, '_> {
                     } = view;
 
                     let mut port_dirs_partial = vec![];
-                    ctx.elaborate_extra_list(scope.as_scope(), flow, port_dirs, &mut |_, _, _, &port_dir| {
+                    slf.elaborate_extra_list(scope.as_scope(), flow, port_dirs, true, &mut |_, _, _, &port_dir| {
                         port_dirs_partial.push(port_dir);
                         Ok(())
                     })?;

@@ -4,7 +4,7 @@ use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
-use crate::front::scope::{DeclaredValueSingle, FileScope, ScopedEntry};
+use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopedEntry};
 use crate::front::signal::Signal;
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
@@ -27,7 +27,7 @@ use itertools::{Itertools, zip_eq};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // TODO make all of these configurable
 // TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
@@ -277,7 +277,7 @@ impl PartialIrDatabase<IrModuleInfo> {
     }
 }
 
-pub type FileScopes = IndexMap<FileId, DiagResult<FileScope>>;
+pub type FileScopes = IndexMap<FileId, DiagResult<Arc<FrozenScope>>>;
 
 #[derive(Copy, Clone)]
 pub struct CompileRefs<'a, 's> {
@@ -467,10 +467,10 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     } = fixed;
 
     // pass 0: add all declared items to the file scope
-    let mut file_scopes: FileScopes = IndexMap::new();
+    let mut file_scopes = IndexMap::new();
     for file in hierarchy.files() {
         let scope = parsed[file].as_ref_ok().map(|ast| {
-            let mut scope = FileScope::new(ast.span);
+            let mut scope = FrozenScope::new(ast.span);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
                     scope.maybe_declare(
@@ -573,7 +573,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             let scope = &file_scopes.get(&file).unwrap();
             if let Ok(scope) = scope {
                 scope.for_each_immediate_entry(|name, value| {
-                    prelude_imported_items.push((name.to_owned(), value));
+                    prelude_imported_items.push((name.to_owned(), value.cloned()));
                 });
             }
         }
@@ -582,13 +582,13 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
         if let Ok(scope) = file_scopes.get_mut(&file).unwrap() {
             for (name, value) in &prelude_imported_items {
                 if !scope.has_immediate_entry(name) {
-                    scope.declare_already_checked(name.clone(), *value);
+                    scope.declare_already_checked(name.clone(), value.clone());
                 }
             }
         }
     }
 
-    file_scopes
+    file_scopes.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect()
 }
 
 fn resolve_import_path(
@@ -664,14 +664,13 @@ fn find_top_module(
                     "defined here",
                 )),
             },
-            _ => Err(diags.report_error_simple("`top` should be a module", top_entry.defining_span, "defined here")),
+            _ => Err(diags.report_error_simple("`top` should be a module", top_entry.span_decl, "defined here")),
         },
-        ScopedEntry::Named(_) => {
-            // TODO include "got" string
-            // TODO is this even ever possible? direct should only be inside of scopes
+        ScopedEntry::Named(_) | ScopedEntry::Captured(_) => {
+            // this should not be possible, but provide a decent error message anyway
             Err(diags.report_error_simple(
-                "top should be an item, got a named value",
-                top_entry.defining_span,
+                "top should be an item, got named or captured",
+                top_entry.span_decl,
                 "defined here",
             ))
         }
@@ -747,7 +746,7 @@ impl CompileShared {
         }
     }
 
-    pub fn file_scope(&self, file: FileId) -> DiagResult<&FileScope> {
+    pub fn file_scope(&self, file: FileId) -> DiagResult<&Arc<FrozenScope>> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 

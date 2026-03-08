@@ -9,10 +9,9 @@ use crate::front::flow::{
     Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent, HardwareProcessKind,
     RegisterInfo,
 };
-use crate::front::function::CapturedScope;
 use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
-use crate::front::scope::{NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
+use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
 use crate::front::signal::{
     Interface, Polarized, Port, PortInfo, PortInterfaceInfo, PortOrWire, Signal, WireInfo, WireInfoInInterface,
     WireInfoSingle, WireInterfaceInfo,
@@ -47,6 +46,7 @@ use indexmap::map::Entry;
 use itertools::{Either, Itertools, chain, enumerate};
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::Arc;
 
 new_index_type!(pub Connector);
 
@@ -84,7 +84,7 @@ pub struct ElaboratedModuleHeader<A> {
     port_interfaces: ArenaPortInterfaces,
     pub ports_ir: Arena<IrPort, IrPortInfo>,
 
-    captured_scope_params: CapturedScope,
+    scope_params: Arc<FrozenScope>,
     scope_ports: ScopeContent,
     flow_root: FlowRootContent,
     flow: FlowCompileContent,
@@ -113,7 +113,7 @@ impl CompileRefs<'_, '_> {
         def_span: Span,
         elab_module: ElaboratedModule,
         params: ElaboratedItemParams,
-        captured_scope_params: CapturedScope,
+        scope_params: Arc<FrozenScope>,
         ports: &Spanned<ExtraList<ModulePortItem>>,
     ) -> DiagResult<(ArenaConnectors, ElaboratedModuleHeader<A>)> {
         let ElaboratedItemParams {
@@ -125,14 +125,17 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_empty(self, None, Some(elab_module));
         let flow_root = FlowRoot::new(self.diags, &self.shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
-        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
 
         // elaborate ports
-        // TODO we actually need a full context/flow here?
+        let scope_params_tmp = &Arc::clone(&scope_params).as_scope();
         let (connectors, scope_ports, ports_ir) =
-            self.elaborate_module_ports_impl(&mut ctx, &scope_params, &mut flow, ports, def_span)?;
-        let scope_ports = scope_ports.into_content();
+            self.elaborate_module_ports_impl(&mut ctx, scope_params_tmp, &mut flow, ports, def_span)?;
 
+        // save scope and flow
+        let scope_ports = scope_ports.into_content();
+        let flow = flow.into_content();
+
+        // create params debug info string
         let source = self.fixed.source;
         let debug_info_params = debug_info_params.map(|p| {
             p.into_iter()
@@ -145,7 +148,6 @@ impl CompileRefs<'_, '_> {
                 .collect_vec()
         });
 
-        let flow = flow.into_content();
         let header = ElaboratedModuleHeader {
             elab_module,
             ast_ref,
@@ -154,7 +156,7 @@ impl CompileRefs<'_, '_> {
             port_interfaces: ctx.port_interfaces,
             ports_ir,
 
-            captured_scope_params,
+            scope_params,
             scope_ports,
             flow_root: flow_root.into_content(),
             flow,
@@ -173,7 +175,7 @@ impl CompileRefs<'_, '_> {
             ports,
             port_interfaces,
             ports_ir,
-            captured_scope_params,
+            scope_params,
             scope_ports,
             flow_root,
             flow,
@@ -193,9 +195,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx = CompileItemContext::new_restore(self, None, Some(elab), ports, port_interfaces);
         let flow_root = FlowRoot::restore(self.diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
-
-        let scope_params = captured_scope_params.to_scope(self, &mut flow, def_span)?;
-        let scope_ports = Scope::restore_from_content(ScopeParent::Normal(&scope_params), scope_ports);
+        let scope_ports = Scope::restore_from_content(ScopeParent::Frozen(scope_params), scope_ports);
 
         // elaborate the body
         let mut ctx_body = BodyContext {
@@ -210,6 +210,7 @@ impl CompileRefs<'_, '_> {
             &mut scope_body,
             &mut flow,
             &body.inner,
+            false,
             &mut |ctx, scope, flow, stmt| ctx_body.elaborate_module_statement(ctx, scope, flow, stmt),
         )?;
         ctx_body.delayed_err?;
@@ -496,13 +497,13 @@ impl CompileRefs<'_, '_> {
                             Ok(())
                         };
 
-                    ctx.elaborate_extra_list_block(scope_ports, flow, ports, &mut visit_port_item_in_block)?;
+                    ctx.elaborate_extra_list_block(scope_ports, flow, ports, true, &mut visit_port_item_in_block)?;
                 }
             }
             Ok(())
         };
 
-        ctx.elaborate_extra_list(&mut scope_ports_root, flow, &ports.inner, &mut visit_port_item)?;
+        ctx.elaborate_extra_list(&mut scope_ports_root, flow, &ports.inner, true, &mut visit_port_item)?;
 
         Ok((connectors, scope_ports_root, ports_ir))
     }
@@ -1278,6 +1279,7 @@ impl BodyContext {
                 &mut scope_connections,
                 flow_parent,
                 &port_connections.inner,
+                true,
                 &mut |_, _, _, connection| {
                     port_connections_eval.push(connection);
                     Ok(())

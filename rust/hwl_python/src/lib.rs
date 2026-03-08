@@ -446,10 +446,10 @@ impl Compile {
         )?;
         let item = match found.value {
             ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-            ScopedEntry::Named(_) => {
+            ScopedEntry::Named(_) | ScopedEntry::Captured(_) => {
                 let e = diags.report_error_internal(
-                    found.defining_span,
-                    "file scope should only contain items, not named/value",
+                    found.span_decl,
+                    "file scope should only contain items, not named/captured",
                 );
                 return Err(convert_diag_error(py, &diags, source, e));
             }

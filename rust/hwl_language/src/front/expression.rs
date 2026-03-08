@@ -14,7 +14,7 @@ use crate::front::function::{
 };
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
-use crate::front::scope::{NamedValue, Scope, ScopedEntry};
+use crate::front::scope::{CaptureFailed, CapturedValue, NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
@@ -53,7 +53,7 @@ use unwrap_match::unwrap_match;
 #[derive(Debug)]
 pub enum NamedOrValue {
     Named(NamedValue),
-    ItemValue(CompileValue),
+    Value(CompileValue),
 }
 
 impl<'a> CompileItemContext<'a, '_> {
@@ -97,17 +97,39 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
 
         let found = scope.find(diags, id)?;
-        let def_span = found.defining_span;
+        let span_decl = found.span_decl;
         let result = match found.value {
             ScopedEntry::Named(value) => NamedOrValue::Named(value),
             ScopedEntry::Item(item) => {
                 let entry = StackEntry::ItemUsage(id.span);
                 let value = self.recurse(entry, |s| Ok(s.eval_item(item)?.clone())).flatten_err()?;
-                NamedOrValue::ItemValue(value)
+                NamedOrValue::Value(value)
+            }
+            ScopedEntry::Captured(value) => {
+                let CapturedValue { span_capture, value } = value;
+
+                match value {
+                    Ok(value) => NamedOrValue::Value(value.as_ref().clone()),
+                    Err(e) => {
+                        let reason = match e {
+                            CaptureFailed::NotCompile => "is not a compile-time value",
+                            CaptureFailed::NotFullyInitialized => "was not fully initialized",
+                        };
+                        let e = DiagnosticError::new(
+                            format!("cannot access captured value because it {reason}"),
+                            id.span,
+                            "trying to access captured value here",
+                        )
+                        .add_info(span_decl, "value declared here")
+                        .add_info(span_capture, "value captured here")
+                        .report(diags);
+                        return Err(e);
+                    }
+                }
             }
         };
         Ok(Spanned {
-            span: def_span,
+            span: span_decl,
             inner: result,
         })
     }
@@ -219,7 +241,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 let result = match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::ItemValue(value) => {
+                    NamedOrValue::Value(value) => {
                         return Ok(Value::simple(Value::from(value)));
                     }
                     NamedOrValue::Named(value) => match value {
@@ -737,24 +759,25 @@ impl<'a> CompileItemContext<'a, '_> {
                 // eval args
                 let mut args_eval = vec![];
                 let mut scope_args = scope.new_child(args.span());
-                let args_result = self.elaborate_extra_list(&mut scope_args, flow, args, &mut |slf, _, flow, arg| {
-                    let &Arg {
-                        span: arg_span,
-                        name: arg_name,
-                        value: arg_value,
-                    } = arg;
+                let args_result =
+                    self.elaborate_extra_list(&mut scope_args, flow, args, false, &mut |slf, _, flow, arg| {
+                        let &Arg {
+                            span: arg_span,
+                            name: arg_name,
+                            value: arg_value,
+                        } = arg;
 
-                    let arg_name = arg_name.map(|name| name.spanned_str(source));
-                    // TODO pass expected type in cases where we know it (eg. struct/enum construction)
-                    let arg_value = slf.eval_expression_with_implications(scope, flow, &Type::Any, arg_value)?;
+                        let arg_name = arg_name.map(|name| name.spanned_str(source));
+                        // TODO pass expected type in cases where we know it (eg. struct/enum construction)
+                        let arg_value = slf.eval_expression_with_implications(scope, flow, &Type::Any, arg_value)?;
 
-                    args_eval.push(Arg {
-                        span: arg_span,
-                        name: arg_name,
-                        value: arg_value,
+                        args_eval.push(Arg {
+                            span: arg_span,
+                            name: arg_name,
+                            value: arg_value,
+                        });
+                        Ok(())
                     });
-                    Ok(())
-                });
 
                 let args = args_result.map(|()| EvaluatedArgs {
                     span: args.span(),
@@ -859,13 +882,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             Value::Simple(SimpleCompileValue::Reference(rf))
                         }
                     },
-                    NamedOrValue::ItemValue(_) => {
+                    NamedOrValue::Value(_) => {
                         let diag = DiagnosticError::new(
-                            "cannot take reference to item",
+                            "cannot take reference to value",
                             expr.span,
                             "trying to take reference here",
                         )
-                        .add_info(id_eval.span, "item declared here")
+                        .add_info(id_eval.span, "value declared here")
                         .report(diags);
                         return Err(diag);
                     }
@@ -1512,7 +1535,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
                 match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::ItemValue(_) => return Err(build_err("item")),
+                    NamedOrValue::Value(_) => return Err(build_err("value")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
                         NamedValue::Signal(signal) => AssignmentTarget::simple(Spanned::new(expr.span, signal.into())),
@@ -1706,7 +1729,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
-                    NamedOrValue::ItemValue(_) => Err(build_err("item")),
+                    NamedOrValue::Value(_) => Err(build_err("value")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Signal(s) => Ok(Polarized::new(s)),
                         NamedValue::Variable(_) => Err(build_err("variable")),

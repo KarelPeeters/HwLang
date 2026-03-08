@@ -3,7 +3,7 @@ use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
-use crate::front::function::{CapturedScope, FunctionBody, FunctionValue, UserFunctionValue};
+use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
 use crate::front::scope::ScopedEntry;
@@ -347,7 +347,8 @@ impl CompileItemContext<'_, '_> {
         let item_ast = &self.refs.fixed.parsed[item];
         self.refs.check_should_stop(item_ast.info().span_short)?;
 
-        let file_scope = self.refs.shared.file_scope(item.file())?.as_scope();
+        let file_scope = self.refs.shared.file_scope(item.file())?;
+        let file_scope = Arc::clone(file_scope).as_scope();
 
         match item_ast {
             Item::Import(item_inner) => {
@@ -590,13 +591,13 @@ impl CompileItemContext<'_, '_> {
                 } = decl;
 
                 let body_inner = FunctionBody::FunctionBodyBlock {
-                    body: body.clone(),
+                    body: Arc::new(body.clone()),
                     ret_ty,
                 };
                 let function = UserFunctionValue {
-                    decl_span: id.span(),
-                    scope_captured: CapturedScope::from_scope(scope, flow),
-                    params: params.clone(),
+                    span_decl: id.span(),
+                    scope_captured: Arc::new(scope.capture(flow, id.span())),
+                    params: Arc::new(params.clone()),
                     body: Spanned {
                         span: body.span,
                         inner: body_inner,
@@ -645,9 +646,9 @@ impl CompileItemContext<'_, '_> {
             Some(params) => {
                 // build function
                 let func = UserFunctionValue {
-                    decl_span: span_decl,
-                    scope_captured: CapturedScope::from_scope(scope, flow),
-                    params: params.clone(),
+                    span_decl,
+                    scope_captured: Arc::new(scope.capture(flow, span_decl)),
+                    params: Arc::new(params.clone()),
                     body: Spanned {
                         span: span_body,
                         inner: FunctionBody::ItemBody(body),
@@ -679,21 +680,24 @@ impl CompileItemContext<'_, '_> {
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
 
+                // TODO make module elaboration more similar to other items,
+                //   where the flow is not created by the inner elaboration function but top-level.
+                //   This is trickier than usual (since we delay module body elaboration) but might still be possible.
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_internal.elaborate(
                     item_params,
                     ElaboratedModuleInternal,
                     |result_id, item_params| {
+                        // capture scope to ensure full separation
+                        let scope_params = scope_params.capture(flow, body.span);
+
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(scope_params, flow);
-
                         let ast = &refs.fixed.parsed[ast_ref];
-
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
                             ElaboratedModule::Internal(result_id),
                             item_params,
-                            scope_captured,
+                            Arc::new(scope_params),
                             &ast.ports,
                         )?;
 
@@ -758,14 +762,16 @@ impl CompileItemContext<'_, '_> {
                             })
                             .transpose()?;
 
+                        // capture scope to ensure full separation
+                        let scope_params = scope_params.capture(flow, body.span);
+
                         // elaborate ports
-                        let scope_captured = CapturedScope::from_scope(scope_params, flow);
                         let (connectors, header) = refs.elaborate_module_ports_new(
                             ast_ref,
                             ast.span,
                             ElaboratedModule::External(result_id),
                             item_params,
-                            scope_captured,
+                            Arc::new(scope_params),
                             &ast.ports,
                         )?;
                         let port_names = header
@@ -789,16 +795,15 @@ impl CompileItemContext<'_, '_> {
                 )))
             }
             FunctionItemBody::Interface(unique, ast_ref) => {
-                // TODO pass the scope along, and make this more similar to struct elaboration in all aspects
-                //   (we'll need to do that once we allow modules/interfaces as common declarations anyway)
                 let item_params = ElaboratedItemParams { unique, params };
-                let scope_params = CapturedScope::from_scope(scope_params, flow);
 
                 let refs = self.refs;
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_interfaces.elaborate(
                     item_params,
                     ElaboratedInterface,
-                    |_, item_params| refs.elaborate_interface_new(ast_ref, scope_params, unique, &item_params.params),
+                    |_, item_params| {
+                        self.elaborate_interface_new(scope_params, flow, unique, &item_params.params, ast_ref)
+                    },
                 )?;
 
                 Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
@@ -852,11 +857,9 @@ impl CompileItemContext<'_, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
         let GenericStructInfo { fields } = generic_info;
 
-        // TODO generalize this indexmap "already defined" structure
+        // elaborate extra list containing fields and declarations
         let mut fields_eval = IndexMap::new();
-
         let mut any_field_err = Ok(());
-
         let mut visit_field = |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, field: &StructField| {
             let &StructField { span: _, id, ty } = field;
 
@@ -878,7 +881,7 @@ impl CompileItemContext<'_, '_> {
         };
 
         let mut scope = scope_params.new_child(span_body);
-        self.elaborate_extra_list(&mut scope, flow, fields, &mut visit_field)?;
+        self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
         any_field_err?;
 
         // check if this struct can be represented in hardware
@@ -961,7 +964,7 @@ impl CompileItemContext<'_, '_> {
             };
 
         let mut scope = scope_params.new_child(span_body);
-        self.elaborate_extra_list(&mut scope, flow, variants, &mut visit_variant)?;
+        self.elaborate_extra_list(&mut scope, flow, variants, true, &mut visit_variant)?;
         any_variant_err?;
 
         // check if this enum can be represented in hardware
