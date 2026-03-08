@@ -249,6 +249,18 @@ impl Type {
         self == &self.union(ty)
     }
 
+    /// Returns the "broadened" version of this type, removing any narrow range constraints.
+    /// For integers, `int(3..4)` becomes `int` (open integer type).
+    /// All other types are returned unchanged.
+    /// This is useful when checking that a pattern value is broadly type-compatible
+    /// with a match target without requiring exact range containment.
+    pub fn broaden(&self) -> Type {
+        match self {
+            Type::Int(_) => Type::Int(MultiRange::open()),
+            other => other.clone(),
+        }
+    }
+
     // TODO centralize error messages for this, everyone is just doing them manually for now
     // TODO accept empty tuples here, maybe those need to be normal values instead of types,
     //   and then cast to type where needed

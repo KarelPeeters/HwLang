@@ -340,6 +340,73 @@ def test_enum_none_is_not_callable_elaboration_error():
         f()
 
 
+def test_match_range_without_in_keyword_is_type_error():
+    """
+    BUG FIX: writing `0..5` as an EqualTo match pattern (without the `in`
+    keyword) against an integer target used to silently never match — every
+    value fell through to the wildcard branch.  It is now a type-mismatch
+    error at elaboration time, because `0..5` evaluates to a Range value,
+    which is incompatible with an integer match target.
+
+    In HwLang, function bodies are elaborated lazily (at call time), so the
+    error is raised when the function is called, not when it is compiled.
+
+    The correct range-match syntax is `in 0..5`.
+    """
+    src = """
+    fn f(a: int) -> int {
+        match (a) {
+            0..5 => { return 1; }
+            _    => { return 2; }
+        }
+    }
+    """
+    # compile and resolve succeed; the error is raised lazily at call time
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        f(3)
+
+
+def test_match_range_with_in_keyword_works():
+    """
+    The correct syntax for matching an integer against a range is `in 0..5`.
+    This should compile and execute correctly.
+    """
+    src = """
+    fn f(a: int) -> int {
+        match (a) {
+            in 0..5 => { return 1; }
+            _       => { return 2; }
+        }
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(-1) == 2
+    assert f(0) == 1
+    assert f(4) == 1
+    assert f(5) == 2  # exclusive end
+    assert f(6) == 2
+
+
+def test_hw_match_range_without_in_keyword_is_type_error():
+    """
+    BUG FIX (hardware): same issue in a hardware match — `0..5` as an EqualTo
+    pattern now gives a type-mismatch error instead of silently never matching.
+    """
+    src = """
+    module eval_mod ports(p0: in async uint(0..10), p_res: out async uint(0..3)) {
+        comb {
+            match (p0) {
+                0..5 => { p_res = 1; }
+                _    => { p_res = 2; }
+            }
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        compile_custom(src).resolve("top.eval_mod")
+
+
 # =============================================================================
 # HARDWARE CORRECTNESS TESTS (compare interpreter vs Verilog simulation)
 # All of the tests below should pass — they are regression guards confirming
