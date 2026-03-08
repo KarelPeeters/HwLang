@@ -92,6 +92,13 @@ pub struct WireInterfaceInfo {
 }
 
 impl Interface {
+    pub fn span_decl(self, ctx: &CompileItemContext) -> Span {
+        match self {
+            PortOrWire::Port(intf) => ctx.port_interfaces[intf].id.span,
+            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].id.span(),
+        }
+    }
+
     pub fn elab_interface(self, ctx: &CompileItemContext) -> Spanned<ElaboratedInterface> {
         match self {
             PortOrWire::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
@@ -126,7 +133,7 @@ impl PortInfo {
 }
 
 impl WireInfo {
-    pub fn decl_span(&self) -> Span {
+    pub fn span_decl(&self) -> Span {
         match self {
             WireInfo::Single(slf) => slf.id.span(),
             WireInfo::Interface(slf) => slf.decl_span,
@@ -371,6 +378,13 @@ impl<P, W> PortOrWire<P, W> {
 }
 
 impl Signal {
+    pub fn span_decl<'c>(self, s: &'c CompileItemContext) -> Span {
+        match self {
+            Signal::Port(port) => s.ports[port].span,
+            Signal::Wire(wire) => s.wires[wire].span_decl(),
+        }
+    }
+
     pub fn diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
         match self {
             Signal::Port(port) => &s.ports[port].name,

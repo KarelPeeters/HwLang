@@ -245,7 +245,7 @@ impl CompileRefs<'_, '_> {
                 }
                 Signal::Wire(signal) => {
                     let info = &ctx.wires[signal];
-                    (info.decl_span(), info.diagnostic_str())
+                    (info.span_decl(), info.diagnostic_str())
                 }
             };
 
@@ -1706,7 +1706,7 @@ impl BodyContext {
                 let (value_interface, value_domain, value_signals) = match value.inner {
                     Value::Simple(SimpleCompileValue::Reference(reference)) => {
                         match reference.get(ctx, &flow_connection, value.span)? {
-                            ReferenceInner::Interface(intf, _elab_intf) => {
+                            ReferenceInner::Interface { intf, elab: _ } => {
                                 match intf {
                                     Interface::Port(port_interface) => {
                                         let info = &ctx.port_interfaces[port_interface];

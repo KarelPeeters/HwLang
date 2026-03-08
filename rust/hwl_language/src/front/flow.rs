@@ -303,6 +303,7 @@ pub enum CapturedValue {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum FailedCaptureReason {
     NotCompile,
+    Reference,
     NotFullyInitialized,
 }
 

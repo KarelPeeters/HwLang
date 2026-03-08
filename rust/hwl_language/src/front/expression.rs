@@ -238,7 +238,13 @@ impl<'a> CompileItemContext<'a, '_> {
                                     )
                                 })?;
 
-                                let rf = ReferenceWrapper::new_interface(module, intf, elab_intf.inner);
+                                let rf = ReferenceWrapper::new_interface(
+                                    module,
+                                    intf,
+                                    elab_intf.inner,
+                                    intf.span_decl(self),
+                                    expr.span,
+                                );
                                 Value::Simple(SimpleCompileValue::Reference(rf))
                             } else {
                                 return Err(error_cannot_eval_interface_as(
@@ -799,7 +805,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     expr: value_expr,
                 })
             }
-            &ExpressionKind::Ref(_span_op, inner) => {
+            &ExpressionKind::Ref(span_op, inner) => {
                 let id = match refs.get_expr(inner) {
                     &ExpressionKind::Id(id) => self.eval_general_id(scope, flow, id)?,
                     _ => return Err(diags.report_error_todo(expr.span, "reference to general expression")),
@@ -818,7 +824,13 @@ impl<'a> CompileItemContext<'a, '_> {
 
                             let flow_id = flow.root_id();
 
-                            let rf = ReferenceWrapper::new_variable(flow_id, var, var_ty, var_info.span_decl);
+                            let rf = ReferenceWrapper::new_variable(
+                                flow_id,
+                                var,
+                                Arc::new(var_ty),
+                                var_info.span_decl,
+                                span_op,
+                            );
                             Value::Simple(SimpleCompileValue::Reference(rf))
                         }
                         NamedValue::Signal(signal) => {
@@ -827,7 +839,13 @@ impl<'a> CompileItemContext<'a, '_> {
                             })?;
 
                             let signal_ty = signal.expect_ty(self, id.span)?;
-                            let rf = ReferenceWrapper::new_signal(module, signal, signal_ty.inner.clone());
+                            let rf = ReferenceWrapper::new_signal(
+                                module,
+                                signal,
+                                Arc::new(signal_ty.inner.clone()),
+                                signal.span_decl(self),
+                                span_op,
+                            );
                             Value::Simple(SimpleCompileValue::Reference(rf))
                         }
                         NamedValue::Interface(intf) => {
@@ -836,7 +854,8 @@ impl<'a> CompileItemContext<'a, '_> {
                             })?;
 
                             let elab_intf = intf.elab_interface(self).inner;
-                            let rf = ReferenceWrapper::new_interface(module, intf, elab_intf);
+                            let rf =
+                                ReferenceWrapper::new_interface(module, intf, elab_intf, intf.span_decl(self), span_op);
                             Value::Simple(SimpleCompileValue::Reference(rf))
                         }
                     },
@@ -869,7 +888,8 @@ impl<'a> CompileItemContext<'a, '_> {
                             })?;
 
                             let elab_intf = intf.elab_interface(self).inner;
-                            let rf = ReferenceWrapper::new_interface(module, intf, elab_intf);
+                            let rf =
+                                ReferenceWrapper::new_interface(module, intf, elab_intf, intf.span_decl(self), span_op);
                             Value::Simple(SimpleCompileValue::Reference(rf))
                         } else {
                             return Err(error_cannot_eval_interface_as(
@@ -951,7 +971,7 @@ impl<'a> CompileItemContext<'a, '_> {
         // interface fields
         if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base.inner {
             let rf = rf.get(self, flow, base.span)?;
-            if let ReferenceInner::Interface(intf, _) = rf {
+            if let ReferenceInner::Interface { intf, elab: _ } = rf {
                 let signal = self.interface_get_signal(base.span, intf, index_str)?;
                 let flow = flow.require_hardware(expr_span, "signal read")?;
                 return flow.signal_eval(self, Spanned::new(expr_span, signal));
@@ -1609,21 +1629,26 @@ impl<'a> CompileItemContext<'a, '_> {
 
         match operand.inner {
             CompileValue::Simple(SimpleCompileValue::Reference(rf)) => match rf.get(self, flow, operand.span)? {
-                ReferenceInner::Variable(var, _, span_decl) => {
+                ReferenceInner::Variable { var, ty: _ } => {
                     if !flow.var_still_exists(var) {
                         let err = DiagnosticError::new(
                             "cannot access variable after its scope has ended",
                             expr_span,
                             "trying to deference here",
                         )
-                        .add_info(span_decl, "variable declared here")
+                        .add_info(rf.span_decl, "variable declared here")
+                        .add_info(rf.span_ref, "reference taken here")
                         .report(diags);
                         return Err(err);
                     }
                     Ok(Either::Left(var.into()))
                 }
-                ReferenceInner::Signal(signal, _) => Ok(Either::Left(signal.into())),
-                ReferenceInner::Interface(intf, _) => Ok(Either::Right(intf)),
+                ReferenceInner::Signal {
+                    signal,
+                    ty: _,
+                    ty_hw: _,
+                } => Ok(Either::Left(signal.into())),
+                ReferenceInner::Interface { intf, elab: _ } => Ok(Either::Right(intf)),
             },
             v => {
                 let diag = DiagnosticError::new(

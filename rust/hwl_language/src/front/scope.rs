@@ -420,6 +420,9 @@ impl ScopeContent {
                 DeclaredValue::FailedCapture(span, reason) => {
                     let reason_str = match reason {
                         FailedCaptureReason::NotCompile => "contains a non-compile-time value",
+                        FailedCaptureReason::Reference => {
+                            "contains a reference which is not valid in the current context"
+                        }
                         FailedCaptureReason::NotFullyInitialized => "was not fully initialized",
                     };
                     return Err(DiagnosticError::new(

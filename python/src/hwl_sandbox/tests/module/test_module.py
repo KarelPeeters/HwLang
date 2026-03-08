@@ -144,16 +144,33 @@ def test_undef_expression():
     compile_custom(src).resolve("top.top")
 
 
-def test_interface_escape():
-    src = """
-    interface foo { x: bool } 
+def test_reference_escape_simple():
+    src = """ 
     module top ports() {
-        wire w: interface foo;
+        wire w: bool;
         instance child(ref(w)) ports();
     }
     module child(a: any) ports() {}
     """
     with pytest.raises(hwl.DiagnosticException, match="item parameters cannot contain references"):
+        compile_custom(src).resolve("top.top")
+
+
+def test_reference_escape_function():
+    src = """
+    module top ports() {
+        wire w: bool = true;
+        const r = ref(w);
+        fn f() {
+            deref(r).x = false;
+        }
+        instance child(f) ports();
+    }
+    module child(f: Function) ports() {
+        comb { f(); }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="attempt to use signal reference outside its declaring module"):
         compile_custom(src).resolve("top.top")
 
 

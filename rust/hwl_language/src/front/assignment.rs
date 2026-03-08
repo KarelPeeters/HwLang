@@ -406,7 +406,7 @@ impl CompileItemContext<'_, '_> {
                     let signal_kind = target_base_signal.inner.kind_str();
                     let signal_decl_span = match target_base_signal.inner {
                         Signal::Port(signal) => self.ports[signal].span,
-                        Signal::Wire(signal) => self.wires[signal].decl_span(),
+                        Signal::Wire(signal) => self.wires[signal].span_decl(),
                     };
 
                     return Err(DiagnosticError::new(

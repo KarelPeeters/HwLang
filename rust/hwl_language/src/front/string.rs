@@ -488,14 +488,17 @@ impl SimpleCompileValue {
                 )
             }
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
-                ReferenceInner::Variable(_, ty, _) => {
+                ReferenceInner::Variable { var: _, ty } => {
                     format!("<ref to var with type `{}`>", ty.value_string(elab))
                 }
-                ReferenceInner::Signal(signal, ty) => {
+                ReferenceInner::Signal { signal, ty, ty_hw: _ } => {
                     let kind_str = signal.kind_str();
                     format!("<ref to {kind_str} with type `{}`>", ty.value_string(elab))
                 }
-                ReferenceInner::Interface(signal, intf) => {
+                ReferenceInner::Interface {
+                    intf: signal,
+                    elab: intf,
+                } => {
                     let kind_str = signal.kind_str();
                     format!(
                         "<ref to {kind_str} instance of interface `{}`>",
