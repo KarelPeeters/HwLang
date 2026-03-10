@@ -59,4 +59,19 @@ def test_member_duplicate():
             match="identifier `derp` declared multiple times",
             check=lambda e: len(e.messages) == 1
     ):
-        a = compile_custom(src).resolve("top.a")
+        _ = compile_custom(src).resolve("top.a")
+
+
+def test_member_builtin():
+    src = """
+    struct Foo {
+        x: int,
+        
+        const size_bits = 4;
+    }
+    """
+    with pytest.raises(
+            hwl.DiagnosticException,
+            match="declaring struct members that collide with with builtin type members is not allowed"
+    ):
+        _ = compile_custom(src).resolve("top.Foo")

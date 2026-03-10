@@ -56,6 +56,8 @@ pub enum NamedOrValue {
     Value(CompileValue),
 }
 
+pub const POSSIBLE_BUILTIN_TYPE_MEMBERS: &[&str] = &["size_bits", "to_bits", "from_bits", "from_bits_unsafe", "new"];
+
 impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_general_id(
         &mut self,

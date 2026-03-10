@@ -1,6 +1,7 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::expression::POSSIBLE_BUILTIN_TYPE_MEMBERS;
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
@@ -886,7 +887,7 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
         any_field_err?;
 
-        let members = capture_type_decl_members(diags, &scope, flow);
+        let members = capture_type_decl_members(diags, &scope, flow, "struct");
 
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
@@ -972,7 +973,7 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, variants, true, &mut visit_variant)?;
         any_variant_err?;
 
-        let members = capture_type_decl_members(diags, &scope, flow);
+        let members = capture_type_decl_members(diags, &scope, flow, "enum");
 
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
@@ -994,29 +995,42 @@ fn capture_type_decl_members(
     diags: &Diagnostics,
     scope: &Scope,
     flow: &impl Flow,
+    kind: &str,
 ) -> IndexMap<String, DiagResult<CompileValue>> {
     // TODO separate public/private?
 
     let mut members = IndexMap::new();
     scope.for_each_immediate_entry(|name, entry| {
         let member = match entry {
-            DeclaredValueSingle::Value { span, value } => match value {
-                &ScopedEntry::Named(value) => match value {
-                    NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
-                        value.map_err(|e: CaptureFailed| {
-                            diags.report_error_internal(span, format!("failed to capture member: {e:?}"))
-                        })
-                    }),
-                    NamedValue::Signal(_) | NamedValue::Interface(_) => {
-                        Err(diags.report_error_internal(span, "unexpected member kind"))
+            DeclaredValueSingle::Value { span, value } => {
+                if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name) {
+                    Err(DiagnosticError::new(
+                        format!("declaring {kind} members that collide with with builtin type members is not allowed"),
+                        span,
+                        format!("trying to declare member with name `{name}` here"),
+                    )
+                    .report(diags))
+                } else {
+                    match value {
+                        &ScopedEntry::Named(value) => match value {
+                            NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
+                                value.map_err(|e: CaptureFailed| {
+                                    diags.report_error_internal(span, format!("failed to capture member: {e:?}"))
+                                })
+                            }),
+                            NamedValue::Signal(_) | NamedValue::Interface(_) => {
+                                Err(diags.report_error_internal(span, "unexpected member named value kind"))
+                            }
+                        },
+                        ScopedEntry::Item(_) | ScopedEntry::Captured(_) => {
+                            Err(diags.report_error_internal(span, "unexpected member scoped entry kind"))
+                        }
                     }
-                },
-                ScopedEntry::Item(_) | ScopedEntry::Captured(_) => {
-                    Err(diags.report_error_internal(span, "unexpected member kind"))
                 }
-            },
+            }
             DeclaredValueSingle::Error(e) => Err(e),
         };
+
         members.insert(name.to_owned(), member);
     });
     members
