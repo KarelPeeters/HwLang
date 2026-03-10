@@ -33,7 +33,13 @@ use std::sync::{Arc, Mutex};
 // TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
 //   it might also not matter, maybe every platform pre-commits stack space by now
 pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
-const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
+// The Python-binding call path (Function.__call__) runs on the Python thread whose default stack
+// is only ~8 MB.  Each HwLang recursive call adds ~2 entries here plus several Rust frames on
+// the system stack.  With the old limit of 1000 (~500 real recursive calls), the Rust system
+// stack exhausted first, causing a SIGSEGV instead of a clean diagnostic.
+// 128 entries (~64 actual recursive calls) fires well within the 8 MB Python thread stack
+// while still allowing reasonable recursive programs.
+const STACK_OVERFLOW_STACK_LIMIT: usize = 128;
 const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 // TODO add test that randomizes order of files and items to check for dependency bugs,
