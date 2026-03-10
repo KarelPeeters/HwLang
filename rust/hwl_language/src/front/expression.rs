@@ -40,11 +40,11 @@ use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
-use crate::util::ResultDoubleExt;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
+use crate::util::{ResultDoubleExt, ResultExt};
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -1097,7 +1097,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             let info = self.refs.shared.elaboration_arenas.struct_info(elab);
             if let Some(value) = info.members.get(index_str.inner) {
-                return Ok(Value::from(value.clone()));
+                return Ok(Value::from(value.as_ref_ok()?.clone()));
             }
         }
 
