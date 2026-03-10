@@ -23,12 +23,31 @@ def test_struct_member():
     assert f(4) == 16
 
 
-def test_struct_member_duplicate():
+def test_enum_member():
+    src = """
+    enum Foo {
+        A,
+        B(bool),
+        
+        const C: int = 8;
+        fn derp(x: uint) -> uint {
+            return x * 2;
+        }
+    }
+    fn f(x: uint) -> int {
+       return Foo.C + Foo.derp(x);
+    }
+    """
+    f = compile_custom(src).resolve("top.f")
+    assert f(0) == 8
+    assert f(4) == 16
+
+
+def test_member_duplicate():
     src = """
     struct Foo {
         x: int,
         
-        const C: int = 8;
         fn derp(x: uint) -> uint { return x * 2; }
         fn derp(x: uint) -> uint { return x * 3; }
     }

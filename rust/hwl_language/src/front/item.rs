@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
@@ -241,7 +241,7 @@ pub struct ElaboratedStructInfo {
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
     pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
-    pub members: IndexMap<String, Result<CompileValue, DiagError>>,
+    pub members: IndexMap<String, DiagResult<CompileValue>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -271,6 +271,7 @@ pub struct ElaboratedEnumInfo {
     pub span_body: Span,
     pub variants: IndexMap<String, ElaboratedEnumVariantInfo>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
+    pub members: IndexMap<String, DiagResult<CompileValue>>,
 }
 
 #[derive(Debug)]
@@ -885,30 +886,7 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
         any_field_err?;
 
-        // capture member declarations from the scope
-        // TODO separate public/private?
-        let mut members = IndexMap::new();
-        scope.for_each_immediate_entry(|name, entry| {
-            let member = match entry {
-                DeclaredValueSingle::Value { span, value } => match value {
-                    &ScopedEntry::Named(value) => match value {
-                        NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
-                            value.map_err(|e: CaptureFailed| {
-                                diags.report_error_internal(span, format!("failed to capture member: {e:?}"))
-                            })
-                        }),
-                        NamedValue::Signal(_) | NamedValue::Interface(_) => {
-                            Err(diags.report_error_internal(span, "unexpected member kind"))
-                        }
-                    },
-                    ScopedEntry::Item(_) | ScopedEntry::Captured(_) => {
-                        Err(diags.report_error_internal(span, "unexpected member kind"))
-                    }
-                },
-                DeclaredValueSingle::Error(e) => Err(e),
-            };
-            members.insert(name.to_owned(), member);
-        });
+        let members = capture_type_decl_members(diags, &scope, flow);
 
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
@@ -994,6 +972,8 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, variants, true, &mut visit_variant)?;
         any_variant_err?;
 
+        let members = capture_type_decl_members(diags, &scope, flow);
+
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
         let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
@@ -1005,8 +985,41 @@ impl CompileItemContext<'_, '_> {
             span_body,
             variants: variants_eval,
             hw,
+            members,
         })
     }
+}
+
+fn capture_type_decl_members(
+    diags: &Diagnostics,
+    scope: &Scope,
+    flow: &impl Flow,
+) -> IndexMap<String, DiagResult<CompileValue>> {
+    // TODO separate public/private?
+
+    let mut members = IndexMap::new();
+    scope.for_each_immediate_entry(|name, entry| {
+        let member = match entry {
+            DeclaredValueSingle::Value { span, value } => match value {
+                &ScopedEntry::Named(value) => match value {
+                    NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
+                        value.map_err(|e: CaptureFailed| {
+                            diags.report_error_internal(span, format!("failed to capture member: {e:?}"))
+                        })
+                    }),
+                    NamedValue::Signal(_) | NamedValue::Interface(_) => {
+                        Err(diags.report_error_internal(span, "unexpected member kind"))
+                    }
+                },
+                ScopedEntry::Item(_) | ScopedEntry::Captured(_) => {
+                    Err(diags.report_error_internal(span, "unexpected member kind"))
+                }
+            },
+            DeclaredValueSingle::Error(e) => Err(e),
+        };
+        members.insert(name.to_owned(), member);
+    });
+    members
 }
 
 pub fn debug_info_name_including_params(

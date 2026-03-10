@@ -1137,6 +1137,13 @@ impl<'a> CompileItemContext<'a, '_> {
         };
 
         if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
+            // enum members
+            let info = self.refs.shared.elaboration_arenas.enum_info(elab);
+            if let Some(value) = info.members.get(index_str.inner) {
+                return Ok(Value::from(value.as_ref_ok()?.clone()));
+            }
+
+            // enum variants
             return eval_enum(elab);
         }
         if let Some(&FunctionItemBody::Enum(unique, ref generic_info)) = base_item_function {
