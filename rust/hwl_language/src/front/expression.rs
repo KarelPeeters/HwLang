@@ -1088,14 +1088,20 @@ impl<'a> CompileItemContext<'a, '_> {
             }
         }
 
-        // struct new
-        if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner
-            && index_str.inner == "new"
-        {
-            let func = FunctionValue::StructNew(elab);
-            return Ok(Value::Simple(SimpleCompileValue::Function(func)));
+        // struct new, struct members
+        if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
+            if index_str.inner == "new" {
+                let func = FunctionValue::StructNew(elab);
+                return Ok(Value::Simple(SimpleCompileValue::Function(func)));
+            }
+
+            let info = self.refs.shared.elaboration_arenas.struct_info(elab);
+            if let Some(value) = info.members.get(index_str.inner) {
+                return Ok(Value::from(value.clone()));
+            }
         }
 
+        // struct new for not yet inferred struct types
         let base_item_function = match &base.inner {
             Value::Simple(SimpleCompileValue::Function(FunctionValue::User(func))) => match &func.body.inner {
                 FunctionBody::ItemBody(body) => Some(body),

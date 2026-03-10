@@ -6,7 +6,7 @@ use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
-use crate::front::scope::ScopedEntry;
+use crate::front::scope::{DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, SimpleCompileValue, Value};
@@ -241,6 +241,7 @@ pub struct ElaboratedStructInfo {
     pub span_body: Span,
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
     pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
+    pub members: IndexMap<String, CompileValue>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -884,6 +885,32 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
         any_field_err?;
 
+        // capture member declarations from the scope
+        // TODO separate public/private?
+        let mut members = IndexMap::new();
+        let mut any_member_err = Ok(());
+        scope.for_each_immediate_entry(|name, entry| {
+            if let DeclaredValueSingle::Value {
+                span,
+                value: &ScopedEntry::Named(NamedValue::Variable(var)),
+            } = entry
+            {
+                match flow.var_capture(Spanned::new(span, var)) {
+                    Ok(value) => match value {
+                        Ok(value) => {
+                            members.insert(name.to_owned(), value);
+                        }
+                        Err(failed) => {
+                            any_member_err =
+                                Err(diags.report_error_internal(span, format!("failed to capture member: {failed:?}")));
+                        }
+                    },
+                    Err(e) => any_member_err = Err(e),
+                }
+            }
+        });
+        any_member_err?;
+
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
         let fields_hw = fields_eval
@@ -903,6 +930,7 @@ impl CompileItemContext<'_, '_> {
             span_body,
             fields: fields_eval,
             fields_hw,
+            members,
         })
     }
 

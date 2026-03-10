@@ -443,6 +443,7 @@ impl CompileItemContext<'_, '_> {
             span_body,
             ref fields,
             fields_hw: _,
+            members: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);
 
         let mut matcher = ParamArgMacher::new(self.refs, span_body, &args, false, NamedRule::OnlyNamed)?;
