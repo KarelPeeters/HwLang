@@ -1945,9 +1945,9 @@ fn merge_branch_variable(
 
     if !branch_errors.is_empty() {
         let mut diag = DiagnosticError::new(
-            "if statement assignment merging only works hardware types",
+            "branch assignment merging only works hardware types",
             span_merge,
-            "merging happens here",
+            "merging due to this branch",
         )
         .add_info(var_info.span_decl, "for this variable");
 
@@ -1956,7 +1956,10 @@ fn merge_branch_variable(
             diag = diag.add_info(value_span, msg);
         }
 
-        return Err(diag.report(diags));
+        let e = diag
+            .add_footer_hint("avoid assigning different non-hardware values to the same variable in different branches")
+            .report(diags);
+        return Err(e);
     }
     let branch_tys = branch_tys.unwrap();
 
@@ -1968,9 +1971,9 @@ fn merge_branch_variable(
         let ty_str = ty.value_string(elab);
 
         let mut diag = DiagnosticError::new(
-            "merging if assignments needs hardware type",
+            "branch assignment merging needs hardware type",
             span_merge,
-            format!("merging happens here, combined type `{ty_str}` cannot be represented in hardware"),
+            format!("merging due to this branch, combined type `{ty_str}` cannot be represented in hardware"),
         )
         .add_info(var_info.span_decl, "for this variable");
 
