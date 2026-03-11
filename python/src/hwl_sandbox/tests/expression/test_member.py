@@ -62,7 +62,7 @@ def test_member_duplicate():
         _ = compile_custom(src).resolve("top.a")
 
 
-def test_member_builtin():
+def test_member_err_builtin():
     src = """
     struct Foo {
         x: int,
@@ -70,8 +70,17 @@ def test_member_builtin():
         const size_bits = 4;
     }
     """
-    with pytest.raises(
-            hwl.DiagnosticException,
-            match="declaring struct members that collide with with builtin type members is not allowed"
-    ):
+    with pytest.raises(hwl.DiagnosticException, match="struct member name collides with builtin type member"):
+        _ = compile_custom(src).resolve("top.Foo")
+
+
+def test_member_err_field():
+    src = """
+    struct Foo {
+        x: int,
+        
+        const x = 4;
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="struct member name collides with struct field"):
         _ = compile_custom(src).resolve("top.Foo")

@@ -887,7 +887,9 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
         any_field_err?;
 
-        let members = capture_type_decl_members(diags, &scope, flow, "struct");
+        let members = collect_members_from_body(diags, &scope, flow, BodyKind::Struct, |name| {
+            fields_eval.get(name).map(|(id, _)| id.span)
+        });
 
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
@@ -973,7 +975,9 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, variants, true, &mut visit_variant)?;
         any_variant_err?;
 
-        let members = capture_type_decl_members(diags, &scope, flow, "enum");
+        let members = collect_members_from_body(diags, &scope, flow, BodyKind::Enum, |name| {
+            variants_eval.get(name).map(|info| info.id.span)
+        });
 
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
@@ -991,13 +995,22 @@ impl CompileItemContext<'_, '_> {
     }
 }
 
-fn capture_type_decl_members(
+enum BodyKind {
+    Struct,
+    Enum,
+}
+
+fn collect_members_from_body(
     diags: &Diagnostics,
     scope: &Scope,
     flow: &impl Flow,
-    kind: &str,
+    kind: BodyKind,
+    existing: impl Fn(&str) -> Option<Span>,
 ) -> IndexMap<String, DiagResult<CompileValue>> {
-    // TODO separate public/private?
+    let (kind_name, kind_existing_name) = match kind {
+        BodyKind::Struct => ("struct", "field"),
+        BodyKind::Enum => ("enum", "variant"),
+    };
 
     let mut members = IndexMap::new();
     scope.for_each_immediate_entry(|name, entry| {
@@ -1005,10 +1018,18 @@ fn capture_type_decl_members(
             DeclaredValueSingle::Value { span, value } => {
                 if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name) {
                     Err(DiagnosticError::new(
-                        format!("declaring {kind} members that collide with with builtin type members is not allowed"),
+                        format!("{kind_name} member name collides with builtin type member"),
                         span,
                         format!("trying to declare member with name `{name}` here"),
                     )
+                    .report(diags))
+                } else if let Some(span_decl) = existing(name) {
+                    Err(DiagnosticError::new(
+                        format!("{kind_name} member name collides with {kind_name} {kind_existing_name}"),
+                        span,
+                        format!("trying to declare member with name `{name}` here"),
+                    )
+                    .add_info(span_decl, format!("collides with {kind_existing_name} declared here"))
                     .report(diags))
                 } else {
                     match value {
