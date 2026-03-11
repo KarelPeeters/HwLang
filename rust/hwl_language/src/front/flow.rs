@@ -6,7 +6,7 @@ use crate::front::implication::{
 };
 use crate::front::scope::CaptureFailed;
 use crate::front::signal::{Signal, SignalOrVariable};
-use crate::front::types::{HardwareType, Type, Typed};
+use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
@@ -1898,6 +1898,7 @@ fn merge_branch_variable(
 
     // check that all types are hardware
     // (we do this before finding the common type to get nicer error messages)
+    let mut branch_errors = IndexMap::new();
     let branch_tys = branches
         .iter()
         .map(|branch| {
@@ -1931,22 +1932,33 @@ fn merge_branch_variable(
                 }
             };
 
-            branch_ty.as_hardware_type(elab).map_err(|_| {
-                let ty_str = branch_ty.value_string(elab);
-                DiagnosticError::new(
-                    "merging if assignments needs hardware type",
-                    span_merge,
-                    "merging happens here",
-                )
-                .add_info(var_info.span_decl, "for this variable")
-                .add_info(
-                    branch_value.span,
-                    format!("value assigned here has type `{ty_str}` which cannot be represented in hardware"),
-                )
-                .report(diags)
-            })
+            match branch_ty.as_hardware_type(elab) {
+                Ok(ty) => Ok(ty),
+                Err(NonHardwareType) => {
+                    let ty_str = branch_ty.value_string(elab);
+                    branch_errors.entry(branch_value.span).or_insert(ty_str);
+                    Err(NonHardwareType)
+                }
+            }
         })
-        .try_collect_all_vec()?;
+        .try_collect_all_vec();
+
+    if !branch_errors.is_empty() {
+        let mut diag = DiagnosticError::new(
+            "if statement assignment merging only works hardware types",
+            span_merge,
+            "merging happens here",
+        )
+        .add_info(var_info.span_decl, "for this variable");
+
+        for (value_span, ty_str) in branch_errors {
+            let msg = format!("value assigned here has type `{ty_str}` which cannot be represented in hardware");
+            diag = diag.add_info(value_span, msg);
+        }
+
+        return Err(diag.report(diags));
+    }
+    let branch_tys = branch_tys.unwrap();
 
     // find common type
     let ty = branch_tys.iter().fold(Type::Undefined, |a, t| a.union(&t.as_type()));
