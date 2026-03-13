@@ -10,12 +10,13 @@ use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInterna
 use crate::front::scope::{CaptureFailed, DeclaredValueSingle, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
-use crate::front::value::{CompileValue, SimpleCompileValue, Value};
+use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
 use crate::mid::ir::IrType;
 use crate::syntax::ast::{
-    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumDeclaration,
-    EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface, ItemDefModuleExternal,
-    ItemDefModuleInternal, MaybeIdentifier, Parameters, StructDeclaration, StructField, TypeDeclaration,
+    CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumBodyItem,
+    EnumDeclaration, EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface,
+    ItemDefModuleExternal, ItemDefModuleInternal, MaybeIdentifier, ParameterSelfKind, Parameters, StructBodyItem,
+    StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -27,7 +28,6 @@ use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
-use indexmap::map::Entry;
 use itertools::Itertools;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -232,7 +232,7 @@ impl<T: Copy> HardwareChecked<T> {
 #[derive(Debug)]
 pub struct GenericStructInfo {
     // TODO replace with AstRef
-    fields: ExtraList<StructField>,
+    items: ExtraList<StructBodyItem>,
 }
 
 #[derive(Debug)]
@@ -240,9 +240,12 @@ pub struct ElaboratedStructInfo {
     pub unique: UniqueDeclaration,
     pub debug_info_name: String,
     pub span_body: Span,
+
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
     pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
-    pub members: IndexMap<String, DiagResult<CompileValue>>,
+
+    pub members_static: IndexMap<String, DiagResult<CompileValue>>,
+    pub methods_self: IndexMap<String, Arc<MethodInfo>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -255,7 +258,7 @@ pub struct NonHardwareStruct {
 pub struct GenericEnumInfo {
     pub span_body: Span,
     // TODO replace with AstRef
-    pub variants: ExtraList<EnumVariant>,
+    pub items: ExtraList<EnumBodyItem>,
     pub generic_variants: IndexMap<String, GenericVariantInfo>,
 }
 
@@ -272,7 +275,9 @@ pub struct ElaboratedEnumInfo {
     pub span_body: Span,
     pub variants: IndexMap<String, ElaboratedEnumVariantInfo>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
-    pub members: IndexMap<String, DiagResult<CompileValue>>,
+
+    pub members_static: IndexMap<String, DiagResult<CompileValue>>,
+    pub methods_self: IndexMap<String, Arc<MethodInfo>>,
 }
 
 #[derive(Debug)]
@@ -510,11 +515,11 @@ impl CompileItemContext<'_, '_> {
                     span_body,
                     id,
                     ref params,
-                    ref fields,
+                    ref items,
                 } = decl;
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
-                let generic_info = GenericStructInfo { fields: fields.clone() };
+                let generic_info = GenericStructInfo { items: items.clone() };
                 let body = FunctionItemBody::Struct(unique, Arc::new(generic_info));
 
                 let value = self.eval_maybe_generic_item(id.span(), span_body, scope, flow, params, body)?;
@@ -525,13 +530,19 @@ impl CompileItemContext<'_, '_> {
                     span,
                     id,
                     ref params,
-                    ref variants,
+                    ref items,
                 } = decl;
 
-                // check payload consistency
+                // check variant payload consistency
+                // this is necessary to avoid confusing type inference situations later
                 let mut generic_variants: IndexMap<String, GenericVariantInfo> = IndexMap::new();
                 let mut any_err = Ok(());
-                variants.for_each_leaf(&mut |variant| {
+                items.for_each_leaf(&mut |item| {
+                    let variant = match item {
+                        EnumBodyItem::Variant(variant) => variant,
+                        EnumBodyItem::Method(_) => return,
+                    };
+
                     let &EnumVariant {
                         span: variant_span,
                         id,
@@ -575,8 +586,8 @@ impl CompileItemContext<'_, '_> {
 
                 let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
                 let generic_info = GenericEnumInfo {
-                    span_body: variants.span,
-                    variants: variants.clone(),
+                    span_body: items.span,
+                    items: items.clone(),
                     generic_variants,
                 };
                 let body = FunctionItemBody::Enum(unique, Arc::new(generic_info));
@@ -592,15 +603,20 @@ impl CompileItemContext<'_, '_> {
                     ret_ty,
                     ref body,
                 } = decl;
+                let Parameters {
+                    span: _,
+                    slf: (),
+                    items: param_items,
+                } = params;
 
-                let body_inner = FunctionBody::FunctionBodyBlock {
+                let body_inner = FunctionBody::FunctionBodyBlockOwned {
                     body: Arc::new(body.clone()),
                     ret_ty,
                 };
                 let function = UserFunctionValue {
                     span_decl: id.span(),
                     scope_captured: Arc::new(scope.capture(flow, id.span())),
-                    params: Arc::new(params.clone()),
+                    params: Arc::new(param_items.clone()),
                     body: Spanned {
                         span: body.span,
                         inner: body_inner,
@@ -648,10 +664,15 @@ impl CompileItemContext<'_, '_> {
             }
             Some(params) => {
                 // build function
+                let Parameters {
+                    span: _,
+                    slf: (),
+                    items: param_items,
+                } = params;
                 let func = UserFunctionValue {
                     span_decl,
                     scope_captured: Arc::new(scope.capture(flow, span_decl)),
-                    params: Arc::new(params.clone()),
+                    params: Arc::new(param_items.clone()),
                     body: Spanned {
                         span: span_body,
                         inner: FunctionBody::ItemBody(body),
@@ -846,49 +867,94 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
-    fn elaborate_struct_new(
+    fn elaborate_struct_new<'a>(
         &mut self,
         scope_params: &Scope,
         flow: &mut FlowCompile,
         unique: UniqueDeclaration,
         params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
-        generic_info: &GenericStructInfo,
+        generic_info: &'a GenericStructInfo,
     ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
         let elab = &self.refs.shared.elaboration_arenas;
-        let GenericStructInfo { fields } = generic_info;
+        let GenericStructInfo { items } = generic_info;
 
-        // elaborate extra list containing fields and declarations
-        let mut fields_eval = IndexMap::new();
-        let mut any_field_err = Ok(());
-        let mut visit_field = |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, field: &StructField| {
-            let &StructField { span: _, id, ty } = field;
+        // capture scope for possible member functions
+        let scope_params_captured = Arc::new(scope_params.capture(flow, span_body));
 
-            let ty = s.eval_expression_as_ty(scope.as_scope(), flow, ty)?;
+        // elaborate extra list containing fields and members
+        let mut fields_eval: IndexMap<String, (Identifier, Spanned<Type>)> = IndexMap::new();
+        let mut methods_self: IndexMap<String, Arc<MethodInfo>> = IndexMap::new();
+        let mut any_item_err = Ok(());
 
-            match fields_eval.entry(id.str(source).to_owned()) {
-                Entry::Vacant(entry) => {
-                    entry.insert((id, ty));
-                }
-                Entry::Occupied(entry) => {
-                    let e = DiagnosticError::new("duplicate struct field name", id.span, "declared again here")
-                        .add_info(entry.get().0.span, "previously declared here")
-                        .report(diags);
-                    any_field_err = Err(e);
-                }
-            }
-
-            Ok(())
+        let mut err_member_duplicate = |prev_span, prev_kind, curr_span, curr_kind| {
+            let e = err_member_duplicate("struct", prev_span, prev_kind, curr_span, curr_kind).report(diags);
+            any_item_err = Err(e);
         };
 
-        let mut scope = scope_params.new_child(span_body);
-        self.elaborate_extra_list(&mut scope, flow, fields, true, &mut visit_field)?;
-        any_field_err?;
+        let mut visit_item =
+            |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, item: &'a StructBodyItem| {
+                match item {
+                    StructBodyItem::Field(field) => {
+                        let &StructField { span: _, id, ty } = field;
 
-        let members = collect_members_from_body(diags, &scope, flow, BodyKind::Struct, |name| {
-            fields_eval.get(name).map(|(id, _)| id.span)
+                        let id_eval = id.str(source);
+                        let ty = s.eval_expression_as_ty(scope.as_scope(), flow, ty)?;
+
+                        if let Some(&(prev_id, _)) = fields_eval.get(id_eval) {
+                            err_member_duplicate(prev_id.span, "field", id.span, "field");
+                            return Ok(());
+                        }
+                        if let Some(prev_info) = methods_self.get(id_eval) {
+                            err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "field");
+                            return Ok(());
+                        }
+
+                        fields_eval.insert(id_eval.to_owned(), (id, ty));
+                    }
+                    StructBodyItem::Method(method) => match method.params.slf.inner {
+                        ParameterSelfKind::Slf => {
+                            let id = match method.id {
+                                MaybeIdentifier::Dummy { .. } => return Ok(()),
+                                MaybeIdentifier::Identifier(id) => id,
+                            };
+                            let id_eval = id.str(source);
+
+                            if let Some(&(prev_id, _)) = fields_eval.get(id_eval) {
+                                err_member_duplicate(prev_id.span, "field", id.span, "method");
+                                return Ok(());
+                            }
+                            if let Some(prev_info) = methods_self.get(id_eval) {
+                                err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "method");
+                                return Ok(());
+                            }
+
+                            let info = MethodInfo {
+                                scope: Arc::clone(&scope_params_captured),
+                                name: id_eval.to_owned(),
+                                func_decl: method.clone(),
+                            };
+                            methods_self.insert(id_eval.to_owned(), Arc::new(info));
+                        }
+                    },
+                }
+                Ok(())
+            };
+
+        let mut scope = scope_params.new_child(span_body);
+        self.elaborate_extra_list(&mut scope, flow, items, true, &mut visit_item)?;
+        any_item_err?;
+
+        let members_static = collect_static_members_from_body(diags, &scope, flow, "struct", |name| {
+            if let Some(&(prev_id, _)) = fields_eval.get(name) {
+                Some((prev_id.span, "field"))
+            } else if let Some(prev_info) = methods_self.get(name) {
+                Some((prev_info.func_decl.id.span(), "method"))
+            } else {
+                None
+            }
         });
 
         // check if this struct can be represented in hardware
@@ -910,7 +976,8 @@ impl CompileItemContext<'_, '_> {
             span_body,
             fields: fields_eval,
             fields_hw,
-            members,
+            members_static,
+            methods_self,
         })
     }
 
@@ -928,55 +995,91 @@ impl CompileItemContext<'_, '_> {
         let elab = &self.refs.shared.elaboration_arenas;
         let GenericEnumInfo {
             span_body: _,
-            variants,
+            items,
             generic_variants: _,
         } = generic_info;
 
-        // evaluate variants
-        let mut variants_eval = IndexMap::new();
-        let mut any_variant_err = Ok(());
+        // capture scope for possible member functions
+        let scope_params_captured = Arc::new(scope_params.capture(flow, span_body));
 
-        let mut visit_variant =
-            |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, variant: &EnumVariant| {
-                let &EnumVariant {
-                    span: _,
-                    id,
-                    payload: content,
-                } = variant;
+        // elaborate extra list containing variants and members
+        let mut variants_eval: IndexMap<String, ElaboratedEnumVariantInfo> = IndexMap::new();
+        let mut methods_self: IndexMap<String, Arc<MethodInfo>> = IndexMap::new();
+        let mut any_item_err = Ok(());
 
-                let id_string = id.str(source).to_owned();
+        let mut err_member_duplicate = |prev_span, prev_kind, curr_span, curr_kind| {
+            let e = err_member_duplicate("enum", prev_span, prev_kind, curr_span, curr_kind).report(diags);
+            any_item_err = Err(e);
+        };
 
-                let payload_ty = content
-                    .map(|content| s.eval_expression_as_ty(scope.as_scope(), flow, content))
-                    .transpose()?;
+        let mut visit_item = |s: &mut Self, scope: &mut ExtraScope, flow: &mut FlowCompile, item: &EnumBodyItem| {
+            match item {
+                EnumBodyItem::Variant(variant) => {
+                    let &EnumVariant {
+                        span: _,
+                        id,
+                        payload: content,
+                    } = variant;
 
-                let variant_info = ElaboratedEnumVariantInfo {
-                    id,
-                    debug_info_name: id_string.clone(),
-                    payload_ty,
-                };
+                    let id_eval = id.str(source).to_owned();
+                    let payload_ty = content
+                        .map(|content| s.eval_expression_as_ty(scope.as_scope(), flow, content))
+                        .transpose()?;
+                    let variant_info = ElaboratedEnumVariantInfo {
+                        id,
+                        debug_info_name: id_eval.clone(),
+                        payload_ty,
+                    };
 
-                match variants_eval.entry(id_string) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(variant_info);
+                    if let Some(prev_info) = variants_eval.get(&id_eval) {
+                        err_member_duplicate(prev_info.id.span, "variant", id.span, "variant");
+                        return Ok(());
                     }
-                    Entry::Occupied(entry) => {
-                        let e = DiagnosticError::new("duplicate enum variant name", id.span, "declared again here")
-                            .add_info(entry.get().id.span, "previously declared here")
-                            .report(diags);
-                        any_variant_err = Err(e);
+                    if let Some(prev_info) = methods_self.get(&id_eval) {
+                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "variant");
+                        return Ok(());
                     }
+
+                    variants_eval.insert(id_eval, variant_info);
                 }
+                EnumBodyItem::Method(method) => {
+                    let id = match method.id {
+                        MaybeIdentifier::Dummy { .. } => return Ok(()),
+                        MaybeIdentifier::Identifier(id) => id,
+                    };
+                    let id_eval = id.str(source).to_owned();
 
-                Ok(())
-            };
+                    if let Some(prev_info) = methods_self.get(&id_eval) {
+                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "method");
+                        return Ok(());
+                    }
+                    if let Some(prev_info) = variants_eval.get(&id_eval) {
+                        err_member_duplicate(prev_info.id.span, "variant", id.span, "method");
+                        return Ok(());
+                    }
+
+                    let info = MethodInfo {
+                        scope: Arc::clone(&scope_params_captured),
+                        name: id_eval.to_owned(),
+                        func_decl: method.clone(),
+                    };
+                    methods_self.insert(id_eval.to_owned(), Arc::new(info));
+                }
+            }
+
+            Ok(())
+        };
 
         let mut scope = scope_params.new_child(span_body);
-        self.elaborate_extra_list(&mut scope, flow, variants, true, &mut visit_variant)?;
-        any_variant_err?;
+        self.elaborate_extra_list(&mut scope, flow, items, true, &mut visit_item)?;
+        any_item_err?;
 
-        let members = collect_members_from_body(diags, &scope, flow, BodyKind::Enum, |name| {
-            variants_eval.get(name).map(|info| info.id.span)
+        let members = collect_static_members_from_body(diags, &scope, flow, "enum", |name| {
+            if let Some(variant_info) = variants_eval.get(name) {
+                Some((variant_info.id.span, "variant"))
+            } else {
+                None
+            }
         });
 
         // check if this enum can be represented in hardware
@@ -990,47 +1093,32 @@ impl CompileItemContext<'_, '_> {
             span_body,
             variants: variants_eval,
             hw,
-            members,
+            members_static: members,
+            methods_self,
         })
     }
 }
 
-enum BodyKind {
-    Struct,
-    Enum,
-}
-
-fn collect_members_from_body(
+fn collect_static_members_from_body(
     diags: &Diagnostics,
     scope: &Scope,
     flow: &impl Flow,
-    kind: BodyKind,
-    existing: impl Fn(&str) -> Option<Span>,
+    ty_kind: &str,
+    prev_span_kind: impl Fn(&str) -> Option<(Span, &str)>,
 ) -> IndexMap<String, DiagResult<CompileValue>> {
-    let (kind_name, kind_existing_name) = match kind {
-        BodyKind::Struct => ("struct", "field"),
-        BodyKind::Enum => ("enum", "variant"),
-    };
-
     let mut members = IndexMap::new();
     scope.for_each_immediate_entry(|name, entry| {
         let member = match entry {
             DeclaredValueSingle::Value { span, value } => {
                 if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name) {
                     Err(DiagnosticError::new(
-                        format!("{kind_name} member name collides with builtin type member"),
+                        format!("{ty_kind} member name collides with builtin type member"),
                         span,
                         format!("trying to declare member with name `{name}` here"),
                     )
                     .report(diags))
-                } else if let Some(span_decl) = existing(name) {
-                    Err(DiagnosticError::new(
-                        format!("{kind_name} member name collides with {kind_name} {kind_existing_name}"),
-                        span,
-                        format!("trying to declare member with name `{name}` here"),
-                    )
-                    .add_info(span_decl, format!("collides with {kind_existing_name} declared here"))
-                    .report(diags))
+                } else if let Some((prev_span, prev_kind)) = prev_span_kind(name) {
+                    Err(err_member_duplicate(ty_kind, prev_span, prev_kind, span, "member").report(diags))
                 } else {
                     match value {
                         &ScopedEntry::Named(value) => match value {
@@ -1055,6 +1143,21 @@ fn collect_members_from_body(
         members.insert(name.to_owned(), member);
     });
     members
+}
+
+fn err_member_duplicate(
+    ty_kind: &str,
+    prev_span: Span,
+    prev_kind: &str,
+    curr_span: Span,
+    curr_kind: &str,
+) -> DiagnosticError {
+    DiagnosticError::new(
+        format!("conflicting definitions of {ty_kind} member"),
+        curr_span,
+        format!("{curr_kind} declared here"),
+    )
+    .add_info(prev_span, format!("{prev_kind} previously declared here"))
 }
 
 pub fn debug_info_name_including_params(

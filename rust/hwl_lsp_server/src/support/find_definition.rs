@@ -1,12 +1,13 @@
 use crate::support::PosNotOnIdentifier;
 use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
-use hwl_language::syntax::pos::{Pos, Span};
+use hwl_language::syntax::pos::{Pos, Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase;
-use hwl_language::syntax::visitor::{DeclScope, EvaluatedId, SyntaxVisitor, syntax_visit};
+use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
+use itertools::Either;
 use std::ops::ControlFlow;
 
 pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> Result<Vec<Span>, PosNotOnIdentifier> {
-    let mut visitor = FindDeclarationVisitor { source, pos };
+    let mut visitor = FindDeclarationVisitor { pos };
     let res = syntax_visit(source, ast, &mut visitor);
     match res {
         ControlFlow::Continue(()) => Err(PosNotOnIdentifier),
@@ -14,12 +15,11 @@ pub fn find_definition(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> 
     }
 }
 
-struct FindDeclarationVisitor<'a> {
-    source: &'a SourceDatabase,
+struct FindDeclarationVisitor {
     pos: Pos,
 }
 
-impl SyntaxVisitor for FindDeclarationVisitor<'_> {
+impl SyntaxVisitor for FindDeclarationVisitor {
     type Break = Vec<Span>;
     const SCOPE_DECLARE: bool = true;
 
@@ -29,10 +29,9 @@ impl SyntaxVisitor for FindDeclarationVisitor<'_> {
 
     fn report_id_use(
         &mut self,
-        scope: &DeclScope<'_>,
-        id: GeneralIdentifier,
-        id_eval: impl Fn(&SourceDatabase, GeneralIdentifier) -> EvaluatedId<&str>,
+        _: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
-        ControlFlow::Break(scope.find(&id_eval(self.source, id)))
+        ControlFlow::Break(scope_find_id())
     }
 }

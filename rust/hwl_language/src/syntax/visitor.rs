@@ -1,22 +1,24 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
     BlockStatementKind, ClockedProcess, ClockedProcessReset, CombinatorialProcess, CommonDeclaration,
-    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumDeclaration,
-    EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement,
-    FunctionDeclaration, GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
+    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumBodyItem,
+    EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent,
+    ForStatement, FunctionDeclaration, GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
     InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal,
     ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier,
-    ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, Parameters, PortConnection,
-    PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew,
-    RegisterDeclarationWire, ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration,
-    VariableDeclaration, Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    MaybeParameterSelf, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    ParameterSelf, ParameterSelfKind, Parameters, PortConnection, PortSingleKindInner, RangeLiteral,
+    RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement,
+    StringPiece, StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
 use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
+use itertools::Either;
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 
@@ -53,18 +55,17 @@ pub trait SyntaxVisitor {
     //   eg. for declarations it's not that straightforward
     fn should_visit_span(&self, span: Span) -> bool;
 
-    fn report_id_declare(&mut self, id: GeneralIdentifier) -> ControlFlow<Self::Break, ()> {
+    fn report_id_declare(&mut self, id: Either<GeneralIdentifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
         let _ = id;
         ControlFlow::Continue(())
     }
 
     fn report_id_use(
         &mut self,
-        scope: &DeclScope<'_>,
-        id: GeneralIdentifier,
-        id_eval: impl Fn(&SourceDatabase, GeneralIdentifier) -> EvaluatedId<&str>,
+        id: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
-        let _ = (scope, id, id_eval);
+        let _ = (id, scope_find_id);
         ControlFlow::Continue(())
     }
 
@@ -87,6 +88,7 @@ pub struct DeclScope<'p> {
 
 #[derive(Debug, Default)]
 struct DeclScopeContent {
+    slf: Vec<(Span, Conditional)>,
     simple: IndexMap<String, Vec<(Span, Conditional)>>,
     pattern: Vec<(RegexDfa, Span, Conditional)>,
 }
@@ -112,6 +114,9 @@ struct VisitContext<'a, 'v, V> {
     visitor: &'v mut V,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct SelfExpression;
+
 impl<'p> DeclScope<'p> {
     fn new_root() -> Self {
         Self {
@@ -127,70 +132,84 @@ impl<'p> DeclScope<'p> {
         }
     }
 
-    fn merge_conditional_child(&mut self, content: DeclScopeContent) {
-        let DeclScopeContent {
-            simple: fixed,
-            pattern: regex,
-        } = content;
-        let mut content = self.content.borrow_mut();
-        for (k, v) in fixed {
+    fn merge_conditional_child(&mut self, child: DeclScopeContent) {
+        let DeclScopeContent { slf, simple, pattern } = child;
+        let mut parent = self.content.borrow_mut();
+
+        for (span, _) in slf {
+            parent.slf.push((span, Conditional::Yes));
+        }
+        for (k, v) in simple {
             for (span, _) in v {
-                content
+                parent
                     .simple
                     .entry(k.clone())
                     .or_default()
                     .push((span, Conditional::Yes));
             }
         }
-        for (k, v, _) in regex {
-            content.pattern.push((k, v, Conditional::Yes));
+        for (k, span, _) in pattern {
+            parent.pattern.push((k, span, Conditional::Yes));
         }
     }
 
-    pub fn find(&self, id: &EvaluatedId<&str>) -> Vec<Span> {
+    fn find(&self, id: &Either<EvaluatedId<&str>, SelfExpression>) -> Vec<Span> {
         let mut curr = self;
         let mut result = vec![];
 
         loop {
-            let mut any_certain = false;
             let content = curr.content.borrow();
+            let mut any_certain = false;
 
-            // check simple
             match id {
-                &EvaluatedId::Simple(id) => {
-                    if let Some(entries) = content.simple.get(id) {
-                        for &(span, cond) in entries {
-                            result.push(span);
-                            match cond {
-                                Conditional::Yes => {}
-                                Conditional::No => any_certain = true,
+                Either::Left(id) => {
+                    // check simple
+                    match id {
+                        &EvaluatedId::Simple(id) => {
+                            if let Some(entries) = content.simple.get(id) {
+                                for &(span, cond) in entries {
+                                    result.push(span);
+                                    match cond {
+                                        Conditional::Yes => {}
+                                        Conditional::No => any_certain = true,
+                                    }
+                                }
+                            }
+                        }
+                        EvaluatedId::Pattern(id) => {
+                            for (key, entries) in &content.simple {
+                                if id.could_match_str(key) {
+                                    for &(span, cond) in entries {
+                                        result.push(span);
+                                        // pattern matches are never certain
+                                        let _ = cond;
+                                    }
+                                }
                             }
                         }
                     }
-                }
-                EvaluatedId::Pattern(id) => {
-                    for (key, entries) in &content.simple {
-                        if id.could_match_str(key) {
-                            for &(span, cond) in entries {
-                                result.push(span);
-                                // pattern matches are never certain
-                                let _ = cond;
-                            }
-                        }
-                    }
-                }
-            }
 
-            // check patterns
-            for &(ref pattern, span, c) in &content.pattern {
-                let could_match = match id {
-                    EvaluatedId::Simple(id) => pattern.could_match_str(id),
-                    EvaluatedId::Pattern(id) => pattern.could_match_pattern(id),
-                };
-                if could_match {
-                    result.push(span);
-                    // pattern matches are never certain
-                    let _ = c;
+                    // check patterns
+                    for &(ref pattern, span, c) in &content.pattern {
+                        let could_match = match id {
+                            EvaluatedId::Simple(id) => pattern.could_match_str(id),
+                            EvaluatedId::Pattern(id) => pattern.could_match_pattern(id),
+                        };
+                        if could_match {
+                            result.push(span);
+                            // pattern matches are never certain
+                            let _ = c;
+                        }
+                    }
+                }
+                Either::Right(_) => {
+                    for &(span, cond) in &content.slf {
+                        result.push(span);
+                        match cond {
+                            Conditional::Yes => {}
+                            Conditional::No => any_certain = true,
+                        }
+                    }
                 }
             }
 
@@ -209,12 +228,17 @@ impl<'p> DeclScope<'p> {
 }
 
 impl DeclScopeContent {
-    fn declare(&mut self, cond: Conditional, span: Span, id: EvaluatedId<&str>) {
+    fn declare(&mut self, cond: Conditional, span: Span, id: Either<EvaluatedId<&str>, ParameterSelfKind>) {
         match id {
-            EvaluatedId::Simple(id_inner) => {
-                self.simple.entry(id_inner.to_owned()).or_default().push((span, cond));
+            Either::Left(id) => match id {
+                EvaluatedId::Simple(id_inner) => {
+                    self.simple.entry(id_inner.to_owned()).or_default().push((span, cond));
+                }
+                EvaluatedId::Pattern(pattern) => self.pattern.push((pattern, span, cond)),
+            },
+            Either::Right(_) => {
+                self.slf.push((span, cond));
             }
-            EvaluatedId::Pattern(pattern) => self.pattern.push((pattern, span, cond)),
         }
     }
 }
@@ -402,7 +426,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 })?;
 
                 for port_id in all_view_ports {
-                    self.visit_id_usage(&scope_ports, port_id.into())?;
+                    self.visit_id_usage(&scope_ports, Either::Left(port_id.into()))?;
                 }
 
                 ControlFlow::Continue(())
@@ -534,18 +558,25 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             span_body: _,
                             id,
                             ref params,
-                            ref fields,
+                            ref items,
                         } = decl;
 
                         let mut scope_params = scope_parent.new_child();
                         if let Some(params) = params {
                             self.visit_parameters(&mut scope_params, params)?;
                         }
-                        // TODO why the weird scoping here?
-                        self.visit_extra_list(&mut scope_params, fields, &mut |slf, _scope, field| {
-                            let &StructField { span, id: _, ty } = field;
-                            slf.visitor.report_range(span, None);
-                            slf.visit_expression(scope_parent, ty)?;
+                        self.visit_extra_list(&mut scope_params, items, &mut |slf, scope, item| {
+                            match item {
+                                StructBodyItem::Field(field) => {
+                                    let &StructField { span, id: _, ty } = field;
+                                    slf.visitor.report_range(span, None);
+                                    slf.visit_expression(scope, ty)?;
+                                }
+                                StructBodyItem::Method(decl) => {
+                                    slf.visit_function_declaration(scope, decl)?;
+                                }
+                            }
+
                             ControlFlow::Continue(())
                         })?;
 
@@ -556,7 +587,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             span: _,
                             id,
                             ref params,
-                            ref variants,
+                            ref items,
                         } = decl;
 
                         let mut scope_params = scope_parent.new_child();
@@ -564,40 +595,33 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             self.visit_parameters(&mut scope_params, params)?;
                         }
 
-                        self.visit_extra_list(&mut scope_params, variants, &mut |slf, scope_params, variant| {
-                            let &EnumVariant {
-                                span,
-                                id: _,
-                                payload: content,
-                            } = variant;
-                            slf.visitor.report_range(span, None);
+                        self.visit_extra_list(&mut scope_params, items, &mut |slf, scope_params, item| {
+                            match item {
+                                EnumBodyItem::Variant(variant) => {
+                                    let &EnumVariant {
+                                        span,
+                                        id: _,
+                                        payload: content,
+                                    } = variant;
+                                    slf.visitor.report_range(span, None);
 
-                            // TODO declare variant name
-                            if let Some(content) = content {
-                                slf.visit_expression(scope_params, content)?;
+                                    // TODO declare variant name
+                                    if let Some(content) = content {
+                                        slf.visit_expression(scope_params, content)?;
+                                    }
+                                }
+                                EnumBodyItem::Method(decl) => {
+                                    slf.visit_function_declaration(scope_parent, decl)?;
+                                }
                             }
+
                             ControlFlow::Continue(())
                         })?;
 
                         id
                     }
                     CommonDeclarationNamedKind::Function(decl) => {
-                        let &FunctionDeclaration {
-                            span: _,
-                            id,
-                            ref params,
-                            ret_ty,
-                            ref body,
-                        } = decl;
-
-                        let mut scope_params = scope_parent.new_child();
-                        self.visit_parameters(&mut scope_params, params)?;
-                        if let Some(ret_ty) = ret_ty {
-                            self.visit_expression(&scope_params, ret_ty)?;
-                        }
-                        self.visit_block_statements(&scope_params, body)?;
-
-                        id
+                        self.visit_function_declaration(scope_parent, decl)?
                     }
                 };
 
@@ -612,9 +636,40 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn visit_parameters(&mut self, scope: &mut DeclScope, params: &Parameters) -> ControlFlow<V::Break> {
-        let &Parameters { span, ref items } = params;
+    fn visit_function_declaration<S: MaybeParameterSelf>(
+        &mut self,
+        scope_parent: &DeclScope,
+        decl: &FunctionDeclaration<S>,
+    ) -> ControlFlow<V::Break, MaybeIdentifier> {
+        let &FunctionDeclaration {
+            span: _,
+            id,
+            ref params,
+            ret_ty,
+            ref body,
+        } = decl;
+
+        let mut scope_params = scope_parent.new_child();
+        self.visit_parameters(&mut scope_params, params)?;
+        if let Some(ret_ty) = ret_ty {
+            self.visit_expression(&scope_params, ret_ty)?;
+        }
+        self.visit_block_statements(&scope_params, body)?;
+
+        ControlFlow::Continue(id)
+    }
+
+    fn visit_parameters<S: MaybeParameterSelf>(
+        &mut self,
+        scope: &mut DeclScope,
+        params: &Parameters<S>,
+    ) -> ControlFlow<V::Break> {
+        let &Parameters { span, slf, ref items } = params;
         self.visitor.report_range(span, Some(FoldRangeKind::Region));
+
+        if let Some(slf) = slf.as_parameter_self() {
+            self.scope_declare_impl(scope, Conditional::No, Either::Right(slf))?;
+        }
 
         self.visit_extra_list(scope, items, &mut |slf, scope, param| {
             let &Parameter { span, id, ty, default } = param;
@@ -994,7 +1049,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 }
 
                 match vis {
-                    Visibility::Public { span: _ } => self.scope_ref_declare(module_scope, Conditional::No, id)?,
+                    Visibility::Public { span: _ } => {
+                        self.scope_declare_impl(module_scope, Conditional::No, Either::Left(id))?
+                    }
                     Visibility::Private => self.scope_declare(scope, Conditional::No, id)?,
                 }
             }
@@ -1097,7 +1154,10 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(&scope_inner, expression)?;
             }
             &ExpressionKind::Id(id) => {
-                self.visit_id_usage(scope, id.into())?;
+                self.visit_id_usage(scope, Either::Left(id.into()))?;
+            }
+            ExpressionKind::Slf => {
+                self.visit_id_usage(scope, Either::Right(Spanned::new(expr.span, SelfExpression)))?;
             }
             ExpressionKind::StringLiteral(pieces) => {
                 for &piece in pieces {
@@ -1260,28 +1320,51 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         ControlFlow::Continue(())
     }
 
-    fn visit_id_usage(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
-        check_skip!(self, id.span());
+    fn visit_id_usage(
+        &mut self,
+        scope: &DeclScope,
+        id: Either<MaybeGeneralIdentifier, Spanned<SelfExpression>>,
+    ) -> ControlFlow<V::Break> {
+        let span = id.span();
 
-        self.visitor.report_range(id.span(), None);
+        check_skip!(self, span);
+        self.visitor.report_range(span, None);
 
-        match id {
-            MaybeGeneralIdentifier::Dummy { .. } => ControlFlow::Continue(()),
-            MaybeGeneralIdentifier::Identifier(id) => {
-                // first visit the inner expressions if any
+        let report_id = match id {
+            Either::Left(id) => {
                 match id {
-                    GeneralIdentifier::Simple(_id) => {}
-                    GeneralIdentifier::FromString(_span, expr) => {
-                        self.visit_expression(scope, expr)?;
+                    MaybeGeneralIdentifier::Dummy { .. } => None,
+                    MaybeGeneralIdentifier::Identifier(id) => {
+                        // first visit the inner expressions if any
+                        match id {
+                            GeneralIdentifier::Simple(_id) => {}
+                            GeneralIdentifier::FromString(_span, expr) => {
+                                self.visit_expression(scope, expr)?;
+                            }
+                        }
+
+                        Some(Either::Left(id))
                     }
                 }
-
-                // report the id usage itself
-                self.visitor.report_id_use(scope, id, |source, id| {
-                    eval_general_id(source, self.arena_expressions, id)
-                })
             }
+            Either::Right(slf) => Some(Either::Right(slf)),
+        };
+
+        // report the id usage itself
+        if let Some(report_id) = report_id {
+            self.visitor.report_id_use(report_id, || {
+                let id_eval = match report_id {
+                    Either::Left(report_id) => {
+                        let eval_id = eval_general_id(self.source, self.arena_expressions, report_id);
+                        Either::Left(eval_id)
+                    }
+                    Either::Right(slf) => Either::Right(slf.inner),
+                };
+                scope.find(&id_eval)
+            })?;
         }
+
+        ControlFlow::Continue(())
     }
 
     fn scope_declare(
@@ -1290,23 +1373,38 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         cond: Conditional,
         id: MaybeGeneralIdentifier,
     ) -> ControlFlow<V::Break> {
-        self.scope_ref_declare(scope, cond, id)
+        self.scope_declare_impl(scope, cond, Either::Left(id))
     }
 
-    fn scope_ref_declare(
+    fn scope_declare_impl(
         &mut self,
         scope: &DeclScope,
         cond: Conditional,
-        id: MaybeGeneralIdentifier,
+        id: Either<MaybeGeneralIdentifier, ParameterSelf>,
     ) -> ControlFlow<V::Break> {
         match id {
-            MaybeGeneralIdentifier::Dummy { .. } => {}
-            MaybeGeneralIdentifier::Identifier(id) => {
-                self.visitor.report_id_declare(id)?;
+            Either::Left(id) => match id {
+                MaybeGeneralIdentifier::Dummy { .. } => {}
+                MaybeGeneralIdentifier::Identifier(id) => {
+                    self.visitor.report_id_declare(Either::Left(id))?;
+
+                    if V::SCOPE_DECLARE {
+                        let id_eval = eval_general_id(self.source, self.arena_expressions, id);
+                        scope
+                            .content
+                            .borrow_mut()
+                            .declare(cond, id.span(), Either::Left(id_eval));
+                    }
+                }
+            },
+            Either::Right(slf) => {
+                self.visitor.report_id_declare(Either::Right(slf))?;
 
                 if V::SCOPE_DECLARE {
-                    let id_eval = eval_general_id(self.source, self.arena_expressions, id);
-                    scope.content.borrow_mut().declare(cond, id.span(), id_eval);
+                    scope
+                        .content
+                        .borrow_mut()
+                        .declare(cond, slf.span, Either::Right(slf.inner));
                 }
             }
         }

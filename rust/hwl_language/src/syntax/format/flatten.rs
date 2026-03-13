@@ -3,16 +3,17 @@ use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
     CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
-    ConstDeclaration, DomainKind, DotIndexKind, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList,
-    ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier, Identifier,
-    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceSignal,
-    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch,
-    MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, ModuleInstance, ModulePortDomainBlock,
-    ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement,
-    ModuleStatementKind, Parameter, Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner,
-    RangeLiteral, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire,
-    ReturnStatement, StringPiece, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ConstDeclaration, DomainKind, DotIndexKind, EnumBodyItem, EnumDeclaration, EnumVariant, Expression, ExpressionKind,
+    ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier,
+    Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem,
+    InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport,
+    MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, MaybeParameterSelf,
+    MaybeVisibility, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelfKind,
+    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegisterDeclaration,
+    RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement, StringPiece,
+    StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility,
+    WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
@@ -163,7 +164,7 @@ impl Context<'_> {
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
         let ExtraList { span: _, items } = list;
-        self.fmt_extra_list_items(surround, force_wrap, items, f)
+        self.fmt_extra_list_items(surround, force_wrap, None, items, f)
     }
 
     fn fmt_extra_list_block<T>(
@@ -173,38 +174,50 @@ impl Context<'_> {
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
         let ExtraListBlock { span: _, items } = block;
-        self.fmt_extra_list_items(SurroundKind::Curly, force_wrap, items, f)
+        self.fmt_extra_list_items(SurroundKind::Curly, force_wrap, None, items, f)
     }
 
     fn fmt_extra_list_items<T>(
         &self,
         surround: SurroundKind,
         force_wrap: bool,
+        first: Option<HNodeAndComma>,
         items: &[ExtraListItem<T>],
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
         let mut seq = vec![];
-        if force_wrap && !items.is_empty() {
-            seq.push(HNode::ForceWrap);
-        }
-        if !items.is_empty() {
+
+        if first.is_some() || !items.is_empty() {
+            if force_wrap {
+                seq.push(HNode::ForceWrap);
+            }
             seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
+        }
+
+        let push_leaf = |seq: &mut Vec<HNode>, leaf: HNodeAndComma, last: bool| {
+            let HNodeAndComma { node, comma } = leaf;
+
+            seq.push(node);
+            if comma {
+                seq.push(comma_nodes(last));
+            } else {
+                seq.push(HNode::ForceWrap);
+            }
+            if !last {
+                seq.push(HNode::WrapNewline);
+            }
+        };
+
+        if let Some(first) = first {
+            let last = items.is_empty();
+            push_leaf(&mut seq, first, last);
+            seq.push(preserve_blank_lines_after_item(last));
         }
 
         for (item, last) in items.iter().with_last() {
             match item {
                 ExtraListItem::Leaf(leaf) => {
-                    let HNodeAndComma { node, comma } = f(leaf);
-
-                    seq.push(node);
-                    if comma {
-                        seq.push(comma_nodes(last));
-                    } else {
-                        seq.push(HNode::ForceWrap);
-                    }
-                    if !last {
-                        seq.push(HNode::WrapNewline);
-                    }
+                    push_leaf(&mut seq, f(leaf), last);
                 }
                 ExtraListItem::Declaration(decl) => {
                     seq.push(self.fmt_common_decl(decl));
@@ -226,10 +239,10 @@ impl Context<'_> {
         surrounded_group_indent(surround, HNode::Sequence(seq))
     }
 
-    fn fmt_common_decl<V: FormatVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
+    fn fmt_common_decl<V: MaybeVisibility>(&self, decl: &CommonDeclaration<V>) -> HNode {
         match decl {
             CommonDeclaration::Named(decl) => {
-                let CommonDeclarationNamed { vis, kind } = decl;
+                let &CommonDeclarationNamed { vis, ref kind } = decl;
                 let node_kind = match kind {
                     CommonDeclarationNamedKind::Type(decl) => {
                         let &TypeDeclaration {
@@ -258,7 +271,7 @@ impl Context<'_> {
                             span_body: _,
                             id,
                             ref params,
-                            ref fields,
+                            ref items,
                         } = decl;
 
                         let mut seq = vec![token(TT::Struct), HNode::Space, self.fmt_maybe_id(id)];
@@ -266,11 +279,19 @@ impl Context<'_> {
                             seq.push(self.fmt_parameters(params));
                         }
                         seq.push(HNode::Space);
-                        seq.push(self.fmt_extra_list(SurroundKind::Curly, true, fields, &|field| {
-                            let &StructField { span: _, id, ty } = field;
-                            let node = HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))]);
-                            HNodeAndComma { node, comma: true }
-                        }));
+                        seq.push(
+                            self.fmt_extra_list(SurroundKind::Curly, true, items, &|item| match item {
+                                StructBodyItem::Field(field) => {
+                                    let &StructField { span: _, id, ty } = field;
+                                    let node = HNode::Sequence(vec![self.fmt_id(id), wrapping_type(self.fmt_expr(ty))]);
+                                    HNodeAndComma { node, comma: true }
+                                }
+                                StructBodyItem::Method(method) => {
+                                    let node = self.fmt_function_decl(method);
+                                    HNodeAndComma { node, comma: false }
+                                }
+                            }),
+                        );
                         seq.push(HNode::AlwaysNewline);
                         HNode::Sequence(seq)
                     }
@@ -279,7 +300,7 @@ impl Context<'_> {
                             span: _,
                             id,
                             ref params,
-                            ref variants,
+                            ref items,
                         } = decl;
 
                         let mut seq = vec![token(TT::Enum), HNode::Space, self.fmt_maybe_id(id)];
@@ -287,60 +308,39 @@ impl Context<'_> {
                             seq.push(self.fmt_parameters(params));
                         }
                         seq.push(HNode::Space);
-                        seq.push(self.fmt_extra_list(SurroundKind::Curly, true, variants, &|variant| {
-                            let &EnumVariant {
-                                span: _,
-                                id,
-                                payload: content,
-                            } = variant;
+                        seq.push(
+                            self.fmt_extra_list(SurroundKind::Curly, true, items, &|item| match item {
+                                EnumBodyItem::Variant(variant) => {
+                                    let &EnumVariant {
+                                        span: _,
+                                        id,
+                                        payload: content,
+                                    } = variant;
 
-                            let node_id = self.fmt_id(id);
-                            let node = match content {
-                                None => node_id,
-                                Some(content) => HNode::Sequence(vec![
-                                    node_id,
-                                    surrounded_group_indent(SurroundKind::Round, self.fmt_expr(content)),
-                                ]),
-                            };
-                            HNodeAndComma { node, comma: true }
-                        }));
+                                    let node_id = self.fmt_id(id);
+                                    let node = match content {
+                                        None => node_id,
+                                        Some(content) => HNode::Sequence(vec![
+                                            node_id,
+                                            surrounded_group_indent(SurroundKind::Round, self.fmt_expr(content)),
+                                        ]),
+                                    };
+                                    HNodeAndComma { node, comma: true }
+                                }
+                                EnumBodyItem::Method(method) => {
+                                    let node = self.fmt_function_decl(method);
+                                    HNodeAndComma { node, comma: false }
+                                }
+                            }),
+                        );
                         seq.push(HNode::AlwaysNewline);
                         HNode::Sequence(seq)
                     }
-                    CommonDeclarationNamedKind::Function(decl) => {
-                        let &FunctionDeclaration {
-                            span: _,
-                            id,
-                            ref params,
-                            ret_ty,
-                            ref body,
-                        } = decl;
-
-                        let mut nodes = vec![
-                            token(TT::Fn),
-                            HNode::Space,
-                            self.fmt_maybe_id(id),
-                            self.fmt_parameters(params),
-                        ];
-
-                        if let Some(ret_ty) = ret_ty {
-                            nodes.push(HNode::Space);
-                            nodes.push(token(TT::Arrow));
-                            nodes.push(HNode::Space);
-                            nodes.push(self.fmt_expr(ret_ty));
-                        }
-
-                        nodes.push(HNode::Space);
-                        nodes.push(self.fmt_block(body));
-                        nodes.push(HNode::AlwaysNewline);
-
-                        HNode::Sequence(nodes)
-                    }
+                    CommonDeclarationNamedKind::Function(decl) => self.fmt_function_decl(decl),
                 };
 
                 let mut seq = vec![];
-                vis.to_seq(&mut seq);
-
+                fmt_visibility(&mut seq, vis);
                 seq.push(node_kind);
                 HNode::Sequence(seq)
             }
@@ -366,7 +366,7 @@ impl Context<'_> {
         body: Option<&ExtraList<ModuleStatement>>,
     ) -> HNode {
         let mut seq = vec![];
-        vis.to_seq(&mut seq);
+        fmt_visibility(&mut seq, vis);
 
         if external {
             seq.push(token(TT::External));
@@ -412,7 +412,7 @@ impl Context<'_> {
         } = decl;
 
         let mut seq = vec![];
-        vis.to_seq(&mut seq);
+        fmt_visibility(&mut seq, vis);
         seq.push(token(TT::Interface));
         seq.push(HNode::Space);
         seq.push(self.fmt_maybe_id(id));
@@ -477,9 +477,48 @@ impl Context<'_> {
         ])
     }
 
-    fn fmt_parameters(&self, params: &Parameters) -> HNode {
-        let Parameters { span: _, items } = params;
-        self.fmt_extra_list(SurroundKind::Round, false, items, &|p| {
+    fn fmt_function_decl<S: MaybeParameterSelf>(&self, decl: &FunctionDeclaration<S>) -> HNode {
+        let &FunctionDeclaration {
+            span: _,
+            id,
+            ref params,
+            ret_ty,
+            ref body,
+        } = decl;
+
+        let mut nodes = vec![
+            token(TT::Fn),
+            HNode::Space,
+            self.fmt_maybe_id(id),
+            self.fmt_parameters(params),
+        ];
+
+        if let Some(ret_ty) = ret_ty {
+            nodes.push(HNode::Space);
+            nodes.push(token(TT::Arrow));
+            nodes.push(HNode::Space);
+            nodes.push(self.fmt_expr(ret_ty));
+        }
+
+        nodes.push(HNode::Space);
+        nodes.push(self.fmt_block(body));
+        nodes.push(HNode::AlwaysNewline);
+
+        HNode::Sequence(nodes)
+    }
+
+    fn fmt_parameters<S: MaybeParameterSelf>(&self, params: &Parameters<S>) -> HNode {
+        let Parameters { span: _, slf, items } = params;
+
+        let first = slf.as_parameter_self().map(|slf| {
+            let node = match slf.inner {
+                ParameterSelfKind::Slf => token(TT::Slf),
+            };
+            HNodeAndComma { node, comma: true }
+        });
+        let ExtraList { span: _, items } = items;
+
+        self.fmt_extra_list_items(SurroundKind::Round, false, first, items, &|p| {
             let node = self.fmt_parameter(p);
             HNodeAndComma { node, comma: true }
         })
@@ -587,7 +626,7 @@ impl Context<'_> {
                 } = decl;
 
                 let mut seq = vec![];
-                vis.to_seq(&mut seq);
+                fmt_visibility(&mut seq, vis);
 
                 seq.push(token(TT::Wire));
                 seq.push(HNode::Space);
@@ -1018,6 +1057,7 @@ impl Context<'_> {
             ExpressionKind::Dummy => token(TT::Underscore),
             ExpressionKind::Undefined => token(TT::Undef),
             ExpressionKind::Type => token(TT::Type),
+            ExpressionKind::Slf => token(TT::Slf),
             ExpressionKind::Builtin { span_keyword: _, args } => {
                 fmt_call_like(token(TT::Builtin), &args.inner, |&arg| self.fmt_expr(arg))
             }
@@ -1334,6 +1374,20 @@ fn fmt_comma_list<T>(surround: SurroundKind, items: &[T], f: impl Fn(&T) -> HNod
     surrounded_group_indent(surround, HNode::Sequence(seq))
 }
 
+fn fmt_visibility<V: MaybeVisibility>(seq: &mut Vec<HNode>, v: V) {
+    if let Some(vis) = v.as_visibility() {
+        match vis {
+            Visibility::Public { span: _ } => {
+                seq.push(token(TT::Pub));
+                seq.push(HNode::Space);
+            }
+            Visibility::Private => {
+                // emit nothing, private is the default
+            }
+        }
+    }
+}
+
 fn preserve_blank_lines_after_item(last: bool) -> HNode {
     if !last {
         HNode::PreserveBlankLines(PreserveKind::Always)
@@ -1434,30 +1488,6 @@ impl SurroundKind {
                 HNode::Sequence(vec![HNode::Space, token(TT::CloseC)]),
             ),
         }
-    }
-}
-
-trait FormatVisibility: Copy {
-    fn to_seq(self, seq: &mut Vec<HNode>);
-}
-
-impl FormatVisibility for Visibility {
-    fn to_seq(self, seq: &mut Vec<HNode>) {
-        match self {
-            Visibility::Public { span: _ } => {
-                seq.push(token(TT::Pub));
-                seq.push(HNode::Space);
-            }
-            Visibility::Private => {
-                // this is the default, do nothing
-            }
-        }
-    }
-}
-
-impl FormatVisibility for () {
-    fn to_seq(self, _: &mut Vec<HNode>) {
-        // do nothing
     }
 }
 

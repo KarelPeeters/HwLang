@@ -6,10 +6,11 @@ use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
+use crate::front::scope::FrozenScope;
 use crate::front::signal::{Interface, Signal};
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
-use crate::syntax::ast::StringPiece;
+use crate::syntax::ast::{FunctionDeclaration, ParameterSelf, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
@@ -18,6 +19,7 @@ use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultNeverExt};
 use itertools::{Itertools, zip_eq};
+use std::hash::Hash;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
@@ -211,6 +213,7 @@ pub enum MixedCompoundValue {
     Tuple(Vec<Value>),
     Struct(StructValue<Value>),
     Enum(EnumValue<Box<Value>>),
+    BoundMethod(BoundMethod<Value>),
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +228,7 @@ pub enum CompileCompoundValue {
     Tuple(Vec<CompileValue>),
     Struct(StructValue<CompileValue>),
     Enum(EnumValue<Box<CompileValue>>),
+    BoundMethod(BoundMethod<CompileValue>),
 }
 
 /// This type intentionally does not implement Eq/PartialEq, comparing hardware values only makes sense at runtime,
@@ -258,6 +262,21 @@ pub struct EnumValue<V> {
     pub ty: ElaboratedEnum,
     pub variant: usize,
     pub payload: Option<V>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct BoundMethod<V> {
+    pub self_type: Type,
+    pub self_value: Box<V>,
+    pub method: Arc<MethodInfo>,
+}
+
+#[derive(Debug)]
+pub struct MethodInfo {
+    pub scope: Arc<FrozenScope>,
+    pub name: String,
+    // TODO replace with AstRef
+    pub func_decl: FunctionDeclaration<ParameterSelf>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -441,6 +460,14 @@ impl ValueCommon for MixedCompoundValue {
                     Some(payload) => payload.domain(),
                 }
             }
+            MixedCompoundValue::BoundMethod(method) => {
+                let BoundMethod {
+                    self_type: _,
+                    self_value,
+                    method: _,
+                } = method;
+                self_value.domain()
+            }
         }
     }
 
@@ -454,8 +481,6 @@ impl ValueCommon for MixedCompoundValue {
         let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
 
         match self {
-            MixedCompoundValue::String(_) => Err(err_type()),
-            MixedCompoundValue::Range(_) => Err(err_type()),
             MixedCompoundValue::Tuple(v) => match &ty {
                 HardwareType::Tuple(ty) if v.len() == ty.len() => {
                     let result = zip_eq(v.iter(), ty.iter())
@@ -502,6 +527,10 @@ impl ValueCommon for MixedCompoundValue {
                 }
                 _ => Err(err_type()),
             },
+
+            MixedCompoundValue::String(_) | MixedCompoundValue::Range(_) | MixedCompoundValue::BoundMethod(_) => {
+                Err(err_type())
+            }
         }
     }
 }
@@ -675,11 +704,11 @@ impl CompileValue {
     ///
     /// This is not watertight, it is still possible for captured references to be stored inside the captured scope
     /// for functions. This check just exists to get earlier error messages for common cases.
-    pub fn contains_reference(&self) -> bool {
+    pub fn definitely_contains_reference(&self) -> bool {
         match self {
             CompileValue::Simple(v) => match v {
                 SimpleCompileValue::Reference(_) => true,
-                SimpleCompileValue::Array(v) => v.iter().any(CompileValue::contains_reference),
+                SimpleCompileValue::Array(v) => v.iter().any(CompileValue::definitely_contains_reference),
                 SimpleCompileValue::Type(_)
                 | SimpleCompileValue::Bool(_)
                 | SimpleCompileValue::Int(_)
@@ -689,9 +718,10 @@ impl CompileValue {
                 | SimpleCompileValue::InterfaceView(_) => false,
             },
             CompileValue::Compound(v) => match v {
-                CompileCompoundValue::Tuple(v) => v.iter().any(CompileValue::contains_reference),
-                CompileCompoundValue::Struct(v) => v.fields.iter().any(CompileValue::contains_reference),
-                CompileCompoundValue::Enum(v) => v.payload.as_ref().is_some_and(|p| p.contains_reference()),
+                CompileCompoundValue::Tuple(v) => v.iter().any(CompileValue::definitely_contains_reference),
+                CompileCompoundValue::Struct(v) => v.fields.iter().any(CompileValue::definitely_contains_reference),
+                CompileCompoundValue::Enum(v) => v.payload.as_ref().is_some_and(|p| p.definitely_contains_reference()),
+                CompileCompoundValue::BoundMethod(v) => v.self_value.definitely_contains_reference(),
                 CompileCompoundValue::String(_) | CompileCompoundValue::Range(_) => false,
             },
             CompileValue::Hardware(never) => never.unreachable(),
@@ -791,6 +821,19 @@ impl From<CompileCompoundValue> for MixedCompoundValue {
                 let payload = payload.map(|e| Box::new(Value::from(*e)));
                 MixedCompoundValue::Enum(EnumValue { ty, variant, payload })
             }
+            CompileCompoundValue::BoundMethod(m) => {
+                let BoundMethod {
+                    self_type,
+                    self_value,
+                    method,
+                } = m;
+                let self_value = Box::new(Value::from(*self_value));
+                MixedCompoundValue::BoundMethod(BoundMethod {
+                    self_type,
+                    self_value,
+                    method,
+                })
+            }
         }
     }
 }
@@ -878,6 +921,14 @@ impl TryFrom<&MixedCompoundValue> for CompileCompoundValue {
                     payload,
                 }))
             }
+            MixedCompoundValue::BoundMethod(m) => {
+                let self_value = Box::new(CompileValue::try_from(&*m.self_value)?);
+                Ok(CompileCompoundValue::BoundMethod(BoundMethod {
+                    self_type: m.self_type.clone(),
+                    self_value,
+                    method: Arc::clone(&m.method),
+                }))
+            }
         }
     }
 }
@@ -933,6 +984,7 @@ impl Typed for MixedCompoundValue {
             MixedCompoundValue::Tuple(values) => Type::Tuple(Some(Arc::new(values.iter().map(Value::ty).collect()))),
             MixedCompoundValue::Struct(value) => Type::Struct(value.ty),
             MixedCompoundValue::Enum(value) => Type::Enum(value.ty),
+            MixedCompoundValue::BoundMethod(_) => Type::Function,
         }
     }
 }
@@ -944,6 +996,7 @@ impl Typed for CompileCompoundValue {
             CompileCompoundValue::Tuple(values) => Type::Tuple(Some(Arc::new(values.iter().map(Value::ty).collect()))),
             CompileCompoundValue::Struct(value) => Type::Struct(value.ty),
             CompileCompoundValue::Enum(value) => Type::Enum(value.ty),
+            CompileCompoundValue::BoundMethod(_) => Type::Function,
         }
     }
 }
@@ -1051,5 +1104,28 @@ impl MaybeCompile<BigUint, HardwareUInt> {
             MaybeCompile::Compile(value) => ClosedNonEmptyMultiRange::single(value.clone()),
             MaybeCompile::Hardware(value) => value.ty.clone(),
         }
+    }
+}
+
+impl MethodInfo {
+    fn eq_key(&self) -> impl Eq + Hash {
+        let MethodInfo {
+            scope,
+            name: _,
+            func_decl,
+        } = self;
+        (Arc::as_ptr(scope), func_decl.span)
+    }
+}
+
+impl Eq for MethodInfo {}
+impl PartialEq for MethodInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.eq_key() == other.eq_key()
+    }
+}
+impl Hash for MethodInfo {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.eq_key().hash(state)
     }
 }

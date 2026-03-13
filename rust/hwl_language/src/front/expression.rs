@@ -14,13 +14,14 @@ use crate::front::function::{
 };
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
-use crate::front::scope::{CaptureFailed, CapturedValue, NamedValue, Scope, ScopedEntry};
+use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue,
-    NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
+    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile,
+    MixedCompoundValue, NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value,
+    ValueCommon,
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
@@ -95,6 +96,7 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
+    // TODO move into scope?
     pub fn eval_named_or_value(&mut self, scope: &Scope, id: Spanned<&str>) -> DiagResult<Spanned<NamedOrValue>> {
         let diags = self.refs.diags;
 
@@ -109,24 +111,9 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             ScopedEntry::Captured(value) => {
                 let CapturedValue { span_capture, value } = value;
-
                 match value {
                     Ok(value) => NamedOrValue::Value(value.as_ref().clone()),
-                    Err(e) => {
-                        let reason = match e {
-                            CaptureFailed::NotCompile => "is not a compile-time value",
-                            CaptureFailed::NotFullyInitialized => "was not fully initialized",
-                        };
-                        let e = DiagnosticError::new(
-                            format!("cannot access captured value because it {reason}"),
-                            id.span,
-                            "trying to access captured value here",
-                        )
-                        .add_info(span_decl, "value declared here")
-                        .add_info(span_capture, "value captured here")
-                        .report(diags);
-                        return Err(e);
-                    }
+                    Err(e) => return Err(e.to_diag_error(span_decl, span_capture, id.span).report(diags)),
                 }
             }
         };
@@ -216,6 +203,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
+            ExpressionKind::Slf => scope.find_self_value(diags, expr.span)?,
             &ExpressionKind::Builtin { span_keyword, ref args } => {
                 let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
                 return Ok(Value::simple(value));
@@ -673,7 +661,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
-                    return self.eval_dot_id_index(scope, flow, expected_ty, expr.span, base, index);
+                    return self.eval_dot_index_id(scope, flow, expected_ty, expr.span, base, index);
                 }
                 DotIndexKind::Int { span: index_span } => {
                     let base = self.eval_expression(scope, flow, &Type::Any, base)?;
@@ -738,13 +726,7 @@ impl<'a> CompileItemContext<'a, '_> {
             },
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
-                let target = self.eval_expression_as_compile(
-                    scope,
-                    flow,
-                    &Type::Any,
-                    target,
-                    Spanned::new(expr.span, "call target"),
-                )?;
+                let target = self.eval_expression(scope, flow, &Type::Any, target)?;
 
                 // handle special cases that can't immediately evaluate their arguments
                 match target.inner {
@@ -937,7 +919,7 @@ impl<'a> CompileItemContext<'a, '_> {
         flow: &mut impl Flow,
         expected_ty: &Type,
         expr_span: Span,
-        target: Spanned<&CompileValue>,
+        target: Spanned<&Value>,
         args: DiagResult<EvaluatedArgs>,
     ) -> DiagResult<Value> {
         let refs = self.refs;
@@ -945,14 +927,14 @@ impl<'a> CompileItemContext<'a, '_> {
         let elab = &refs.shared.elaboration_arenas;
 
         match target.inner {
+            // normal function call
             Value::Simple(SimpleCompileValue::Function(target_function)) => {
-                // normal function call
-                // TODO should we do the recursion marker here or inside of the call function?
-                let entry = StackEntry::FunctionCall(expr_span);
-                self.recurse(entry, |s| {
-                    s.call_function(flow, expected_ty, target.span, expr_span, target_function, args?)
-                })
-                .flatten_err()
+                self.call_function(flow, expected_ty, target.span, expr_span, target_function, args?)
+            }
+
+            // bound method
+            Value::Compound(MixedCompoundValue::BoundMethod(bound)) => {
+                self.call_bound_method(flow, expr_span, bound, args?)
             }
 
             // handle some special type calls
@@ -974,7 +956,7 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    fn eval_dot_id_index(
+    fn eval_dot_index_id(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
@@ -1090,7 +1072,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
         }
 
-        // struct new, struct members
+        // struct new, struct static members
         if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
             if index_str.inner == "new" {
                 let func = FunctionValue::StructNew(elab);
@@ -1098,7 +1080,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
 
             let info = self.refs.shared.elaboration_arenas.struct_info(elab);
-            if let Some(value) = info.members.get(index_str.inner) {
+            if let Some(value) = info.members_static.get(index_str.inner) {
                 return Ok(Value::from(value.as_ref_ok()?.clone()));
             }
         }
@@ -1141,7 +1123,7 @@ impl<'a> CompileItemContext<'a, '_> {
         if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
             // enum members
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            if let Some(value) = info.members.get(index_str.inner) {
+            if let Some(value) = info.members_static.get(index_str.inner) {
                 return Ok(Value::from(value.as_ref_ok()?.clone()));
             }
 
@@ -1173,20 +1155,33 @@ impl<'a> CompileItemContext<'a, '_> {
             };
         }
 
-        // struct fields
+        // struct fields and methods
         let base_ty = base.inner.ty();
         if let Type::Struct(base_ty_struct) = base_ty {
             let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
-            let field_index = info.fields.get_index_of(index_str.inner).ok_or_else(|| {
-                DiagnosticError::new(
-                    "field not found",
+
+            // try method
+            if let Some(method) = info.methods_self.get(index_str.inner) {
+                let bound = BoundMethod {
+                    self_type: base_ty,
+                    self_value: Box::new(base.inner.into_value()),
+                    method: Arc::clone(method),
+                };
+                return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
+            }
+
+            // try field
+            let Some(field_index) = info.fields.get_index_of(index_str.inner) else {
+                let e = DiagnosticError::new(
+                    format!("struct member `{}` not found", index_str.inner),
                     index.span,
-                    "attempt to access non-existing field here",
+                    "attempt to access non-existing member here",
                 )
                 .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
-                .add_info(info.span_body, "struct fields declared here")
-                .report(diags)
-            })?;
+                .add_info(info.span_body, "struct body declared here")
+                .report(diags);
+                return Err(e);
+            };
 
             let result = match base.inner {
                 Value::Simple(_) => return Err(diags.report_error_internal(expr_span, "expected struct value")),
@@ -1217,6 +1212,21 @@ impl<'a> CompileItemContext<'a, '_> {
             };
 
             return Ok(Value::simple(result));
+        }
+
+        // enum methods
+        if let Type::Enum(base_ty_enum) = base_ty {
+            let info = self.refs.shared.elaboration_arenas.enum_info(base_ty_enum);
+
+            // try method
+            if let Some(method) = info.methods_self.get(index_str.inner) {
+                let bound = BoundMethod {
+                    self_type: base_ty,
+                    self_value: Box::new(base.inner.into_value()),
+                    method: Arc::clone(method),
+                };
+                return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
+            }
         }
 
         // array length

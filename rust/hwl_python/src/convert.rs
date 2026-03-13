@@ -71,6 +71,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
             }
             CompileCompoundValue::Struct(_) => fallback(),
             CompileCompoundValue::Enum(_) => fallback(),
+            CompileCompoundValue::BoundMethod(_) => fallback(),
         },
         CompileValue::Hardware(n) => n.unreachable(),
     }

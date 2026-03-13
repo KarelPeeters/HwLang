@@ -105,3 +105,16 @@ fn resolve_general_general() {
     let src = "module foo ports() { wire id_from_str(\"x\") = false; comb { id_from_str(\"x\"); } }";
     test_resolve(src, 59, Ok(&[26..42]));
 }
+
+#[test]
+fn resolve_self() {
+    let src = "struct Foo { fn foo(self) { self; } }";
+    test_resolve(src, 28, Ok(&[20..24]));
+}
+
+#[test]
+fn resolve_self_nested() {
+    let src = "struct Foo { fn foo(self) { struct Bar { fn bar(self) { self; } }  self; } }";
+    test_resolve(src, 56, Ok(&[48..52]));
+    test_resolve(src, 67, Ok(&[20..24]));
+}

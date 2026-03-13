@@ -15,7 +15,9 @@ use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
-use hwl_language::front::value::{CompileValue as RustCompileValue, CompileValue, NotCompile, SimpleCompileValue};
+use hwl_language::front::value::{
+    CompileValue as RustCompileValue, NotCompile, SimpleCompileValue, Value as RustValue,
+};
 use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
@@ -205,6 +207,7 @@ impl DiagnosticException {
 //   maybe we can even all of std as a module object? careful about mixing compile contexts though
 // TODO add assertions to wrapper types to avoid mixing contexts, those probably hit arena check assertions now
 // TODO call Python::check_signals to handle ctrl+C during potentially long running operations
+// TODO switch to adding a prefix to python wrappers instead of the original rust types, then rename back in pyclass
 #[pymodule]
 fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_file, m)?)?;
@@ -597,7 +600,7 @@ impl Type {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let target = CompileValue::new_ty(self.ty.clone());
+        let target = RustValue::new_ty(self.ty.clone());
         call_impl(py, &self.compile, &target, args, kwargs)
     }
 
@@ -693,7 +696,7 @@ impl Function {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let target = CompileValue::Simple(SimpleCompileValue::Function(self.function_value.clone()));
+        let target = RustValue::Simple(SimpleCompileValue::Function(self.function_value.clone()));
         call_impl(py, &self.compile, &target, args, kwargs)
     }
 }
@@ -701,7 +704,7 @@ impl Function {
 fn call_impl(
     py: Python,
     compile: &Py<Compile>,
-    target: &CompileValue,
+    target: &RustValue,
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Py<PyAny>> {
@@ -756,7 +759,7 @@ fn call_impl(
 
         // extract return value
         let returned = returned.and_then(|returned| {
-            CompileValue::try_from(&returned).map_err(|_: NotCompile| {
+            RustCompileValue::try_from(&returned).map_err(|_: NotCompile| {
                 diags.report_error_internal(dummy_span, "compile-time call return non-compile value")
             })
         });

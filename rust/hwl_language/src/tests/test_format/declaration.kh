@@ -76,3 +76,12 @@ const {}
 const {
     const c = false;
 }
+
+struct Foo {
+    fn f() {}
+    fn f(self) {}
+}
+enum Foo {
+    fn f() {}
+    fn f(self) {}
+}

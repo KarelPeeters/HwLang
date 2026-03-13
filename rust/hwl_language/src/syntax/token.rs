@@ -583,6 +583,7 @@ declare_tokens! {
         Type("type", TC::Keyword),
         Struct("struct", TC::Keyword),
         Enum("enum", TC::Keyword),
+        Slf("self", TC::Keyword),
         Ports("ports", TC::Keyword),
         Port("port", TC::Keyword),
         Module("module", TC::Keyword),

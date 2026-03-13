@@ -5,8 +5,8 @@ use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString, RangeValue,
-    ReferenceInner, SimpleCompileValue, StructValue, Value,
+    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString,
+    RangeValue, ReferenceInner, SimpleCompileValue, StructValue, Value,
 };
 use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
@@ -130,6 +130,19 @@ impl StringBuilder {
                         self.push_value(elab, payload);
                         self.push_str(")");
                     }
+                }
+                MixedCompoundValue::BoundMethod(bound) => {
+                    let BoundMethod {
+                        self_type,
+                        self_value: _,
+                        method,
+                    } = bound;
+
+                    self.push_str("<bound ");
+                    self.push_str(self_type.value_string(elab));
+                    self.push_str(".");
+                    self.push_str(&method.name);
+                    self.push_str(">");
                 }
             },
             Value::Hardware(value) => {
@@ -641,6 +654,14 @@ impl CompileCompoundValue {
                     swrite!(f, "({})", payload.value_string(elab));
                 }
                 f
+            }
+            CompileCompoundValue::BoundMethod(bound) => {
+                let BoundMethod {
+                    self_type,
+                    self_value: _,
+                    method,
+                } = bound;
+                format!("<bound {}.{}>", self_type.value_string(elab), method.name)
             }
         }
     }

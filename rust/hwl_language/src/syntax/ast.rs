@@ -94,7 +94,13 @@ pub struct StructDeclaration {
     pub span_body: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub fields: ExtraList<StructField>,
+    pub items: ExtraList<StructBodyItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum StructBodyItem {
+    Field(StructField),
+    Method(FunctionDeclaration<ParameterSelf>),
 }
 
 #[derive(Debug, Clone)]
@@ -104,13 +110,18 @@ pub struct StructField {
     pub ty: Expression,
 }
 
-// TODO proper sum type
 #[derive(Debug, Clone)]
 pub struct EnumDeclaration {
     pub span: Span,
     pub id: MaybeIdentifier,
     pub params: Option<Parameters>,
-    pub variants: ExtraList<EnumVariant>,
+    pub items: ExtraList<EnumBodyItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EnumBodyItem {
+    Variant(EnumVariant),
+    Method(FunctionDeclaration<ParameterSelf>),
 }
 
 #[derive(Debug, Clone)]
@@ -121,12 +132,10 @@ pub struct EnumVariant {
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionDeclaration {
+pub struct FunctionDeclaration<S = ()> {
     pub span: Span,
     pub id: MaybeIdentifier,
-    /// All function parameters are "generic", which means they can be types.
-    /// It doesn't make sense to force a distinction similar to modules.
-    pub params: Parameters,
+    pub params: Parameters<S>,
     pub ret_ty: Option<Expression>,
     pub body: Block<BlockStatement>,
 }
@@ -181,9 +190,18 @@ pub struct InterfaceView {
 }
 
 #[derive(Debug, Clone)]
-pub struct Parameters {
+pub struct Parameters<S = ()> {
     pub span: Span,
+    pub slf: S,
     pub items: ExtraList<Parameter>,
+}
+
+pub type ParameterSelf = Spanned<ParameterSelfKind>;
+
+#[derive(Debug, Copy, Clone)]
+pub enum ParameterSelfKind {
+    Slf,
+    // RefSlf
 }
 
 #[derive(Debug, Clone)]
@@ -738,6 +756,7 @@ pub enum ExpressionKind {
     Dummy,
     Undefined,
     Type,
+    Slf,
     Builtin {
         span_keyword: Span,
         args: Spanned<Vec<Expression>>,
@@ -1262,6 +1281,12 @@ impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
 
+impl<T> HasSpan for FunctionDeclaration<T> {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
 impl<T> HasSpan for ExtraList<T> {
     fn span(&self) -> Span {
         self.span
@@ -1464,5 +1489,33 @@ impl From<MaybeIdentifier> for MaybeGeneralIdentifier {
             MaybeIdentifier::Dummy { span } => MaybeGeneralIdentifier::Dummy { span },
             MaybeIdentifier::Identifier(id) => MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(id)),
         }
+    }
+}
+
+pub trait MaybeParameterSelf: Copy {
+    fn as_parameter_self(&self) -> Option<ParameterSelf>;
+}
+impl MaybeParameterSelf for () {
+    fn as_parameter_self(&self) -> Option<ParameterSelf> {
+        None
+    }
+}
+impl MaybeParameterSelf for ParameterSelf {
+    fn as_parameter_self(&self) -> Option<ParameterSelf> {
+        Some(*self)
+    }
+}
+
+pub trait MaybeVisibility: Copy {
+    fn as_visibility(&self) -> Option<Visibility>;
+}
+impl MaybeVisibility for () {
+    fn as_visibility(&self) -> Option<Visibility> {
+        None
+    }
+}
+impl MaybeVisibility for Visibility {
+    fn as_visibility(&self) -> Option<Visibility> {
+        Some(*self)
     }
 }

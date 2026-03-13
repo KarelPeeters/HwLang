@@ -53,6 +53,10 @@
       "match": "\\benum\\b"
     },
     {
+      "name": "keyword.other.slf.hwlang",
+      "match": "\\bself\\b"
+    },
+    {
       "name": "keyword.other.ports.hwlang",
       "match": "\\bports\\b"
     },

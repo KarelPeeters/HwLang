@@ -1,12 +1,12 @@
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_definition::find_definition;
-use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
-use hwl_language::syntax::pos::{HasSpan, Pos, Span};
+use hwl_language::syntax::ast::{FileContent, GeneralIdentifier, ParameterSelf};
+use hwl_language::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase;
-use hwl_language::syntax::visitor::{DeclScope, EvaluatedId, SyntaxVisitor, syntax_visit};
+use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
 use hwl_language::util::{Never, ResultNeverExt};
 use indexmap::IndexSet;
-use itertools::Itertools;
+use itertools::Either;
 use std::ops::ControlFlow;
 
 // TODO make this cross-file
@@ -24,15 +24,14 @@ pub fn find_usages(source: &SourceDatabase, ast: &FileContent, pos: Pos) -> Resu
         .ok_or(PosNotOnIdentifier)?;
 
     // find usages of the given id
-    let mut usages = vec![];
+    let mut usage_spans = vec![];
     let mut visitor = FindUsagesVisitor {
         target_ids: target_ids.into_iter().collect(),
-        source,
-        result: &mut usages,
+        usage_spans: &mut usage_spans,
     };
     syntax_visit(source, ast, &mut visitor).remove_never();
 
-    Ok(usages.iter().map(|id| id.span()).collect_vec())
+    Ok(usage_spans)
 }
 
 struct FindDeclaredIdVisitor {
@@ -47,9 +46,10 @@ impl SyntaxVisitor for FindDeclaredIdVisitor {
         span.touches_pos(self.pos)
     }
 
-    fn report_id_declare(&mut self, id: GeneralIdentifier) -> ControlFlow<Self::Break, ()> {
-        if id.span().touches_pos(self.pos) {
-            ControlFlow::Break(id.span())
+    fn report_id_declare(&mut self, id: Either<GeneralIdentifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
+        let id_span = id.span();
+        if id_span.touches_pos(self.pos) {
+            ControlFlow::Break(id_span)
         } else {
             ControlFlow::Continue(())
         }
@@ -58,8 +58,7 @@ impl SyntaxVisitor for FindDeclaredIdVisitor {
 
 struct FindUsagesVisitor<'a> {
     target_ids: IndexSet<Span>,
-    source: &'a SourceDatabase,
-    result: &'a mut Vec<GeneralIdentifier>,
+    usage_spans: &'a mut Vec<Span>,
 }
 
 impl SyntaxVisitor for FindUsagesVisitor<'_> {
@@ -73,14 +72,12 @@ impl SyntaxVisitor for FindUsagesVisitor<'_> {
 
     fn report_id_use(
         &mut self,
-        scope: &DeclScope<'_>,
-        id: GeneralIdentifier,
-        id_eval: impl Fn(&SourceDatabase, GeneralIdentifier) -> EvaluatedId<&str>,
+        id: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
-        let found = scope.find(&id_eval(self.source, id));
-        for span in found {
-            if self.target_ids.contains(&span) {
-                self.result.push(id);
+        for def_span in scope_find_id() {
+            if self.target_ids.contains(&def_span) {
+                self.usage_spans.push(id.span());
             }
         }
         ControlFlow::Continue(())

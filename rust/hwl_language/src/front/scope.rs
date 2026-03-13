@@ -1,12 +1,13 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{Flow, Variable};
 use crate::front::signal::{Interface, Signal};
-use crate::front::value::CompileValue;
+use crate::front::value::{CompileValue, NotCompile, Value};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::ResultExt;
 use indexmap::map::{Entry, IndexMap};
+use itertools::Either;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -33,6 +34,7 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     span: Span,
+    self_value: Option<SelfValue>,
     values: IndexMap<String, DeclaredValue>,
     any_id_err: DiagResult,
 }
@@ -58,12 +60,18 @@ pub enum NamedValue {
 }
 
 #[derive(Debug, Clone)]
+pub struct SelfValue {
+    span_decl: Span,
+    value: Either<Value, CapturedValue>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CapturedValue {
     pub span_capture: Span,
     pub value: Result<Arc<CompileValue>, CaptureFailed>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum CaptureFailed {
     NotCompile,
     NotFullyInitialized,
@@ -180,6 +188,10 @@ impl<'p> Scope<'p> {
         self.content.borrow().for_each_immediate_entry(f);
     }
 
+    pub fn set_self_value(&self, diags: &Diagnostics, value: Spanned<Value>) -> DiagResult {
+        self.content.borrow_mut().set_self_value(diags, value)
+    }
+
     /// Declare a value in this scope.
     ///
     /// Allows shadowing identifiers in the parent scope, but not in the local scope.
@@ -275,6 +287,46 @@ impl<'p> Scope<'p> {
         self.content.borrow_mut().declare_already_checked(id, value);
     }
 
+    pub fn find_self_value(&self, diags: &Diagnostics, span_use: Span) -> DiagResult<Value> {
+        let map_found = |found: &SelfValue| match &found.value {
+            Either::Left(v) => Ok(v.clone()),
+            Either::Right(v) => match &v.value {
+                Ok(v) => Ok(Value::from(v.as_ref().clone())),
+                &Err(e) => Err(e.to_diag_error(found.span_decl, v.span_capture, span_use).report(diags)),
+            },
+        };
+
+        let mut curr = self;
+        loop {
+            let content = curr.content.borrow();
+            if let Some(found) = &content.self_value {
+                return map_found(found);
+            }
+            curr = match &curr.parent {
+                ScopeParent::Normal(parent) => parent,
+                ScopeParent::Frozen(parent) => {
+                    let mut curr = parent;
+                    loop {
+                        if let Some(found) = &curr.content.self_value {
+                            return map_found(found);
+                        }
+                        curr = match &curr.parent {
+                            None => {
+                                return Err(DiagnosticError::new(
+                                    "self is not bound in this scope",
+                                    span_use,
+                                    "tried to use self here",
+                                )
+                                .report(diags));
+                            }
+                            Some(parent) => parent,
+                        }
+                    }
+                }
+            };
+        }
+    }
+
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
@@ -323,6 +375,7 @@ impl<'p> Scope<'p> {
     pub fn capture(&self, flow: &impl Flow, span_capture: Span) -> FrozenScope {
         // walk up scopes, starting from the current scope up to the root
         //   try to capture all values that have not yet been shadowed by a child scope
+        let mut captured_self_value: Option<SelfValue> = None;
         let mut captured_values: IndexMap<String, DeclaredValue> = IndexMap::new();
         let mut any_id_err = Ok(());
 
@@ -334,12 +387,29 @@ impl<'p> Scope<'p> {
                 any_id_err = Err(e);
             }
 
+            // capture self, skip self already captured by child scopes
+            if captured_self_value.is_none() {
+                if let Some(self_value) = curr_content.self_value.as_ref() {
+                    let value = match &self_value.value {
+                        Either::Left(value) => match CompileValue::try_from(value) {
+                            Ok(v_inner) => Ok(Arc::new(v_inner)),
+                            Err(NotCompile) => Err(CaptureFailed::NotCompile),
+                        },
+                        Either::Right(value) => value.value.clone(),
+                    };
+
+                    captured_self_value = Some(SelfValue {
+                        span_decl: self_value.span_decl,
+                        value: Either::Right(CapturedValue { span_capture, value }),
+                    });
+                }
+            }
+
+            // capture normal entries
             curr_content.for_each_immediate_entry(|id, value| {
+                // skip entries already captured by child scopes
                 let child_values_entry = match captured_values.entry(id.to_owned()) {
-                    Entry::Occupied(_) => {
-                        // shadowed by child scope, no need to capture
-                        return;
-                    }
+                    Entry::Occupied(_) => return,
                     Entry::Vacant(child_values_entry) => child_values_entry,
                 };
 
@@ -391,6 +461,7 @@ impl<'p> Scope<'p> {
             parent: Some(Arc::clone(final_parent)),
             content: ScopeContent {
                 span: self.content.borrow().span,
+                self_value: captured_self_value,
                 values: captured_values,
                 any_id_err,
             },
@@ -402,9 +473,23 @@ impl ScopeContent {
     pub fn new(span: Span) -> ScopeContent {
         ScopeContent {
             span,
+            self_value: None,
             values: IndexMap::new(),
             any_id_err: Ok(()),
         }
+    }
+
+    fn set_self_value(&mut self, diags: &Diagnostics, value: Spanned<Value>) -> DiagResult {
+        if self.self_value.is_some() {
+            let e = diags.report_error_internal(value.span, "cannot set self value multiple times in the same scope");
+            return Err(e);
+        }
+
+        self.self_value = Some(SelfValue {
+            span_decl: value.span,
+            value: Either::Left(value.inner),
+        });
+        Ok(())
     }
 
     fn maybe_declare(
@@ -554,4 +639,20 @@ fn error_not_found(initial_scope_span: Span, id: Spanned<&str>) -> DiagnosticErr
         Span::empty_at(initial_scope_span.start()),
         "searched in the scope starting here and its parents",
     )
+}
+
+impl CaptureFailed {
+    pub fn to_diag_error(self, span_decl: Span, span_capture: Span, span_use: Span) -> DiagnosticError {
+        let reason = match self {
+            CaptureFailed::NotCompile => "is not a compile-time value",
+            CaptureFailed::NotFullyInitialized => "was not fully initialized",
+        };
+        DiagnosticError::new(
+            format!("cannot access captured value because it {reason}"),
+            span_use,
+            "trying to access captured value here",
+        )
+        .add_info(span_decl, "value declared here")
+        .add_info(span_capture, "value captured here")
+    }
 }

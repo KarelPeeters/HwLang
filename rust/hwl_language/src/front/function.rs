@@ -11,14 +11,17 @@ use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
     UniqueDeclaration,
 };
-use crate::front::scope::{FrozenScope, NamedValue, ScopedEntry};
+use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
-    CompileValue, EnumValue, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile, SimpleCompileValue,
-    StructValue, Value, ValueCommon,
+    BoundMethod, CompileValue, EnumValue, HardwareValue, MaybeCompile, MethodInfo, MixedCompoundValue, NotCompile,
+    SimpleCompileValue, StructValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
-use crate::syntax::ast::{Arg, Block, BlockStatement, Expression, Identifier, MaybeIdentifier, Parameter, Parameters};
+use crate::syntax::ast::{
+    Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, Identifier, MaybeIdentifier, Parameter,
+    Parameters,
+};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultDoubleExt;
 use crate::util::data::VecExt;
@@ -59,18 +62,23 @@ pub struct UserFunctionValue {
     pub scope_captured: Arc<FrozenScope>,
 
     // TODO point into ast instead of storing a clone here
-    pub params: Arc<Parameters>,
-    pub body: Spanned<FunctionBody>,
+    pub params: Arc<ExtraList<Parameter>>,
+    pub body: Spanned<FunctionBody<'static>>,
 }
 
+// TODO this is a weird struct, rework this
 #[derive(Debug, Clone)]
-pub enum FunctionBody {
-    FunctionBodyBlock {
+pub enum FunctionBody<'a> {
+    ItemBody(FunctionItemBody),
+    FunctionBodyBlockOwned {
         // TODO avoid ast clones, just refer to the ast item here
         body: Arc<Block<BlockStatement>>,
         ret_ty: Option<Expression>,
     },
-    ItemBody(FunctionItemBody),
+    FunctionBodyBlockRef {
+        body: &'a Block<BlockStatement>,
+        ret_ty: Option<Expression>,
+    },
 }
 
 // // TODO move this into the scope module
@@ -143,7 +151,7 @@ impl<'a> ParamArgMacher<'a> {
             if args_must_be_compile_without_ref {
                 match CompileValue::try_from(&arg.value.inner) {
                     Ok(arg_compile) => {
-                        if arg_compile.contains_reference() {
+                        if arg_compile.definitely_contains_reference() {
                             let diag = DiagnosticError::new(
                                 "item parameters cannot contain references",
                                 arg.value.span,
@@ -385,7 +393,15 @@ impl CompileItemContext<'_, '_> {
         };
 
         match function {
-            FunctionValue::User(function) => self.call_user_function(flow, function, args),
+            FunctionValue::User(function) => {
+                let UserFunctionValue {
+                    span_decl,
+                    scope_captured,
+                    params,
+                    body,
+                } = &**function;
+                self.call_user_function(flow, *span_decl, scope_captured, params, body, span_call, None, args)
+            }
             FunctionValue::Bits(function) => self.call_bits_function(span_call, span_target, function, args),
             &FunctionValue::StructNew(struct_elab) => self.call_struct_new(span_call, struct_elab, args),
             &FunctionValue::StructNewInfer(func_unique) => match *expected_ty {
@@ -433,6 +449,52 @@ impl CompileItemContext<'_, '_> {
         }
     }
 
+    pub fn call_bound_method(
+        &mut self,
+        flow: &mut impl Flow,
+        span_call: Span,
+        method: &BoundMethod<Value>,
+        args: EvaluatedArgs,
+    ) -> DiagResult<Value> {
+        // TODO propagate self type too
+        let BoundMethod {
+            self_type: _,
+            self_value,
+            method,
+        } = method;
+        let MethodInfo {
+            scope,
+            name: _,
+            func_decl,
+        } = &**method;
+        let &FunctionDeclaration {
+            span: span_decl,
+            id: _,
+            ref params,
+            ret_ty,
+            ref body,
+        } = func_decl;
+        let Parameters {
+            span: _,
+            slf: self_param,
+            items: param_items,
+        } = params;
+
+        let self_value = Spanned::new(self_param.span, self_value.as_ref().clone());
+        let func_body = FunctionBody::FunctionBodyBlockRef { body, ret_ty };
+
+        self.call_user_function(
+            flow,
+            span_decl,
+            scope,
+            param_items,
+            &Spanned::new(span_decl, func_body),
+            span_call,
+            Some(self_value),
+            args,
+        )
+    }
+
     // TODO ensure the expected type for fields is correctly propagated to the args
     //   (this might need a major re-think, currently args are always evaluated in advance)
     fn call_struct_new(&mut self, span_call: Span, elab: ElaboratedStruct, args: EvaluatedArgs) -> DiagResult<Value> {
@@ -443,7 +505,8 @@ impl CompileItemContext<'_, '_> {
             span_body,
             ref fields,
             fields_hw: _,
-            members: _,
+            members_static: _,
+            methods_self: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);
 
         let mut matcher = ParamArgMacher::new(self.refs, span_body, &args, false, NamedRule::OnlyNamed)?;
@@ -505,15 +568,35 @@ impl CompileItemContext<'_, '_> {
     fn call_user_function(
         &mut self,
         flow: &mut impl Flow,
-        function: &UserFunctionValue,
+        // function
+        span_decl: Span,
+        scope_captured: &Arc<FrozenScope>,
+        params: &ExtraList<Parameter>,
+        body: &Spanned<FunctionBody>,
+        // args
+        span_call: Span,
+        arg_self: Option<Spanned<Value>>,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let &UserFunctionValue {
-            span_decl,
-            ref scope_captured,
-            ref params,
-            ref body,
-        } = function;
+        let entry = StackEntry::FunctionCall(span_call);
+        self.recurse(entry, |s| {
+            s.call_user_function_inner(flow, span_decl, scope_captured, params, body, arg_self, args)
+        })
+        .flatten_err()
+    }
+
+    fn call_user_function_inner(
+        &mut self,
+        flow: &mut impl Flow,
+        // function
+        span_decl: Span,
+        scope_captured: &Arc<FrozenScope>,
+        params: &ExtraList<Parameter>,
+        body: &Spanned<FunctionBody>,
+        // args
+        arg_self: Option<Spanned<Value>>,
+        args: EvaluatedArgs,
+    ) -> DiagResult<Value> {
         let diags = self.refs.diags;
 
         self.refs.check_should_stop(span_decl)?;
@@ -526,9 +609,13 @@ impl CompileItemContext<'_, '_> {
         let mut scope = scope_captured.new_child(span_scope);
         let mut param_values = vec![];
 
+        if let Some(arg_self) = arg_self {
+            scope.set_self_value(diags, arg_self)?;
+        }
+
         let args_must_be_compile_without_ref = match body.inner {
             FunctionBody::ItemBody(_) => true,
-            FunctionBody::FunctionBodyBlock { .. } => false,
+            FunctionBody::FunctionBodyBlockOwned { .. } | FunctionBody::FunctionBodyBlockRef { .. } => false,
         };
         let mut matcher = ParamArgMacher::new(
             self.refs,
@@ -538,7 +625,7 @@ impl CompileItemContext<'_, '_> {
             NamedRule::PositionalAndNamed,
         )?;
 
-        self.elaborate_extra_list(&mut scope, flow, &params.items, true, &mut |slf, scope, flow, param| {
+        self.elaborate_extra_list(&mut scope, flow, params, true, &mut |slf, scope, flow, param| {
             let &Parameter {
                 span: _,
                 id,
@@ -588,56 +675,6 @@ impl CompileItemContext<'_, '_> {
         let entry = StackEntry::FunctionRun(span_decl);
         self.recurse(entry, |slf| {
             match &body.inner {
-                FunctionBody::FunctionBodyBlock { body, ret_ty } => {
-                    // evaluate return type
-                    let return_type = ret_ty
-                        .map(|ret_ty| slf.eval_expression_as_ty(&scope, flow, ret_ty))
-                        .transpose()?;
-
-                    // set up the stack
-                    let return_entry_kind = match flow.kind_mut() {
-                        FlowKind::Compile(_) => ReturnEntryKind::Compile,
-                        FlowKind::Hardware(flow) => {
-                            let return_flag = ExitFlag::new(flow, span_decl, EarlyExitKind::Return)?;
-                            ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
-                        }
-                    };
-                    let return_var = if let Some(return_type) = &return_type
-                        && !return_type.inner.is_unit()
-                    {
-                        let return_var_info = VariableInfo {
-                            span_decl,
-                            id: VariableId::Custom("return_value"),
-                            mutable: false,
-                            ty: None,
-                            join_ir_variable: None,
-                        };
-                        let return_var = flow.var_new(return_var_info);
-
-                        // As far as the flow is concerned,
-                        //   it might look like not all branches are guaranteed to initialize the return value.
-                        // To avoid wrong error messages and skipped merging, we always start with an initial value.
-                        flow.var_set_undefined(return_var, span_decl)?;
-
-                        Some(return_var)
-                    } else {
-                        None
-                    };
-                    let return_entry = ReturnEntry {
-                        span_function_decl: span_decl,
-                        return_type: return_type.as_ref().map(Spanned::as_ref),
-                        return_var,
-                        kind: return_entry_kind,
-                    };
-                    let mut stack = ExitStack::new_in_function(return_entry);
-
-                    // evaluate block
-                    let end = slf.elaborate_block(&scope, flow, &mut stack, body)?;
-
-                    // check end and extract return value
-                    let return_entry = stack.return_info_option().unwrap();
-                    check_function_end(slf.refs, flow, &mut slf.large, body.span, return_entry, end)
-                }
                 FunctionBody::ItemBody(item_body) => {
                     // unwrap compile, we checked that these values are compile-time during argument matching
                     let param_values = param_values
@@ -654,9 +691,73 @@ impl CompileItemContext<'_, '_> {
                     )?;
                     Ok(Value::from(value))
                 }
+                &FunctionBody::FunctionBodyBlockOwned { ref body, ret_ty } => {
+                    slf.run_function_body_block(flow, &scope, span_decl, ret_ty, body)
+                }
+                &FunctionBody::FunctionBodyBlockRef { body, ret_ty } => {
+                    slf.run_function_body_block(flow, &scope, span_decl, ret_ty, body)
+                }
             }
         })
         .flatten_err()
+    }
+
+    fn run_function_body_block(
+        &mut self,
+        flow: &mut impl Flow,
+        scope: &Scope,
+        span_decl: Span,
+        ret_ty: Option<Expression>,
+        body: &Block<BlockStatement>,
+    ) -> DiagResult<Value> {
+        // evaluate return type
+        let return_type = ret_ty
+            .map(|ret_ty| self.eval_expression_as_ty(scope, flow, ret_ty))
+            .transpose()?;
+
+        // set up the stack
+        let return_entry_kind = match flow.kind_mut() {
+            FlowKind::Compile(_) => ReturnEntryKind::Compile,
+            FlowKind::Hardware(flow) => {
+                let return_flag = ExitFlag::new(flow, span_decl, EarlyExitKind::Return)?;
+                ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
+            }
+        };
+        let return_var = if let Some(return_type) = &return_type
+            && !return_type.inner.is_unit()
+        {
+            let return_var_info = VariableInfo {
+                span_decl,
+                id: VariableId::Custom("return_value"),
+                mutable: false,
+                ty: None,
+                join_ir_variable: None,
+            };
+            let return_var = flow.var_new(return_var_info);
+
+            // As far as the flow is concerned,
+            //   it might look like not all branches are guaranteed to initialize the return value.
+            // To avoid wrong error messages and skipped merging, we always start with an initial value.
+            flow.var_set_undefined(return_var, span_decl)?;
+
+            Some(return_var)
+        } else {
+            None
+        };
+        let return_entry = ReturnEntry {
+            span_function_decl: span_decl,
+            return_type: return_type.as_ref().map(Spanned::as_ref),
+            return_var,
+            kind: return_entry_kind,
+        };
+        let mut stack = ExitStack::new_in_function(return_entry);
+
+        // evaluate block
+        let end = self.elaborate_block(scope, flow, &mut stack, body)?;
+
+        // check end and extract return value
+        let return_entry = stack.return_info_option().unwrap();
+        check_function_end(self.refs, flow, &mut self.large, body.span, return_entry, end)
     }
 
     fn call_bits_function(

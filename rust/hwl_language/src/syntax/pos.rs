@@ -1,7 +1,9 @@
 use crate::syntax::source::FileId;
 use crate::util::arena::IndexType;
+use itertools::Either;
 use std::cmp::{max, min};
 use std::fmt::{Debug, Formatter};
+use std::hash::Hash;
 
 /// Minimal source code position.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -433,5 +435,13 @@ impl<A: HasSpan, B: HasSpan> HasSpan for (A, B) {
     fn span(&self) -> Span {
         let (a, b) = self;
         a.span().join(b.span())
+    }
+}
+impl<L: HasSpan, R: HasSpan> HasSpan for Either<L, R> {
+    fn span(&self) -> Span {
+        match self {
+            Either::Left(l) => l.span(),
+            Either::Right(r) => r.span(),
+        }
     }
 }
