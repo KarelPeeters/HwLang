@@ -14,7 +14,7 @@ use crate::front::function::{
 };
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
-use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopedEntry};
+use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
@@ -54,7 +54,7 @@ use unwrap_match::unwrap_match;
 #[derive(Debug)]
 pub enum NamedOrValue {
     Named(NamedValue),
-    Value(CompileValue),
+    Value(Value),
 }
 
 pub const POSSIBLE_BUILTIN_TYPE_MEMBERS: &[&str] = &["size_bits", "to_bits", "from_bits", "from_bits_unsafe", "new"];
@@ -96,31 +96,81 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    // TODO move into scope?
-    pub fn eval_named_or_value(&mut self, scope: &Scope, id: Spanned<&str>) -> DiagResult<Spanned<NamedOrValue>> {
+    pub fn eval_scoped_as_named<'s>(
+        &mut self,
+        scope: &Scope,
+        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
+    ) -> DiagResult<Spanned<NamedOrValue>> {
         let diags = self.refs.diags;
 
-        let found = scope.find(diags, id)?;
+        let key = key.into();
+        let key_span = key.span();
+
+        let found = scope.find(diags, key)?;
         let span_decl = found.span_decl;
+
         let result = match found.value {
             ScopedEntry::Named(value) => NamedOrValue::Named(value),
             ScopedEntry::Item(item) => {
-                let entry = StackEntry::ItemUsage(id.span);
+                let entry = StackEntry::ItemUsage(key.span());
                 let value = self.recurse(entry, |s| Ok(s.eval_item(item)?.clone())).flatten_err()?;
-                NamedOrValue::Value(value)
+                NamedOrValue::Value(Value::from(value))
             }
             ScopedEntry::Captured(value) => {
                 let CapturedValue { span_capture, value } = value;
                 match value {
-                    Ok(value) => NamedOrValue::Value(value.as_ref().clone()),
-                    Err(e) => return Err(e.to_diag_error(span_decl, span_capture, id.span).report(diags)),
+                    Ok(value) => NamedOrValue::Value(Value::from(Arc::unwrap_or_clone(value))),
+                    Err(e) => return Err(e.to_diag_error(span_decl, span_capture, key_span).report(diags)),
                 }
             }
+            ScopedEntry::Value(value) => NamedOrValue::Value(value),
         };
         Ok(Spanned {
             span: span_decl,
             inner: result,
         })
+    }
+
+    pub fn eval_scoped_as_value<'s>(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
+        allow_interface_ref: bool,
+    ) -> DiagResult<ValueWithImplications> {
+        let refs = self.refs;
+        let diags = refs.diags;
+
+        let key = key.into();
+        let key_span = key.span();
+
+        match self.eval_scoped_as_named(scope, key)?.inner {
+            NamedOrValue::Value(value) => Ok(Value::simple(value)),
+            NamedOrValue::Named(value) => match value {
+                NamedValue::Variable(var) => flow.var_eval(refs, &mut self.large, Spanned::new(key_span, var)),
+                NamedValue::Signal(signal) => flow.signal_eval(self, Spanned::new(key_span, signal)),
+                NamedValue::Interface(intf) => {
+                    let elab_intf = intf.elab_interface(self);
+
+                    if allow_interface_ref {
+                        let module = self.curr_module.ok_or_else(|| {
+                            diags.report_error_internal(key_span, "reference to interface instance outside module")
+                        })?;
+
+                        let rf = ReferenceWrapper::new_interface(
+                            module,
+                            intf,
+                            elab_intf.inner,
+                            intf.span_decl(self),
+                            key_span,
+                        );
+                        Ok(Value::Simple(SimpleCompileValue::Reference(rf)))
+                    } else {
+                        Err(error_cannot_eval_interface_as(diags, key_span, elab_intf.span, "value"))
+                    }
+                }
+            },
+        }
     }
 
     pub fn eval_expression(
@@ -203,7 +253,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 })
             }
             ExpressionKind::Type => Value::new_ty(Type::Type),
-            ExpressionKind::Slf => scope.find_self_value(diags, expr.span)?,
             &ExpressionKind::Builtin { span_keyword, ref args } => {
                 let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
                 return Ok(Value::simple(value));
@@ -229,47 +278,10 @@ impl<'a> CompileItemContext<'a, '_> {
             &ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
-
-                let result = match self.eval_named_or_value(scope, id)?.inner {
-                    NamedOrValue::Value(value) => {
-                        return Ok(Value::simple(Value::from(value)));
-                    }
-                    NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => {
-                            flow.var_eval(refs, &mut self.large, Spanned::new(expr.span, var))?
-                        }
-                        NamedValue::Signal(signal) => flow.signal_eval(self, Spanned::new(expr.span, signal))?,
-                        NamedValue::Interface(intf) => {
-                            let elab_intf = intf.elab_interface(self);
-
-                            if allow_interface_ref {
-                                let module = self.curr_module.ok_or_else(|| {
-                                    diags.report_error_internal(
-                                        expr.span,
-                                        "reference to interface instance outside module",
-                                    )
-                                })?;
-
-                                let rf = ReferenceWrapper::new_interface(
-                                    module,
-                                    intf,
-                                    elab_intf.inner,
-                                    intf.span_decl(self),
-                                    expr.span,
-                                );
-                                Value::Simple(SimpleCompileValue::Reference(rf))
-                            } else {
-                                return Err(error_cannot_eval_interface_as(
-                                    diags,
-                                    expr.span,
-                                    elab_intf.span,
-                                    "value",
-                                ));
-                            }
-                        }
-                    },
-                };
-                return Ok(result);
+                return self.eval_scoped_as_value(scope, flow, id, allow_interface_ref);
+            }
+            ExpressionKind::Slf => {
+                return self.eval_scoped_as_value(scope, flow, ScopeKey::Slf(expr.span), allow_interface_ref);
             }
             ExpressionKind::IntLiteral(pattern) => {
                 // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
@@ -819,7 +831,8 @@ impl<'a> CompileItemContext<'a, '_> {
                 };
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                let id_eval = self.eval_named_or_value(scope, id)?;
+                let id_eval = self.eval_scoped_as_named(scope, id)?;
+
                 match id_eval.inner {
                     NamedOrValue::Named(value) => match value {
                         NamedValue::Variable(var) => {
@@ -1559,7 +1572,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                match self.eval_named_or_value(scope, id)?.inner {
+                match self.eval_scoped_as_named(scope, id)?.inner {
                     NamedOrValue::Value(_) => return Err(build_err("value")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
@@ -1630,7 +1643,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             let base = self.eval_general_id(scope, flow, base)?;
                             let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
-                            match self.eval_named_or_value(scope, base)?.inner {
+                            match self.eval_scoped_as_named(scope, base)?.inner {
                                 NamedOrValue::Named(NamedValue::Interface(intf)) => intf,
                                 _ => return Err(err_todo_non_intf()),
                             }
@@ -1752,7 +1765,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = self.eval_general_id(scope, flow, id).map_err(Either::Right)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                let value = self.eval_named_or_value(scope, id).map_err(|e| Either::Right(e))?;
+                let value = self.eval_scoped_as_named(scope, id).map_err(|e| Either::Right(e))?;
                 match value.inner {
                     NamedOrValue::Value(_) => Err(build_err("value")),
                     NamedOrValue::Named(s) => match s {

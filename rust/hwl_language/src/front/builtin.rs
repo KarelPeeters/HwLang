@@ -62,7 +62,7 @@ impl CompileItemContext<'_, '_> {
         };
         let id = self.eval_general_id(scope, flow, id)?;
         let value = self
-            .eval_named_or_value(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
+            .eval_scoped_as_named(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
             .inner;
 
         // get type

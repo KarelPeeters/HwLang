@@ -4,7 +4,7 @@ use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
-use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopedEntry};
+use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
 use crate::front::signal::Signal;
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
@@ -569,7 +569,9 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             let scope = &file_scopes.get(&file).unwrap();
             if let Ok(scope) = scope {
                 scope.for_each_immediate_entry(|name, value| {
-                    prelude_imported_items.push((name.to_owned(), value.cloned()));
+                    if let ScopeKey::Id(name) = name {
+                        prelude_imported_items.push((name.to_owned(), value.cloned()));
+                    }
                 });
             }
         }
@@ -577,7 +579,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     for file in hierarchy.files() {
         if let Ok(scope) = file_scopes.get_mut(&file).unwrap() {
             for (name, value) in &prelude_imported_items {
-                if !scope.has_immediate_entry(name) {
+                if !scope.has_immediate_entry(ScopeKey::Id(name.as_str())) {
                     scope.declare_already_checked(name.clone(), value.clone());
                 }
             }
@@ -662,7 +664,7 @@ fn find_top_module(
             },
             _ => Err(diags.report_error_simple("`top` should be a module", top_entry.span_decl, "defined here")),
         },
-        ScopedEntry::Named(_) | ScopedEntry::Captured(_) => {
+        ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
             // this should not be possible, but provide a decent error message anyway
             Err(diags.report_error_simple(
                 "top should be an item, got named or captured",

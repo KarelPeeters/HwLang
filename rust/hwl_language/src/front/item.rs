@@ -7,7 +7,7 @@ use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
-use crate::front::scope::{CaptureFailed, DeclaredValueSingle, ScopedEntry};
+use crate::front::scope::{CaptureFailed, DeclaredValueSingle, ScopeKey, ScopedEntry};
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
@@ -1108,6 +1108,11 @@ fn collect_static_members_from_body(
 ) -> IndexMap<String, DiagResult<CompileValue>> {
     let mut members = IndexMap::new();
     scope.for_each_immediate_entry(|name, entry| {
+        let name = match name {
+            ScopeKey::Id(name) => name,
+            ScopeKey::Slf(_) => return,
+        };
+
         let member = match entry {
             DeclaredValueSingle::Value { span, value } => {
                 if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name) {
@@ -1131,7 +1136,7 @@ fn collect_static_members_from_body(
                                 Err(diags.report_error_internal(span, "unexpected member named value kind"))
                             }
                         },
-                        ScopedEntry::Item(_) | ScopedEntry::Captured(_) => {
+                        ScopedEntry::Item(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
                             Err(diags.report_error_internal(span, "unexpected member scoped entry kind"))
                         }
                     }

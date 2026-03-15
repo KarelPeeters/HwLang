@@ -419,7 +419,7 @@ impl Compile {
             return Err(ResolveException::new_err("resolve path cannot be empty"));
         }
         let steps: Vec<&str> = path.split('.').collect_vec();
-        let (item_name, steps) = steps.split_last().unwrap();
+        let (&item_name, steps) = steps.split_last().unwrap();
 
         let mut curr_node = hierarchy.root_node();
         for (i_step, &step) in enumerate(steps) {
@@ -449,7 +449,7 @@ impl Compile {
         )?;
         let item = match found.value {
             ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-            ScopedEntry::Named(_) | ScopedEntry::Captured(_) => {
+            ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
                 let e = diags.report_error_internal(
                     found.span_decl,
                     "file scope should only contain items, not named/captured",

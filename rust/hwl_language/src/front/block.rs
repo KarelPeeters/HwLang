@@ -589,7 +589,7 @@ impl CompileItemContext<'_, '_> {
 
                         // declare in scope
                         let entry = ScopedEntry::Named(NamedValue::Signal(wire.into()));
-                        scope.declare(diags, id, Ok(entry));
+                        scope.declare(diags, MaybeIdentifier::Identifier(id), Ok(entry));
 
                         Spanned::new(id.span, Signal::Wire(wire))
                     }

@@ -425,6 +425,12 @@ macro_rules! impl_has_span {
     };
 }
 
+impl HasSpan for Span {
+    fn span(&self) -> Span {
+        *self
+    }
+}
+
 impl<T> HasSpan for Spanned<T> {
     fn span(&self) -> Span {
         self.span

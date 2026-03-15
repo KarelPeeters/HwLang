@@ -11,7 +11,7 @@ use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
     UniqueDeclaration,
 };
-use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopedEntry};
+use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
     BoundMethod, CompileValue, EnumValue, HardwareValue, MaybeCompile, MethodInfo, MixedCompoundValue, NotCompile,
@@ -610,7 +610,11 @@ impl CompileItemContext<'_, '_> {
         let mut param_values = vec![];
 
         if let Some(arg_self) = arg_self {
-            scope.set_self_value(diags, arg_self)?;
+            scope.declare(
+                diags,
+                ScopeKey::Slf(arg_self.span),
+                Ok(ScopedEntry::Value(arg_self.inner)),
+            );
         }
 
         let args_must_be_compile_without_ref = match body.inner {

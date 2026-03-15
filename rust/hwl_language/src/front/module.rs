@@ -1598,7 +1598,7 @@ impl BodyContext {
                             &ExpressionKind::Id(id) => {
                                 let id = ctx.eval_general_id(scope, flow_parent, id)?;
                                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
-                                let named = ctx.eval_named_or_value(scope, id)?;
+                                let named = ctx.eval_scoped_as_named(scope, id)?;
 
                                 let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
                                     NamedOrValue::Named(NamedValue::Signal(signal)) => match signal {
