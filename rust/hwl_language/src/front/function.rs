@@ -665,7 +665,7 @@ impl CompileItemContext<'_, '_> {
             )?;
             let entry = ScopedEntry::Named(NamedValue::Variable(param_var));
 
-            scope.declare_root(diags, Ok(param.id.spanned_str(self.refs.fixed.source)), Ok(entry));
+            scope.declare_root(diags, param.id.spanned_str(self.refs.fixed.source), Ok(entry));
 
             Ok(())
         })?;

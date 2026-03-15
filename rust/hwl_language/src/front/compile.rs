@@ -473,11 +473,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             let mut scope = FrozenScope::new(ast.span);
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
-                    scope.maybe_declare(
-                        diags,
-                        Ok(info.id.spanned_str(source)),
-                        Ok(ScopedEntry::Item(ast_item_ref)),
-                    );
+                    scope.declare(diags, info.id.spanned_str(source), Ok(ScopedEntry::Item(ast_item_ref)));
                 }
             }
             scope
@@ -552,7 +548,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     for (target_file, items) in zip_eq(hierarchy.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
-                scope.maybe_declare(diags, Ok(target_id.spanned_str(source)), value);
+                scope.declare(diags, target_id.spanned_str(source), value);
             }
         }
     }

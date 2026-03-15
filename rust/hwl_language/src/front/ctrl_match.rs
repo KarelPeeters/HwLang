@@ -76,9 +76,9 @@ impl<V: Into<ValueWithImplications>> BranchDeclare<V> {
         } = self;
 
         let var = flow.var_new_immutable_init(refs, id.span(), VariableId::Id(id), pattern_span, Ok(value.into()))?;
-        scope.maybe_declare(
+        scope.declare(
             refs.diags,
-            Ok(id.spanned_str(refs.fixed.source)),
+            id.spanned_str(refs.fixed.source),
             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
         );
 

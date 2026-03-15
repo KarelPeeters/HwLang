@@ -640,7 +640,7 @@ impl CompileItemContext<'_, '_> {
             let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
             let id_str = id.spanned_str(self.refs.fixed.source);
             let entry = eval.value_into_entry(self.refs, flow)?;
-            scope.maybe_declare(self.refs.diags, Ok(id_str), Ok(entry));
+            scope.declare(self.refs.diags, id_str, Ok(entry));
         }
 
         Ok(())

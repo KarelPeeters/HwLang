@@ -513,9 +513,9 @@ impl<'a> CompileItemContext<'a, '_> {
 
                     let scope_span = body.span().join(index.span());
                     let mut scope_body = scope.new_child(scope_span);
-                    scope_body.maybe_declare(
+                    scope_body.declare(
                         diags,
-                        Ok(index.spanned_str(source)),
+                        index.spanned_str(source),
                         Ok(ScopedEntry::Named(NamedValue::Variable(index_var))),
                     );
 

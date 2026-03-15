@@ -24,28 +24,20 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
         }
     }
 
-    pub fn declare_root(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, entry: DiagResult<ScopedEntry>) {
+    pub fn declare_root<'s>(
+        &mut self,
+        diags: &Diagnostics,
+        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
+        entry: DiagResult<ScopedEntry>,
+    ) {
+        let id = id.into();
+
         // slight code duplication to avoid redundant clone but respect order
         if let Some(root_scope) = self.root_scope {
             self.scope.declare(diags, id, entry.clone());
             root_scope.declare_non_mut(diags, id, entry);
         } else {
             self.scope.declare(diags, id, entry);
-        }
-    }
-
-    pub fn maybe_declare_root(
-        &mut self,
-        diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
-        entry: DiagResult<ScopedEntry>,
-    ) {
-        // slight code duplication to avoid redundant clone but respect order
-        if let Some(root_scope) = self.root_scope {
-            self.scope.maybe_declare(diags, id, entry.clone());
-            root_scope.maybe_declare_non_mut(diags, id, entry);
-        } else {
-            self.scope.maybe_declare(diags, id, entry);
         }
     }
 }
@@ -105,9 +97,9 @@ impl CompileItemContext<'_, '_> {
                         let entry = eval.value_into_entry(self.refs, flow)?;
 
                         if common_decl_in_root_scope {
-                            scope.maybe_declare_root(diags, Ok(id_str), Ok(entry));
+                            scope.declare_root(diags, id_str, Ok(entry));
                         } else {
-                            scope.as_scope().maybe_declare(diags, Ok(id_str), Ok(entry));
+                            scope.as_scope().declare(diags, id_str, Ok(entry));
                         }
                     }
                 }

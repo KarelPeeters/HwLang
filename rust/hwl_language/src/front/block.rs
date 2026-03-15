@@ -437,9 +437,9 @@ impl CompileItemContext<'_, '_> {
                 }
 
                 // declare entry
+                let id = id.spanned_str(refs.fixed.source);
                 let entry = ScopedEntry::Named(NamedValue::Variable(var));
-                let id = Ok(id.spanned_str(refs.fixed.source));
-                scope.maybe_declare(diags, id, Ok(entry));
+                scope.declare(diags, id, Ok(entry));
 
                 BlockEnd::Normal
             }
@@ -589,7 +589,7 @@ impl CompileItemContext<'_, '_> {
 
                         // declare in scope
                         let entry = ScopedEntry::Named(NamedValue::Signal(wire.into()));
-                        scope.declare(diags, Ok(id), Ok(entry));
+                        scope.declare(diags, id, Ok(entry));
 
                         Spanned::new(id.span, Signal::Wire(wire))
                     }
@@ -921,9 +921,9 @@ impl CompileItemContext<'_, '_> {
         )?;
 
         // declare variable in scope
-        scope.maybe_declare(
+        scope.declare(
             diags,
-            Ok(stmt.index.spanned_str(self.refs.fixed.source)),
+            stmt.index.spanned_str(self.refs.fixed.source),
             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
         );
 

@@ -369,7 +369,7 @@ impl CompileRefs<'_, '_> {
                                 domain,
                                 ty,
                             );
-                            scope_ports.declare_root(diags, Ok(id.spanned_str(source)), entry);
+                            scope_ports.declare_root(diags, id.spanned_str(source), entry);
                         }
                         ModulePortSingleKind::Interface {
                             span_keyword,
@@ -414,7 +414,7 @@ impl CompileRefs<'_, '_> {
                                 domain,
                                 interface_view,
                             );
-                            scope_ports.declare_root(diags, Ok(id.spanned_str(source)), entry);
+                            scope_ports.declare_root(diags, id.spanned_str(source), entry);
                         }
                     }
                 }
@@ -452,7 +452,7 @@ impl CompileRefs<'_, '_> {
                                         domain,
                                         ty,
                                     );
-                                    scope_ports.declare_root(diags, Ok(id.spanned_str(source)), entry);
+                                    scope_ports.declare_root(diags, id.spanned_str(source), entry);
                                 }
                                 ModulePortInBlockKind::Interface {
                                     span_keyword: _,
@@ -491,7 +491,7 @@ impl CompileRefs<'_, '_> {
                                         domain,
                                         interface_view,
                                     );
-                                    scope_ports.declare_root(diags, Ok(id.spanned_str(source)), entry);
+                                    scope_ports.declare_root(diags, id.spanned_str(source), entry);
                                 }
                             }
                             Ok(())
@@ -982,8 +982,8 @@ impl BodyContext {
         let id_ref = id.as_ref().map_id(|id| id.as_ref().map_inner(|s| s.as_ref()));
         let entry = ScopedEntry::Named(named_value);
         match vis {
-            Visibility::Public { span: _ } => scope_extra.maybe_declare_root(diags, Ok(id_ref), Ok(entry)),
-            Visibility::Private => scope_extra.as_scope().maybe_declare(diags, Ok(id_ref), Ok(entry)),
+            Visibility::Public { span: _ } => scope_extra.declare_root(diags, id_ref, Ok(entry)),
+            Visibility::Private => scope_extra.as_scope().declare(diags, id_ref, Ok(entry)),
         }
 
         Ok(())

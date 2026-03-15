@@ -36,7 +36,6 @@ pub struct ScopeContent {
     span: Span,
     self_value: Option<SelfValue>,
     values: IndexMap<String, DeclaredValue>,
-    any_id_err: DiagResult,
 }
 
 // TODO do we actually still need clone bounds here?
@@ -115,17 +114,13 @@ impl FrozenScope {
         Scope::new(span, ScopeParent::Frozen(self))
     }
 
-    pub fn declare(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        self.content.declare(diags, id, value);
-    }
-
-    pub fn maybe_declare(
+    pub fn declare<'s>(
         &mut self,
         diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
-        entry: DiagResult<ScopedEntry>,
+        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
+        value: DiagResult<ScopedEntry>,
     ) {
-        self.content.maybe_declare(diags, id, entry)
+        self.content.declare(diags, id, value);
     }
 
     pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
@@ -199,88 +194,26 @@ impl<'p> Scope<'p> {
     /// This function always appears to succeed, errors are instead reported as diags.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        self.declare_impl(diags, id, value)
+    pub fn declare<'s>(
+        &mut self,
+        diags: &Diagnostics,
+        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
+        value: DiagResult<ScopedEntry>,
+    ) {
+        self.content.get_mut().declare(diags, id, value)
     }
 
     /// The same as [Self::declare], but does not require `&mut self`.
     ///
     /// This should only be used in cases where a declaration needs to happen in a borrowed parent scope.
     /// We don't want to use this as the default declare method, since usually that is an error.
-    pub fn declare_non_mut(&self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        self.declare_impl(diags, id, value)
-    }
-
-    pub fn maybe_declare(
-        &mut self,
-        diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
-        entry: DiagResult<ScopedEntry>,
-    ) {
-        let id = match id {
-            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
-            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
-            Err(e) => Err(e),
-        };
-        self.declare(diags, id, entry);
-    }
-
-    pub fn maybe_declare_non_mut(
+    pub fn declare_non_mut<'s>(
         &self,
         diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
+        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
         value: DiagResult<ScopedEntry>,
     ) {
-        let id = match id {
-            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
-            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
-            Err(e) => Err(e),
-        };
-        self.declare_non_mut(diags, id, value);
-    }
-
-    fn declare_impl(&self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        let id = match id {
-            Ok(id) => id,
-            Err(e) => {
-                self.content.borrow_mut().any_id_err = Err(e);
-                return;
-            }
-        };
-
-        match self.content.borrow_mut().values.entry(id.inner.to_owned()) {
-            Entry::Occupied(mut entry) => {
-                // already declared, report error
-                let declared = entry.get_mut();
-
-                // get all spans
-                let mut spans = match declared {
-                    DeclaredValue::Once { value: _, span } => vec![*span],
-                    DeclaredValue::Multiple { spans, err: _ } => std::mem::take(spans),
-                    DeclaredValue::Error(_) => return,
-                };
-
-                // report error
-                // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
-                let mut diag = DiagnosticError::new(
-                    format!("identifier `{}` declared multiple times", id.inner),
-                    id.span,
-                    "declared again here",
-                );
-                for span in &spans {
-                    diag = diag.add_info(*span, "previously declared here");
-                }
-                let err = diag.report(diags);
-
-                // insert error value into scope to avoid downstream errors
-                //   caused by only considering the first declared value
-                spans.push(id.span);
-                *declared = DeclaredValue::Multiple { spans, err };
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(DeclaredValue::Once { value, span: id.span });
-            }
-        }
+        self.content.borrow_mut().declare(diags, id, value)
     }
 
     pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
@@ -377,15 +310,10 @@ impl<'p> Scope<'p> {
         //   try to capture all values that have not yet been shadowed by a child scope
         let mut captured_self_value: Option<SelfValue> = None;
         let mut captured_values: IndexMap<String, DeclaredValue> = IndexMap::new();
-        let mut any_id_err = Ok(());
 
         let mut curr = self;
         let final_parent = loop {
             let curr_content = curr.content.borrow();
-
-            if let Err(e) = curr_content.any_id_err {
-                any_id_err = Err(e);
-            }
 
             // capture self, skip self already captured by child scopes
             if captured_self_value.is_none() {
@@ -463,7 +391,6 @@ impl<'p> Scope<'p> {
                 span: self.content.borrow().span,
                 self_value: captured_self_value,
                 values: captured_values,
-                any_id_err,
             },
         }
     }
@@ -475,7 +402,6 @@ impl ScopeContent {
             span,
             self_value: None,
             values: IndexMap::new(),
-            any_id_err: Ok(()),
         }
     }
 
@@ -492,33 +418,19 @@ impl ScopeContent {
         Ok(())
     }
 
-    fn maybe_declare(
+    pub fn declare<'s>(
         &mut self,
         diags: &Diagnostics,
-        id: DiagResult<MaybeIdentifier<Spanned<&str>>>,
-        entry: DiagResult<ScopedEntry>,
+        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
+        value: DiagResult<ScopedEntry>,
     ) {
-        let id = match id {
-            Ok(MaybeIdentifier::Dummy { span: _ }) => return,
-            Ok(MaybeIdentifier::Identifier(id)) => Ok(id),
-            Err(e) => Err(e),
-        };
-        self.declare(diags, id, entry);
+        match id.into() {
+            MaybeIdentifier::Dummy { span: _ } => {}
+            MaybeIdentifier::Identifier(id) => self.declare_impl(diags, id, value),
+        }
     }
 
-    pub fn declare(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        self.declare_impl(diags, id, value)
-    }
-
-    fn declare_impl(&mut self, diags: &Diagnostics, id: DiagResult<Spanned<&str>>, value: DiagResult<ScopedEntry>) {
-        let id = match id {
-            Ok(id) => id,
-            Err(e) => {
-                self.any_id_err = Err(e);
-                return;
-            }
-        };
-
+    fn declare_impl(&mut self, diags: &Diagnostics, id: Spanned<&str>, value: DiagResult<ScopedEntry>) {
         match self.values.entry(id.inner.to_owned()) {
             Entry::Occupied(mut entry) => {
                 // already declared, report error
@@ -569,8 +481,6 @@ impl ScopeContent {
     }
 
     fn find_step(&self, id: Spanned<&str>) -> DiagResult<Option<ScopeFound>> {
-        self.any_id_err?;
-
         if let Some(declared) = self.values.get(id.inner) {
             let (value, span_decl) = match *declared {
                 DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
