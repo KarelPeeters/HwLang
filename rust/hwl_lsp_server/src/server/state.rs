@@ -1,3 +1,4 @@
+use crate::server::compile::ManifestFound;
 use crate::server::settings::Settings;
 use crate::server::vfs::{Vfs, VfsError};
 use crate::util::sender::{SendError, SendErrorOr, ServerSender};
@@ -8,17 +9,23 @@ use lsp_types::request::RegisterCapability;
 use lsp_types::{DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, Registration, Uri, notification};
 
 pub struct ServerState {
+    // global settings
     pub settings: Settings,
     pub sender: ServerSender,
 
+    // lifecycle
     pub has_received_shutdown_request: bool,
 
+    // server-side file state
     pub open_files: IndexSet<Uri>,
     pub vfs: Vfs,
 
     // local model of the client-side state, used to correctly send incremental messages
     pub curr_watchers: Vec<FileSystemWatcher>,
     pub curr_files_with_diagnostics: IndexSet<Uri>,
+
+    // cached data
+    pub cache_manifests_found: Option<Vec<ManifestFound>>,
 }
 
 // TODO move these to some common place
@@ -49,9 +56,9 @@ impl ServerState {
             has_received_shutdown_request: false,
             open_files: IndexSet::new(),
             vfs: Vfs::new(),
-
             curr_watchers: vec![],
             curr_files_with_diagnostics: IndexSet::new(),
+            cache_manifests_found: None,
         }
     }
 
@@ -139,7 +146,7 @@ impl ServerState {
         &mut self,
         should_stop: &(impl Fn() -> bool + Sync),
     ) -> Result<(), SendErrorOr<RequestError>> {
-        self.compile_project_and_send_diagnostics(should_stop)
+        self.compile_projects_and_send_diagnostics(should_stop)
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {

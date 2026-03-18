@@ -3,6 +3,7 @@ use crate::syntax::pos::{LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::{Arena, IndexType};
 
 /// The full set of source files that are part of this compilation. This type is immutable.
+#[derive(Clone)]
 pub struct SourceDatabase {
     files: Arena<FileId, FileSourceInfo>,
 }

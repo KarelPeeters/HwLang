@@ -8,19 +8,19 @@ use indexmap::IndexMap;
 // TODO allow manifests to refer to other manifests
 // TODO add external verilog filelist, at some point we can parse it to avoid manual "external" declarations
 // TODO allow marking certain files as "external", meaning that eg. format should not format them
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub source: ManifestSource,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields, transparent)]
 pub struct ManifestSource {
     node: ManifestSourceNode,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(untagged)]
 enum ManifestSourceNode {
     Leaf(String),

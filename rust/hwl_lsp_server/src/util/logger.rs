@@ -1,9 +1,11 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::time::Instant;
 
 pub struct Logger {
     log_to_stderr: bool,
     log_writer: Option<BufWriter<File>>,
+    time_start: Instant,
 }
 
 // TODO replace with proper logging setup, ideally the same one the lsp-server crate uses
@@ -13,11 +15,13 @@ impl Logger {
         Self {
             log_to_stderr,
             log_writer,
+            time_start: Instant::now(),
         }
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
-        let msg = msg.into();
+        let time = self.time_start.elapsed().as_secs_f64();
+        let msg = format!("[{time:6.4}] {}", msg.into());
 
         if self.log_to_stderr {
             eprintln!("{msg}");

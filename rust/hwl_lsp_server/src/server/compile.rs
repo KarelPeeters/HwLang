@@ -28,17 +28,19 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[derive(Clone)]
 struct ManifestCommon {
+    manifest_folder: PathBuf,
+
     diags: Diagnostics,
     source: SourceDatabase,
-    manifest_folder: PathBuf,
     manifest_file: FileId,
     file_to_path: IndexMap<FileId, PathBuf>,
 }
 
-struct ManifestPartial {
+pub struct ManifestFound {
     common: ManifestCommon,
-    manifest: DiagResult<Manifest>,
+    parsed: DiagResult<Manifest>,
 }
 
 struct ManifestCollected {
@@ -48,28 +50,51 @@ struct ManifestCollected {
 
 struct ManifestCollectedInner {
     #[allow(dead_code)]
-    manifest: Manifest,
+    parsed: Manifest,
     hierarchy: SourceHierarchy,
 }
 
 impl ServerState {
-    pub fn compile_project_and_send_diagnostics(
+    pub fn compile_projects_and_send_diagnostics(
         &mut self,
         should_stop: &(impl Fn() -> bool + Sync),
     ) -> Result<(), SendErrorOr<RequestError>> {
+        self.log("try compile");
+
         // if nothing has changed we don't need to do any work
-        if !self.vfs.get_changed() {
+        if !self.vfs.any_changed() {
+            self.log("no vfs changes");
             return Ok(());
         }
 
-        // TODO parallel loop over everything?
-        self.log("compile: building source database");
-        let manifests = self.collect_manifests()?;
+        // collect manifests and set watchers
+        //   setting watchers and scanning the entire workspace tree is expensive,
+        //   so we want to avoid doing this as much as possible
+        if self.vfs.any_manifest_changed() || self.cache_manifests_found.is_none() {
+            self.log("manifest change");
+            self.cache_manifests_found = Some(self.collect_manifests_and_set_watchers()?);
+        } else {
+            self.log("no manifest change");
+        }
+        let manifests_found = self.cache_manifests_found.as_ref().unwrap();
 
+        // collect sources
+        let mut manifests_collected = vec![];
+        for found in manifests_found {
+            let ManifestFound { common, parsed } = found;
+
+            let mut common = common.clone();
+            let parsed = parsed.clone();
+
+            let inner = parsed.and_then(|parsed| collect_manifest_sources(&mut self.vfs, &mut common, parsed));
+            manifests_collected.push(ManifestCollected { common, inner });
+        }
+
+        // compile all manifests
         // TODO multithread this on a shared thread pool
+        // TODO parallel loop over everything?
         let mut grouped_diags = IndexMap::new();
-
-        for manifest in manifests {
+        for manifest in manifests_collected {
             let diags = manifest.common.diags;
             let source = &manifest.common.source;
 
@@ -93,6 +118,7 @@ impl ServerState {
                     do_ir_cleanup: false,
                 };
 
+                self.log("compile: start compile");
                 let _: DiagResult<IrDatabase> = compile(
                     &diags,
                     &settings,
@@ -105,6 +131,7 @@ impl ServerState {
                     NON_ZERO_USIZE_ONE,
                     source.full_span(manifest.common.manifest_file),
                 );
+                self.log("compile: end compile");
 
                 if early_stop.load(Ordering::Relaxed) {
                     // return immediately without reporting any diagnostics, they would include interrupts
@@ -134,7 +161,7 @@ impl ServerState {
         Ok(())
     }
 
-    fn collect_manifests(&mut self) -> Result<Vec<ManifestCollected>, SendErrorOr<RequestError>> {
+    fn collect_manifests_and_set_watchers(&mut self) -> Result<Vec<ManifestFound>, SendErrorOr<RequestError>> {
         // TODO support multiple workspaces, root_path, no workspace
         //   also register change listeners for workspaces when we add support for them
         #[allow(deprecated)]
@@ -170,10 +197,9 @@ impl ServerState {
         .map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
         // parse manifests and add watchers to their files
-        let mut manifests_partial: Vec<ManifestPartial> = vec![];
+        let mut manifests: Vec<ManifestFound> = vec![];
         for manifest_folder in manifest_folders {
             let manifest_path = manifest_folder.join(HWL_MANIFEST_FILE_NAME);
-
             let manifest_source = self
                 .vfs
                 .read_str_maybe_from_disk(&manifest_path)
@@ -187,9 +213,9 @@ impl ServerState {
                 source.add_file(manifest_path.to_string_lossy().into_owned(), manifest_source.to_owned());
             file_to_path.insert(manifest_file, manifest_path);
 
-            let manifest = Manifest::parse_toml(&diags, &source, manifest_file);
+            let parsed = Manifest::parse_toml(&diags, &source, manifest_file);
 
-            if let Ok(manifest) = &manifest {
+            if let Ok(manifest) = &parsed {
                 for entry in manifest.source.entries() {
                     let SourceEntry {
                         steps: _,
@@ -204,26 +230,18 @@ impl ServerState {
             }
 
             let common = ManifestCommon {
+                manifest_folder,
                 diags,
                 source,
-                manifest_folder,
                 manifest_file,
                 file_to_path,
             };
-            manifests_partial.push(ManifestPartial { common, manifest });
+            let manifest_found = ManifestFound { common, parsed };
+            manifests.push(manifest_found);
         }
         self.set_watchers(watchers)?;
 
-        // collect sources
-        // TODO fully share as much code as possible with the main binary
-        let mut manifests_collected = vec![];
-        for manifest in manifests_partial {
-            let ManifestPartial { mut common, manifest } = manifest;
-            let inner = manifest.and_then(|manifest| collect_partial_manifest(&mut self.vfs, &mut common, manifest));
-            manifests_collected.push(ManifestCollected { common, inner });
-        }
-
-        Ok(manifests_collected)
+        Ok(manifests)
     }
 
     fn send_diagnostics(
@@ -269,10 +287,10 @@ impl ServerState {
     }
 }
 
-fn collect_partial_manifest(
+fn collect_manifest_sources(
     vfs: &mut Vfs,
     common: &mut ManifestCommon,
-    manifest: Manifest,
+    parsed: Manifest,
 ) -> DiagResult<ManifestCollectedInner> {
     let diags = &common.diags;
     let source = &mut common.source;
@@ -283,7 +301,7 @@ fn collect_partial_manifest(
     // TODO get more precise span
     let manifest_span = source.full_span(common.manifest_file);
 
-    for entry in manifest.source.entries() {
+    for entry in parsed.source.entries() {
         let SourceEntry { steps, path_relative } = entry;
         let entry_path = common.manifest_folder.join(&path_relative);
 
@@ -312,7 +330,7 @@ fn collect_partial_manifest(
         }
     }
 
-    Ok(ManifestCollectedInner { manifest, hierarchy })
+    Ok(ManifestCollectedInner { parsed, hierarchy })
 }
 
 fn add_grouped_diagnostic_to_lsp(

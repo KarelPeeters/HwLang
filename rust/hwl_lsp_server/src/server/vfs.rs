@@ -1,6 +1,8 @@
+use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
 use lsp_types::Uri;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 
@@ -8,7 +10,8 @@ use std::str::Utf8Error;
 // TODO clarify what this is: this is just an overlay over the underlying file system, and is not guaranteed to contain every file
 // TODO somehow collect all files referenced by the manifest file and add listeners for them
 pub struct Vfs {
-    changed: bool,
+    any_changed: bool,
+    any_manifest_changed: bool,
     files: IndexMap<PathBuf, Vec<u8>>,
 }
 
@@ -32,21 +35,32 @@ pub enum VfsError {
 impl Vfs {
     pub fn new() -> Self {
         Vfs {
-            changed: true,
+            any_changed: true,
+            any_manifest_changed: true,
+
             files: IndexMap::new(),
         }
     }
 
+    fn update_changed(&mut self, path: &Path) {
+        self.any_changed = true;
+        if let Some(name) = path.file_name()
+            && name == OsStr::new(HWL_MANIFEST_FILE_NAME)
+        {
+            self.any_manifest_changed = true;
+        }
+    }
+
     pub fn create_or_update(&mut self, path: PathBuf, content: Vec<u8>) {
+        self.update_changed(&path);
         self.files.insert(path, content);
-        self.changed = true;
     }
 
     pub fn delete(&mut self, path: &Path) -> Result<(), VfsError> {
         match self.files.swap_remove(path) {
             None => Err(VfsError::DoesNotExist(path.to_owned())),
             Some(_) => {
-                self.changed = true;
+                self.update_changed(path);
                 Ok(())
             }
         }
@@ -70,12 +84,17 @@ impl Vfs {
         std::str::from_utf8(content).map_err(VfsError::ContentInvalidUtf8)
     }
 
-    pub fn get_changed(&mut self) -> bool {
-        self.changed
+    pub fn any_changed(&mut self) -> bool {
+        self.any_changed
+    }
+
+    pub fn any_manifest_changed(&mut self) -> bool {
+        self.any_manifest_changed
     }
 
     pub fn clear_changed(&mut self) {
-        self.changed = false;
+        self.any_changed = false;
+        self.any_manifest_changed = false;
     }
 }
 
