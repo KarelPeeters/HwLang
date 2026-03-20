@@ -2,10 +2,12 @@ use crate::server::vfs::{VfsError, VfsResult};
 use fluent_uri::HostData;
 use fluent_uri::enc::EStr;
 use lsp_types::{FileSystemWatcher, GlobPattern, OneOf, RelativePattern, Uri};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
-pub fn watcher_any_file_with_name(base_uri: Uri, name: &str) -> FileSystemWatcher {
+/// Build a watcher that watches all files with the given name in the given base URI and all subdirectories.
+/// `name` cannot contain any special glob characters.
+pub fn build_watcher_any_file_with_name(base_uri: Uri, name: &str) -> FileSystemWatcher {
     // TODO check for features, pick relative or non-relative
     // TODO check for the presence of certain features with a proper error message
     // https://github.com/rust-lang/rust-analyzer/blob/58e507d80728f6f32c93117668dc4510ba80bac9/crates/rust-analyzer/src/reload.rs#L562-L603
@@ -70,4 +72,62 @@ pub fn abs_path_to_uri(path: &Path) -> VfsResult<Uri> {
 
 pub fn uri_join(uri: &Uri, steps: impl AsRef<Path>) -> VfsResult<Uri> {
     abs_path_to_uri(&uri_to_path(uri)?.join(steps.as_ref()))
+}
+
+#[derive(Debug)]
+pub struct NormalizeError {
+    pub base: PathBuf,
+    pub rel: PathBuf,
+}
+
+/// Utility function to join two paths with some normalization.
+///
+/// Only `.` and `..` components originating from the `rel` path are normalized,
+/// the `base` path is preserved as much as possible.
+///
+/// This is useful in LSPs because we don't want to fully normalize paths,
+/// that risks divergence between client and server.
+///
+/// The implementation is partially based on the unstable stdlib function `Path.normalize_lexically`, specially this
+/// version:
+/// https://github.com/rust-lang/rust/blob/fd0c901b00ee1e08a250039cdb90258603497e20/library/std/src/path.rs#L3365
+pub fn path_join_normalized(base: &Path, rel: &Path) -> Result<PathBuf, NormalizeError> {
+    let mut result = base.to_owned();
+
+    let mut prev_was_prefix = false;
+
+    for step in rel.components() {
+        match step {
+            Component::Prefix(c) => {
+                result.clear();
+                result.push(Component::Prefix(c));
+            }
+            Component::RootDir => {
+                if !prev_was_prefix {
+                    // on windows C:\ turns into (prefix, rootdir), and we don't want to clear twice
+                    result.clear();
+                }
+                result.push(Component::RootDir);
+            }
+            Component::CurDir => {
+                // skip
+            }
+            Component::ParentDir => {
+                // pop last component
+                if !result.pop() {
+                    return Err(NormalizeError {
+                        base: base.to_owned(),
+                        rel: rel.to_owned(),
+                    });
+                }
+            }
+            Component::Normal(c) => {
+                result.push(Component::Normal(c));
+            }
+        }
+
+        prev_was_prefix = matches!(step, Component::Prefix(_));
+    }
+
+    Ok(result)
 }

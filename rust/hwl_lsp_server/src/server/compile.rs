@@ -1,9 +1,12 @@
 use crate::server::settings::{PositionEncoding, Settings};
 use crate::server::state::{RequestError, ServerState};
-use crate::server::vfs::{Vfs, VfsResult};
+use crate::server::vfs::{Vfs, VfsError, VfsResult};
 use crate::util::encode::span_to_lsp;
+use crate::util::logger::Logger;
 use crate::util::sender::SendErrorOr;
-use crate::util::uri::{abs_path_to_uri, uri_to_path, watcher_any_file_with_name};
+use crate::util::uri::{
+    NormalizeError, abs_path_to_uri, build_watcher_any_file_with_name, path_join_normalized, uri_to_path,
+};
 use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
 use hwl_language::front::diagnostic::{
     DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
@@ -15,6 +18,7 @@ use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
+use hwl_language::try_inner;
 use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME, HWL_MANIFEST_FILE_NAME};
 use hwl_util::io::recurse_for_each_file;
@@ -25,7 +29,7 @@ use lsp_types::{
     DiagnosticRelatedInformation, DiagnosticSeverity, Location, PublishDiagnosticsParams, Uri, notification,
 };
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
@@ -86,7 +90,12 @@ impl ServerState {
             let mut common = common.clone();
             let parsed = parsed.clone();
 
-            let inner = parsed.and_then(|parsed| collect_manifest_sources(&mut self.vfs, &mut common, parsed));
+            let inner = match parsed {
+                Ok(parsed) => collect_manifest_sources(&mut self.vfs, &mut common, parsed)
+                    .map_err(|e| SendErrorOr::Other(RequestError::Vfs(VfsError::FailedNormalization(e))))?,
+                Err(e) => Err(e),
+            };
+
             manifests_collected.push(ManifestCollected { common, inner });
         }
 
@@ -179,8 +188,8 @@ impl ServerState {
         let root_path = uri_to_path(&root_uri).map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?;
 
         // start collecting watchers, they need to be set before reading the corresponding files
-        // TODO this is_empty stuff is a bit weird
-        let mut watchers = vec![watcher_any_file_with_name(root_uri.clone(), HWL_MANIFEST_FILE_NAME)];
+        let root_watcher = build_watcher_any_file_with_name(root_uri.clone(), HWL_MANIFEST_FILE_NAME);
+        let mut watchers = vec![root_watcher];
         if self.curr_watchers.is_empty() {
             self.set_watchers(watchers.clone())?;
         }
@@ -221,8 +230,11 @@ impl ServerState {
                         steps: _,
                         path_relative,
                     } = entry;
-                    let entry_path = manifest_folder.join(path_relative);
-                    watchers.push(watcher_any_file_with_name(
+
+                    let entry_path = path_join_normalized(&manifest_folder, Path::new(&path_relative))
+                        .map_err(|e| SendErrorOr::Other(RequestError::Vfs(VfsError::FailedNormalization(e))))?;
+
+                    watchers.push(build_watcher_any_file_with_name(
                         abs_path_to_uri(&entry_path).map_err(|e| SendErrorOr::Other(RequestError::Vfs(e)))?,
                         &format!("*.{HWL_FILE_EXTENSION}"),
                     ));
@@ -291,23 +303,24 @@ fn collect_manifest_sources(
     vfs: &mut Vfs,
     common: &mut ManifestCommon,
     parsed: Manifest,
-) -> DiagResult<ManifestCollectedInner> {
+) -> Result<DiagResult<ManifestCollectedInner>, NormalizeError> {
     let diags = &common.diags;
     let source = &mut common.source;
     let mut hierarchy = SourceHierarchy::new();
 
-    add_std_sources(diags, source, &mut hierarchy)?;
+    try_inner!(add_std_sources(diags, source, &mut hierarchy));
 
     // TODO get more precise span
     let manifest_span = source.full_span(common.manifest_file);
 
     for entry in parsed.source.entries() {
         let SourceEntry { steps, path_relative } = entry;
-        let entry_path = common.manifest_folder.join(&path_relative);
+
+        let entry_path = path_join_normalized(&common.manifest_folder, Path::new(&path_relative))?;
 
         // TODO don't early exit, visit all entries before returning error
         // TODO insert extra files from Vfs that don't yet exist on disk
-        let files = collect_source_files_from_tree(diags, manifest_span, entry_path)?;
+        let files = try_inner!(collect_source_files_from_tree(diags, manifest_span, entry_path));
 
         let file_paths = files.iter().map(|(_, p)| p.to_owned()).collect_vec();
 
@@ -318,19 +331,19 @@ fn collect_manifest_sources(
             manifest_span,
             steps,
             &files,
-            // TODO this is sketchy
             |file_path| match vfs.read_str_maybe_from_disk(file_path) {
                 Ok(s) => Ok(s.to_owned()),
                 Err(e) => Err(format!("{e:?}")),
             },
-        )?;
+        );
+        let file_ids = try_inner!(file_ids);
 
         for (file_id, file_path) in zip_eq(file_ids, file_paths) {
             common.file_to_path.insert(file_id, file_path);
         }
     }
 
-    Ok(ManifestCollectedInner { parsed, hierarchy })
+    Ok(Ok(ManifestCollectedInner { parsed, hierarchy }))
 }
 
 fn add_grouped_diagnostic_to_lsp(

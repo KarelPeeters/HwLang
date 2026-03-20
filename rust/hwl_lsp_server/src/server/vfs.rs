@@ -1,3 +1,4 @@
+use crate::util::uri::NormalizeError;
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath};
 use indexmap::IndexMap;
@@ -29,6 +30,7 @@ pub enum VfsError {
     // TODO this should not really be a VfsError
     ContentInvalidUtf8(Utf8Error),
     PathInvalidUtf8(PathBuf),
+    FailedNormalization(NormalizeError),
 }
 
 // TODO log VFS operations
