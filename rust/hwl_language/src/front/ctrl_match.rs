@@ -286,6 +286,14 @@ impl CompileItemContext<'_, '_> {
                     value,
                     Spanned::new(pattern.span, "match branch"),
                 )?;
+                // Check that the pattern value type is broadly compatible with the target type,
+                // e.g. reject a `Range(0..5)` literal as an EqualTo pattern for an integer target
+                // (the correct syntax for range matching is `in 0..5`).
+                // We use `target_ty.broaden()` (e.g. `int` instead of `int(3..4)`) to accept
+                // integer literals that are unreachable but type-correct; unreachable branches are
+                // reported separately by the coverage/reachability analysis.
+                let broad_target_ty = target_ty.broaden();
+                check_type_contains_value(diags, elab, TypeContainsReason::MatchPattern(target_span), &broad_target_ty, value.as_ref())?;
                 Ok(EvaluatedMatchPattern::EqualTo(value))
             }
             MatchPattern::InRange { span_in, range } => {
