@@ -71,7 +71,7 @@ pub fn lower_verilator(modules: &IrModules, top_module: IrModule, verilog: &Lowe
     let check_hash = {
         let mut hasher = FnvHasher::default();
         verilog.source.hash(&mut hasher);
-        verilog.top_module_name.hash(&mut hasher);
+        verilog.module_to_lowered_name.get(&top_module).hash(&mut hasher);
         TEMPLATE.hash(&mut hasher);
         hasher.finish()
     };

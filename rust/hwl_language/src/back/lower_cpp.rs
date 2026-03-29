@@ -24,7 +24,7 @@ use unwrap_match::unwrap_match;
 //   only one for each signal, maybe also a separate one for each array element?
 //   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
 //   skip operations on undefined values, we don't want to cause undefined C++ behavior!
-pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModule) -> DiagResult<String> {
+pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_modules: &[IrModule]) -> DiagResult<String> {
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
@@ -37,7 +37,7 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_module: IrModu
     swriteln!(f, "#include <iostream>");
     swriteln!(f);
 
-    for (i, module) in enumerate(ir_modules_topological_sort(modules, [top_module])) {
+    for (i, module) in enumerate(ir_modules_topological_sort(modules, top_modules.iter().copied())) {
         if i != 0 {
             swriteln!(f);
         }

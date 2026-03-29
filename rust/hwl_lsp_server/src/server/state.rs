@@ -2,6 +2,7 @@ use crate::server::compile::ManifestFound;
 use crate::server::settings::Settings;
 use crate::server::vfs::{Vfs, VfsError};
 use crate::util::sender::{SendError, SendErrorOr, ServerSender};
+use hwl_language::util::pool::ThreadPool;
 use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
@@ -12,6 +13,7 @@ pub struct ServerState {
     // global settings
     pub settings: Settings,
     pub sender: ServerSender,
+    pub pool: Option<ThreadPool>,
 
     // lifecycle
     pub has_received_shutdown_request: bool,
@@ -53,6 +55,8 @@ impl ServerState {
         ServerState {
             settings,
             sender,
+            // TODO make pool configurable, default to half of available cores
+            pool: None,
             has_received_shutdown_request: false,
             open_files: IndexSet::new(),
             vfs: Vfs::new(),

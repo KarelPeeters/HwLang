@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
+use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::hierarchy::SourceHierarchy;
@@ -25,18 +25,21 @@ fn target(data: String) {
 
     let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
 
-    // TODO don't require top module?
     let settings = CompileSettings { do_ir_cleanup: true };
-    let _ = compile(
-        &diags,
-        &settings,
-        &source,
-        &hierarchy,
-        &parsed,
-        ElaborationSet::AsMuchAsPossible,
-        &mut IgnorePrintHandler,
-        &|| false,
-        NON_ZERO_USIZE_ONE,
-        dummy_span,
-    );
+    let fixed = CompileFixed {
+        settings: &settings,
+        source: &source,
+        hierarchy: &hierarchy,
+        parsed: &parsed,
+    };
+
+    let shared = CompileShared::new(&diags, fixed, QueueItems::All, NON_ZERO_USIZE_ONE);
+    let refs = CompileRefs {
+        diags: &diags,
+        fixed,
+        shared: &shared,
+        print_handler: &IgnorePrintHandler,
+        should_stop: &|| false,
+    };
+    refs.run_compile_loop(None);
 }

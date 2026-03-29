@@ -129,6 +129,7 @@ fn manifest_find_read(manifest_path: Option<PathBuf>) -> Result<FoundManifest, F
 }
 
 pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
+    // TODO this handles warnings incorrectly
     let diags = diags.finish();
     let any_error = !diags.is_empty();
 

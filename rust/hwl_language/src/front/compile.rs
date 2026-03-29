@@ -9,20 +9,21 @@ use crate::front::signal::Signal;
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
 };
-use crate::front::value::{CompileValue, SimpleCompileValue, Value};
+use crate::front::value::{CompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
-use crate::syntax::parsed::{AstRefItem, AstRefItemKind, AstRefModuleInternal, ParsedDatabase};
+use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::Span;
 use crate::syntax::pos::{HasSpan, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
+use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
@@ -32,162 +33,81 @@ use std::sync::{Arc, Mutex};
 // TODO make all of these configurable
 // TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
 //   it might also not matter, maybe every platform pre-commits stack space by now
+// TODO move
 pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
 const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
 const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
-// TODO add test that randomizes order of files and items to check for dependency bugs,
-//   assert that result and diagnostics are the same
-// TODO extend the set of "type-checking" root points:
-//   * project settings: multiple top modules
-//   * type-checking-only generic instantiations of modules
-//   * type-check all modules without generics automatically
-//   * type-check modules with generics partially
-// TODO make this flexible enough to serve as the driver for the python API
-pub fn compile(
-    diags: &Diagnostics,
-    settings: &CompileSettings,
-    source: &SourceDatabase,
-    hierarchy: &SourceHierarchy,
-    parsed: &ParsedDatabase,
-    elaboration_set: ElaborationSet,
-    print_handler: &mut (dyn PrintHandler + Sync),
-    should_stop: &(dyn Fn() -> bool + Sync),
-    thread_count: NonZeroUsize,
-    manifest_span: Span,
-) -> DiagResult<IrDatabase> {
-    let fixed = CompileFixed {
-        settings,
-        source,
-        hierarchy,
-        parsed,
-    };
+#[derive(Debug)]
+pub enum ResolveError {
+    EmptyPath,
+    ItemNotFound,
+}
 
-    let queue_all_items = match elaboration_set {
-        ElaborationSet::TopOnly => false,
-        ElaborationSet::AsMuchAsPossible => true,
-    };
-    let shared = CompileShared::new(diags, fixed, queue_all_items, thread_count);
+impl<'a, 's> CompileRefs<'a, 's> {
+    pub fn run_compile_loop(self, pool: Option<&ThreadPool>) {
+        if let Some(pool) = pool {
+            let num_threads = pool.thread_count();
 
-    // get the top module
-    // TODO we don't really need to do this any more, all non-generic modules are elaborated anyway
-    // TODO change this once we're not hardcoding a single top item any more
-    let top_item_and_ir_module = {
-        let refs = CompileRefs {
-            fixed,
-            shared: &shared,
-            diags,
-            print_handler,
-            should_stop,
-        };
-        find_top_module(diags, fixed, &shared, manifest_span).and_then(|top_item| {
-            let mut ctx = CompileItemContext::new_empty(refs, None, None);
-            let result = ctx.eval_item(top_item.item())?;
+            pool.scope(|s| {
+                let mut handles = vec![];
 
-            match result {
-                &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(elab))) => {
-                    let info = shared.elaboration_arenas.module_internal_info(elab);
-                    Ok((top_item, info.module_ir))
-                }
-                _ => Err(diags.report_error_internal(parsed[top_item].id.span(), "top items should be modules")),
-            }
-        })
-    };
+                // spawn elaboration loop for each thread, each writing into separate diagnostics
+                for _ in 0..num_threads.get() {
+                    let f = || {
+                        let thread_diags = Diagnostics::new();
+                        let thread_refs = CompileRefs {
+                            diags: &thread_diags,
 
-    // run until everything is elaborated
-    if thread_count.get() > 1 {
-        // TODO manage thread pool externally, and re-use it between parsing and elaboration
-        // TODO use the current thread as one of thread loops instead of just joining?
-        std::thread::scope(|s| {
-            let mut handles = vec![];
-
-            for thread_index in 0..thread_count.get() {
-                let f = || {
-                    let thread_diags = Diagnostics::new();
-                    let thread_refs = CompileRefs {
-                        fixed,
-                        shared: &shared,
-                        diags: &thread_diags,
-                        print_handler,
-                        should_stop,
+                            fixed: self.fixed,
+                            shared: self.shared,
+                            print_handler: self.print_handler,
+                            should_stop: self.should_stop,
+                        };
+                        thread_refs.run_compile_loop_inner();
+                        thread_diags
                     };
-                    thread_refs.run_elaboration_loop();
-                    thread_diags
-                };
+                    handles.push(s.spawn(f));
+                }
 
-                let name = format!("compile_{thread_index}");
-                let h = std::thread::Builder::new()
-                    .name(name)
-                    .stack_size(COMPILE_THREAD_STACK_SIZE)
-                    .spawn_scoped(s, f)
-                    .unwrap();
-
-                handles.push(h);
-            }
-
-            // merge diagnostics, sorting to keep them deterministic
-            // TODO some kind of topological sort "as if visited by single thread" might be nicer
-            let mut all_diags = vec![];
-            for h in handles {
+                // wait for all threads to finish and collect their diagnostics
                 // TODO propagate panics better here, ideally all threads would stop and program would fully exit
-                let thread_diags = h.join().unwrap();
-                all_diags.extend(thread_diags.finish());
-            }
-            all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-            for d in all_diags {
-                diags.push(d);
-            }
-        });
-    } else {
-        let thread_refs = CompileRefs {
-            fixed,
-            shared: &shared,
-            diags,
-            print_handler,
-            should_stop,
-        };
-        thread_refs.run_elaboration_loop();
-    }
+                let mut all_diags = vec![];
+                for h in handles {
+                    let thread_diags = h.join().unwrap();
+                    all_diags.extend(thread_diags.finish());
+                }
 
-    // return result (at this point all modules should have been fully elaborated)
-    let (top_item, top_ir_module) = top_item_and_ir_module?;
-
-    let db_partial = shared.finish_ir_database(diags, parsed[top_item].span)?;
-
-    let db = IrDatabase {
-        top_module: top_ir_module,
-        modules: db_partial.ir_modules,
-        external_modules: db_partial.external_modules.into_iter().sorted().collect(),
-    };
-
-    // TODO add an option to always/never do this?
-    if cfg!(debug_assertions) {
-        db.validate(diags)?;
-    }
-
-    Ok(db)
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum ElaborationSet {
-    TopOnly,
-    AsMuchAsPossible,
-}
-
-impl<'a> CompileRefs<'a, '_> {
-    pub fn check_should_stop(&self, span: Span) -> DiagResult {
-        // TODO report only one error, now all threads report the same error
-        //   put an Option<ErrorGuaranteed> somewhere in a mutex?
-        if (self.should_stop)() {
-            Err(self
-                .diags
-                .report_error_simple("compilation interrupted", span, "while elaborating here"))
+                // merge diagnostics into original diags, sorting to keep them deterministic
+                // TODO some kind of topological sort "as if visited by single thread" might be nicer
+                all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+                for d in all_diags {
+                    self.diags.push(d);
+                }
+            })
         } else {
-            Ok(())
+            // run elaboration on the current thread
+            let local_diags = Diagnostics::new();
+            let local_refs = CompileRefs {
+                diags: &local_diags,
+
+                fixed: self.fixed,
+                shared: self.shared,
+                print_handler: self.print_handler,
+                should_stop: self.should_stop,
+            };
+            local_refs.run_compile_loop_inner();
+
+            // sort diagnostics here too, to match threaded case
+            let mut local_diags = local_diags.finish();
+            local_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+            for d in local_diags {
+                self.diags.push(d);
+            }
         }
     }
 
-    pub fn run_elaboration_loop(self) {
+    fn run_compile_loop_inner(self) {
         while let Some(work_item) = self.shared.work_queue.pop() {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
@@ -201,7 +121,7 @@ impl<'a> CompileRefs<'a, '_> {
                     let ir_module_info = self.elaborate_module_body_new(header);
 
                     // store result
-                    let slot = &mut self.shared.ir_database.lock().unwrap().ir_modules[ir_module];
+                    let slot = &mut self.shared.ir_database.lock().unwrap().modules[ir_module];
                     assert!(slot.is_none());
                     *slot = Some(ir_module_info);
                 }
@@ -209,11 +129,21 @@ impl<'a> CompileRefs<'a, '_> {
         }
     }
 
-    pub fn get_expr(&self, expr: Expression) -> &'a ExpressionKind {
+    pub fn check_should_stop(self, span: Span) -> DiagResult {
+        if (self.should_stop)() {
+            Err(self
+                .diags
+                .report_error_simple("compilation interrupted", span, "while elaborating here"))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn get_expr(self, expr: Expression) -> &'a ExpressionKind {
         self.fixed.parsed.get_expr(expr)
     }
 
-    pub fn get_expr_inner(&self, expr: Expression) -> &'a ExpressionKind {
+    pub fn get_expr_inner(self, expr: Expression) -> &'a ExpressionKind {
         let mut curr = expr;
         loop {
             match self.get_expr(curr) {
@@ -221,6 +151,59 @@ impl<'a> CompileRefs<'a, '_> {
                 kind => break kind,
             }
         }
+    }
+
+    pub fn resolve_item_by_path(self, path: Spanned<&str>) -> DiagResult<AstRefItem> {
+        // TODO share code with resolve_import_path
+        let diags = self.diags;
+
+        // split path
+        let path_split = path.inner.split(".").collect_vec();
+        let (&name, steps) = path_split.split_last().ok_or_else(|| {
+            diags.report_error_simple(
+                "invalid path: cannot be empty",
+                path.span,
+                format!("got empty path `{}`", path.inner),
+            )
+        })?;
+
+        // follow steps to get node
+        let mut curr_node = self.fixed.hierarchy.root_node();
+        for &step in steps {
+            curr_node = curr_node.children.get(step).ok_or_else(|| {
+                diags.report_error_simple(
+                    "invalid path: step does not exist in hierarchy",
+                    path.span,
+                    format!("hierarchy step `{}` does not exist in path `{}`", step, path.inner),
+                )
+            })?;
+        }
+
+        // get file scope
+        let file = curr_node.file.ok_or_else(|| {
+            diags.report_error_simple(
+                "invalid path: expected file at end of hierarchy",
+                path.span,
+                format!("expected file at end of hierarchy for path `{}`", path.inner),
+            )
+        })?;
+        let scope = self.shared.file_scope(file)?;
+
+        // get item in scope
+        // TODO check public?
+        let entry = scope.find(diags, Spanned::new(path.span, name))?;
+        let item = match entry.value {
+            ScopedEntry::Item(item) => item,
+            ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
+                return Err(diags.report_error_internal(path.span, "file scopes should only contain items"));
+            }
+        };
+        Ok(item)
+    }
+
+    pub fn eval_item(self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
+        let mut ctx = CompileItemContext::new_empty(self, None, None);
+        ctx.eval_item(item)
     }
 }
 
@@ -236,6 +219,12 @@ pub struct CompileFixed<'a> {
 #[derive(Debug, Clone)]
 pub struct CompileSettings {
     pub do_ir_cleanup: bool,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum QueueItems {
+    None,
+    All,
 }
 
 #[derive(Debug)]
@@ -254,40 +243,21 @@ pub struct CompileShared {
     pub elaboration_arenas: ElaborationArenas,
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
-    pub ir_database: Mutex<PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>>,
+    pub ir_database: Mutex<IrDatabase<Option<DiagResult<IrModuleInfo>>>>,
     pub next_flow_root_id: NextFlowRootId,
-}
-
-#[derive(Debug, Clone)]
-pub struct PartialIrDatabase<M> {
-    pub external_modules: IndexSet<String>,
-    pub ir_modules: Arena<IrModule, M>,
-}
-
-impl PartialIrDatabase<IrModuleInfo> {
-    pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
-        let PartialIrDatabase {
-            external_modules,
-            ir_modules,
-        } = self;
-        for (_, info) in ir_modules.iter() {
-            info.validate(diags, ir_modules, external_modules)?;
-        }
-        Ok(())
-    }
 }
 
 pub type FileScopes = IndexMap<FileId, DiagResult<Arc<FrozenScope>>>;
 
 #[derive(Copy, Clone)]
 pub struct CompileRefs<'a, 's> {
+    pub diags: &'a Diagnostics,
     // TODO maybe inline this
     pub fixed: CompileFixed<'a>,
     pub shared: &'s CompileShared,
-    pub diags: &'a Diagnostics,
     // TODO is there a reasonable way to get deterministic prints?
     pub print_handler: &'a (dyn PrintHandler + Sync),
-    pub should_stop: &'a dyn Fn() -> bool,
+    pub should_stop: &'a (dyn Fn() -> bool + Sync),
 }
 
 pub type ArenaPorts = Arena<Port, PortInfo>;
@@ -376,7 +346,7 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         Ok(result)
     }
 
-    pub fn eval_item(&mut self, item: AstRefItem) -> DiagResult<&CompileValue> {
+    pub fn eval_item(&mut self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
         let item_span = self.refs.fixed.parsed[item].info().span_short;
         let stack_entry = StackEntry::ItemEvaluation(item_span);
 
@@ -628,55 +598,8 @@ fn resolve_import_path(
         .ok_or_else(|| diags.report_error_simple("expected path to file", parents_span, "no file exists at this path"))
 }
 
-fn find_top_module(
-    diags: &Diagnostics,
-    fixed: CompileFixed,
-    shared: &CompileShared,
-    manifest_span: Span,
-) -> DiagResult<AstRefModuleInternal> {
-    // TODO make the top module if any configurable or at least an external parameter, not hardcoded here
-    //   maybe we can even remove the concept entirely, by now we're elaborating all items without generics already
-    let top_file = fixed
-        .hierarchy
-        .root_node()
-        .children
-        .get("top")
-        .and_then(|top_node| top_node.file)
-        .ok_or_else(|| {
-            diags.report_error_simple(
-                "no top file found, should be called `top` and be in the root directory of the project",
-                manifest_span,
-                "manifest should point to top file",
-            )
-        })?;
-    let top_file_scope = shared.file_scopes.get(&top_file).unwrap().as_ref_ok()?;
-    let top_entry = top_file_scope.find(diags, Spanned::new(manifest_span, "top"))?;
-
-    match top_entry.value {
-        ScopedEntry::Item(item) => match &fixed.parsed[item] {
-            ast::Item::ModuleInternal(module) => match &module.params {
-                None => Ok(AstRefModuleInternal::new_unchecked(item, module)),
-                Some(_) => Err(diags.report_error_simple(
-                    "`top` cannot have generic parameters",
-                    module.id.span(),
-                    "defined here",
-                )),
-            },
-            _ => Err(diags.report_error_simple("`top` should be a module", top_entry.span_decl, "defined here")),
-        },
-        ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
-            // this should not be possible, but provide a decent error message anyway
-            Err(diags.report_error_simple(
-                "top should be an item, got named or captured",
-                top_entry.span_decl,
-                "defined here",
-            ))
-        }
-    }
-}
-
 impl CompileShared {
-    pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_all_items: bool, thread_count: NonZeroUsize) -> Self {
+    pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_items: QueueItems, thread_count: NonZeroUsize) -> Self {
         let file_scopes = populate_file_scopes(diags, fixed);
 
         // pass over all items, to:
@@ -726,9 +649,12 @@ impl CompileShared {
         //   * which is actually faster? (for mutex contention)
         //   * do we want to shuffle anyway to test that the compiler is deterministic?
         let work_queue = SharedQueue::new(thread_count);
-        if queue_all_items {
-            items.shuffle(&mut rand::thread_rng());
-            work_queue.push_batch(items.into_iter().map(WorkItem::EvaluateItem));
+        match queue_items {
+            QueueItems::None => {}
+            QueueItems::All => {
+                items.shuffle(&mut rand::thread_rng());
+                work_queue.push_batch(items.into_iter().map(WorkItem::EvaluateItem));
+            }
         }
 
         CompileShared {
@@ -736,8 +662,8 @@ impl CompileShared {
             work_queue,
             item_values,
             elaboration_arenas: ElaborationArenas::new(),
-            ir_database: Mutex::new(PartialIrDatabase {
-                ir_modules: Arena::new(),
+            ir_database: Mutex::new(IrDatabase {
+                modules: Arena::new(),
                 external_modules,
             }),
             next_flow_root_id: NextFlowRootId::default(),
@@ -748,11 +674,7 @@ impl CompileShared {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 
-    pub fn finish_ir_database(
-        self,
-        diags: &Diagnostics,
-        dummy_span: Span,
-    ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
+    pub fn finish_ir_database(self, diags: &Diagnostics, dummy_span: Span) -> DiagResult<IrDatabase<IrModuleInfo>> {
         finish_ir_database_impl(
             diags,
             dummy_span,
@@ -765,7 +687,7 @@ impl CompileShared {
         &self,
         diags: &Diagnostics,
         dummy_span: Span,
-    ) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
+    ) -> DiagResult<IrDatabase<IrModuleInfo>> {
         let ir_database = self.ir_database.lock().unwrap().clone();
         finish_ir_database_impl(diags, dummy_span, &self.work_queue, ir_database)
     }
@@ -775,29 +697,29 @@ fn finish_ir_database_impl(
     diags: &Diagnostics,
     dummy_span: Span,
     work_queue: &SharedQueue<WorkItem>,
-    ir_database: PartialIrDatabase<Option<DiagResult<IrModuleInfo>>>,
-) -> DiagResult<PartialIrDatabase<IrModuleInfo>> {
+    ir_database: IrDatabase<Option<DiagResult<IrModuleInfo>>>,
+) -> DiagResult<IrDatabase<IrModuleInfo>> {
     // check that work queue is empty
     if work_queue.pop().is_some() {
         return Err(diags.report_error_internal(dummy_span, "not all work items have been processed"));
     }
 
     // check that all modules have been elaborated
-    let PartialIrDatabase {
+    let IrDatabase {
+        modules,
         external_modules,
-        ir_modules,
     } = ir_database;
-    let ir_modules = ir_modules.try_map_values(|_, v| match v {
+    let modules = modules.try_map_values(|_, v| match v {
         Some(Ok(v)) => Ok(v),
         Some(Err(e)) => Err(e),
         None => Err(diags.report_error_internal(dummy_span, "not all modules were elaborated")),
     })?;
 
     // check that there are no cycles
-    ir_modules_check_no_cycles(diags, &ir_modules)?;
+    ir_modules_check_no_cycles(diags, &modules)?;
 
-    Ok(PartialIrDatabase {
-        ir_modules,
+    Ok(IrDatabase {
+        modules,
         external_modules,
     })
 }

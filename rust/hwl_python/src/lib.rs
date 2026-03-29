@@ -6,8 +6,8 @@ use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_verilator::{
     SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
 };
-use hwl_language::front::compile::CompileSettings;
-use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared, PartialIrDatabase};
+use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared};
+use hwl_language::front::compile::{CompileSettings, QueueItems};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
@@ -18,7 +18,7 @@ use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::{
     CompileValue as RustCompileValue, NotCompile, SimpleCompileValue, Value as RustValue,
 };
-use hwl_language::mid::ir::{IrModule, IrModuleInfo, IrPort, IrPortInfo};
+use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
     io_error_message,
@@ -32,6 +32,7 @@ use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
+use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
 use hwl_util::io::IoErrorExt;
@@ -65,6 +66,8 @@ struct Parsed {
 
 #[pyclass]
 struct Compile {
+    pool: Option<ThreadPool>,
+
     #[pyo3(get)]
     parsed: Py<Parsed>,
     shared: CompileShared,
@@ -384,13 +387,17 @@ impl Parsed {
                 parsed: &parsed.parsed,
             };
 
-            let shared = CompileShared::new(&diags, fixed, false, NON_ZERO_USIZE_ONE);
+            // TODO add parameter for queue_all_items, default to true and then set to false for specific tests
+            //   then run initial elaboration loop immediately
+            let shared = CompileShared::new(&diags, fixed, QueueItems::None, NON_ZERO_USIZE_ONE);
             check_diags(py, &source.source, &diags)?;
 
             shared
         };
 
+        // TODO make threadpool configurable
         Ok(Compile {
+            pool: None,
             parsed: slf,
             shared,
             capture_prints: None,
@@ -477,7 +484,7 @@ impl Compile {
         // eval item and elaborate any necessary items
         let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
         let value = item_ctx.eval_item(item).cloned();
-        refs.run_elaboration_loop();
+        refs.run_compile_loop(None);
 
         // build ir database to run final checks
         let ir_database = if value.is_ok() {
@@ -755,7 +762,7 @@ fn call_impl(
             Spanned::new(dummy_span, target),
             Ok(args),
         );
-        refs.run_elaboration_loop();
+        refs.run_compile_loop(compile_ref.pool.as_ref());
 
         // extract return value
         let returned = returned.and_then(|returned| {
@@ -780,9 +787,11 @@ fn call_impl(
 #[pymethods]
 impl Module {
     fn as_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
-        let (_, _, lowered) = self.lower_verilog_impl(py)?;
+        let (_, ir_module, lowered) = self.lower_verilog_impl(py)?;
+        let verilog_name = lowered.module_to_lowered_name.get(&ir_module).unwrap();
+
         Ok(ModuleVerilog {
-            module_name: lowered.top_module_name,
+            module_name: verilog_name.to_owned(),
             source: lowered.source,
         })
     }
@@ -814,18 +823,19 @@ impl Module {
 
         // lower
         let (ir_database, ir_module, lowered_verilog) = self.lower_verilog_impl(py)?;
-        let lowered_verilator = lower_verilator(&ir_database.ir_modules, ir_module, &lowered_verilog);
+        let lowered_verilator = lower_verilator(&ir_database.modules, ir_module, &lowered_verilog);
 
         let LoweredVerilog {
             source: source_verilog,
-            top_module_name,
-            debug_info_module_map: _,
+            module_to_lowered_name,
         } = lowered_verilog;
         let LoweredVerilator {
             source: source_cpp,
             top_class_name,
             check_hash,
         } = lowered_verilator;
+
+        let verilog_name = module_to_lowered_name.get(&ir_module).unwrap();
 
         // write to files
         // TODO only write if changed to avoid unnecessary rebuilds? or does verilator already do that for us?
@@ -855,7 +865,7 @@ impl Module {
                     .arg("+1364-2001ext+v")
                     .arg("--trace")
                     .arg("--top-module")
-                    .arg(&top_module_name)
+                    .arg(verilog_name)
                     .arg("--prefix")
                     .arg(&top_class_name)
                     .args(extra_verilog_files)
@@ -896,7 +906,7 @@ impl Module {
 
         // load library
         let lib = unsafe {
-            VerilatedLib::new(&ir_database.ir_modules, ir_module, check_hash, &path_so)
+            VerilatedLib::new(&ir_database.modules, ir_module, check_hash, &path_so)
                 .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e}")))?
         };
         Ok(ModuleVerilated {
@@ -926,7 +936,7 @@ fn run_command(command: &mut Command, dir: &Path, name: &str) -> PyResult<()> {
 }
 
 impl Module {
-    fn lower_verilog_impl(&self, py: Python) -> PyResult<(PartialIrDatabase<IrModuleInfo>, IrModule, LoweredVerilog)> {
+    fn lower_verilog_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, LoweredVerilog)> {
         // borrow self
         let compile = self.compile.borrow(py);
         let parsed_ref = compile.parsed.borrow(py);
@@ -957,12 +967,7 @@ impl Module {
         }
 
         // actual lowering
-        let lowered = lower_to_verilog(
-            &diags,
-            &ir_database.ir_modules,
-            &ir_database.external_modules,
-            ir_module,
-        );
+        let lowered = lower_to_verilog(&diags, &ir_database, &[ir_module]);
         let lowered = map_diag_error(py, &diags, source, lowered)?;
 
         Ok((ir_database, ir_module, lowered))

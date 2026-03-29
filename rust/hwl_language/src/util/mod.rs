@@ -8,6 +8,7 @@ pub mod data;
 pub mod exhaust;
 pub mod int;
 pub mod iter;
+pub mod pool;
 pub mod range;
 pub mod range_multi;
 pub mod regex;

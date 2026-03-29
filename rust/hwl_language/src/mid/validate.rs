@@ -18,7 +18,6 @@ use itertools::zip_eq;
 impl IrDatabase {
     pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
         let IrDatabase {
-            top_module: _,
             modules,
             external_modules,
         } = self;

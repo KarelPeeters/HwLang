@@ -4,11 +4,11 @@ use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable,
-    IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
-    IrWireInfo, ValueAccess,
+    IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
+    IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance,
+    IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal,
+    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
+    IrVariables, IrWire, IrWireInfo, ValueAccess,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -31,10 +31,7 @@ const I: &str = Indent::I;
 #[derive(Debug, Clone)]
 pub struct LoweredVerilog {
     pub source: String,
-
-    // TODO should this be a string or a lowered name? we don't want to expose too many implementation details
-    pub top_module_name: String,
-    pub debug_info_module_map: IndexMap<IrModule, String>,
+    pub module_to_lowered_name: IndexMap<IrModule, String>,
 }
 
 // TODO make backend configurable between verilog and VHDL?
@@ -45,12 +42,12 @@ pub struct LoweredVerilog {
 // TODO avoid a bunch of string allocations
 // TODO should we always shadow output ports with intermediate signals so we can read back from them,
 //   even in old verilog versions?
-pub fn lower_to_verilog(
-    diags: &Diagnostics,
-    modules: &IrModules,
-    external_modules: &IndexSet<String>,
-    top_module: IrModule,
-) -> DiagResult<LoweredVerilog> {
+pub fn lower_to_verilog(diags: &Diagnostics, db: &IrDatabase, top_modules: &[IrModule]) -> DiagResult<LoweredVerilog> {
+    let IrDatabase {
+        modules,
+        external_modules,
+    } = db;
+
     let mut ctx = LowerContext {
         diags,
         modules,
@@ -59,17 +56,17 @@ pub fn lower_to_verilog(
         result_source: vec![],
     };
 
-    let modules = ir_modules_topological_sort(modules, [top_module]);
+    let modules = ir_modules_topological_sort(modules, top_modules.iter().copied());
     for module in modules {
         let result = lower_module(&mut ctx, module)?;
         ctx.module_map.insert_first(module, result);
     }
 
-    let top_name = ctx.module_map.get(&top_module).unwrap().name.clone();
+    let source = ctx.result_source.join("\n\n");
+    let module_to_lowered_name = ctx.module_map.into_iter().map(|(k, v)| (k, v.name.0)).collect();
     Ok(LoweredVerilog {
-        source: ctx.result_source.join("\n\n"),
-        top_module_name: top_name.0.clone(),
-        debug_info_module_map: ctx.module_map.into_iter().map(|(k, v)| (k, v.name.0)).collect(),
+        source,
+        module_to_lowered_name,
     })
 }
 

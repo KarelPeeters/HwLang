@@ -726,7 +726,7 @@ impl CompileItemContext<'_, '_> {
                         )?;
 
                         // reserve ir module key, will be filled in later during body elaboration
-                        let ir_module = { refs.shared.ir_database.lock().unwrap().ir_modules.push(None) };
+                        let ir_module = { refs.shared.ir_database.lock().unwrap().modules.push(None) };
 
                         // queue body elaboration for later
                         refs.shared

@@ -25,14 +25,13 @@ use unwrap_match::unwrap_match;
 
 // TODO dropping this type takes a long time (maybe due to the web of vecs caused by blocks/statements/...?)
 // TODO add some way to share Strings, especially for debug info there are lots of duplicates
-#[derive(Debug)]
-pub struct IrDatabase {
-    pub top_module: IrModule,
-    pub modules: IrModules,
+#[derive(Debug, Clone)]
+pub struct IrDatabase<M = IrModuleInfo> {
+    pub modules: IrModules<M>,
     pub external_modules: IndexSet<String>,
 }
 
-pub type IrModules = Arena<IrModule, IrModuleInfo>;
+pub type IrModules<M = IrModuleInfo> = Arena<IrModule, M>;
 
 /// Variant of [Type] that can only represent types that are valid in hardware.
 #[derive(Debug, Clone, Eq, PartialEq)]

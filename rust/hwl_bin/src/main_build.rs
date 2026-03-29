@@ -2,61 +2,63 @@ use crate::args::ArgsBuild;
 use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{COMPILE_THREAD_STACK_SIZE, CompileSettings, ElaborationSet, compile};
-use hwl_language::front::diagnostic::Diagnostics;
+use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::diagnostic::{DiagError, Diagnostics};
+use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
+use hwl_language::front::value::{CompileValue, SimpleCompileValue};
 use hwl_language::syntax::collect::collect_source_from_manifest;
 use hwl_language::syntax::hierarchy::HierarchyNode;
 use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase;
+use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
+use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::util::arena::IndexType;
-use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
+use hwl_language::util::pool::ThreadPool;
+use itertools::Itertools;
 use std::num::NonZeroUsize;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn main_build(args: ArgsBuild) -> ExitCode {
-    if args.keep_main_stack {
-        main_build_inner(args)
-    } else {
-        // spawn a new thread with a larger stack size
-        // TODO is this still needed? was it ever?
-        std::thread::Builder::new()
-            .stack_size(COMPILE_THREAD_STACK_SIZE)
-            .spawn(|| main_build_inner(args))
-            .unwrap()
-            .join()
-            .unwrap()
-    }
-}
-
-fn main_build_inner(args: ArgsBuild) -> ExitCode {
     // interpret args
     let ArgsBuild {
         manifest,
+        top,
+        top_only,
+        output_verilog,
+        output_cpp,
+        debug_output_ir,
         thread_count,
-        profile,
-        print_files,
-        print_ir,
-        only_top,
-        skip_lower,
-        keep_main_stack: _,
+        debug_profile,
+        debug_print_files,
+        debug_keep_main_stack,
     } = args;
 
-    let thread_count = thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE));
-    let elaboration_set = if only_top {
-        ElaborationSet::TopOnly
+    if top_only && top.is_empty() {
+        eprintln!("error: --top-only requires at least one --top module");
+        return ExitCode::FAILURE;
+    }
+
+    let thread_count = if debug_keep_main_stack {
+        if thread_count.is_some() {
+            eprintln!(
+                "error: --debug-keep-main-stack is always single-threaded, so changing thread count does nothing"
+            );
+        }
+        None
     } else {
-        ElaborationSet::AsMuchAsPossible
+        Some(thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE)))
     };
     let settings = CompileSettings { do_ir_cleanup: true };
+    let queue_items = if top_only { QueueItems::None } else { QueueItems::All };
 
     let start_all = Instant::now();
-    let start_source = Instant::now();
+    let start_source = start_all;
 
     // find and parse manifest
     let mut source = SourceDatabase::new();
@@ -67,6 +69,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     let Manifest {
         source: manifest_source,
     } = manifest.parsed;
+    let manifest_span = source.full_span(manifest.file);
 
     // collect source
     let diags = Diagnostics::new();
@@ -86,7 +89,7 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
     let time_source = start_source.elapsed();
 
     // print source info
-    if print_files {
+    if debug_print_files {
         eprintln!("Collected sources:");
         for file in source.files() {
             let file_info = &source[file];
@@ -104,93 +107,120 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         print_node("  ", hierarchy.root_node());
     }
 
-    // run compilation
+    // parse source
     // TODO parallelize parsing
     let start_parse = Instant::now();
     let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
     let time_parse = start_parse.elapsed();
 
+    // compilation setup
     let should_stop = Arc::new(AtomicBool::new(false));
     {
         let should_stop = should_stop.clone();
         ctrlc::set_handler(move || should_stop.store(true, Ordering::Relaxed)).expect("Failed to set Ctrl+C handler");
     }
+    let fixed = CompileFixed {
+        settings: &settings,
+        source: &source,
+        hierarchy: &hierarchy,
+        parsed: &parsed,
+    };
+    let shared = CompileShared::new(&diags, fixed, queue_items, thread_count.unwrap_or(NON_ZERO_USIZE_ONE));
+    let refs = CompileRefs {
+        diags: &diags,
+        fixed,
+        shared: &shared,
+        print_handler: &StdoutPrintHandler,
+        should_stop: &|| should_stop.load(Ordering::Relaxed),
+    };
+    let thread_pool = thread_count.map(ThreadPool::new);
 
+    // find top modules
     let start_compile = Instant::now();
-    let compiled = compile(
-        &diags,
-        &settings,
-        &source,
-        &hierarchy,
-        &parsed,
-        elaboration_set,
-        &mut StdoutPrintHandler,
-        &|| should_stop.load(Ordering::Relaxed),
-        thread_count,
-        source.full_span(manifest.file),
-    );
+    let top_values = top
+        .iter()
+        .map(|top| {
+            let item = refs.resolve_item_by_path(Spanned::new(manifest_span, top))?;
+            refs.eval_item(item)
+        })
+        .collect_vec();
+
+    // run compilation loop
+    refs.run_compile_loop(thread_pool.as_ref());
+    // filter top modules
+    //   we allowed other top values earlier, they could be useful as compilation roots too
+    let top_modules = top_values
+        .into_iter()
+        .filter_map(|v| {
+            if let Ok(&CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(v)))) = v {
+                let v_ir = refs.shared.elaboration_arenas.module_internal_info(v).module_ir;
+                Some(v_ir)
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
+    // finish compilation
+    let ir_db = shared.finish_ir_database(&diags, manifest_span);
     let time_compile = start_compile.elapsed();
 
-    // TODO don't hardcode paths here
-    // TODO make this configurable
-    // std::fs::write(
-    //     "../ignored/lowered.ir",
-    //     compiled
-    //         .as_ref()
-    //         .map_or("// failed".to_owned(), |s| format!("{:#?}", s)),
-    // )
-    // .unwrap();
+    // lower and write outputs
+    let mut time_lower_ir = None;
+    let mut time_lower_verilog = None;
+    let mut time_lower_cpp = None;
+    let mut outputs = vec![];
 
-    // TODO parallelize lowering?
-    let lower_results = if skip_lower {
-        None
-    } else {
-        let start_lower = Instant::now();
-        let lowered = compiled
-            .as_ref_ok()
-            .and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
-        let time_lower = start_lower.elapsed();
+    if let Ok(ir_db) = ir_db {
+        // output debug ir
+        if let Some(output_ir) = debug_output_ir {
+            let start_lower_ir = Instant::now();
+            let str_ir = format!("{:#?}", ir_db);
+            time_lower_ir = Some(start_lower_ir.elapsed());
+            outputs.push((output_ir, str_ir));
+        }
 
-        let start_simulator = Instant::now();
-        let simulator_code = compiled
-            .as_ref_ok()
-            .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
-        let time_simulator = start_simulator.elapsed();
+        // output verilog
+        if let Some(output_verilog) = output_verilog {
+            let start_lower_verilog = Instant::now();
+            match lower_to_verilog(&diags, &ir_db, &top_modules) {
+                Ok(lowered_verilog) => {
+                    // TODO expose module mapping?
+                    outputs.push((output_verilog, lowered_verilog.source));
+                }
+                Err(e) => {
+                    // will be reported later, we can ignore it here
+                    let _: DiagError = e;
+                }
+            }
+            time_lower_verilog = Some(start_lower_verilog.elapsed());
+        }
 
-        Some((time_lower, time_simulator, lowered, simulator_code))
-    };
+        // output c++
+        if let Some(output_cpp) = output_cpp {
+            let start_lower_cpp = Instant::now();
+            match lower_to_cpp(&diags, &ir_db.modules, &top_modules) {
+                Ok(lowered_cpp) => {
+                    // TODO expose module mapping?
+                    outputs.push((output_cpp, lowered_cpp));
+                }
+                Err(e) => {
+                    // will be reported later, we can ignore it here
+                    let _: DiagError = e;
+                }
+            }
+            time_lower_cpp = Some(start_lower_cpp.elapsed());
+        }
+    }
 
     let time_all = start_all.elapsed();
 
-    // print results
+    // print diagnostics
     let any_error = print_diagnostics(&source, diags);
-
-    if print_ir {
-        eprintln!("{compiled:#?}");
-    }
-
-    // TODO don't hardcode paths here
-    // TODO make this configurable
-    if let Some((_, _, lowered, simulator_code)) = &lower_results {
-        // save lowered verilog
-        std::fs::create_dir_all("../ignored").unwrap();
-        std::fs::write(
-            "../ignored/lowered.v",
-            lowered.as_ref().map_or("// failed", |s| &s.source),
-        )
-        .unwrap();
-
-        // save simulator code
-        std::fs::write(
-            "../ignored/lowered.cpp",
-            simulator_code.as_ref().map_or("// failed", String::as_str),
-        )
-        .unwrap();
-    }
 
     // print profiling info
     // TODO expand to include separate profiling info for each elaborated item
-    if profile {
+    if debug_profile {
         // profile tokenization separately
         let start_tokenize = Instant::now();
         let mut total_tokens = 0;
@@ -210,13 +240,9 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         eprintln!("tokenize:         {time_tokenize:?}");
         eprintln!("parse + tokenize: {time_parse:?}");
         eprintln!("compile:          {time_compile:?}");
-        if let Some((time_lower, time_simulator, _, _)) = lower_results {
-            eprintln!("lower verilog:    {time_lower:?}");
-            eprintln!("lower c++:        {time_simulator:?}");
-        } else {
-            eprintln!("lower verilog:    (skipped)");
-            eprintln!("lower c++:        (skipped)");
-        }
+        eprintln!("lower ir:         {}", fmt_duration(time_lower_ir));
+        eprintln!("lower verilog:    {}", fmt_duration(time_lower_verilog));
+        eprintln!("lower c++:        {}", fmt_duration(time_lower_cpp));
         eprintln!("-----------------------------------------------");
         eprintln!("total:            {time_all:?}");
         eprintln!();
@@ -227,5 +253,12 @@ fn main_build_inner(args: ArgsBuild) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn fmt_duration(duration: Option<Duration>) -> String {
+    match duration {
+        Some(d) => format!("{d:?}"),
+        None => "(skipped)".to_string(),
     }
 }

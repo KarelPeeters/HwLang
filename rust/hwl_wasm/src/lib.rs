@@ -1,12 +1,15 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
+use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
-use hwl_language::front::print::CollectPrintHandler;
+use hwl_language::front::item::ElaboratedModule;
+use hwl_language::front::print::{CollectPrintHandler, StdoutPrintHandler};
+use hwl_language::front::value::{CompileValue, SimpleCompileValue};
 use hwl_language::syntax::collect::add_std_sources;
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::parsed::ParsedDatabase;
+use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_language::syntax::token::{TokenCategory, Tokenizer};
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
@@ -50,7 +53,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     let hierarchy_file = build_source(&diags, &mut source, top_src);
 
     // compile
-    let mut print_handler = CollectPrintHandler::new();
+    let print_handler = CollectPrintHandler::new();
     let compiled = hierarchy_file.as_ref_ok().and_then(|&(ref hierarchy, top_file)| {
         let parsed = ParsedDatabase::new(&diags, &source, hierarchy);
 
@@ -58,27 +61,52 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
         let should_stop = || start.elapsed() >= TIMEOUT;
         let dummy_span = source.full_span(top_file);
 
-        compile(
-            &diags,
-            &settings,
-            &source,
+        let fixed = CompileFixed {
+            settings: &settings,
+            source: &source,
             hierarchy,
-            &parsed,
-            ElaborationSet::AsMuchAsPossible,
-            &mut print_handler,
-            &should_stop,
-            NON_ZERO_USIZE_ONE,
-            dummy_span,
-        )
+            parsed: &parsed,
+        };
+        let shared = CompileShared::new(&diags, fixed, QueueItems::All, NON_ZERO_USIZE_ONE);
+        let mut refs = CompileRefs {
+            diags: &diags,
+            fixed,
+            shared: &shared,
+            print_handler: &StdoutPrintHandler,
+            should_stop: &should_stop,
+        };
+
+        // find top module, discarding any diagnostics reported here
+        let dummy_diags = Diagnostics::new();
+        let top_module = {
+            refs.diags = &dummy_diags;
+
+            let top_module = if let Ok(top) = refs.resolve_item_by_path(Spanned::new(dummy_span, "top.top"))
+                && let Ok(top) = refs.eval_item(top)
+                && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
+            {
+                Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
+            } else {
+                None
+            };
+
+            refs.diags = &diags;
+            top_module
+        };
+
+        refs.run_compile_loop(None);
+        let db = shared.finish_ir_database(&diags, dummy_span)?;
+
+        Ok((db, top_module))
     });
 
     // lower
-    let lowered = compiled
+    let lowered_verilog = compiled
         .as_ref_ok()
-        .and_then(|c| lower_to_verilog(&diags, &c.modules, &c.external_modules, c.top_module));
-    let sim = compiled
+        .and_then(|(db, top)| top.map(|top| lower_to_verilog(&diags, db, &[top])).transpose());
+    let lowered_cpp = compiled
         .as_ref_ok()
-        .and_then(|c| lower_to_cpp(&diags, &c.modules, c.top_module));
+        .and_then(|(db, top)| top.map(|top| lower_to_cpp(&diags, &db.modules, &[top])).transpose());
 
     // format
     let diags_format = Diagnostics::new();
@@ -95,11 +123,20 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     // package results
     // TODO lower diagnostics directly to html instead of through ansi first?
     let compile_diags_ansi = diags_to_string(&source, diags.finish(), true);
-    let lowered_verilog = lowered.map_or_else(|_| "/* error */".to_string(), |lowered| lowered.source);
-    let lowered_cpp = sim.unwrap_or_else(|_| "/* error */".to_string());
+
+    let fallback_error = "/* error */";
+    let fallback_empty = "/* empty, no module named `top` */";
+    let lowered_verilog = lowered_verilog.map_or_else(
+        |_| fallback_error.to_owned(),
+        |lowered| lowered.map_or_else(|| fallback_empty.to_owned(), |v| v.source),
+    );
+    let lowered_cpp = lowered_cpp.map_or_else(
+        |_| fallback_error.to_owned(),
+        |lowered| lowered.unwrap_or_else(|| fallback_empty.to_owned()),
+    );
 
     let format_diags_ansi = diags_to_string(&source, diags_format.finish(), true);
-    let format_debug_str = formatted.map_or_else(String::new, |f| f.unwrap_or_else(|_| "/* error */".to_string()));
+    let format_debug_str = formatted.map_or_else(String::new, |f| f.unwrap_or_else(|_| fallback_error.to_owned()));
 
     RunAllResult {
         compile_diags_ansi,

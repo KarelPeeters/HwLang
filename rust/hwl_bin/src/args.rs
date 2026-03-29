@@ -17,35 +17,46 @@ pub enum ArgsCommand {
     Fmt(ArgsFormat),
 }
 
-// TODO add positional command to only check certain items
-// TODO allow separately selecting which items to elaborate
-// TODO allow specifying output verilog and cpp files
-
 /// Build a project.
 #[derive(Parser, Debug)]
 pub struct ArgsBuild {
     #[arg(long, help=MANIFEST_DOC)]
     pub manifest: Option<PathBuf>,
 
+    // elaboration
+    /// The top module to elaborate and use as the root module of the outputs.
+    ///
+    /// This option can be passed multiple times, in which case there multiple tops will be elaborated.
+    /// Must be a full path to a public module with no generic parameters.
+    #[arg(long)]
+    pub top: Vec<String>,
+    /// Elaborate only the top modules, instead of all items.
+    ///
+    /// This can be useful to speed up compilation or to avoid type-checking unnecessary items.
+    #[arg(long)]
+    pub top_only: bool,
+
+    // outputs
+    #[arg(long)]
+    pub output_verilog: Option<PathBuf>,
+    #[arg(long)]
+    pub output_cpp: Option<PathBuf>,
+
+    // performance
     // TODO maybe make this a common option?
-    /// The number of threads to use, defaults to the number of hardware threads.
+    /// The number of threads to use. Defaults to the number of hardware threads.
     #[arg(long, short = 'j')]
     pub thread_count: Option<NonZeroUsize>,
 
-    // debug options
-    // TODO some of these have major effects and are not really debug options
+    // debug
     #[arg(long)]
-    pub profile: bool,
+    pub debug_profile: bool,
     #[arg(long)]
-    pub print_files: bool,
+    pub debug_print_files: bool,
     #[arg(long)]
-    pub print_ir: bool,
+    pub debug_keep_main_stack: bool,
     #[arg(long)]
-    pub only_top: bool,
-    #[arg(long)]
-    pub skip_lower: bool,
-    #[arg(long)]
-    pub keep_main_stack: bool,
+    pub debug_output_ir: Option<PathBuf>,
 }
 
 /// Format source files.

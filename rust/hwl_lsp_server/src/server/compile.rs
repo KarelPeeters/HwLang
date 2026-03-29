@@ -2,17 +2,15 @@ use crate::server::settings::{PositionEncoding, Settings};
 use crate::server::state::{RequestError, ServerState};
 use crate::server::vfs::{Vfs, VfsError, VfsResult};
 use crate::util::encode::span_to_lsp;
-use crate::util::logger::Logger;
 use crate::util::sender::SendErrorOr;
 use crate::util::uri::{
     NormalizeError, abs_path_to_uri, build_watcher_any_file_with_name, path_join_normalized, uri_to_path,
 };
-use hwl_language::front::compile::{CompileSettings, ElaborationSet, compile};
+use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{
     DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
 };
 use hwl_language::front::print::IgnorePrintHandler;
-use hwl_language::mid::ir::IrDatabase;
 use hwl_language::syntax::collect::{add_source_files_to_tree, add_std_sources, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
@@ -100,7 +98,6 @@ impl ServerState {
         }
 
         // compile all manifests
-        // TODO multithread this on a shared thread pool
         // TODO parallel loop over everything?
         let mut grouped_diags = IndexMap::new();
         for manifest in manifests_collected {
@@ -112,7 +109,6 @@ impl ServerState {
                 let parsed = ParsedDatabase::new(&diags, source, hierarchy);
 
                 // TODO at this point we can clear/update all parsing diagnostics already
-                // TODO enable multithreading
                 // TODO compile all items in the open files first, then later the rest for increased interactivity
                 // TODO propagate prints to a separate output channel or log file
                 let early_stop = AtomicBool::new(false);
@@ -126,21 +122,26 @@ impl ServerState {
                     // we will discard the IR anyway, so no need to spend time cleaning it up
                     do_ir_cleanup: false,
                 };
-
-                self.log("compile: start compile");
-                let _: DiagResult<IrDatabase> = compile(
-                    &diags,
-                    &settings,
+                let fixed = CompileFixed {
+                    settings: &settings,
                     source,
                     hierarchy,
-                    &parsed,
-                    ElaborationSet::AsMuchAsPossible,
-                    &mut IgnorePrintHandler,
-                    &should_stop_inner,
-                    NON_ZERO_USIZE_ONE,
-                    source.full_span(manifest.common.manifest_file),
-                );
-                self.log("compile: end compile");
+                    parsed: &parsed,
+                };
+
+                let thread_count = self.pool.as_ref().map_or(NON_ZERO_USIZE_ONE, |p| p.thread_count());
+                let shared = CompileShared::new(&diags, fixed, QueueItems::All, thread_count);
+                let refs = CompileRefs {
+                    diags: &diags,
+                    fixed,
+                    shared: &shared,
+                    print_handler: &IgnorePrintHandler,
+                    should_stop: &should_stop_inner,
+                };
+
+                self.log("compile: start compile loop");
+                refs.run_compile_loop(self.pool.as_ref());
+                self.log("compile: end compile loop");
 
                 if early_stop.load(Ordering::Relaxed) {
                     // return immediately without reporting any diagnostics, they would include interrupts
