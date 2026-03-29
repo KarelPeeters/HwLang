@@ -1,4 +1,4 @@
-use crate::front::compile::COMPILE_THREAD_STACK_SIZE;
+use hwl_util::constants::COMPILE_THREAD_STACK_SIZE;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::thread::ScopedJoinHandle;

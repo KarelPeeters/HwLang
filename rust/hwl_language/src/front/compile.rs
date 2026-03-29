@@ -23,20 +23,13 @@ use crate::util::data::{IndexMapExt, NonEmptyVec};
 use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
+use hwl_util::constants::{STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
 use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
 use rand::seq::SliceRandom;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-
-// TODO make all of these configurable
-// TODO maybe we can reduce this by now, module elaboration does not count towards the stack any more
-//   it might also not matter, maybe every platform pre-commits stack space by now
-// TODO move
-pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
-const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
-const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 #[derive(Debug)]
 pub enum ResolveError {
