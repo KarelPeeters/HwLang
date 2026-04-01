@@ -40,44 +40,30 @@ pub enum ResolveError {
 impl<'a, 's> CompileRefs<'a, 's> {
     pub fn run_compile_loop(self, pool: Option<&ThreadPool>) {
         if let Some(pool) = pool {
-            let num_threads = pool.thread_count();
+            let all_thread_diags = pool.broadcast(|| {
+                let thread_diags = Diagnostics::new();
+                let thread_refs = CompileRefs {
+                    diags: &thread_diags,
 
-            pool.scope(|s| {
-                let mut handles = vec![];
+                    fixed: self.fixed,
+                    shared: self.shared,
+                    print_handler: self.print_handler,
+                    should_stop: self.should_stop,
+                };
+                thread_refs.run_compile_loop_inner();
+                thread_diags
+            });
 
-                // spawn elaboration loop for each thread, each writing into separate diagnostics
-                for _ in 0..num_threads.get() {
-                    let f = || {
-                        let thread_diags = Diagnostics::new();
-                        let thread_refs = CompileRefs {
-                            diags: &thread_diags,
-
-                            fixed: self.fixed,
-                            shared: self.shared,
-                            print_handler: self.print_handler,
-                            should_stop: self.should_stop,
-                        };
-                        thread_refs.run_compile_loop_inner();
-                        thread_diags
-                    };
-                    handles.push(s.spawn(f));
-                }
-
-                // wait for all threads to finish and collect their diagnostics
-                // TODO propagate panics better here, ideally all threads would stop and program would fully exit
-                let mut all_diags = vec![];
-                for h in handles {
-                    let thread_diags = h.join().unwrap();
-                    all_diags.extend(thread_diags.finish());
-                }
-
-                // merge diagnostics into original diags, sorting to keep them deterministic
-                // TODO some kind of topological sort "as if visited by single thread" might be nicer
-                all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-                for d in all_diags {
-                    self.diags.push(d);
-                }
-            })
+            // collect and merge diagnostics, sorting to keep them deterministic
+            // TODO some kind of topological sort "as if visited by single thread" might be nicer
+            let mut all_diags: Vec<_> = all_thread_diags
+                .into_iter()
+                .flat_map(|d| d.finish())
+                .collect();
+            all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+            for d in all_diags {
+                self.diags.push(d);
+            }
         } else {
             // run elaboration on the current thread
             let local_diags = Diagnostics::new();
