@@ -34,7 +34,7 @@ use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
-use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
 use pyo3::exceptions::{PyException, PyIOError, PyKeyError, PyValueError};
@@ -881,7 +881,7 @@ impl Module {
                     .arg("-f")
                     .arg(format!("{top_class_name}.mk"))
                     .arg("-j")
-                    .arg(num_cpus::get().to_string()),
+                    .arg(get_num_cpus().get().to_string()),
                 &obj_dir,
                 "make",
             )?;

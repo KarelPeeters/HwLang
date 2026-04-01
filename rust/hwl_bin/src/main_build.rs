@@ -14,11 +14,10 @@ use hwl_language::syntax::parsed::ParsedDatabase;
 use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
-use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::pool::ThreadPool;
+use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
 use itertools::Itertools;
-use std::num::NonZeroUsize;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,7 +51,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         }
         None
     } else {
-        Some(thread_count.unwrap_or_else(|| NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE)))
+        Some(thread_count.unwrap_or_else(get_num_cpus))
     };
     let settings = CompileSettings { do_ir_cleanup: true };
     let queue_items = if top_only { QueueItems::None } else { QueueItems::All };

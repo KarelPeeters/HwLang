@@ -3,6 +3,7 @@ use crate::server::settings::Settings;
 use crate::server::vfs::{Vfs, VfsError};
 use crate::util::sender::{SendError, SendErrorOr, ServerSender};
 use hwl_language::util::pool::ThreadPool;
+use hwl_language::util::{NON_ZERO_USIZE_TWO, get_num_cpus};
 use indexmap::IndexSet;
 use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::notification::Notification;
@@ -52,11 +53,14 @@ pub enum HandleMessageOutcome {
 
 impl ServerState {
     pub fn new(settings: Settings, sender: ServerSender) -> Self {
+        // TODO make pool configurable, default to half of available cores
+        // for now use half of the cores to avoid overloading the system
+        let pool = ThreadPool::new(get_num_cpus().div_ceil(NON_ZERO_USIZE_TWO));
+
         ServerState {
             settings,
             sender,
-            // TODO make pool configurable, default to half of available cores
-            pool: None,
+            pool: Some(pool),
             has_received_shutdown_request: false,
             open_files: IndexSet::new(),
             vfs: Vfs::new(),

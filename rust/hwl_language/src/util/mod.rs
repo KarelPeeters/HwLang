@@ -158,3 +158,7 @@ impl Display for Indent {
 pub fn separator_non_trailing(s: &str, i: usize, len: usize) -> &str {
     if i == len - 1 { "" } else { s }
 }
+
+pub fn get_num_cpus() -> NonZeroUsize {
+    NonZeroUsize::new(num_cpus::get()).unwrap_or(NON_ZERO_USIZE_ONE)
+}
