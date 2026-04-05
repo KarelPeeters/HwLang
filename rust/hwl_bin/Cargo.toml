@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 default-run = "hwl_bin"
 
+[lints]
+workspace = true
+
 [dependencies]
 hwl_util.workspace = true
 hwl_language.workspace = true
@@ -15,6 +18,3 @@ indexmap.workspace = true
 itertools.workspace = true
 mimalloc.workspace = true
 path-clean.workspace = true
-
-[lints]
-workspace = true

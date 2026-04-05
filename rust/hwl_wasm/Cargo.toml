@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -25,5 +28,3 @@ getrandom = { workspace = true, features = ["js"] }
 [package.metadata.wasm-pack.profile.dev]
 wasm-opt = false
 
-[lints]
-workspace = true

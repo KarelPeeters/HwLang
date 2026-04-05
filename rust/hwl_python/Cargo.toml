@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 name = "hwl"
 crate-type = ["cdylib"]
@@ -15,6 +18,3 @@ hwl_util = { workspace = true }
 itertools.workspace = true
 num-bigint.workspace = true
 pyo3.workspace = true
-
-[lints]
-workspace = true

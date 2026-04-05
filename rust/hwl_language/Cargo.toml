@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 wrap_verilator = ["dep:dlopen2"]
 
@@ -37,6 +40,3 @@ yastl.workspace = true
 
 [build-dependencies]
 lalrpop.workspace = true
-
-[lints]
-workspace = true
