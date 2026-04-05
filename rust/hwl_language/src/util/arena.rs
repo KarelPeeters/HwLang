@@ -1,8 +1,7 @@
 use crate::util::{Never, ResultNeverExt};
 use indexmap::map::IndexMap;
 use itertools::Itertools;
-use std::fmt::Debug;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::num::NonZeroU16;

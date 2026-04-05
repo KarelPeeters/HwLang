@@ -5,9 +5,9 @@ use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
 use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
-use crate::front::signal::Signal;
 use crate::front::signal::{
-    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
+    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Signal, Wire, WireInfo, WireInterface,
+    WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_cycles;
@@ -15,8 +15,7 @@ use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal}
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
-use crate::syntax::pos::Span;
-use crate::syntax::pos::{HasSpan, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
@@ -56,10 +55,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
 
             // collect and merge diagnostics, sorting to keep them deterministic
             // TODO some kind of topological sort "as if visited by single thread" might be nicer
-            let mut all_diags: Vec<_> = all_thread_diags
-                .into_iter()
-                .flat_map(|d| d.finish())
-                .collect();
+            let mut all_diags: Vec<_> = all_thread_diags.into_iter().flat_map(|d| d.finish()).collect();
             all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
             for d in all_diags {
                 self.diags.push(d);

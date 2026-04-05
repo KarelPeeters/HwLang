@@ -1,5 +1,4 @@
-use crate::syntax::token::REGEX_ID;
-use crate::syntax::token::TokenType;
+use crate::syntax::token::{REGEX_ID, TokenType};
 use hwl_util::constants::HWL_LANGUAGE_NAME;
 use indexmap::IndexMap;
 use serde_json::{Value, json};

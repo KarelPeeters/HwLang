@@ -1,6 +1,5 @@
 use crate::front::diagnostic::{Diagnostics, diags_to_string};
-use crate::syntax::format::FormatSettings;
-use crate::syntax::format::format_file;
+use crate::syntax::format::{FormatSettings, format_file};
 use crate::syntax::source::SourceDatabase;
 
 pub fn assert_formatted(src: &str) {

@@ -7,12 +7,12 @@ use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, D
 use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::expression::ForIterator;
-use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, ImplicationContradiction, RegisterInfo, VariableId};
-use crate::front::flow::{FlowKind, VariableInfo};
+use crate::front::flow::{
+    Flow, FlowHardware, FlowKind, HardwareProcessKind, ImplicationContradiction, RegisterInfo, VariableId, VariableInfo,
+};
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
-use crate::front::scope::ScopedEntry;
-use crate::front::scope::{NamedValue, Scope};
+use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Signal, SignalOrVariable, WireInfo, WireInfoSingle};
 use crate::front::types::{NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, SimpleCompileValue, Value, ValueCommon};

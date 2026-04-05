@@ -26,13 +26,10 @@ use crate::mid::ir::{
 };
 use crate::new_index_type;
 use crate::syntax::ast::{
-    self, ClockedProcessReset, ExpressionKind, ExtraList, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock,
-    ModulePortInBlockKind, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortDirection,
-    PortSingleKindInner, ResetKind, Visibility, WireDeclarationDomainTyKind, WireDeclarationKind,
-};
-use crate::syntax::ast::{
-    ClockedProcess, CombinatorialProcess, DomainKind, Identifier, ModulePortItem, ModulePortSingle, PortConnection,
-    SyncDomain, WireDeclaration,
+    self, ClockedProcess, ClockedProcessReset, CombinatorialProcess, DomainKind, ExpressionKind, ExtraList, Identifier,
+    ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, PortSingleKindInner,
+    ResetKind, SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};

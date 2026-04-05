@@ -4,8 +4,7 @@ use crate::front::check::{TypeContainsReason, check_type_contains_value, check_t
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
-use crate::front::flow::Flow;
-use crate::front::flow::{FlowKind, VariableId, VariableInfo};
+use crate::front::flow::{Flow, FlowKind, VariableId, VariableInfo};
 use crate::front::implication::ValueWithImplications;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,

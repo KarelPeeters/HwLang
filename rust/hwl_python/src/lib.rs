@@ -6,8 +6,9 @@ use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_verilator::{
     SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
 };
-use hwl_language::front::compile::{CompileFixed, CompileItemContext, CompileRefs, CompileShared};
-use hwl_language::front::compile::{CompileSettings, QueueItems};
+use hwl_language::front::compile::{
+    CompileFixed, CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems,
+};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
@@ -27,8 +28,7 @@ use hwl_language::syntax::format::{FormatError, FormatSettings, format_file as r
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
-use hwl_language::syntax::pos::Span;
-use hwl_language::syntax::pos::Spanned;
+use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;

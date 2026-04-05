@@ -1,8 +1,7 @@
 #![no_main]
 
 use hwl_language::front::diagnostic::{Diagnostics, diags_to_string};
-use hwl_language::syntax::format::FormatSettings;
-use hwl_language::syntax::format::format_file;
+use hwl_language::syntax::format::{FormatSettings, format_file};
 use hwl_language::syntax::parse_file_content_without_recovery;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::{TokenCategory, tokenize};

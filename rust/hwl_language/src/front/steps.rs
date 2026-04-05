@@ -6,8 +6,7 @@ use crate::front::value::{
     CompileValue, HardwareInt, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
-use crate::syntax::pos::Span;
-use crate::syntax::pos::Spanned;
+use crate::syntax::pos::{Span, Spanned};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;

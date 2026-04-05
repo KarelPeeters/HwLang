@@ -1,6 +1,5 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::signal::Signal;
-use crate::front::signal::{Polarized, Port};
+use crate::front::signal::{Polarized, Port, Signal};
 use crate::syntax::ast::{DomainKind, SyncDomain};
 use crate::syntax::pos::Spanned;
 

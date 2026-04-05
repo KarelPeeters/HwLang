@@ -1,10 +1,7 @@
 use crate::DiagnosticException;
-use hwl_language::front::diagnostic::{DiagResult, diags_to_string_vec};
+use hwl_language::front::diagnostic::{DiagError, DiagResult, Diagnostics, diags_to_string_vec};
+use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::Never;
-use hwl_language::{
-    front::diagnostic::{DiagError, Diagnostics},
-    syntax::source::SourceDatabase as RustSourceDatabase,
-};
 use pyo3::prelude::*;
 
 pub fn check_diags(py: Python, source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
