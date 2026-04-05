@@ -1,25 +1,32 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use hwl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
-use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
+use hwl_common::back::lower_verilator::{LoweredVerilator, lower_verilator};
+use hwl_common::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
+use hwl_common::diagnostic::Diagnostics;
+use hwl_common::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::source::SourceDatabase as RustSourceDatabase;
+use hwl_common::util::big_int::BigInt;
+use hwl_common::util::data::GrowVec;
+use hwl_common::util::pool::ThreadPool;
+use hwl_common::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
+use hwl_common::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_language::back::wrap_verilator::{
     SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
 };
 use hwl_language::front::compile::{
     CompileFixed, CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems,
 };
-use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::function::FunctionValue;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
-use hwl_language::front::types::Type as RustType;
+use hwl_language::front::types::{HardwareType, Type as RustType};
 use hwl_language::front::value::{
     CompileValue as RustCompileValue, NotCompile, SimpleCompileValue, Value as RustValue,
 };
-use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
     io_error_message,
@@ -28,13 +35,6 @@ use hwl_language::syntax::format::{FormatError, FormatSettings, format_file as r
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::Manifest;
 use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
-use hwl_language::syntax::pos::{Span, Spanned};
-use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
-use hwl_language::util::big_int::BigInt;
-use hwl_language::util::data::GrowVec;
-use hwl_language::util::pool::ThreadPool;
-use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
-use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
 use pyo3::exceptions::{PyException, PyIOError, PyKeyError, PyValueError};
@@ -1070,8 +1070,12 @@ impl VerilatedPort {
     fn get_value(&self, py: Python) -> PyResult<Py<PyAny>> {
         let instance = self.instance.borrow(py);
         let compile = &instance.module.borrow(py).compile;
+        let elab = &compile.borrow(py).shared.elaboration_arenas;
 
-        let value = instance.instance.get_port(self.port).map_err(map_verilator_error)?;
+        let value = instance
+            .instance
+            .get_port(elab, self.port)
+            .map_err(map_verilator_error)?;
         compile_value_to_py(py, compile, &value)
     }
 
@@ -1110,7 +1114,7 @@ impl VerilatedPort {
         let ty = self.map_port_info(py, |info| info.ty.clone());
         Type {
             compile: self.instance.borrow(py).module.borrow(py).compile.clone_ref(py),
-            ty: ty.as_type_hw().as_type(),
+            ty: HardwareType::from(&ty).as_type(),
         }
     }
 

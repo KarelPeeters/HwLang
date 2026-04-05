@@ -8,8 +8,10 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+hwl_common.workspace = true
+hwl_language.workspace = true
+
 libfuzzer-sys = "0.4"
-hwl_language = { path = "../hwl_language" }
 
 [[bin]]
 name = "fuzz_token"

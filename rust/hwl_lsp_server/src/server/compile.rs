@@ -6,18 +6,16 @@ use crate::util::sender::SendErrorOr;
 use crate::util::uri::{
     NormalizeError, abs_path_to_uri, build_watcher_any_file_with_name, path_join_normalized, uri_to_path,
 };
+use hwl_common::diagnostic::{DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind};
+use hwl_common::source::{FileId, SourceDatabase};
+use hwl_common::try_inner;
+use hwl_common::util::NON_ZERO_USIZE_ONE;
 use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
-use hwl_language::front::diagnostic::{
-    DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
-};
 use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::collect::{add_source_files_to_tree, add_std_sources, collect_source_files_from_tree};
 use hwl_language::syntax::hierarchy::SourceHierarchy;
 use hwl_language::syntax::manifest::{Manifest, SourceEntry};
 use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::{FileId, SourceDatabase};
-use hwl_language::try_inner;
-use hwl_language::util::NON_ZERO_USIZE_ONE;
 use hwl_util::constants::{HWL_FILE_EXTENSION, HWL_LSP_NAME, HWL_MANIFEST_FILE_NAME};
 use hwl_util::io::recurse_for_each_file;
 use hwl_util::swrite;

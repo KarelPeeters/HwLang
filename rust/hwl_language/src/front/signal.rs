@@ -1,17 +1,17 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
 use crate::front::types::HardwareType;
 use crate::front::value::HardwareValue;
-use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
-use crate::new_index_type;
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::ResultExt;
-use crate::util::arena::Arena;
+use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier};
 use derive_more::From;
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires, Polarized, PortDirection};
+use hwl_common::new_index_type;
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::ResultExt;
+use hwl_common::util::arena::Arena;
 
 new_index_type!(pub Port);
 new_index_type!(pub PortInterface);
@@ -31,12 +31,6 @@ pub enum PortOrWire<P = Port, W = Wire> {
 pub enum SignalOrVariable {
     Signal(Signal),
     Variable(Variable),
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct Polarized<V> {
-    pub inverted: bool,
-    pub signal: V,
 }
 
 // TODO move this stuff into signals?
@@ -321,44 +315,12 @@ fn get_inferred<'s, T>(
     }
 }
 
-impl<V> Polarized<V> {
-    pub fn new(signal: V) -> Self {
-        Polarized {
-            signal,
-            inverted: false,
-        }
-    }
-
-    pub fn invert(self) -> Self {
-        Polarized {
-            signal: self.signal,
-            inverted: !self.inverted,
-        }
-    }
-
-    pub fn map_inner<F, U>(self, f: F) -> Polarized<U>
-    where
-        F: FnOnce(V) -> U,
-    {
-        Polarized {
-            signal: f(self.signal),
-            inverted: self.inverted,
-        }
-    }
-
-    pub fn try_map_inner<F, U, E>(self, f: F) -> Result<Polarized<U>, E>
-    where
-        F: FnOnce(V) -> Result<U, E>,
-    {
-        Ok(Polarized {
-            signal: f(self.signal)?,
-            inverted: self.inverted,
-        })
-    }
+pub trait PolarizedSignalExt {
+    fn diagnostic_string(self, s: &CompileItemContext) -> String;
 }
 
-impl Polarized<Signal> {
-    pub fn diagnostic_string(self, s: &CompileItemContext) -> String {
+impl PolarizedSignalExt for Polarized<Signal> {
+    fn diagnostic_string(self, s: &CompileItemContext) -> String {
         let Polarized { inverted, signal } = self;
         let signal_str = signal.diagnostic_string(s);
         match inverted {

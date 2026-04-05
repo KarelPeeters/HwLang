@@ -1,7 +1,7 @@
-use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::syntax::pos::Span;
-use crate::syntax::source::{FileId, SourceDatabase};
-use crate::util::data::VecExt;
+use hwl_common::diagnostic::{DiagResult, Diagnostics};
+use hwl_common::pos::Span;
+use hwl_common::source::{FileId, SourceDatabase};
+use hwl_common::util::data::VecExt;
 use indexmap::IndexMap;
 
 // TODO maybe add default elaboration root(s)

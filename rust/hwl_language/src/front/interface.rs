@@ -1,18 +1,19 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::FlowCompile;
 use crate::front::item::{UniqueDeclaration, debug_info_name_including_params};
 use crate::front::scope::Scope;
 use crate::front::types::HardwareType;
 use crate::front::value::CompileValue;
 use crate::syntax::ast::{
-    Identifier, InterfaceListItem, InterfaceSignal, InterfaceView, ItemDefInterface, MaybeIdentifier, PortDirection,
+    Identifier, InterfaceListItem, InterfaceSignal, InterfaceView, ItemDefInterface, MaybeIdentifier,
 };
 use crate::syntax::parsed::AstRefInterface;
-use crate::syntax::pos::{HasSpan, Spanned};
-use crate::syntax::source::SourceDatabase;
-use crate::util::ResultDoubleExt;
-use crate::util::iter::IterExt;
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::PortDirection;
+use hwl_common::pos::{HasSpan, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::ResultDoubleExt;
+use hwl_common::util::iter::IterExt;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 

@@ -1,8 +1,8 @@
 use crate::syntax::format::common::swrite_indent;
 use crate::syntax::format::low::LNode;
-use crate::syntax::pos::{LineOffsets, SpanFull};
 use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
-use crate::util::data::VecExt;
+use hwl_common::pos::{LineOffsets, SpanFull};
+use hwl_common::util::data::VecExt;
 use hwl_util::swriteln;
 use itertools::enumerate;
 

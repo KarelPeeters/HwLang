@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::mid::ir::{IrModule, IrModuleChild, IrModules};
 use crate::util::data::NonEmptyVec;
 use crate::util::iter::IterExt;

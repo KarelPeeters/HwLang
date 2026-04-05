@@ -15,8 +15,10 @@ hwl_util.workspace = true
 itertools.workspace = true
 
 [dependencies]
-console_error_panic_hook.workspace = true
+hwl_common.workspace = true
 hwl_language.workspace = true
+
+console_error_panic_hook.workspace = true
 itertools.workspace = true
 strum.workspace = true
 wasm-bindgen.workspace = true

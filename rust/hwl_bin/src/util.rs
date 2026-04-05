@@ -1,6 +1,6 @@
-use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_string};
+use hwl_common::diagnostic::{DiagError, Diagnostics, diags_to_string};
+use hwl_common::source::{FileId, SourceDatabase};
 use hwl_language::syntax::manifest::Manifest;
-use hwl_language::syntax::source::{FileId, SourceDatabase};
 use hwl_util::constants::HWL_MANIFEST_FILE_NAME;
 use hwl_util::io::IoErrorExt;
 use path_clean::PathClean;

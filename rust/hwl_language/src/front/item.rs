@@ -1,6 +1,5 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::expression::POSSIBLE_BUILTIN_TYPE_MEMBERS;
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
@@ -10,7 +9,6 @@ use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInterna
 use crate::front::scope::{CaptureFailed, DeclaredValueSingle, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
-use crate::mid::ir::IrType;
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumBodyItem,
     EnumDeclaration, EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface,
@@ -18,13 +16,15 @@ use crate::syntax::ast::{
     StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::syntax::source::SourceDatabase;
-use crate::util::ResultExt;
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::iter::IterExt;
-use crate::util::range::ClosedNonEmptyRange;
-use crate::util::sync::ComputeOnceMap;
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::IrType;
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::ResultExt;
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::ClosedNonEmptyRange;
+use hwl_common::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
 use itertools::Itertools;

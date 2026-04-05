@@ -1,10 +1,10 @@
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format::common::swrite_indent;
-use crate::syntax::pos::LineOffsets;
 use crate::syntax::token::{char_is_whitespace, str_is_whitespace_or_empty};
-use crate::util::Never;
-use crate::util::data::VecExt;
-use crate::util::iter::IterExt;
+use hwl_common::pos::LineOffsets;
+use hwl_common::util::Never;
+use hwl_common::util::data::VecExt;
+use hwl_common::util::iter::IterExt;
 use hwl_util::swriteln;
 use std::fmt::Debug;
 

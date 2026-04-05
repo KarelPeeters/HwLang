@@ -1,13 +1,13 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
 use crate::front::flow::ValueVersion;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value, ValueCommon};
-use crate::mid::ir::{IrExpression, IrLargeArena};
-use crate::syntax::pos::Span;
-use crate::util::big_int::BigInt;
-use crate::util::range_multi::MultiRange;
+use hwl_common::diagnostic::DiagResult;
+use hwl_common::mid::ir::{IrExpression, IrLargeArena};
+use hwl_common::pos::Span;
+use hwl_common::util::big_int::BigInt;
+use hwl_common::util::range_multi::MultiRange;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone)]

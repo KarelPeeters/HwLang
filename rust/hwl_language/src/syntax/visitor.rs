@@ -13,10 +13,10 @@ use crate::syntax::ast::{
     StringPiece, StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
     Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::apply_string_literal_escapes;
-use crate::util::regex::RegexDfa;
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::regex::RegexDfa;
 use indexmap::IndexMap;
 use itertools::Either;
 use std::cell::RefCell;

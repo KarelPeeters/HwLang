@@ -1,11 +1,11 @@
 use crate::front::block::ElaboratedForHeader;
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::flow::Flow;
 use crate::front::item::EvaluatedDeclaration;
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem, MaybeIdentifier};
-use crate::syntax::pos::{HasSpan, Spanned};
+use hwl_common::diagnostic::{DiagResult, Diagnostics};
+use hwl_common::pos::{HasSpan, Spanned};
 
 pub struct ExtraScope<'a, 'b, 'c, 'd> {
     root_scope: Option<&'a Scope<'b>>,

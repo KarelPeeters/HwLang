@@ -1,14 +1,13 @@
-use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::signal::Polarized;
+use crate::diagnostic::{DiagResult, Diagnostics};
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
     IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
     IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece, IrStringSubstitution,
-    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, Polarized,
 };
-use crate::syntax::pos::Span;
+use crate::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;

@@ -1,7 +1,7 @@
-use crate::front::diagnostic::DiagnosticError;
-use crate::syntax::pos::{Pos, Span};
-use crate::syntax::source::FileId;
-use crate::util::iter::IterExt;
+use hwl_common::diagnostic::DiagnosticError;
+use hwl_common::pos::{Pos, Span};
+use hwl_common::source::FileId;
+use hwl_common::util::iter::IterExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
@@ -727,9 +727,9 @@ impl TokenError {
 
 #[cfg(test)]
 mod test {
-    use crate::syntax::pos::{Pos, Span};
-    use crate::syntax::source::FileId;
     use crate::syntax::token::{Token, TokenError, TokenType, Tokenizer, tokenize};
+    use hwl_common::pos::{Pos, Span};
+    use hwl_common::source::FileId;
     use hwl_util::swriteln;
     use std::collections::HashSet;
 

@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+hwl_common.workspace = true
 hwl_language.workspace = true
 hwl_util.workspace = true
 

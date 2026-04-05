@@ -1,16 +1,16 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareInt, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
-use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
-use crate::syntax::pos::{Span, Spanned};
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::iter::IterExt;
-use crate::util::range::ClosedNonEmptyRange;
-use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::ClosedNonEmptyRange;
+use hwl_common::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
 use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 

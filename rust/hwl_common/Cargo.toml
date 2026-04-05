@@ -1,5 +1,5 @@
 [package]
-name = "hwl_language"
+name = "hwl_common"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,37 +7,22 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[features]
-wrap_verilator = ["dep:dlopen2"]
-
 [dependencies]
 hwl_util.workspace = true
-hwl_std.workspace = true
-hwl_common.workspace = true
 
 annotate-snippets.workspace = true
 dashmap.workspace = true
 derive_more.workspace = true
-dlopen2 = { workspace = true, optional = true }
 fnv.workspace = true
-indexmap = { workspace = true, features = ["serde"] }
+indexmap = { workspace = true }
 itertools.workspace = true
-lalrpop-util.workspace = true
 lazy_static.workspace = true
 num-bigint.workspace = true
 num-integer.workspace = true
 num-traits.workspace = true
 num_cpus.workspace = true
-path-clean.workspace = true
 rand.workspace = true
 regex-automata.workspace = true
 regex.workspace = true
-serde = { workspace = true, features = ["serde_derive"] }
-serde_json.workspace = true
-strum.workspace = true
-toml = { workspace = true, features = ["preserve_order"] }
 unwrap-match.workspace = true
 yastl.workspace = true
-
-[build-dependencies]
-lalrpop.workspace = true

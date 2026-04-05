@@ -1,13 +1,11 @@
-use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::signal::Polarized;
+use crate::diagnostic::{DiagResult, Diagnostics};
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrExpression,
     IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo,
-    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString, IrStringSubstitution,
-    IrTargetStep, IrType, IrVariables,
+    IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString, IrStringPiece,
+    IrStringSubstitution, IrTargetStep, IrType, IrVariables, Polarized, PortDirection,
 };
-use crate::syntax::ast::{PortDirection, StringPiece};
-use crate::syntax::pos::Span;
+use crate::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
@@ -234,8 +232,8 @@ fn validate_string(
 ) -> DiagResult {
     for p in s {
         match p {
-            StringPiece::Literal(_) => {}
-            StringPiece::Substitute(p) => match p {
+            IrStringPiece::Literal(_) => {}
+            IrStringPiece::Substitute(p) => match p {
                 IrStringSubstitution::Integer(p, _) => {
                     p.validate(diags, module, locals, span)?;
                     check_type_is_int(diags, span, &p.ty(module, locals))?;

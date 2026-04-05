@@ -9,8 +9,9 @@ default-run = "hwl_bin"
 workspace = true
 
 [dependencies]
-hwl_util.workspace = true
+hwl_common.workspace = true
 hwl_language.workspace = true
+hwl_util.workspace = true
 
 clap.workspace = true
 ctrlc.workspace = true

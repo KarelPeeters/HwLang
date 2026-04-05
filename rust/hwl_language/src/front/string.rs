@@ -1,5 +1,4 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
 use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
 use crate::front::scope::Scope;
@@ -8,17 +7,18 @@ use crate::front::value::{
     BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareValue, MixedCompoundValue, MixedString,
     RangeValue, ReferenceInner, SimpleCompileValue, StructValue, Value,
 };
-use crate::mid::ir::{
+use crate::syntax::ast::{Expression, StringPiece};
+use crate::syntax::token::apply_string_literal_escapes;
+use hwl_common::diagnostic::DiagResult;
+use hwl_common::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
     IrLargeArena, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariable, IrVariableInfo,
 };
-use crate::syntax::ast::{Expression, StringPiece};
-use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::token::apply_string_literal_escapes;
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
-use crate::util::range_multi::{AnyMultiRange, MultiRange};
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
+use hwl_common::util::range_multi::{AnyMultiRange, MultiRange};
 use hwl_util::swrite;
 use itertools::{Itertools, enumerate, zip_eq};
 use std::borrow::Cow;
@@ -288,7 +288,7 @@ fn print_hardware_sub(
             let block_print = |s: &str| IrBlock {
                 statements: vec![Spanned::new(
                     span,
-                    IrStatement::Print(vec![StringPiece::Literal(s.to_owned())]),
+                    IrStatement::Print(vec![IrStringPiece::Literal(s.to_owned())]),
                 )],
             };
             let stmt = IrIfStatement {
@@ -382,7 +382,7 @@ fn print_hardware_sub(
                     then_block: IrBlock {
                         statements: vec![Spanned::new(
                             span,
-                            IrStatement::Print(vec![StringPiece::Literal(", ".to_owned())]),
+                            IrStatement::Print(vec![IrStringPiece::Literal(", ".to_owned())]),
                         )],
                     },
                     else_block: None,

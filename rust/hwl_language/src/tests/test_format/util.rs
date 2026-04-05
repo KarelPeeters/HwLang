@@ -1,6 +1,6 @@
-use crate::front::diagnostic::{Diagnostics, diags_to_string};
 use crate::syntax::format::{FormatSettings, format_file};
-use crate::syntax::source::SourceDatabase;
+use hwl_common::diagnostic::{Diagnostics, diags_to_string};
+use hwl_common::source::SourceDatabase;
 
 pub fn assert_formatted(src: &str) {
     assert_formats_to(src, src);

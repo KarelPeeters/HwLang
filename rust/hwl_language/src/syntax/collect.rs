@@ -1,8 +1,8 @@
-use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::manifest::{ManifestSource, SourceEntry};
-use crate::syntax::pos::Span;
-use crate::syntax::source::{FileId, SourceDatabase};
+use hwl_common::diagnostic::{DiagResult, Diagnostics};
+use hwl_common::pos::Span;
+use hwl_common::source::{FileId, SourceDatabase};
 use hwl_std::{STD_SOURCE_FILES, StdSourceFile};
 use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath, recurse_for_each_file};

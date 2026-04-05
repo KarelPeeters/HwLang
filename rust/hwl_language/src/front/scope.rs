@@ -1,11 +1,11 @@
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{Flow, Variable};
 use crate::front::signal::{Interface, Signal};
 use crate::front::value::{CompileValue, Value};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::ResultExt;
+use hwl_common::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::ResultExt;
 use indexmap::Equivalent;
 use indexmap::map::{Entry, IndexMap};
 use std::cell::RefCell;

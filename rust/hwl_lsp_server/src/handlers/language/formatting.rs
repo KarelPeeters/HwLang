@@ -2,9 +2,9 @@ use crate::handlers::dispatch::RequestHandler;
 use crate::server::state::{RequestError, RequestResult, ServerState};
 use crate::util::encode::span_to_lsp;
 use crate::util::uri::uri_to_path;
-use hwl_language::front::diagnostic::{DiagError, Diagnostics, diags_to_string};
+use hwl_common::diagnostic::{DiagError, Diagnostics, diags_to_string};
+use hwl_common::source::SourceDatabase;
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
-use hwl_language::syntax::source::SourceDatabase;
 use lsp_types::request::Formatting;
 use lsp_types::{DocumentFormattingParams, TextDocumentIdentifier, TextEdit};
 

@@ -2,7 +2,7 @@
 //! This is important so temporarily commenting out some items in a list does not mess with formatting.
 
 use crate::tests::test_format::util::assert_formats_to;
-use crate::util::exhaust::exhaust;
+use hwl_common::util::exhaust::exhaust;
 use hwl_util::{swrite, swriteln};
 
 #[test]

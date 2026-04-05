@@ -1,13 +1,13 @@
 use crate::front::block::EarlyExitKind;
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
 use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
 use crate::front::implication::HardwareValueWithImplications;
 use crate::front::types::{HardwareType, Type, TypeBool};
 use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
-use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
-use crate::syntax::pos::{Span, Spanned};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
+use hwl_common::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
 
 pub struct ExitStack<'r> {

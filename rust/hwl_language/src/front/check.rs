@@ -1,5 +1,4 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::item::ElaborationArenas;
@@ -9,13 +8,15 @@ use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
     MixedString, SimpleCompileValue, Value,
 };
-use crate::syntax::ast::{PortDirection, SyncDomain};
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::ast::SyncDomain;
 use crate::syntax::token::TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN;
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::iter::IterExt;
-use crate::util::range::Range;
-use crate::util::range_multi::MultiRange;
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::PortDirection;
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::Range;
+use hwl_common::util::range_multi::MultiRange;
 use std::fmt::Debug;
 use std::sync::Arc;
 

@@ -17,7 +17,8 @@ use crate::syntax::ast::{
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::token::TokenType as TT;
-use crate::util::iter::IterExt;
+use hwl_common::mid::ir::PortDirection;
+use hwl_common::util::iter::IterExt;
 use itertools::Either;
 use std::cell::Cell;
 
@@ -461,7 +462,7 @@ impl Context<'_> {
                 self.fmt_id(port_id),
                 token(TT::Colon),
                 HNode::Space,
-                token(port_dir.inner.token()),
+                fmt_port_dir(port_dir.inner),
             ]);
             HNodeAndComma { node, comma: true }
         });
@@ -556,7 +557,7 @@ impl Context<'_> {
                                 HNode::Sequence(vec![self.fmt_domain(domain.inner), HNode::Space, self.fmt_expr(ty)])
                             }
                         };
-                        HNode::Sequence(vec![token(direction.inner.token()), HNode::Space, node_kind_inner])
+                        HNode::Sequence(vec![fmt_port_dir(direction.inner), HNode::Space, node_kind_inner])
                     }
                     &ModulePortSingleKind::Interface {
                         span_keyword: _,
@@ -583,7 +584,7 @@ impl Context<'_> {
                     let &ModulePortInBlock { span: _, id, kind } = port;
                     let node_kind = match kind {
                         ModulePortInBlockKind::Port { direction, ty } => {
-                            HNode::Sequence(vec![token(direction.inner.token()), HNode::Space, self.fmt_expr(ty)])
+                            HNode::Sequence(vec![fmt_port_dir(direction.inner), HNode::Space, self.fmt_expr(ty)])
                         }
                         ModulePortInBlockKind::Interface {
                             span_keyword: _,
@@ -1386,6 +1387,14 @@ fn fmt_visibility<V: MaybeVisibility>(seq: &mut Vec<HNode>, v: V) {
             }
         }
     }
+}
+
+fn fmt_port_dir(dir: PortDirection) -> HNode {
+    let ty = match dir {
+        PortDirection::Input => TT::In,
+        PortDirection::Output => TT::Out,
+    };
+    token(ty)
 }
 
 fn preserve_blank_lines_after_item(last: bool) -> HNode {

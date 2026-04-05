@@ -1,7 +1,8 @@
 use crate::front::compile::CompileItemContext;
-use crate::front::signal::{Polarized, Port, Signal};
+use crate::front::signal::{PolarizedSignalExt, Port, Signal};
 use crate::syntax::ast::{DomainKind, SyncDomain};
-use crate::syntax::pos::Spanned;
+use hwl_common::mid::ir::Polarized;
+use hwl_common::pos::Spanned;
 
 #[derive(Debug)]
 pub enum BlockDomain {

@@ -1,6 +1,5 @@
 use crate::front::check::{TypeContainsReason, check_type_is_bool, check_type_is_string, check_type_is_string_compile};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
 use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind, ImplicationContradiction};
@@ -10,12 +9,13 @@ use crate::front::signal::SignalOrVariable;
 use crate::front::string::hardware_print_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value};
-use crate::mid::ir::{IrExpression, IrStatement};
 use crate::syntax::ast::{Arg, Args, Expression, ExpressionKind, StringPiece};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
-use crate::util::range_multi::MultiRange;
-use crate::util::store::ArcOrRef;
+use hwl_common::diagnostic::{DiagResult, DiagnosticError};
+use hwl_common::mid::ir::{IrExpression, IrStatement};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::range_multi::MultiRange;
+use hwl_common::util::store::ArcOrRef;
 use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {

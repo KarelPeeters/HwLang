@@ -1,6 +1,5 @@
 use crate::front::check::{TypeContainsReason, check_port_is_output, check_type_contains_value};
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::expression::eval_binary_expression;
 use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
@@ -10,9 +9,10 @@ use crate::front::signal::{Signal, SignalOrVariable};
 use crate::front::steps::ArraySteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
-use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
 use crate::syntax::ast::{Assignment, SyncDomain};
-use crate::syntax::pos::{Span, Spanned};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError};
+use hwl_common::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
+use hwl_common::pos::{Span, Spanned};
 
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {

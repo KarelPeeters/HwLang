@@ -2,7 +2,6 @@ use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongT
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowKind, VariableId, VariableInfo};
 use crate::front::implication::ValueWithImplications;
@@ -16,14 +15,15 @@ use crate::front::value::{
     BoundMethod, CompileValue, EnumValue, HardwareValue, MaybeCompile, MethodInfo, MixedCompoundValue, NotCompile,
     SimpleCompileValue, StructValue, Value, ValueCommon,
 };
-use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
     Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, Identifier, MaybeIdentifier, Parameter,
     Parameters,
 };
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::ResultDoubleExt;
-use crate::util::data::VecExt;
+use hwl_common::diagnostic::{DiagError, DiagResult, DiagnosticError};
+use hwl_common::mid::ir::{IrExpressionLarge, IrLargeArena};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::ResultDoubleExt;
+use hwl_common::util::data::VecExt;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, enumerate};
@@ -811,7 +811,7 @@ impl CompileItemContext<'_, '_> {
                 // try as compile-time first so we get compile-time bits back
                 match CompileValue::try_from(&value.inner) {
                     Ok(value) => {
-                        let bits = ty_hw.value_to_bits(self.refs, &value).map_err(|_: ToBitsWrongType| {
+                        let bits = ty_hw.value_to_bits(elab, &value).map_err(|_: ToBitsWrongType| {
                             diags.report_error_internal(span_call, "value_to_bits wrong type")
                         })?;
                         let bits_wrapped = bits.into_iter().map(CompileValue::new_bool).collect_vec();
@@ -850,7 +850,7 @@ impl CompileItemContext<'_, '_> {
 
                 let result = match value {
                     MaybeCompile::Compile(v) => {
-                        let result = ty_hw.value_from_bits(self.refs, &v).map_err(|e| match e {
+                        let result = ty_hw.value_from_bits(elab, &v).map_err(|e| match e {
                             Either::Left(FromBitsInvalidValue) => {
                                 if is_unsafe {
                                     DiagnosticError::new(

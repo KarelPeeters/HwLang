@@ -1,10 +1,10 @@
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_definition::find_definition;
+use hwl_common::pos::{HasSpan, Pos, Span, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::{Never, ResultNeverExt};
 use hwl_language::syntax::ast::{FileContent, GeneralIdentifier, ParameterSelf};
-use hwl_language::syntax::pos::{HasSpan, Pos, Span, Spanned};
-use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
-use hwl_language::util::{Never, ResultNeverExt};
 use indexmap::IndexSet;
 use itertools::Either;
 use std::ops::ControlFlow;

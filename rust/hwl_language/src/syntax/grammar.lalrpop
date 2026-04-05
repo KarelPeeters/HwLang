@@ -1,8 +1,10 @@
-use crate::syntax::pos::{Span, Spanned};
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::util::arena::Arena;
+use hwl_common::mid::ir::PortDirection;
+
 use crate::syntax::ast::*;
 use crate::syntax::ParseContext;
 use crate::syntax::token::{TokenType, TokenError};
-use crate::util::arena::Arena;
 
 grammar(ctx: &mut ParseContext, arena_expr: &mut Arena<ExpressionKindIndex, ExpressionKind>);
 

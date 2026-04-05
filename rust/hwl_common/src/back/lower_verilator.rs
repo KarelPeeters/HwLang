@@ -1,6 +1,5 @@
 use crate::back::lower_verilog::LoweredVerilog;
-use crate::mid::ir::{IrModule, IrModules};
-use crate::syntax::ast::PortDirection;
+use crate::mid::ir::{IrModule, IrModules, PortDirection};
 use crate::util::data::IndexMapExt;
 use fnv::FnvHasher;
 use hwl_util::swriteln;
@@ -19,10 +18,10 @@ pub struct LoweredVerilator {
 
 // TODO initialize ports to undefined or at least some valid value
 /// Generate verilator C++ that wraps the top-level module into a dynamically linkable C API.
-/// This can then be compiled and used by [super::wrap_verilator].
+/// This can then be compiled and used by [wrap_verilator].
 ///
 /// `source_hash` is used as an extra safety check to ensure that the correct module is being used at runtime,
-/// can be any arbitrary value but needs to match the one passed to [super::wrap_verilator::VerilatedLib::new].
+/// can be any arbitrary value but needs to match the one passed to [VerilatedLib::new].
 pub fn lower_verilator(modules: &IrModules, top_module: IrModule, verilog: &LoweredVerilog) -> LoweredVerilator {
     let top_module_info = &modules[top_module];
 

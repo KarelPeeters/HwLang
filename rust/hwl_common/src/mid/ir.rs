@@ -7,19 +7,15 @@
 //!
 //! If a local variable is read without being written to, the resulting value is undefined.
 
-use crate::front::signal::Polarized;
-use crate::front::types::HardwareType;
 use crate::new_index_type;
-use crate::syntax::ast::{PortDirection, StringPiece};
-use crate::syntax::pos::{Span, Spanned};
+use crate::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
-use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
 use indexmap::IndexSet;
 use itertools::Itertools;
-use std::sync::Arc;
 use std::vec;
 use unwrap_match::unwrap_match;
 
@@ -175,7 +171,12 @@ pub enum IrStatement {
 }
 
 pub type IrString = Vec<IrStringPiece>;
-pub type IrStringPiece = StringPiece<String, IrStringSubstitution>;
+
+#[derive(Debug, Clone)]
+pub enum IrStringPiece {
+    Literal(String),
+    Substitute(IrStringSubstitution),
+}
 
 #[derive(Debug, Clone)]
 pub enum IrStringSubstitution {
@@ -351,17 +352,6 @@ impl IrIntCompareOp {
 }
 
 impl IrType {
-    /// Note: converting from [HardwareType] to [IrType] is potentially lossy,
-    /// so this function cannot always return the original type.
-    pub fn as_type_hw(&self) -> HardwareType {
-        match self {
-            IrType::Bool => HardwareType::Bool,
-            IrType::Int(range) => HardwareType::Int(ClosedNonEmptyMultiRange::from(range.clone())),
-            IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
-            IrType::Array(inner, len) => HardwareType::Array(Arc::new(inner.as_type_hw()), len.clone()),
-        }
-    }
-
     pub fn unwrap_int(self) -> ClosedNonEmptyRange<BigInt> {
         unwrap_match!(self, IrType::Int(range) => range)
     }
@@ -441,8 +431,8 @@ pub fn visit_values_accessed_string(
 ) {
     for p in pieces {
         match p {
-            StringPiece::Literal(_) => {}
-            StringPiece::Substitute(v) => {
+            IrStringPiece::Literal(_) => {}
+            IrStringPiece::Substitute(v) => {
                 let v = match v {
                     IrStringSubstitution::Integer(v, _) => v,
                 };
@@ -694,6 +684,17 @@ impl IrExpression {
     }
 }
 
+impl IrType {
+    pub fn size_bits(&self) -> BigUint {
+        match self {
+            IrType::Bool => BigUint::ONE,
+            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range.as_ref()).size_bits()),
+            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
+            IrType::Array(inner, len) => inner.size_bits() * len,
+        }
+    }
+}
+
 impl Polarized<IrSignal> {
     pub fn as_expression(self, large: &mut IrLargeArena) -> IrExpression {
         let Polarized { inverted, signal } = self;
@@ -712,6 +713,63 @@ impl IrSignalOrVariable {
             IrSignalOrVariable::Signal(s) => IrExpression::Signal(s),
             IrSignalOrVariable::Variable(v) => IrExpression::Variable(v),
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum PortDirection {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Polarized<V> {
+    pub inverted: bool,
+    pub signal: V,
+}
+
+impl PortDirection {
+    pub fn diagnostic_string(self) -> &'static str {
+        match self {
+            PortDirection::Input => "input",
+            PortDirection::Output => "output",
+        }
+    }
+}
+
+impl<V> Polarized<V> {
+    pub fn new(signal: V) -> Self {
+        Polarized {
+            signal,
+            inverted: false,
+        }
+    }
+
+    pub fn invert(self) -> Self {
+        Polarized {
+            signal: self.signal,
+            inverted: !self.inverted,
+        }
+    }
+
+    pub fn map_inner<F, U>(self, f: F) -> Polarized<U>
+    where
+        F: FnOnce(V) -> U,
+    {
+        Polarized {
+            signal: f(self.signal),
+            inverted: self.inverted,
+        }
+    }
+
+    pub fn try_map_inner<F, U, E>(self, f: F) -> Result<Polarized<U>, E>
+    where
+        F: FnOnce(V) -> Result<U, E>,
+    {
+        Ok(Polarized {
+            signal: f(self.signal)?,
+            inverted: self.inverted,
+        })
     }
 }
 

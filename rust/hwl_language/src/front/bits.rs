@@ -1,12 +1,12 @@
 use crate::front::compile::CompileRefs;
+use crate::front::item::ElaborationArenas;
 use crate::front::types::HardwareType;
 use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue};
-use crate::mid::ir::IrType;
-use crate::util::ResultExt;
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
-use crate::util::iter::IterExt;
-use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
+use hwl_common::util::ResultExt;
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::int::IntRepresentation;
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
 use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -29,7 +29,7 @@ impl HardwareType {
         self.as_ir(refs).size_bits()
     }
 
-    pub fn every_bit_pattern_is_valid(&self, refs: CompileRefs) -> bool {
+    pub fn every_bit_pattern_is_valid(&self, elab: &ElaborationArenas) -> bool {
         match self {
             HardwareType::Undefined => true,
             HardwareType::Bool => true,
@@ -37,15 +37,15 @@ impl HardwareType {
                 let repr = IntRepresentation::for_range(range.enclosing_range());
                 &ClosedNonEmptyMultiRange::from(repr.range()) == range
             }
-            HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
-            HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(refs),
-            &HardwareType::Struct(elab) => {
-                let info = refs.shared.elaboration_arenas.struct_info(elab.inner());
+            HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(elab)),
+            HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(elab),
+            &HardwareType::Struct(slf) => {
+                let info = elab.struct_info(slf.inner());
                 let fields_hw = info.fields_hw.as_ref_ok().unwrap();
-                fields_hw.iter().all(|ty| ty.every_bit_pattern_is_valid(refs))
+                fields_hw.iter().all(|ty| ty.every_bit_pattern_is_valid(elab))
             }
-            &HardwareType::Enum(elab) => {
-                let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
+            &HardwareType::Enum(slf) => {
+                let info = elab.enum_info(slf.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // The tag needs to be fully valid.
@@ -63,20 +63,20 @@ impl HardwareType {
                     .payload_types
                     .iter()
                     .filter_map(Option::as_ref)
-                    .all(|(ty, _)| ty.every_bit_pattern_is_valid(refs))
+                    .all(|(ty, _)| ty.every_bit_pattern_is_valid(elab))
             }
         }
     }
 
-    pub fn value_to_bits(&self, refs: CompileRefs, value: &CompileValue) -> Result<Vec<bool>, ToBitsWrongType> {
+    pub fn value_to_bits(&self, elab: &ElaborationArenas, value: &CompileValue) -> Result<Vec<bool>, ToBitsWrongType> {
         let mut result = Vec::new();
-        self.value_to_bits_impl(refs, value, &mut result)?;
+        self.value_to_bits_impl(elab, value, &mut result)?;
         Ok(result)
     }
 
     fn value_to_bits_impl(
         &self,
-        refs: CompileRefs,
+        elab: &ElaborationArenas,
         value: &CompileValue,
         result: &mut Vec<bool>,
     ) -> Result<(), ToBitsWrongType> {
@@ -95,7 +95,7 @@ impl HardwareType {
                     return Err(ToBitsWrongType);
                 }
                 for (ty_inner, v_inner) in zip_eq(ty_inners.iter(), value.iter()) {
-                    ty_inner.value_to_bits_impl(refs, v_inner, result)?;
+                    ty_inner.value_to_bits_impl(elab, v_inner, result)?;
                 }
                 Ok(())
             }
@@ -104,39 +104,39 @@ impl HardwareType {
                     return Err(ToBitsWrongType);
                 }
                 for v_inner in value.iter() {
-                    ty_inner.value_to_bits_impl(refs, v_inner, result)?;
+                    ty_inner.value_to_bits_impl(elab, v_inner, result)?;
                 }
                 Ok(())
             }
-            (&HardwareType::Struct(elab_ty), CompileValue::Compound(CompileCompoundValue::Struct(value))) => {
+            (&HardwareType::Struct(slf), CompileValue::Compound(CompileCompoundValue::Struct(value))) => {
                 let &StructValue { ty, ref fields } = value;
-                if elab_ty.inner() != ty {
+                if slf.inner() != ty {
                     return Err(ToBitsWrongType);
                 }
-                let info = refs.shared.elaboration_arenas.struct_info(elab_ty.inner());
+                let info = elab.struct_info(slf.inner());
                 let fields_hw = info.fields_hw.as_ref_ok().unwrap();
 
                 for (ty_inner, v_inner) in zip_eq(fields_hw, fields.iter()) {
-                    ty_inner.value_to_bits_impl(refs, v_inner, result)?;
+                    ty_inner.value_to_bits_impl(elab, v_inner, result)?;
                 }
                 Ok(())
             }
-            (HardwareType::Enum(elab_ty), CompileValue::Compound(CompileCompoundValue::Enum(value))) => {
+            (HardwareType::Enum(slf), CompileValue::Compound(CompileCompoundValue::Enum(value))) => {
                 let &EnumValue {
                     ty,
                     variant,
                     ref payload,
                 } = value;
-                if elab_ty.inner() != ty {
+                if slf.inner() != ty {
                     return Err(ToBitsWrongType);
                 }
-                let info = refs.shared.elaboration_arenas.enum_info(elab_ty.inner());
+                let info = elab.enum_info(slf.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
                 let tag_range = info_hw.tag_range.clone();
                 HardwareType::Int(ClosedNonEmptyMultiRange::from(tag_range)).value_to_bits_impl(
-                    refs,
+                    elab,
                     &CompileValue::new_int(BigInt::from(variant)),
                     result,
                 )?;
@@ -144,7 +144,7 @@ impl HardwareType {
                 // content
                 if let Some(payload) = payload {
                     let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
-                    payload_ty.value_to_bits_impl(refs, payload, result)?;
+                    payload_ty.value_to_bits_impl(elab, payload, result)?;
                 }
 
                 // padding
@@ -170,11 +170,11 @@ impl HardwareType {
 
     pub fn value_from_bits(
         &self,
-        refs: CompileRefs,
+        elab: &ElaborationArenas,
         bits: &[bool],
     ) -> Result<CompileValue, Either<FromBitsInvalidValue, FromBitsWrongLength>> {
         let mut iter = bits.iter().copied();
-        let result = self.value_from_bits_impl(refs, &mut iter)?;
+        let result = self.value_from_bits_impl(elab, &mut iter)?;
         if iter.next().is_some() {
             return Err(Either::Right(FromBitsWrongLength));
         }
@@ -183,7 +183,7 @@ impl HardwareType {
 
     fn value_from_bits_impl(
         &self,
-        refs: CompileRefs,
+        elab: &ElaborationArenas,
         bits: &mut impl Iterator<Item = bool>,
     ) -> Result<CompileValue, Either<FromBitsInvalidValue, FromBitsWrongLength>> {
         match self {
@@ -210,46 +210,46 @@ impl HardwareType {
             HardwareType::Tuple(inners) => {
                 let result = inners
                     .iter()
-                    .map(|inner| inner.value_from_bits_impl(refs, bits))
+                    .map(|inner| inner.value_from_bits_impl(elab, bits))
                     .try_collect_vec()?;
                 Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result)))
             }
             HardwareType::Array(inner, len) => {
                 let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;
                 let result = (0..len)
-                    .map(|_| inner.value_from_bits_impl(refs, bits))
+                    .map(|_| inner.value_from_bits_impl(elab, bits))
                     .try_collect_vec()?;
                 Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(result))))
             }
-            HardwareType::Struct(elab) => {
-                let info = refs.shared.elaboration_arenas.struct_info(elab.inner());
+            HardwareType::Struct(slf) => {
+                let info = elab.struct_info(slf.inner());
                 let fields = info.fields_hw.as_ref_ok().unwrap();
 
                 let result_fields = fields
                     .iter()
-                    .map(|inner| inner.value_from_bits_impl(refs, bits))
+                    .map(|inner| inner.value_from_bits_impl(elab, bits))
                     .try_collect()?;
 
                 let result = StructValue {
-                    ty: elab.inner(),
+                    ty: slf.inner(),
                     fields: result_fields,
                 };
                 Ok(CompileValue::Compound(CompileCompoundValue::Struct(result)))
             }
-            HardwareType::Enum(elab) => {
-                let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
+            HardwareType::Enum(slf) => {
+                let info = elab.enum_info(slf.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
                 // tag
                 let tag_ty = HardwareType::Int(ClosedNonEmptyMultiRange::from(info_hw.tag_range.clone()));
-                let tag_value = tag_ty.value_from_bits_impl(refs, bits)?;
+                let tag_value = tag_ty.value_from_bits_impl(elab, bits)?;
                 let tag_value = unwrap_match!(tag_value, CompileValue::Simple(SimpleCompileValue::Int(v)) => v);
                 let tag_value = usize::try_from(tag_value).unwrap();
 
                 // content
                 let payload_ty = info_hw.payload_types[tag_value].as_ref();
                 let payload_value = if let Some((content_ty, _)) = payload_ty {
-                    let content_value = content_ty.value_from_bits_impl(refs, bits)?;
+                    let content_value = content_ty.value_from_bits_impl(elab, bits)?;
                     Some(Box::new(content_value))
                 } else {
                     None
@@ -261,115 +261,11 @@ impl HardwareType {
                 }
 
                 let result = EnumValue {
-                    ty: elab.inner(),
+                    ty: slf.inner(),
                     variant: tag_value,
                     payload: payload_value,
                 };
                 Ok(CompileValue::Compound(CompileCompoundValue::Enum(result)))
-            }
-        }
-    }
-}
-
-impl IrType {
-    pub fn size_bits(&self) -> BigUint {
-        match self {
-            IrType::Bool => BigUint::ONE,
-            IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range.as_ref()).size_bits()),
-            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
-            IrType::Array(inner, len) => inner.size_bits() * len,
-        }
-    }
-
-    // TODO is there a way to avoid all of this code duplication with HardwareType?
-    //   Maybe we just need to move some more hardware type logic into the IR backend?
-    pub fn value_to_bits(&self, value: &CompileValue) -> Result<Vec<bool>, ToBitsWrongType> {
-        let mut result = Vec::new();
-        self.value_to_bits_impl(value, &mut result)?;
-        Ok(result)
-    }
-
-    fn value_to_bits_impl(&self, value: &CompileValue, result: &mut Vec<bool>) -> Result<(), ToBitsWrongType> {
-        match (self, value) {
-            (IrType::Bool, CompileValue::Simple(SimpleCompileValue::Bool(v))) => {
-                result.push(*v);
-                Ok(())
-            }
-            (IrType::Int(range), CompileValue::Simple(SimpleCompileValue::Int(v))) => {
-                let repr = IntRepresentation::for_range(range.as_ref());
-                repr.value_to_bits(v, result);
-                Ok(())
-            }
-            (IrType::Tuple(ty_inners), CompileValue::Compound(CompileCompoundValue::Tuple(v_inners))) => {
-                if ty_inners.len() != v_inners.len() {
-                    return Err(ToBitsWrongType);
-                }
-                for (ty_inner, v_inner) in zip_eq(ty_inners.iter(), v_inners.iter()) {
-                    ty_inner.value_to_bits_impl(v_inner, result)?;
-                }
-                Ok(())
-            }
-            (IrType::Array(ty_inner, ty_len), CompileValue::Simple(SimpleCompileValue::Array(v_inner))) => {
-                if ty_len != &BigUint::from(v_inner.len()) {
-                    return Err(ToBitsWrongType);
-                }
-                for v_inner in v_inner.iter() {
-                    ty_inner.value_to_bits_impl(v_inner, result)?;
-                }
-                Ok(())
-            }
-
-            // type mismatches
-            (_, _) => Err(ToBitsWrongType),
-        }
-    }
-
-    pub fn value_from_bits(
-        &self,
-        bits: &[bool],
-    ) -> Result<CompileValue, Either<FromBitsInvalidValue, FromBitsWrongLength>> {
-        let mut iter = bits.iter().copied();
-        let result = self.value_from_bits_impl(&mut iter)?;
-        match iter.next() {
-            None => Ok(result),
-            Some(_) => Err(Either::Right(FromBitsWrongLength)),
-        }
-    }
-
-    fn value_from_bits_impl(
-        &self,
-        bits: &mut impl Iterator<Item = bool>,
-    ) -> Result<CompileValue, Either<FromBitsInvalidValue, FromBitsWrongLength>> {
-        match self {
-            IrType::Bool => Ok(CompileValue::new_bool(
-                bits.next().ok_or(Either::Right(FromBitsWrongLength))?,
-            )),
-            IrType::Int(range) => {
-                let repr = IntRepresentation::for_range(range.as_ref());
-                let bits: Vec<bool> = (0..repr.size_bits())
-                    .map(|_| bits.next().ok_or(Either::Right(FromBitsWrongLength)))
-                    .try_collect()?;
-
-                let result = repr.value_from_bits(&bits);
-
-                if range.contains(&result) {
-                    Ok(CompileValue::new_int(result))
-                } else {
-                    Err(Either::Left(FromBitsInvalidValue))
-                }
-            }
-            IrType::Tuple(inners) => {
-                let result = inners
-                    .iter()
-                    .map(|inner| inner.value_from_bits_impl(bits))
-                    .try_collect_vec()?;
-
-                Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result)))
-            }
-            IrType::Array(inner, len) => {
-                let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;
-                let result = (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?;
-                Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(result))))
             }
         }
     }

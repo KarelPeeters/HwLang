@@ -1,13 +1,12 @@
-use crate::front::diagnostic::DiagnosticError;
 use crate::syntax::ast::FileContent;
-use crate::syntax::pos::Span;
-use crate::syntax::source::FileId;
 use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
-use crate::util::arena::Arena;
-use crate::util::iter::IterExt;
 use grammar_wrapper::grammar;
+use hwl_common::diagnostic::DiagnosticError;
+use hwl_common::pos::{Pos, Span};
+use hwl_common::source::FileId;
+use hwl_common::util::arena::Arena;
+use hwl_common::util::iter::IterExt;
 use itertools::enumerate;
-use pos::Pos;
 
 pub mod ast;
 pub mod collect;
@@ -16,8 +15,6 @@ pub mod format;
 pub mod hierarchy;
 pub mod manifest;
 pub mod parsed;
-pub mod pos;
-pub mod source;
 pub mod token;
 pub mod visitor;
 
@@ -36,7 +33,7 @@ pub struct ParseContext {
 }
 
 /// Token that proves that a parse error has been reported, intentionally not constructible outside this module.
-/// Similar to [crate::front::diagnostic::DiagError].
+/// Similar to [hwl_common::diagnostic::DiagError].
 #[derive(Debug, Copy, Clone)]
 pub struct RecoveredParseError(());
 

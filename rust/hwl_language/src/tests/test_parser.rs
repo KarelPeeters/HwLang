@@ -1,5 +1,5 @@
 use crate::syntax::parse_file_content_without_recovery;
-use crate::syntax::source::FileId;
+use hwl_common::source::FileId;
 use hwl_util::io::{IoErrorWithPath, recurse_for_each_file};
 use std::path::Path;
 

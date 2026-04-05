@@ -1,23 +1,21 @@
-use crate::front::diagnostic::{DiagResult, Diagnostics};
-use crate::front::range_arithmetic::{range_binary_add, range_binary_sub};
-use crate::front::signal::Polarized;
+use crate::diagnostic::{DiagResult, Diagnostics};
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance,
     IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal,
-    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, ValueAccess,
+    IrSignalOrVariable, IrStatement, IrString, IrStringPiece, IrStringSubstitution, IrTargetStep, IrType, IrVariable,
+    IrVariableInfo, IrVariables, IrWire, IrWireInfo, Polarized, PortDirection, ValueAccess,
 };
-use crate::syntax::ast::{PortDirection, StringPiece};
-use crate::syntax::pos::{Span, Spanned};
+use crate::pos::{Span, Spanned};
 use crate::try_inner;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
+use crate::util::range_arithmetic::{range_binary_add, range_binary_sub};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
@@ -1249,10 +1247,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         for p in s {
             match p {
-                StringPiece::Literal(p) => {
+                IrStringPiece::Literal(p) => {
                     f_str.push_str(&escape_verilog_str(p));
                 }
-                StringPiece::Substitute(p) => match p {
+                IrStringPiece::Substitute(p) => match p {
                     IrStringSubstitution::Integer(p, radix) => {
                         // TODO how does signed bin/hex behave?
                         let signed = p.ty(self.module, self.locals).unwrap_int().as_ref().start.is_negative();
@@ -1627,6 +1625,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         right: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
         // expand operands to a common range that contains all operands and the result
+        // TODO these can probably be lowered targeting the possibly smaller target range
         let range_left = left.ty(self.module, self.locals).unwrap_int();
         let range_right = right.ty(self.module, self.locals).unwrap_int();
         let range_all = result_range

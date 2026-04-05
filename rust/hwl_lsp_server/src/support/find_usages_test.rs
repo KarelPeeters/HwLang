@@ -1,8 +1,8 @@
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_usages::find_usages;
+use hwl_common::pos::{Pos, Span};
+use hwl_common::source::SourceDatabase;
 use hwl_language::syntax::parse_file_content_without_recovery;
-use hwl_language::syntax::pos::{Pos, Span};
-use hwl_language::syntax::source::SourceDatabase;
 use itertools::Itertools;
 use std::ops::Range;
 

@@ -28,15 +28,15 @@
 //!
 //! The current [LNode]s and the low-level line breaking implementation are very similar to prettier.
 
-use crate::front::diagnostic::{DiagError, DiagResult, Diagnostics};
 use crate::syntax::ast::FileContent;
 use crate::syntax::format::flatten::ast_to_node;
 use crate::syntax::format::high::{HNode, lower_nodes};
 use crate::syntax::format::low::{LNode, LNodeSimple, StringsStats, node_to_string};
-use crate::syntax::pos::Span;
-use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::{Token, TokenType, tokenize};
 use crate::syntax::{RecoveredParseError, parse_error_to_diagnostic, parse_file_content_without_recovery};
+use hwl_common::diagnostic::{DiagError, DiagResult, Diagnostics};
+use hwl_common::pos::Span;
+use hwl_common::source::{FileId, SourceDatabase};
 
 mod common;
 mod flatten;

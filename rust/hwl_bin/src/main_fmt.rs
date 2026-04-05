@@ -1,10 +1,10 @@
 use crate::args::ArgsFormat;
 use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
-use hwl_language::front::diagnostic::Diagnostics;
+use hwl_common::diagnostic::Diagnostics;
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::data::IndexMapExt;
 use hwl_language::syntax::collect::collect_source_from_manifest;
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
-use hwl_language::syntax::source::SourceDatabase;
-use hwl_language::util::data::IndexMapExt;
 use hwl_util::constants::HWL_FILE_EXTENSION;
 use hwl_util::io::{IoErrorExt, IoErrorWithPath, recurse_for_each_file};
 use hwl_util::{swrite, swriteln};
@@ -13,7 +13,6 @@ use itertools::{Itertools, zip_eq};
 use std::ffi::OsStr;
 use std::io;
 use std::process::ExitCode;
-
 // TODO project:
 //   * format all existing hwl code
 //   * add CI check that everything is indeed formatted?

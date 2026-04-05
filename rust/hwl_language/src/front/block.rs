@@ -3,7 +3,6 @@ use crate::front::check::{
     TypeContainsReason, check_port_is_output, check_type_contains_value, check_type_is_bool, check_type_is_bool_compile,
 };
 use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::expression::ForIterator;
@@ -16,14 +15,15 @@ use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::signal::{Signal, SignalOrVariable, WireInfo, WireInfoSingle};
 use crate::front::types::{NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{CompileValue, MaybeCompile, MaybeUndefined, SimpleCompileValue, Value, ValueCommon};
-use crate::mid::ir::{IrBlock, IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement};
 use crate::syntax::ast::{
     Block, BlockStatement, BlockStatementKind, ConstBlock, ExpressionKind, ForStatement, IfCondBlockPair, IfStatement,
     MaybeIdentifier, RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire,
     ReturnStatement, VariableDeclaration, WhileStatement,
 };
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::data::{IndexMapExt, VecExt};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
+use hwl_common::mid::ir::{IrBlock, IrExpression, IrExpressionLarge, IrIfStatement, IrLargeArena, IrStatement};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::data::{IndexMapExt, VecExt};
 use indexmap::IndexMap;
 use itertools::{Either, enumerate};
 use unwrap_match::unwrap_match;

@@ -5,7 +5,6 @@ use crate::front::check::{
     check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ValueVersion, VariableId};
 use crate::front::function::{
@@ -15,7 +14,7 @@ use crate::front::function::{
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
-use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
+use crate::front::signal::{Interface, Port, Signal, SignalOrVariable};
 use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
@@ -23,29 +22,30 @@ use crate::front::value::{
     MixedCompoundValue, NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value,
     ValueCommon,
 };
-use crate::mid::ir::{
-    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
-    IrLargeArena,
-};
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
     ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::big_int::{AnyInt, BigInt, BigUint};
-use crate::util::data::{VecExt, vec_concat};
+use hwl_common::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::{
+    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
+    IrLargeArena, Polarized,
+};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::big_int::{AnyInt, BigInt, BigUint};
+use hwl_common::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
 use crate::front::flow::Flow;
-use crate::front::range_arithmetic::{
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
+use hwl_common::util::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
-use crate::util::iter::IterExt;
-use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
-use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
-use crate::util::store::ArcOrRef;
-use crate::util::{ResultDoubleExt, ResultExt};
+use hwl_common::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
+use hwl_common::util::store::ArcOrRef;
+use hwl_common::util::{ResultDoubleExt, ResultExt};
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
@@ -1031,7 +1031,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 "from_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
 
-                    if !ty_hw.every_bit_pattern_is_valid(refs) {
+                    if !ty_hw.every_bit_pattern_is_valid(elab) {
                         let diag = DiagnosticError::new(
                             "from_bits is only allowed for types where every bit pattern is valid",
                             base.span,

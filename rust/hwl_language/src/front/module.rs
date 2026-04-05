@@ -1,6 +1,5 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::NamedOrValue;
@@ -13,31 +12,32 @@ use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeContent, ScopeParent, ScopedEntry};
 use crate::front::signal::{
-    Interface, Polarized, Port, PortInfo, PortInterfaceInfo, PortOrWire, Signal, WireInfo, WireInfoInInterface,
-    WireInfoSingle, WireInterfaceInfo,
+    Interface, Port, PortInfo, PortInterfaceInfo, PortOrWire, Signal, WireInfo, WireInfoInInterface, WireInfoSingle,
+    WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
-use crate::mid::cleanup::cleanup_module;
-use crate::mid::ir::{
-    IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
-    IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrStatement, IrWire, IrWireInfo,
-};
-use crate::new_index_type;
 use crate::syntax::ast::{
     self, ClockedProcess, ClockedProcessReset, CombinatorialProcess, DomainKind, ExpressionKind, ExtraList, Identifier,
     ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, PortSingleKindInner,
-    ResetKind, SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, PortConnection, PortSingleKindInner, ResetKind,
+    SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::arena::Arena;
-use crate::util::big_int::BigInt;
-use crate::util::data::IndexMapExt;
-use crate::util::store::ArcOrRef;
-use crate::util::{ResultExt, result_pair, result_pair_split};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
+use hwl_common::mid::cleanup::cleanup_module;
+use hwl_common::mid::ir::{
+    IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
+    IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
+    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrStatement, IrWire, IrWireInfo, Polarized, PortDirection,
+};
+use hwl_common::new_index_type;
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::util::arena::Arena;
+use hwl_common::util::big_int::BigInt;
+use hwl_common::util::data::IndexMapExt;
+use hwl_common::util::store::ArcOrRef;
+use hwl_common::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, chain, enumerate};

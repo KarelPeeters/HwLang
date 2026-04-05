@@ -1,9 +1,10 @@
 use crate::syntax::RecoveredParseError;
-use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
-use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;
-use crate::util::arena::Arena;
-use crate::{impl_has_span, new_index_type};
+use hwl_common::mid::ir::PortDirection;
+use hwl_common::pos::{HasSpan, Pos, Span, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::util::arena::Arena;
+use hwl_common::{impl_has_span, new_index_type};
 use itertools::Itertools;
 
 new_index_type!(pub ExpressionKindIndex);
@@ -419,28 +420,6 @@ impl<S> SyncDomain<S> {
             clock: f(self.clock)?,
             reset: self.reset.map(f).transpose()?,
         })
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum PortDirection {
-    Input,
-    Output,
-}
-
-impl PortDirection {
-    pub fn diagnostic_string(self) -> &'static str {
-        match self {
-            PortDirection::Input => "input",
-            PortDirection::Output => "output",
-        }
-    }
-
-    pub fn token(self) -> TokenType {
-        match self {
-            PortDirection::Input => TokenType::In,
-            PortDirection::Output => TokenType::Out,
-        }
     }
 }
 

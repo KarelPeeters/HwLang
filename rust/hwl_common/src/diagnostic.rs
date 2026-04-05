@@ -1,8 +1,8 @@
 //! This module is strongly inspired by the Rust compiler,
 //! see <https://rustc-dev-guide.rust-lang.org/diagnostics.html>.
 
-use crate::syntax::pos::{DifferentFile, Span};
-use crate::syntax::source::SourceDatabase;
+use crate::pos::{DifferentFile, Span};
+use crate::source::SourceDatabase;
 use crate::util::data::NonEmptyVec;
 use annotate_snippets::renderer::{AnsiColor, Color, Style};
 use annotate_snippets::{Level, Renderer, Snippet};

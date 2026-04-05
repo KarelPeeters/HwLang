@@ -1,7 +1,7 @@
-use crate::front::diagnostic::{DiagError, DiagnosticError, Diagnostics};
-use crate::syntax::pos::Span;
-use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::str_is_valid_identifier;
+use hwl_common::diagnostic::{DiagError, DiagnosticError, Diagnostics};
+use hwl_common::pos::Span;
+use hwl_common::source::{FileId, SourceDatabase};
 use indexmap::IndexMap;
 
 #[derive(Debug)]

@@ -1,7 +1,7 @@
 use crate::support::PosNotOnIdentifier;
+use hwl_common::pos::{Pos, Span, Spanned};
+use hwl_common::source::SourceDatabase;
 use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
-use hwl_language::syntax::pos::{Pos, Span, Spanned};
-use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
 use itertools::Either;
 use std::ops::ControlFlow;

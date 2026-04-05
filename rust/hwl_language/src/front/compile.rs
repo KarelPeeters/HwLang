@@ -1,4 +1,3 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::DomainSignal;
 use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
@@ -6,22 +5,22 @@ use crate::front::module::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
 use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
 use crate::front::signal::{
-    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Signal, Wire, WireInfo, WireInterface,
-    WireInterfaceInfo,
+    Port, PortInfo, PortInterface, PortInterfaceInfo, Signal, Wire, WireInfo, WireInterface, WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
-use crate::mid::graph::ir_modules_check_no_cycles;
-use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::syntax::source::{FileId, SourceDatabase};
-use crate::util::arena::Arena;
-use crate::util::data::{IndexMapExt, NonEmptyVec};
-use crate::util::pool::ThreadPool;
-use crate::util::sync::{ComputeOnceArena, SharedQueue};
-use crate::util::{ResultDoubleExt, ResultExt};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::graph::ir_modules_check_no_cycles;
+use hwl_common::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal, Polarized};
+use hwl_common::pos::{HasSpan, Span, Spanned};
+use hwl_common::source::{FileId, SourceDatabase};
+use hwl_common::util::arena::Arena;
+use hwl_common::util::data::{IndexMapExt, NonEmptyVec};
+use hwl_common::util::pool::ThreadPool;
+use hwl_common::util::sync::{ComputeOnceArena, SharedQueue};
+use hwl_common::util::{ResultDoubleExt, ResultExt};
 use hwl_util::constants::{STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
 use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};

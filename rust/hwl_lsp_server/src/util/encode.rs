@@ -1,7 +1,7 @@
 use crate::server::settings::PositionEncoding;
-use hwl_language::syntax::pos::{LineOffsets, Pos, Span};
-use hwl_language::syntax::source::FileId;
-use hwl_language::util::iter::IterExt;
+use hwl_common::pos::{LineOffsets, Pos, Span};
+use hwl_common::source::FileId;
+use hwl_common::util::iter::IterExt;
 use itertools::Itertools;
 use lsp_types::{Location, Uri};
 

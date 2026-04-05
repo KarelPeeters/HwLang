@@ -1,5 +1,4 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::implication::{
     BoolImplications, HardwareValueWithImplications, Implication, ImplicationKind, ValueWithImplications,
@@ -10,21 +9,22 @@ use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
-use crate::mid::ir::{
+use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
+use hwl_common::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
+use hwl_common::mid::ir::{
     IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrStatement, IrVariable,
     IrVariableInfo, IrVariables, IrWires,
 };
-use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
-use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::source::SourceDatabase;
-use crate::try_inner;
-use crate::util::arena::RandomCheck;
-use crate::util::big_int::BigInt;
-use crate::util::data::IndexMapExt;
-use crate::util::iter::IterExt;
-use crate::util::range::RangeEmpty;
-use crate::util::range_multi::{ClosedMultiRange, ClosedNonEmptyMultiRange};
-use crate::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO, ResultExt};
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::source::SourceDatabase;
+use hwl_common::try_inner;
+use hwl_common::util::arena::RandomCheck;
+use hwl_common::util::big_int::BigInt;
+use hwl_common::util::data::IndexMapExt;
+use hwl_common::util::iter::IterExt;
+use hwl_common::util::range::RangeEmpty;
+use hwl_common::util::range_multi::{ClosedMultiRange, ClosedNonEmptyMultiRange};
+use hwl_common::util::{NON_ZERO_USIZE_ONE, NON_ZERO_USIZE_TWO, ResultExt};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Itertools, zip_eq};
 use std::cell::Cell;
@@ -2396,9 +2396,9 @@ impl<T> Lattice<T> {
     }
 }
 
-/// The borrow checking has trouble with nested chains of parent references,
+/// The borrow checker has trouble with nested chains of parent references,
 /// but they're not actually unsafe in the way we want to use them.
-// Supress false positive https://github.com/rust-lang/rust-clippy/issues/12860.
+// Suppress false positive https://github.com/rust-lang/rust-clippy/issues/12860.
 #[allow(clippy::unnecessary_cast)]
 mod lifetime_cast {
     use crate::front::flow::{FlowCompile, FlowHardware, FlowHardwareBranch, FlowHardwareRoot};

@@ -1,4 +1,4 @@
-use crate::syntax::source::FileId;
+use crate::source::FileId;
 use crate::util::arena::IndexType;
 use itertools::Either;
 use std::cmp::{max, min};
@@ -417,8 +417,8 @@ impl<T> Spanned<Option<T>> {
 #[macro_export]
 macro_rules! impl_has_span {
     ($ty:ty) => {
-        impl $crate::syntax::pos::HasSpan for $ty {
-            fn span(&self) -> $crate::syntax::pos::Span {
+        impl $crate::pos::HasSpan for $ty {
+            fn span(&self) -> $crate::pos::Span {
                 self.span
             }
         }

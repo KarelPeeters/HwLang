@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::syntax::source::FileId;
+use hwl_common::source::FileId;
 use hwl_language::syntax::token::tokenize;
 use libfuzzer_sys::fuzz_target;
 

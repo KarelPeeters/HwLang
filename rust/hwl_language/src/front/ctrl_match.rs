@@ -1,7 +1,6 @@
 use crate::front::block::{BlockEnd, join_block_ends_branches};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_range_compile};
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning};
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
@@ -9,14 +8,15 @@ use crate::front::item::{ElaboratedEnum, ElaborationArenas, HardwareChecked};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileCompoundValue, CompileValue, NotCompile, SimpleCompileValue, Value, ValueCommon};
-use crate::mid::ir::{
+use crate::syntax::ast::{Block, BlockStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier};
+use hwl_common::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning};
+use hwl_common::mid::ir::{
     IrBlock, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIfStatement, IrIntCompareOp, IrLargeArena, IrStatement,
 };
-use crate::syntax::ast::{Block, BlockStatement, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier};
-use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
-use crate::util::big_int::BigInt;
-use crate::util::range::Range;
-use crate::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
+use hwl_common::pos::{HasSpan, Pos, Span, Spanned};
+use hwl_common::util::big_int::BigInt;
+use hwl_common::util::range::Range;
+use hwl_common::util::range_multi::{AnyMultiRange, ClosedMultiRange, MultiRange};
 use itertools::{Itertools, zip_eq};
 use unwrap_match::unwrap_match;
 

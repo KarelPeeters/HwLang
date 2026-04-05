@@ -10,6 +10,7 @@ pub mod int;
 pub mod iter;
 pub mod pool;
 pub mod range;
+pub mod range_arithmetic;
 pub mod range_multi;
 pub mod regex;
 pub mod store;

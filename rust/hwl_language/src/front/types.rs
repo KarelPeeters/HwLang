@@ -1,13 +1,15 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::DiagResult;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo,
 };
 use crate::front::value::HardwareValue;
-use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
-use crate::util::big_int::{BigInt, BigUint};
-use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
-use crate::util::{Never, ResultExt};
+use hwl_common::diagnostic::DiagResult;
+use hwl_common::mid::ir::{
+    IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType,
+};
+use hwl_common::util::big_int::{BigInt, BigUint};
+use hwl_common::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
+use hwl_common::util::{Never, ResultExt};
 use itertools::{Itertools, zip_eq};
 use std::sync::Arc;
 
@@ -337,6 +339,19 @@ impl HardwareType {
                 let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_payload_size));
                 IrType::Tuple(vec![tag_ty, data_ty])
             }
+        }
+    }
+}
+
+impl From<&IrType> for HardwareType {
+    /// Note: converting from [HardwareType] to [IrType] is potentially lossy,
+    /// so this function cannot always return the original type.
+    fn from(ty: &IrType) -> HardwareType {
+        match ty {
+            IrType::Bool => HardwareType::Bool,
+            IrType::Int(range) => HardwareType::Int(ClosedNonEmptyMultiRange::from(range.clone())),
+            IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(HardwareType::from).collect())),
+            IrType::Array(inner, len) => HardwareType::Array(Arc::new(HardwareType::from(&**inner)), len.clone()),
         }
     }
 }

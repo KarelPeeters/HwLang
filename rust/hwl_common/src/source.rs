@@ -1,5 +1,5 @@
 use crate::new_index_type;
-use crate::syntax::pos::{LineOffsets, Pos, PosFull, Span, SpanFull};
+use crate::pos::{LineOffsets, Pos, PosFull, Span, SpanFull};
 use crate::util::arena::{Arena, IndexType};
 
 /// The full set of source files that are part of this compilation. This type is immutable.
