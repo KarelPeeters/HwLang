@@ -10,6 +10,7 @@ use grammar_wrapper::grammar;
 
 #[allow(clippy::all)]
 #[allow(unreachable_code)]
+#[allow(unused_imports)]
 mod grammar_wrapper {
     use lalrpop_util::lalrpop_mod;
     lalrpop_mod!(pub grammar, "/syntax/grammar.rs");

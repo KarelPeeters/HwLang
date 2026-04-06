@@ -103,14 +103,118 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
 }
 
 // LRM 9 Expressions
-Expression: Expression = {
-    // TODO
-    Identifier => Expression::Identifier(<>),
-    TokenDecimalLiteral => Expression::DecimalLiteral(),
+ConditionalOrUnAffectedExpression: ConditionalOrUnAffectedExpression = {
+    <conditional:ConditionalExpressionT<ExpressionOrUnAffected>> <final_condition:("when" <Expression>)?>
+        => ConditionalOrUnAffectedExpression { conditional, final_condition }
+}
+ExpressionOrUnAffected: ExpressionOrUnAffected = {
+    Expression => ExpressionOrUnAffected::Expression(<>),
+    "unaffected" => ExpressionOrUnAffected::Unaffected,
 }
 
-ConditionalExpression: Expression = {
-    Expression,
+ConditionalExpression = ConditionalExpressionT<Expression>;
+
+ConditionalExpressionT<T>: ConditionalExpression<T> = {
+    <value_first:T> <branches:ConditionalExpressionBranchT<T>*>
+        => ConditionalExpression { value_first, branches }
+}
+ConditionalExpressionBranchT<T>: ConditionalExpressionBranch<T> = {
+    "when" <condition:Expression> "else" <value_else:T> => ConditionalExpressionBranch { condition, value_else }
+}
+
+Expression: Expression = {
+    "??" <PrimaryExpression> => Expression::ConditionOperator(<>),
+    LogicalExpression => Expression::Logical(<>),
+}
+LogicalExpression: LogicalExpression = {
+    RelationExpression => LogicalExpression::Relation(<>),
+
+    <first:RelationExpression> "and" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "and">>
+        => LogicalExpression::And(first, rest),
+    <first:RelationExpression> "or" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "or">>
+        => LogicalExpression::Or(first, rest),
+    <first:RelationExpression> "xor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xor">>
+        => LogicalExpression::Xor(first, rest),
+    <first:RelationExpression> "xnor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xnor">>
+        => LogicalExpression::Xnor(first, rest),
+
+    <left:RelationExpression> "nand" <right:RelationExpression>
+        => LogicalExpression::Nand(left, right),
+    <left:RelationExpression> "nor" <right:RelationExpression>
+        => LogicalExpression::Nor(left, right),
+}
+RelationExpression: RelationExpression = {
+    <left:ShiftExpression> <op_right:(RelationalOperator ShiftExpression)?> => RelationExpression { left, op_right }
+}
+ShiftExpression: ShiftExpression = {
+    <left:SimpleExpression> <op_right:(ShiftOperator SimpleExpression)?> => ShiftExpression { left, op_right }
+}
+SimpleExpression: SimpleExpression = {
+    <sign:Sign?> <left:TermExpression> <op_right:(AddingOperator TermExpression)*>
+        => SimpleExpression { sign, left, op_right }
+}
+TermExpression: TermExpression = {
+    <left:Factor> <op_right:(MultiplyingOperator Factor)*> => TermExpression { left, op_right }
+}
+Factor: Factor = {
+    <left:UnaryExpression> <power_right:("**" <UnaryExpression>)?> => Factor { left, power_right }
+}
+UnaryExpression: UnaryExpression = {
+    PrimaryExpression => UnaryExpression::Primary(<>),
+    "abs" <PrimaryExpression> => UnaryExpression::Abs(<>),
+    "not" <PrimaryExpression> => UnaryExpression::Not(<>),
+    <op:LogicalOperator> <inner:PrimaryExpression> => UnaryExpression::Logical(op, inner),
+}
+PrimaryExpression: PrimaryExpression = {
+    // TODO expand
+    Identifier => PrimaryExpression::Name(<>),
+    TokenDecimalLiteral => PrimaryExpression::DecimalLiteral,
+}
+
+LogicalOperator: LogicalOperator = {
+    "and" => LogicalOperator::And,
+    "or" => LogicalOperator::Or,
+    "nand" => LogicalOperator::Nand,
+    "nor" => LogicalOperator::Nor,
+    "xor" => LogicalOperator::Xor,
+    "xnor" => LogicalOperator::Xnor,
+}
+RelationalOperator: RelationalOperator = {
+    "=" => RelationalOperator::Eq,
+    "/=" => RelationalOperator::Neq,
+    "<" => RelationalOperator::Lt,
+    "<=" => RelationalOperator::Lte,
+    ">" => RelationalOperator::Gt,
+    ">=" => RelationalOperator::Gte,
+    "?=" => RelationalOperator::LogicalEq,
+    "?/=" => RelationalOperator::LogicalNeq,
+    "?<" => RelationalOperator::LogicalLt,
+    "?<=" => RelationalOperator::LogicalLte,
+    "?>" => RelationalOperator::LogicalGt,
+    "?>=" => RelationalOperator::LogicalGte,
+}
+ShiftOperator: ShiftOperator = {
+    "sll" => ShiftOperator::Sll,
+    "srl" => ShiftOperator::Srl,
+    "sla" => ShiftOperator::Sla,
+    "sra" => ShiftOperator::Sra,
+    "rol" => ShiftOperator::Rol,
+    "ror" => ShiftOperator::Ror,
+}
+Sign: Sign = {
+    "+" => Sign::Plus,
+    "-" => Sign::Minus,
+}
+AddingOperator: AddingOperator = {
+    "+" => AddingOperator::Add,
+    "-" => AddingOperator::Sub,
+    "&" => AddingOperator::And,
+}
+MultiplyingOperator: MultiplyingOperator = {
+    "*" => MultiplyingOperator::Mul,
+    "/" => MultiplyingOperator::Div,
+    "mod" => MultiplyingOperator::Mod,
+    "rem" => MultiplyingOperator::Rem,
 }
 
 // LRM 10 Sequential statements

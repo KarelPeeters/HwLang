@@ -66,7 +66,7 @@ pub struct SubTypeIndication {
 pub struct InterfaceConstantDeclaration {
     pub names: NonEmptyVec<Identifier>,
     pub ty: InterfaceTypeIndication,
-    pub init: Option<Expression>,
+    pub init: Option<ConditionalExpression>,
 }
 
 #[derive(Debug)]
@@ -87,7 +87,7 @@ pub enum ModeIndication {
         mode: Option<Mode>,
         ty: InterfaceTypeIndication,
         bus: bool,
-        init: Option<Expression>,
+        init: Option<ConditionalExpression>,
     },
     RecordView(/*TODO*/),
 }
@@ -136,10 +136,154 @@ pub enum PortInterfaceDeclaration {
 
 // LRM 9 Expressions
 #[derive(Debug)]
+pub struct ConditionalOrUnAffectedExpression {
+    pub conditional: ConditionalExpression<ExpressionOrUnAffected>,
+    pub final_condition: Option<Expression>,
+}
+#[derive(Debug)]
+pub enum ExpressionOrUnAffected {
+    Expression(Expression),
+    Unaffected,
+}
+
+#[derive(Debug)]
+pub struct ConditionalExpression<T = Expression> {
+    pub value_first: T,
+    pub branches: Vec<ConditionalExpressionBranch<T>>,
+}
+#[derive(Debug)]
+pub struct ConditionalExpressionBranch<T> {
+    pub condition: Expression,
+    pub value_else: T,
+}
+
+// TODO flatten this into a single enum, we only need these levels in the parser itself
+#[derive(Debug)]
 pub enum Expression {
-    // TODO
-    Identifier(Identifier),
-    DecimalLiteral(/*TODO*/),
+    ConditionOperator(PrimaryExpression),
+    Logical(LogicalExpression),
+}
+
+#[derive(Debug)]
+pub enum LogicalExpression {
+    Relation(RelationExpression),
+
+    And(RelationExpression, NonEmptyVec<RelationExpression>),
+    Or(RelationExpression, NonEmptyVec<RelationExpression>),
+    Nand(RelationExpression, RelationExpression),
+    Nor(RelationExpression, RelationExpression),
+    Xor(RelationExpression, NonEmptyVec<RelationExpression>),
+    Xnor(RelationExpression, NonEmptyVec<RelationExpression>),
+}
+
+#[derive(Debug)]
+pub struct RelationExpression {
+    pub left: ShiftExpression,
+    pub op_right: Option<(RelationalOperator, ShiftExpression)>,
+}
+
+#[derive(Debug)]
+pub struct ShiftExpression {
+    pub left: SimpleExpression,
+    pub op_right: Option<(ShiftOperator, SimpleExpression)>,
+}
+
+#[derive(Debug)]
+pub struct SimpleExpression {
+    pub sign: Option<Sign>,
+    pub left: TermExpression,
+    pub op_right: Vec<(AddingOperator, TermExpression)>,
+}
+
+#[derive(Debug)]
+pub struct TermExpression {
+    pub left: Factor,
+    pub op_right: Vec<(MultiplyingOperator, Factor)>,
+}
+
+#[derive(Debug)]
+pub struct Factor {
+    pub left: UnaryExpression,
+    pub power_right: Option<UnaryExpression>,
+}
+
+#[derive(Debug)]
+pub enum UnaryExpression {
+    Primary(PrimaryExpression),
+    Abs(PrimaryExpression),
+    Not(PrimaryExpression),
+    Logical(LogicalOperator, PrimaryExpression),
+}
+
+#[derive(Debug)]
+pub enum PrimaryExpression {
+    // TODO expand, maybe name is not even correct
+    Name(Identifier),
+    DecimalLiteral,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum LogicalOperator {
+    And,
+    Or,
+    Nand,
+    Nor,
+    Xor,
+    Xnor,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RelationalOperator {
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    LogicalEq,
+    LogicalNeq,
+    LogicalLt,
+    LogicalLte,
+    LogicalGt,
+    LogicalGte,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ShiftOperator {
+    Sll,
+    Srl,
+    Sla,
+    Sra,
+    Rol,
+    Ror,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Sign {
+    Plus,
+    Minus,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum AddingOperator {
+    Add,
+    Sub,
+    And,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum MultiplyingOperator {
+    Mul,
+    Div,
+    Mod,
+    Rem,
+}
+
+// LRM 9.3 Operands
+// LRM 9.3.2 Literals
+pub enum Literal {
+    // TODO expand
+    DecimalLiteral,
 }
 
 // LRM 10 Sequential statements
