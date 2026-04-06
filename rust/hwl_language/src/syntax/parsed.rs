@@ -1,8 +1,9 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::syntax::ast;
 use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
 use crate::syntax::hierarchy::SourceHierarchy;
+use crate::syntax::parser::{parse_error_to_diagnostic, parse_file_content_without_recovery};
 use crate::syntax::source::{FileId, SourceDatabase};
-use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content_without_recovery};
 use crate::util::arena::IndexType;
 use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;

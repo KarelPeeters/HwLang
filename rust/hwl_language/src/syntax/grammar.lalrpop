@@ -1,6 +1,6 @@
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::ast::*;
-use crate::syntax::ParseContext;
+use crate::syntax::parser::ParseContext;
 use crate::syntax::token::{TokenType, TokenError};
 use crate::util::arena::Arena;
 

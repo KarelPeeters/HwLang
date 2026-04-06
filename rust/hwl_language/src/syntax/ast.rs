@@ -1,4 +1,4 @@
-use crate::syntax::RecoveredParseError;
+use crate::syntax::parser::RecoveredParseError;
 use crate::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::syntax::token::TokenType;

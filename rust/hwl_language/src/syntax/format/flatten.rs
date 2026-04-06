@@ -1,4 +1,3 @@
-use crate::syntax::RecoveredParseError;
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
@@ -16,6 +15,7 @@ use crate::syntax::ast::{
     WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
+use crate::syntax::parser::RecoveredParseError;
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
 use itertools::Either;
