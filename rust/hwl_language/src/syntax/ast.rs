@@ -1,4 +1,4 @@
-use crate::syntax::RecoveredParseError;
+use crate::syntax::parser::RecoveredParseError;
 use crate::syntax::token::TokenType;
 use hwl_common::mid::ir::PortDirection;
 use hwl_common::pos::{HasSpan, Pos, Span, Spanned};

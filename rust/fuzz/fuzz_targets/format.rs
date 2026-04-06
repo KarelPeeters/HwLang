@@ -3,7 +3,7 @@
 use hwl_common::diagnostic::{Diagnostics, diags_to_string};
 use hwl_common::source::SourceDatabase;
 use hwl_language::syntax::format::{FormatSettings, format_file};
-use hwl_language::syntax::parse_file_content_without_recovery;
+use hwl_language::syntax::parser::parse_file_content_without_recovery;
 use hwl_language::syntax::token::{TokenCategory, tokenize};
 use libfuzzer_sys::fuzz_target;
 

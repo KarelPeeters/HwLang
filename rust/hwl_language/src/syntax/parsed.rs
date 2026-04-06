@@ -1,6 +1,7 @@
+use crate::syntax::ast;
 use crate::syntax::ast::{Expression, ExpressionKind, FileContent};
 use crate::syntax::hierarchy::SourceHierarchy;
-use crate::syntax::{ast, parse_error_to_diagnostic, parse_file_content_without_recovery};
+use crate::syntax::parser::{parse_error_to_diagnostic, parse_file_content_without_recovery};
 use hwl_common::diagnostic::{DiagResult, Diagnostics};
 use hwl_common::source::{FileId, SourceDatabase};
 use hwl_common::util::arena::IndexType;

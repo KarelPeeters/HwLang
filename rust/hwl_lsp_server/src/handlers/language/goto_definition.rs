@@ -5,7 +5,7 @@ use crate::support::find_definition::find_definition;
 use crate::util::encode::{lsp_to_pos, spans_to_lsp_locations};
 use crate::util::uri::uri_to_path;
 use hwl_common::source::SourceDatabase;
-use hwl_language::syntax::{FileContentRecovery, parse_file_content_with_recovery};
+use hwl_language::syntax::parser::{FileContentRecovery, parse_file_content_with_recovery};
 use lsp_types::request::GotoDefinition;
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, TextDocumentIdentifier, TextDocumentPositionParams};
 
