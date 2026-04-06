@@ -14,7 +14,7 @@ pub struct EntityDeclaration {
 
 #[derive(Debug)]
 pub enum EntityDeclarativeItem {
-    // TODO
+    Type(TypeDeclaration),
 }
 
 #[derive(Debug)]
@@ -39,11 +39,30 @@ pub enum ArchitectureDeclarativeItem {
 
 // LRM 5 Types
 // LRM 5.2 Scalar types
+
 #[derive(Debug)]
-pub struct DiscreteRange {
-    pub left: Expression,
-    pub dir: RangeDirection,
-    pub right: Expression,
+pub enum ScalarTypeDefinition {
+    Enum(EnumTypeDefinition),
+    Integer(RangeConstraint),
+}
+
+#[derive(Debug)]
+pub struct RangeConstraint {
+    pub range: Range,
+}
+
+#[derive(Debug)]
+pub enum Range {
+    Attribute(/*TODO*/),
+    Simple(SimpleRange),
+    Expression(Expression),
+}
+
+#[derive(Debug)]
+pub struct SimpleRange {
+    pub left: SimpleExpression,
+    pub direction: RangeDirection,
+    pub right: SimpleExpression,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -52,12 +71,56 @@ pub enum RangeDirection {
     DownTo,
 }
 
+// LRM 5.2.2 Enumeration types
+#[derive(Debug)]
+pub struct EnumTypeDefinition {
+    pub literals: NonEmptyVec<EnumLiteral>,
+}
+
+#[derive(Debug)]
+pub enum EnumLiteral {
+    Identifier(Identifier),
+    CharLiteral(/*TODO*/)
+}
+
+// LRM 6 Declarations
+
+// LRM 6.2 Type declarations
+
+#[derive(Debug)]
+pub enum TypeDeclaration {
+    Full(FullTypeDeclaration),
+}
+
+#[derive(Debug)]
+pub struct FullTypeDeclaration {
+    pub name: Identifier,
+    pub def: TypeDefinition,
+}
+
+#[derive(Debug)]
+pub enum TypeDefinition {
+    Scalar(ScalarTypeDefinition),
+}
+
 // LRM 6.3 Subtype declarations
 #[derive(Debug)]
-pub struct SubTypeIndication {
-    // TODO
+pub struct SubTypeDeclaration {
     pub name: Identifier,
-    pub constraint: Option<DiscreteRange>,
+    pub indication: SubTypeIndication,
+}
+
+#[derive(Debug)]
+pub struct SubTypeIndication {
+    // TODO resolution
+    // TODO name instead of identifier
+    pub type_mark: Identifier,
+    pub constraint: Option<Constraint>,
+}
+
+#[derive(Debug)]
+pub enum Constraint {
+    Range(RangeConstraint),
 }
 
 // LRM 6.5 Interface declarations

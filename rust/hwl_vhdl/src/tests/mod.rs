@@ -1,4 +1,5 @@
 use crate::syntax::parser::{parse_error_to_diagnostic, parse_file_content_without_recovery};
+use crate::syntax::token::tokenize;
 use hwl_common::diagnostic::{diags_to_string, Diagnostics};
 use hwl_common::source::SourceDatabase;
 use std::path::Path;
@@ -16,6 +17,18 @@ pub fn test_parse(src: &str) {
 
     let mut source = SourceDatabase::new();
     let file = source.add_file("dummy.vhd".to_owned(), src.to_owned());
+
+    let diags = Diagnostics::new();
+    let mut any_fail = false;
+
+    match tokenize(file, src, false) {
+        Ok(_) => {}
+        Err(e) => {
+            any_fail = true;
+            let _ = e.to_diagnostic().report(&diags);
+        }
+    }
+
     let result = parse_file_content_without_recovery(file, src);
 
     match result {
@@ -23,12 +36,15 @@ pub fn test_parse(src: &str) {
             println!("{:#?}", result);
         }
         Err(e) => {
-            let diags = Diagnostics::new();
+            any_fail = true;
             let _ = parse_error_to_diagnostic(e).report(&diags);
-            println!("{}", diags_to_string(&source, diags.finish(), true));
-            panic!();
         }
     }
+
+    let diags = diags.finish();
+    let any_diags = !diags.is_empty();
+    println!("{}", diags_to_string(&source, diags, true));
+    assert!(!any_diags && !any_fail);
 }
 
 pub fn test_parse_files(paths: &[&str]) {

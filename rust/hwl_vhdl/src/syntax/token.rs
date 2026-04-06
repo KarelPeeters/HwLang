@@ -368,7 +368,6 @@ impl<'s> Tokenizer<'s> {
                         });
                     }
 
-                    self.skip(3);
                     TokenType::CharacterLiteral
                 }
             }

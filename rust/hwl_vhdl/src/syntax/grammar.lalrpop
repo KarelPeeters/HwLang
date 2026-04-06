@@ -19,7 +19,7 @@ EntityDeclaration: EntityDeclaration = {
 }
 
 EntityDeclarativeItem: EntityDeclarativeItem = {
-    // TODO
+    TypeDeclaration => EntityDeclarativeItem::Type(<>),
 }
 EntityStatement: EntityStatement = {
     // TODO
@@ -40,19 +40,61 @@ ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
 
 // LRM 5 Types
 // LRM 5.2 Scalar types
-DiscreteRange: DiscreteRange = {
-    <left:Expression> <dir:RangeDirection> <right:Expression> => DiscreteRange { left, dir, right },
+
+ScalarTypeDefinition: ScalarTypeDefinition = {
+    EnumTypeDefinition => ScalarTypeDefinition::Enum(<>),
+    RangeConstraint => ScalarTypeDefinition::Integer(<>),
 }
+
+RangeConstraint: RangeConstraint = {
+    "range" <Range> => RangeConstraint { range: <> } ,
+}
+
+Range: Range = {
+    <left: SimpleExpression> <direction:RangeDirection> <right: SimpleExpression>
+        => Range::Simple(SimpleRange { left, direction, right }),
+    Expression => Range::Expression(<>),
+}
+
 RangeDirection: RangeDirection = {
     "to" => RangeDirection::To,
     "downto" => RangeDirection::DownTo,
 }
 
+// LRM 5.2.2 Enumeration types
+EnumTypeDefinition: EnumTypeDefinition = {
+    "(" <literals:SeparatedNonEmptyNoTrail<EnumLiteral, ",">> ")" => EnumTypeDefinition { literals }
+}
+
+EnumLiteral: EnumLiteral = {
+    Identifier => EnumLiteral::Identifier(<>),
+    TokenCharacterLiteral => EnumLiteral::CharLiteral(),
+}
+
+// LRM 6 Declarations
+
+// LRM 6.2 Type declarations
+TypeDeclaration: TypeDeclaration = {
+    FullTypeDeclaration => TypeDeclaration::Full(<>),
+}
+
+FullTypeDeclaration: FullTypeDeclaration = {
+    "type" <name:Identifier> "is" <def:TypeDefinition> ";" => FullTypeDeclaration { name, def }
+}
+
+TypeDefinition: TypeDefinition = {
+    ScalarTypeDefinition => TypeDefinition::Scalar(<>),
+}
+
 // LRM 6.3 Subtype declarations
 SubTypeIndication: SubTypeIndication = {
     // TODO
-    <name:Identifier> <constraint:("(" <DiscreteRange> ")")?>
-        => SubTypeIndication { name, constraint },
+    <type_mark:Identifier> <constraint:Constraint?>
+        => SubTypeIndication { type_mark, constraint },
+}
+
+Constraint: Constraint = {
+    RangeConstraint => Constraint::Range(<>),
 }
 
 // LRM 6.5 Interface declarations

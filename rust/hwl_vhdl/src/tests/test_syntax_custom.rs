@@ -19,3 +19,27 @@ fn passthrough() {
         ",
     )
 }
+
+#[test]
+fn simple_type_int() {
+    test_parse(
+        "
+        entity top is
+            type A is range 1 to 10;
+            type B is range 1 to 10;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn simple_type_enum() {
+    test_parse(
+        "
+        entity top is
+            type E is (A, B, C);
+            type F is ('0', '1', Z);
+        end;
+        ",
+    )
+}
