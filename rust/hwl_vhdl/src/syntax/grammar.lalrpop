@@ -38,6 +38,32 @@ ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
     // TODO
 }
 
+// LRM 4 Subprograms and packages
+// LRM 4.7 Package declarations
+PackageDeclaration: PackageDeclaration = {
+    "package" <name:Identifier> "is"
+        <generic:GenericClause?>
+        <decl:PackageDeclarativeItem*>
+    "end" "package"? <end_name:Identifier?> ";"
+    => PackageDeclaration { name, generic, decl, end_name }
+}
+PackageDeclarativeItem: PackageDeclarativeItem = {
+    TypeDeclaration => PackageDeclarativeItem::Type(<>),
+    ConstantDeclaration => PackageDeclarativeItem::Constant(<>),
+}
+
+// LRM 4.8 Package bodies
+PackageBody: PackageBody = {
+    "package" "body" <name:Identifier> "is"
+        <decl:PackageBodyDeclarativeItem*>
+    "end" ("package" "body")? <end_name:Identifier?> ";"
+    => PackageBody { name, decl, end_name }
+}
+PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
+    TypeDeclaration => PackageBodyDeclarativeItem::Type(<>),
+    ConstantDeclaration => PackageBodyDeclarativeItem::Constant(<>),
+}
+
 // LRM 5 Types
 // LRM 5.2 Scalar types
 
@@ -115,6 +141,14 @@ SubTypeIndication: SubTypeIndication = {
 
 Constraint: Constraint = {
     RangeConstraint => Constraint::Range(<>),
+}
+
+// LRM 6.4 Objects
+// LRM 6.4.2 Object declarations
+// LRM 6.4.2.2 Constant declarations
+ConstantDeclaration: ConstantDeclaration = {
+    "constant" <names:IdentifierList> ":" <ty:SubTypeIndication> <init:(":=" <ConditionalExpression>)?> ";"
+        => ConstantDeclaration { names, ty, init }
 }
 
 // LRM 6.5 Interface declarations
@@ -330,7 +364,9 @@ DesignUnit: DesignUnit = {
 
 LibraryUnit: LibraryUnit = {
     EntityDeclaration => LibraryUnit::EntityDeclaration(<>),
+    PackageDeclaration => LibraryUnit::PackageDeclaration(<>),
     ArchitectureBody => LibraryUnit::ArchitectureBody(<>),
+    PackageBody => LibraryUnit::PackageBody(<>),
 }
 
 // LRM 13.2 Design libraries

@@ -37,6 +37,36 @@ pub enum ArchitectureDeclarativeItem {
     // TODO
 }
 
+// LRM 4 Subprograms and packages
+// LRM 4.7 Package declarations
+#[derive(Debug)]
+pub struct PackageDeclaration {
+    pub name: Identifier,
+    pub generic: Option<GenericClause>,
+    pub decl: Vec<PackageDeclarativeItem>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum PackageDeclarativeItem {
+    Type(TypeDeclaration),
+    Constant(ConstantDeclaration),
+}
+
+// LRM 4.8 Package bodies
+#[derive(Debug)]
+pub struct PackageBody {
+    pub name: Identifier,
+    pub decl: Vec<PackageBodyDeclarativeItem>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum PackageBodyDeclarativeItem {
+    Type(TypeDeclaration),
+    Constant(ConstantDeclaration),
+}
+
 // LRM 5 Types
 // LRM 5.2 Scalar types
 #[derive(Debug)]
@@ -147,6 +177,16 @@ pub struct SubTypeIndication {
 #[derive(Debug)]
 pub enum Constraint {
     Range(RangeConstraint),
+}
+
+// LRM 6.4 Objects
+// LRM 6.4.2 Object declarations
+// LRM 6.4.2.2 Constant declarations
+#[derive(Debug)]
+pub struct ConstantDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: SubTypeIndication,
+    pub init: Option<ConditionalExpression>,
 }
 
 // LRM 6.5 Interface declarations
@@ -459,13 +499,13 @@ pub enum LibraryUnit {
     // primary unit
     EntityDeclaration(EntityDeclaration),
     ConfigurationDeclaration(/*TODO*/),
-    PackageDeclaration(/*TODO*/),
+    PackageDeclaration(PackageDeclaration),
     PackageInstantiationDeclaration(/*TODO*/),
     ContextDeclaration(/*TODO*/),
 
     // secondary unit
     ArchitectureBody(ArchitectureBody),
-    PackageBody(/*TODO*/),
+    PackageBody(PackageBody),
 }
 
 // LRM 13.2 Design libraries
