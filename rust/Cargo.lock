@@ -614,6 +614,19 @@ name = "hwl_util"
 version = "0.1.0"
 
 [[package]]
+name = "hwl_vhdl"
+version = "0.1.0"
+dependencies = [
+ "hwl_common",
+ "hwl_util",
+ "itertools 0.13.0",
+ "lalrpop",
+ "lalrpop-util",
+ "lazy_static",
+ "strum",
+]
+
+[[package]]
 name = "hwl_wasm"
 version = "0.1.0"
 dependencies = [
