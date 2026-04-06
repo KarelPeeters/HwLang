@@ -39,11 +39,11 @@ pub enum ArchitectureDeclarativeItem {
 
 // LRM 5 Types
 // LRM 5.2 Scalar types
-
 #[derive(Debug)]
 pub enum ScalarTypeDefinition {
     Enum(EnumTypeDefinition),
-    Integer(RangeConstraint),
+    Integer(IntegerTypeDefinition),
+    Physical(PhysicalTypeDefinition),
 }
 
 #[derive(Debug)]
@@ -80,7 +80,33 @@ pub struct EnumTypeDefinition {
 #[derive(Debug)]
 pub enum EnumLiteral {
     Identifier(Identifier),
-    CharLiteral(/*TODO*/)
+    CharLiteral(/*TODO*/),
+}
+
+// LRM 5.2.3 Integer types
+#[derive(Debug)]
+pub struct IntegerTypeDefinition {
+    pub range: RangeConstraint,
+}
+
+// LRM 5.2.4 Physical types
+#[derive(Debug)]
+pub struct PhysicalTypeDefinition {
+    pub range: RangeConstraint,
+    pub primary_unit: Identifier,
+    pub secondary_units: Vec<SecondaryUnitDeclaration>,
+    pub end_name: Option<Identifier>,
+}
+#[derive(Debug)]
+pub struct SecondaryUnitDeclaration {
+    // TODO name?
+    pub name: Identifier,
+    pub value: PhysicalLiteral,
+}
+#[derive(Debug)]
+pub struct PhysicalLiteral {
+    pub value: AbstractLiteral,
+    pub unit: Identifier,
 }
 
 // LRM 6 Declarations
@@ -454,8 +480,25 @@ pub struct ContextClause {
     // TODO
 }
 
-// TODO move to right chapter
+// LRM 15 Lexical elements
+
+// LRM 15.4 Identifiers
 #[derive(Debug)]
 pub struct Identifier {
+    pub span: Span,
+}
+
+// LRM 15.5 Abstract literals
+#[derive(Debug)]
+pub enum AbstractLiteral {
+    Decimal(DecimalLiteral),
+    Based(BasedLiteral),
+}
+#[derive(Debug)]
+pub struct DecimalLiteral {
+    pub span: Span,
+}
+#[derive(Debug)]
+pub struct BasedLiteral {
     pub span: Span,
 }

@@ -43,7 +43,8 @@ ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
 
 ScalarTypeDefinition: ScalarTypeDefinition = {
     EnumTypeDefinition => ScalarTypeDefinition::Enum(<>),
-    RangeConstraint => ScalarTypeDefinition::Integer(<>),
+    IntegerTypeDefinition => ScalarTypeDefinition::Integer(<>),
+    PhysicalTypeDefinition => ScalarTypeDefinition::Physical(<>),
 }
 
 RangeConstraint: RangeConstraint = {
@@ -69,6 +70,25 @@ EnumTypeDefinition: EnumTypeDefinition = {
 EnumLiteral: EnumLiteral = {
     Identifier => EnumLiteral::Identifier(<>),
     TokenCharacterLiteral => EnumLiteral::CharLiteral(),
+}
+
+// LRM 5.2.3 Integer types
+IntegerTypeDefinition: IntegerTypeDefinition = {
+    RangeConstraint => IntegerTypeDefinition { range: <> },
+}
+
+// LRM 5.2.4 Physical types
+PhysicalTypeDefinition: PhysicalTypeDefinition = {
+    <range:RangeConstraint> "units"
+        <primary_unit:Identifier> <secondary_units:SecondaryUnitDeclaration*>
+        "end" "units" <end_name:Identifier?>
+    => PhysicalTypeDefinition { range, primary_unit, secondary_units, end_name },
+}
+SecondaryUnitDeclaration: SecondaryUnitDeclaration = {
+    <name:Identifier> "=" <value:PhysicalLiteral> => SecondaryUnitDeclaration { name, value }
+}
+PhysicalLiteral: PhysicalLiteral = {
+    <value:AbstractLiteral> <unit:Identifier> => PhysicalLiteral { value, unit }
 }
 
 // LRM 6 Declarations
@@ -323,13 +343,26 @@ ContextClause: ContextClause = {
     => ContextClause {}
 }
 
-// TODO move to right chapter
+// LRM 15 Lexical elements
+// LRM 15.4 Identifiers
 Identifier: Identifier = {
-    <start:@L> TokenIdentifier <end:@R> => Identifier { span: ctx.span(start, end) }
+    Span<TokenIdentifier> => Identifier { span: <> }
 }
-
 IdentifierList: NonEmptyVec<Identifier> = SeparatedNonEmptyNoTrail<Identifier, ",">;
 
+// LRM 15.5 Abstract literals
+AbstractLiteral: AbstractLiteral = {
+    DecimalLiteral => AbstractLiteral::Decimal(<>),
+    BasedLiteral => AbstractLiteral::Based(<>),
+}
+DecimalLiteral: DecimalLiteral = {
+    Span<TokenDecimalLiteral> => DecimalLiteral { span: <> },
+}
+BasedLiteral: BasedLiteral = {
+    Span<TokenBasedLiteral> => BasedLiteral { span: <> },
+}
+
+// TODO move to right chapter
 #[inline]
 MaybeLabel: Option<Identifier> = (<Identifier> ":")?;
 
@@ -343,6 +376,7 @@ extern {
         TokenDelimitedComment => TokenType::DelimitedComment,
         TokenIdentifier => TokenType::Identifier,
         TokenDecimalLiteral => TokenType::DecimalLiteral,
+        TokenBasedLiteral => TokenType::BasedLiteral,
         TokenBitStringLiteral => TokenType::BitStringLiteral,
         TokenCharacterLiteral => TokenType::CharacterLiteral,
         TokenStringLiteral => TokenType::StringLiteral,

@@ -241,7 +241,7 @@ impl<'s> Tokenizer<'s> {
                     _ => {
                         // check for based literal
                         let pos_before_pound = self.curr_pos();
-                        if self.accept('#') {
+                        let ty = if self.accept('#') {
                             let span_base = Span::new(start.file, start.byte, pos_before_pound.byte);
                             let base = start_left_str[..pos_before_pound.byte - start.byte]
                                 .replace('_', "")
@@ -255,12 +255,16 @@ impl<'s> Tokenizer<'s> {
                             self.skip_int(start, Some(base))?;
                             self.skip_maybe_fractional(start, Some(base))?;
                             self.skip_expect(start, "based literal", '#')?;
+
+                            TokenType::BasedLiteral
                         } else {
                             self.skip_maybe_fractional(start, None)?;
-                        }
+
+                            TokenType::DecimalLiteral
+                        };
 
                         self.skip_maybe_exp(start)?;
-                        TokenType::DecimalLiteral
+                        ty
                     }
                 }
             }
@@ -743,6 +747,7 @@ declare_tokens! {
 
         Identifier(TC::Identifier),
         DecimalLiteral(TC::IntegerLiteral),
+        BasedLiteral(TC::IntegerLiteral),
         BitStringLiteral(TC::IntegerLiteral),
         CharacterLiteral(TC::StringLiteral),
         StringLiteral(TC::StringLiteral),
