@@ -29,7 +29,7 @@ EntityStatement: EntityStatement = {
 ArchitectureBody: ArchitectureBody = {
     "architecture" <name:Identifier> "of" <entity_name:Identifier> "is"
         <decl:ArchitectureDeclarativeItem*>
-        "begin" <stmt:ArchitectureStatement*>
+        "begin" <stmt:ConcurrentStatement*>
         "end" "architecture"? <end_name:Identifier?> ";"
     => ArchitectureBody { name, entity_name, decl, stmt, end_name }
 }
@@ -38,14 +38,27 @@ ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
     // TODO
 }
 
-ArchitectureStatement: ArchitectureStatement = {
+// LRM 5 Types
+// LRM 5.2 Scalar types
+DiscreteRange: DiscreteRange = {
+    <left:Expression> <dir:RangeDirection> <right:Expression> => DiscreteRange { left, dir, right },
+}
+RangeDirection: RangeDirection = {
+    "to" => RangeDirection::To,
+    "downto" => RangeDirection::DownTo,
+}
+
+// LRM 6.3 Subtype declarations
+SubTypeIndication: SubTypeIndication = {
     // TODO
+    <name:Identifier> <constraint:("(" <DiscreteRange> ")")?>
+        => SubTypeIndication { name, constraint },
 }
 
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
-    "constant"? <names:IdentifierList> ":" "in"? <ty:InterfaceTypeIndication> <init:(":=" <ConditionalExpression>)?> ";"
+    "constant"? <names:IdentifierList> ":" "in"? <ty:InterfaceTypeIndication> <init:(":=" <ConditionalExpression>)?>
         => InterfaceConstantDeclaration { names, ty, init }
 }
 
@@ -66,11 +79,12 @@ Mode: Mode = {
 }
 
 InterfaceTypeIndication: InterfaceTypeIndication = {
-    Identifier => InterfaceTypeIndication::Subtype,
+    SubTypeIndication => InterfaceTypeIndication::Subtype(<>),
+    // TODO unspecified
 }
 
 // LRM 6.5.6 Interface lists
-InterfaceList<T>: NonEmptyVec<T> = SeparatedNonEmptyAllowTrail<T, ",">;
+InterfaceList<T>: NonEmptyVec<T> = SeparatedNonEmptyAllowTrail<T, ";">;
 
 // LRM 6.5.6.2 Generic clauses
 GenericClause: GenericClause = {
@@ -89,8 +103,53 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
 }
 
 // LRM 9 Expressions
-ConditionalExpression: Expression = {
+Expression: Expression = {
+    // TODO
+    Identifier => Expression::Identifier(<>),
+    TokenDecimalLiteral => Expression::DecimalLiteral(),
+}
 
+ConditionalExpression: Expression = {
+    Expression,
+}
+
+// LRM 10 Sequential statements
+// LRM 10.5 Simple assignment statement
+// LRM 10.5.2 Simple signal assignments
+DelayMechanism: DelayMechanism = {
+    "transport" => DelayMechanism::Transport,
+    <reject_time:("reject" <Expression>)?> "inertial" => DelayMechanism::Inertial { reject_time }
+}
+
+Target: Target = {
+    Identifier => Target::Name(<>),
+}
+
+Waveform: Waveform = {
+    <elements:SeparatedNonEmptyNoTrail<WaveformElement, ",">> => Waveform::Elements(elements),
+    "unaffected" => Waveform::Unaffected,
+}
+WaveformElement: WaveformElement = {
+    <value:WaveformElementValue> <after:("after" <Expression>)?> => WaveformElement { value, after }
+}
+WaveformElementValue: WaveformElementValue = {
+    Expression => WaveformElementValue::Expression(<>),
+    "null" => WaveformElementValue::Null,
+}
+
+// LRM 10.5.2.2 Executing a simple assignment statement
+
+// LRM 11 Concurrent statements
+ConcurrentStatement: ConcurrentStatement = {
+    // signal assignment
+    <label:MaybeLabel> <postponed:"postponed"?> <kind:ConcurrentSignalAssignmentKind> => {
+        let stmt = ConcurrentSignalAssignmentStatement { label, postponed: postponed.is_some(), kind };
+        ConcurrentStatement::SignalAssignment(stmt)
+    }
+}
+ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
+    <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <waveform:Waveform> ";"
+        => ConcurrentSignalAssignmentKind::Simple { target, guarded: guarded.is_some(), delay, waveform }
 }
 
 // LRM 13.1 Design units
@@ -118,11 +177,15 @@ ContextClause: ContextClause = {
     => ContextClause {}
 }
 
-// TODO sort
+// TODO move to right chapter
 Identifier: Identifier = {
     <start:@L> TokenIdentifier <end:@R> => Identifier { span: ctx.span(start, end) }
 }
+
 IdentifierList: NonEmptyVec<Identifier> = SeparatedNonEmptyNoTrail<Identifier, ",">;
+
+#[inline]
+MaybeLabel: Option<Identifier> = (<Identifier> ":")?;
 
 // tokens
 extern {

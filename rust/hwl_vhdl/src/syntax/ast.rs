@@ -13,10 +13,14 @@ pub struct EntityDeclaration {
 }
 
 #[derive(Debug)]
-pub enum EntityDeclarativeItem {}
+pub enum EntityDeclarativeItem {
+    // TODO
+}
 
 #[derive(Debug)]
-pub enum EntityStatement {}
+pub enum EntityStatement {
+    // TODO
+}
 
 // LRM 3.3 Architecture bodies
 #[derive(Debug)]
@@ -24,15 +28,37 @@ pub struct ArchitectureBody {
     pub name: Identifier,
     pub entity_name: Identifier,
     pub decl: Vec<ArchitectureDeclarativeItem>,
-    pub stmt: Vec<ArchitectureStatement>,
+    pub stmt: Vec<ConcurrentStatement>,
     pub end_name: Option<Identifier>,
 }
 
 #[derive(Debug)]
-pub enum ArchitectureDeclarativeItem {}
+pub enum ArchitectureDeclarativeItem {
+    // TODO
+}
 
+// LRM 5 Types
+// LRM 5.2 Scalar types
 #[derive(Debug)]
-pub enum ArchitectureStatement {}
+pub struct DiscreteRange {
+    pub left: Expression,
+    pub dir: RangeDirection,
+    pub right: Expression,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RangeDirection {
+    To,
+    DownTo,
+}
+
+// LRM 6.3 Subtype declarations
+#[derive(Debug)]
+pub struct SubTypeIndication {
+    // TODO
+    pub name: Identifier,
+    pub constraint: Option<DiscreteRange>,
+}
 
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
@@ -51,7 +77,7 @@ pub struct InterfaceSignalDeclaration {
 
 #[derive(Debug)]
 pub enum InterfaceTypeIndication {
-    Subtype,
+    Subtype(SubTypeIndication),
     Unspecified,
 }
 
@@ -63,7 +89,7 @@ pub enum ModeIndication {
         bus: bool,
         init: Option<Expression>,
     },
-    RecordView,
+    RecordView(/*TODO*/),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -92,9 +118,9 @@ pub struct GenericClause {
 #[derive(Debug)]
 pub enum GenericInterfaceDeclaration {
     Constant(InterfaceConstantDeclaration),
-    Type,
-    Subprogram,
-    Package,
+    Type(/*TODO*/),
+    Subprogram(/*TODO*/),
+    Package(/*TODO*/),
 }
 
 #[derive(Debug)]
@@ -105,19 +131,31 @@ pub struct PortClause {
 #[derive(Debug)]
 pub enum PortInterfaceDeclaration {
     Signal(InterfaceSignalDeclaration),
-    Variable,
+    Variable(/*TODO*/),
 }
 
 // LRM 9 Expressions
 #[derive(Debug)]
-pub enum Expression {}
+pub enum Expression {
+    // TODO
+    Identifier(Identifier),
+    DecimalLiteral(/*TODO*/),
+}
 
 // LRM 10 Sequential statements
 // LRM 10.5 Simple assignment statement
 // LRM 10.5.2 Simple signal assignments
 #[derive(Debug)]
-pub struct DelayMechanism {
-    pub reject: Option<Expression>,
+pub enum DelayMechanism {
+    Transport,
+    Inertial { reject_time: Option<Expression> },
+}
+
+#[derive(Debug)]
+pub enum Target {
+    // TODO LRM syntax implies this can be many other things too, is that true?
+    Name(Identifier),
+    Aggregate(/*TODO*/),
 }
 
 #[derive(Debug)]
@@ -129,20 +167,26 @@ pub enum Waveform {
 // LRM 10.5.2.2 Executing a simple assignment statement
 #[derive(Debug)]
 pub struct WaveformElement {
-    pub value: Option<Expression>,
+    pub value: WaveformElementValue,
     pub after: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub enum WaveformElementValue {
+    Expression(Expression),
+    Null,
 }
 
 // LRM 11 Concurrent statements
 #[derive(Debug)]
 pub enum ConcurrentStatement {
-    Block,
-    Process,
-    ProcedureCall,
-    Assertion,
+    Block(/*TODO*/),
+    Process(/*TODO*/),
+    ProcedureCall(/*TODO*/),
+    Assertion(/*TODO*/),
     SignalAssignment(ConcurrentSignalAssignmentStatement),
-    ComponentInstantiation,
-    Generate,
+    ComponentInstantiation(/*TODO*/),
+    Generate(/*TODO*/),
 }
 
 // LRM 11.6 Concurrent signal assignment statements
@@ -150,16 +194,19 @@ pub enum ConcurrentStatement {
 pub struct ConcurrentSignalAssignmentStatement {
     pub label: Option<Identifier>,
     pub postponed: bool,
+    pub kind: ConcurrentSignalAssignmentKind,
 }
 
-pub enum ConcurrentSignalAssignment {
+#[derive(Debug)]
+pub enum ConcurrentSignalAssignmentKind {
     Simple {
+        target: Target,
         guarded: bool,
         delay: Option<DelayMechanism>,
         waveform: Waveform,
     },
-    Conditional,
-    Selected,
+    Conditional(/*TODO*/),
+    Selected(/*TODO*/),
 }
 
 // LRM 13.1 Design units
@@ -178,14 +225,14 @@ pub struct DesignUnit {
 pub enum LibraryUnit {
     // primary unit
     EntityDeclaration(EntityDeclaration),
-    ConfigurationDeclaration,
-    PackageDeclaration,
-    PackageInstantiationDeclaration,
-    ContextDeclaration,
+    ConfigurationDeclaration(/*TODO*/),
+    PackageDeclaration(/*TODO*/),
+    PackageInstantiationDeclaration(/*TODO*/),
+    ContextDeclaration(/*TODO*/),
 
     // secondary unit
     ArchitectureBody(ArchitectureBody),
-    PackageBody,
+    PackageBody(/*TODO*/),
 }
 
 // LRM 13.2 Design libraries
@@ -196,9 +243,11 @@ pub struct LibraryClause {
 
 // LRM 13.4 Context clauses
 #[derive(Debug)]
-pub struct ContextClause {}
+pub struct ContextClause {
+    // TODO
+}
 
-// TODO sort
+// TODO move to right chapter
 #[derive(Debug)]
 pub struct Identifier {
     pub span: Span,

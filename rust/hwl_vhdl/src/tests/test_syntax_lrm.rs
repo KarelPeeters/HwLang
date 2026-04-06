@@ -1,13 +1,4 @@
-use crate::syntax::parser::parse_file_content_without_recovery;
-use hwl_common::source::SourceDatabase;
-
-// TODO test standard packages
-// TODO copy over all LRM examples
-
-#[test]
-fn empty() {
-    test_parse("")
-}
+use crate::tests::test_parse;
 
 #[test]
 fn comments() {
@@ -19,11 +10,11 @@ fn comments() {
 
 #[test]
 fn entity_header() {
-    test_parse("entity Full_Adder is port(X, Y, Cin: in Bit, Sum: out Bit); end Full_Adder;");
+    test_parse("entity Full_Adder is port(X, Y, Cin: in Bit; Sum: out Bit); end Full_Adder;");
     test_parse(
-        "entity AndGate is generic(N: Natural := 2) port(inputs: in Bit_Vector(1 to N); result: out Bit); end entity AndGate;",
+        "entity AndGate is generic(N: Natural := 2); port(inputs: in Bit_Vector(1 to N); result: out Bit); end entity AndGate;",
     );
-    test_parse("entity TestBench is end TestBench");
+    test_parse("entity TestBench is end TestBench;");
 }
 
 #[test]
@@ -80,15 +71,4 @@ fn architecture_statement() {
         end Behavior;
         ",
     )
-}
-
-fn test_parse(src: &str) {
-    println!("{}", src);
-
-    let mut source = SourceDatabase::new();
-    let file = source.add_file("dummy.vhd".to_owned(), src.to_owned());
-    let result = parse_file_content_without_recovery(file, src);
-
-    println!("{:#?}", result);
-    result.unwrap();
 }
