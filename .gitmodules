@@ -2,3 +2,9 @@
 	path = extern/pybind11
 	url = https://github.com/pybind/pybind11.git
 	branch = stable
+[submodule "external/nvc"]
+	path = external/nvc
+	url = git@github.com:nickg/nvc.git
+[submodule "external/ghdl"]
+	path = external/ghdl
+	url = git@github.com:ghdl/ghdl.git
