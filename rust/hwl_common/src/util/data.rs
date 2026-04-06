@@ -158,6 +158,12 @@ impl<T> NonEmptyVec<T> {
         Self { inner: vec![value] }
     }
 
+    pub fn new_vec_push(vec: Vec<T>, last: T) -> Self {
+        let mut inner = vec;
+        inner.push(last);
+        Self { inner }
+    }
+
     pub fn first(&self) -> &T {
         &self.inner[0]
     }

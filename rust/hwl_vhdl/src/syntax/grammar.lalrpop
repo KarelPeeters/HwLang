@@ -1,0 +1,347 @@
+use hwl_common::pos::{Span, Spanned};
+use hwl_common::util::data::NonEmptyVec;
+
+use crate::syntax::ast::*;
+use crate::syntax::parser::ParseContext;
+use crate::syntax::token::{TokenType, TokenError};
+
+grammar(ctx: &mut ParseContext);
+
+// LRM 3.2 Entity declarations
+EntityDeclaration: EntityDeclaration = {
+    "entity"  <name:Identifier> "is"
+        <generic:GenericClause?>
+        <port:PortClause?>
+        <decl:EntityDeclarativeItem*>
+        <stmt:("begin" <EntityStatement*>)?>
+        "end" "entity"? <end_name:Identifier?> ";"
+    => EntityDeclaration { name, generic, port, decl, stmt, end_name }
+}
+
+EntityDeclarativeItem: EntityDeclarativeItem = {
+    // TODO
+}
+EntityStatement: EntityStatement = {
+    // TODO
+}
+
+// LRM 3.3 Architecture bodies
+ArchitectureBody: ArchitectureBody = {
+    "architecture" <name:Identifier> "of" <entity_name:Identifier> "is"
+        <decl:ArchitectureDeclarativeItem*>
+        "begin" <stmt:ArchitectureStatement*>
+        "end" "architecture"? <end_name:Identifier?> ";"
+    => ArchitectureBody { name, entity_name, decl, stmt, end_name }
+}
+
+ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
+    // TODO
+}
+
+ArchitectureStatement: ArchitectureStatement = {
+    // TODO
+}
+
+// LRM 6.5 Interface declarations
+// LRM 6.5.2 Interface object declarations
+InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
+    "constant"? <names:IdentifierList> ":" "in"? <ty:InterfaceTypeIndication> <init:(":=" <ConditionalExpression>)?> ";"
+        => InterfaceConstantDeclaration { names, ty, init }
+}
+
+InterfaceSignalDeclaration: InterfaceSignalDeclaration = {
+    "signal"? <names:IdentifierList> ":" <mode_indication:ModeIndication>
+        => InterfaceSignalDeclaration { names, mode_indication }
+}
+ModeIndication: ModeIndication = {
+    <mode:Mode?> <ty:InterfaceTypeIndication> <bus:"bus"?> <init:(":=" <ConditionalExpression>)?>
+        => ModeIndication::Simple { mode, ty, bus: bus.is_some(), init }
+}
+Mode: Mode = {
+    "in" => Mode::In,
+    "out" => Mode::Out,
+    "inout" => Mode::Inout,
+    "buffer" => Mode::Buffer,
+    "linkage" => Mode::Linkage,
+}
+
+InterfaceTypeIndication: InterfaceTypeIndication = {
+    Identifier => InterfaceTypeIndication::Subtype,
+}
+
+// LRM 6.5.6 Interface lists
+InterfaceList<T>: NonEmptyVec<T> = SeparatedNonEmptyAllowTrail<T, ",">;
+
+// LRM 6.5.6.2 Generic clauses
+GenericClause: GenericClause = {
+    "generic" "(" <InterfaceList<GenericInterfaceDeclaration>> ")" ";" => GenericClause { list: <> }
+}
+GenericInterfaceDeclaration: GenericInterfaceDeclaration = {
+    InterfaceConstantDeclaration => GenericInterfaceDeclaration::Constant(<>),
+}
+
+// LRM 6.5.6.3 Port clauses
+PortClause: PortClause = {
+    "port" "(" <InterfaceList<PortInterfaceDeclaration>> ")" ";" => PortClause { list: <> }
+}
+PortInterfaceDeclaration: PortInterfaceDeclaration = {
+    InterfaceSignalDeclaration => PortInterfaceDeclaration::Signal(<>),
+}
+
+// LRM 9 Expressions
+ConditionalExpression: Expression = {
+
+}
+
+// LRM 13.1 Design units
+pub DesignFile: DesignFile = {
+    <units:DesignUnit*> => DesignFile { units }
+}
+
+DesignUnit: DesignUnit = {
+    <context_clause:ContextClause> <library_unit:LibraryUnit>
+        => DesignUnit { context_clause, library_unit }
+}
+
+LibraryUnit: LibraryUnit = {
+    EntityDeclaration => LibraryUnit::EntityDeclaration(<>),
+    ArchitectureBody => LibraryUnit::ArchitectureBody(<>),
+}
+
+// LRM 13.2 Design libraries
+LibraryClause: LibraryClause = {
+    "library" <SeparatedNonEmptyNoTrail<Identifier, ".">> ";" => LibraryClause { logical_name_list: <> }
+}
+
+// LRM 13.4 Context clauses
+ContextClause: ContextClause = {
+    => ContextClause {}
+}
+
+// TODO sort
+Identifier: Identifier = {
+    <start:@L> TokenIdentifier <end:@R> => Identifier { span: ctx.span(start, end) }
+}
+IdentifierList: NonEmptyVec<Identifier> = SeparatedNonEmptyNoTrail<Identifier, ",">;
+
+// tokens
+extern {
+    type Location = usize;
+    type Error = TokenError;
+
+    enum TokenType {
+        TokenSingleLineComment => TokenType::SingleLineComment,
+        TokenDelimitedComment => TokenType::DelimitedComment,
+        TokenIdentifier => TokenType::Identifier,
+        TokenDecimalLiteral => TokenType::DecimalLiteral,
+        TokenBitStringLiteral => TokenType::BitStringLiteral,
+        TokenCharacterLiteral => TokenType::CharacterLiteral,
+        TokenStringLiteral => TokenType::StringLiteral,
+        TokenAttributeQuote => TokenType::AttributeQuote,
+        "abs" => TokenType::ResAbs,
+        "access" => TokenType::ResAccess,
+        "after" => TokenType::ResAfter,
+        "alias" => TokenType::ResAlias,
+        "all" => TokenType::ResAll,
+        "and" => TokenType::ResAnd,
+        "architecture" => TokenType::ResArchitecture,
+        "array" => TokenType::ResArray,
+        "assert" => TokenType::ResAssert,
+        "assume" => TokenType::ResAssume,
+        "attribute" => TokenType::ResAttribute,
+        "begin" => TokenType::ResBegin,
+        "block" => TokenType::ResBlock,
+        "body" => TokenType::ResBody,
+        "buffer" => TokenType::ResBuffer,
+        "bus" => TokenType::ResBus,
+        "case" => TokenType::ResCase,
+        "component" => TokenType::ResComponent,
+        "configuration" => TokenType::ResConfiguration,
+        "constant" => TokenType::ResConstant,
+        "context" => TokenType::ResContext,
+        "cover" => TokenType::ResCover,
+        "default" => TokenType::ResDefault,
+        "disconnect" => TokenType::ResDisconnect,
+        "downto" => TokenType::ResDownto,
+        "else" => TokenType::ResElse,
+        "elsif" => TokenType::ResElsif,
+        "end" => TokenType::ResEnd,
+        "entity" => TokenType::ResEntity,
+        "exit" => TokenType::ResExit,
+        "fairness" => TokenType::ResFairness,
+        "file" => TokenType::ResFile,
+        "for" => TokenType::ResFor,
+        "force" => TokenType::ResForce,
+        "function" => TokenType::ResFunction,
+        "generate" => TokenType::ResGenerate,
+        "generic" => TokenType::ResGeneric,
+        "group" => TokenType::ResGroup,
+        "guarded" => TokenType::ResGuarded,
+        "if" => TokenType::ResIf,
+        "impure" => TokenType::ResImpure,
+        "in" => TokenType::ResIn,
+        "inertial" => TokenType::ResInertial,
+        "inout" => TokenType::ResInout,
+        "is" => TokenType::ResIs,
+        "label" => TokenType::ResLabel,
+        "library" => TokenType::ResLibrary,
+        "linkage" => TokenType::ResLinkage,
+        "literal" => TokenType::ResLiteral,
+        "loop" => TokenType::ResLoop,
+        "map" => TokenType::ResMap,
+        "mod" => TokenType::ResMod,
+        "nand" => TokenType::ResNand,
+        "new" => TokenType::ResNew,
+        "next" => TokenType::ResNext,
+        "nor" => TokenType::ResNor,
+        "not" => TokenType::ResNot,
+        "null" => TokenType::ResNull,
+        "of" => TokenType::ResOf,
+        "on" => TokenType::ResOn,
+        "open" => TokenType::ResOpen,
+        "or" => TokenType::ResOr,
+        "others" => TokenType::ResOthers,
+        "out" => TokenType::ResOut,
+        "package" => TokenType::ResPackage,
+        "parameter" => TokenType::ResParameter,
+        "port" => TokenType::ResPort,
+        "postponed" => TokenType::ResPostponed,
+        "private" => TokenType::ResPrivate,
+        "procedure" => TokenType::ResProcedure,
+        "process" => TokenType::ResProcess,
+        "property" => TokenType::ResProperty,
+        "protected" => TokenType::ResProtected,
+        "pure" => TokenType::ResPure,
+        "range" => TokenType::ResRange,
+        "record" => TokenType::ResRecord,
+        "register" => TokenType::ResRegister,
+        "reject" => TokenType::ResReject,
+        "release" => TokenType::ResRelease,
+        "rem" => TokenType::ResRem,
+        "report" => TokenType::ResReport,
+        "restrict" => TokenType::ResRestrict,
+        "return" => TokenType::ResReturn,
+        "rol" => TokenType::ResRol,
+        "ror" => TokenType::ResRor,
+        "select" => TokenType::ResSelect,
+        "sequence" => TokenType::ResSequence,
+        "severity" => TokenType::ResSeverity,
+        "shared" => TokenType::ResShared,
+        "signal" => TokenType::ResSignal,
+        "sla" => TokenType::ResSla,
+        "sll" => TokenType::ResSll,
+        "sra" => TokenType::ResSra,
+        "srl" => TokenType::ResSrl,
+        "strong" => TokenType::ResStrong,
+        "subtype" => TokenType::ResSubtype,
+        "then" => TokenType::ResThen,
+        "to" => TokenType::ResTo,
+        "transport" => TokenType::ResTransport,
+        "type" => TokenType::ResType,
+        "unaffected" => TokenType::ResUnaffected,
+        "units" => TokenType::ResUnits,
+        "until" => TokenType::ResUntil,
+        "use" => TokenType::ResUse,
+        "variable" => TokenType::ResVariable,
+        "view" => TokenType::ResView,
+        "vmode" => TokenType::ResVmode,
+        "vpkg" => TokenType::ResVpkg,
+        "vprop" => TokenType::ResVprop,
+        "vunit" => TokenType::ResVunit,
+        "wait" => TokenType::ResWait,
+        "when" => TokenType::ResWhen,
+        "while" => TokenType::ResWhile,
+        "with" => TokenType::ResWith,
+        "xnor" => TokenType::ResXnor,
+        "xor" => TokenType::ResXor,
+        "(" => TokenType::OpenR,
+        ")" => TokenType::CloseR,
+        "[" => TokenType::OpenS,
+        "]" => TokenType::CloseS,
+        ";" => TokenType::Semi,
+        ":" => TokenType::Colon,
+        "." => TokenType::Dot,
+        "," => TokenType::Comma,
+        "?" => TokenType::Quest,
+        "@" => TokenType::AtSign,
+        "^" => TokenType::Caret,
+        "|" => TokenType::Pipe,
+        "=>" => TokenType::Arrow,
+        ":=" => TokenType::ColonEq,
+        "??" => TokenType::QuestQuest,
+        "=" => TokenType::Eq,
+        "/=" => TokenType::SlashEq,
+        "<" => TokenType::Lt,
+        "<=" => TokenType::LtEq,
+        ">" => TokenType::Gt,
+        ">=" => TokenType::GtEq,
+        "?=" => TokenType::QuestEq,
+        "?/=" => TokenType::QuestSlashEq,
+        "?<" => TokenType::QuestLt,
+        "?<=" => TokenType::QuestLtEq,
+        "?>" => TokenType::QuestGt,
+        "?>=" => TokenType::QuestGtEq,
+        "+" => TokenType::Plus,
+        "-" => TokenType::Minus,
+        "&" => TokenType::Amper,
+        "*" => TokenType::Star,
+        "/" => TokenType::Slash,
+        "**" => TokenType::StarStar,
+    }
+}
+
+// utilities
+SeparatedNoTrail<T, S>: Vec<T> = {
+    => vec![],
+    <v:(<T> S)*> <e:T> => {
+        let mut v = v;
+        if let Some(e) = e {
+            v.push(e);
+        }
+        v
+    }
+}
+
+SeparatedAllowTrail<T, S>: Vec<T> = {
+    <v:(<T> S)*> <e:T?> => {
+        let mut v = v;
+        if let Some(e) = e {
+            v.push(e);
+        }
+        v
+    }
+}
+
+SeparatedNonEmptyNoTrail<T, S>: NonEmptyVec<T> = {
+    <v:(<T> S)*> <e:T> => {
+        NonEmptyVec::new_vec_push(v, e)
+    }
+}
+
+SeparatedNonEmptyAllowTrail<T, S>: NonEmptyVec<T> = {
+    <v:(<T> S)*> <e:T> S? => {
+        NonEmptyVec::new_vec_push(v, e)
+    }
+}
+
+// Matches nothing, useful to skip branches in generic macros.
+#[inline]
+Never<T>: T = {}
+
+#[inline]
+Box<T>: Box<T> = {
+    T => Box::new(<>),
+}
+
+#[inline]
+BoxSpanned<T>: Box<Spanned<T>> = Box<Spanned<T>>;
+
+#[inline]
+Spanned<T>: Spanned<T> = {
+    <start:@L> <inner:T> <end:@R> => Spanned { inner, span: ctx.span(start, end) },
+}
+
+#[inline]
+Span<T>: Span = {
+    <start:@L> <inner:T> <end:@R> => ctx.span(start, end),
+}

@@ -454,6 +454,7 @@ impl<'s> Tokenizer<'s> {
 
             // bigrams
             ['=', '>', _] => skip_fixed(2, TokenType::Arrow),
+            [':', '=', _] => skip_fixed(2, TokenType::ColonEq),
             ['/', '=', _] => skip_fixed(2, TokenType::SlashEq),
             ['>', '=', _] => skip_fixed(2, TokenType::GtEq),
             ['<', '=', _] => skip_fixed(2, TokenType::LtEq),
@@ -884,6 +885,7 @@ declare_tokens! {
         Caret("^", TC::Symbol),
         Pipe("|", TC::Symbol),
         Arrow("=>", TC::Symbol),
+        ColonEq(":=", TC::Symbol),
 
         // operators
         QuestQuest("??", TC::Symbol),
@@ -965,6 +967,7 @@ mod test {
     use crate::syntax::token::{Token, TokenType, tokenize};
     use hwl_common::pos::Span;
     use hwl_common::source::FileId;
+    use hwl_util::swriteln;
     use std::collections::HashSet;
 
     #[test]
@@ -1025,5 +1028,27 @@ mod test {
         }
 
         assert!(!any_error);
+    }
+
+    #[test]
+    fn grammar_matches_tokens() {
+        let expected = {
+            const I: &str = "    ";
+            let mut f = String::new();
+            swriteln!(f, "{I}enum TokenType {{");
+            for (name, _ty) in TokenType::CUSTOM_TOKENS {
+                swriteln!(f, "{I}{I}Token{name} => TokenType::{name},");
+            }
+            for info in TokenType::FIXED_TOKENS {
+                swriteln!(f, "{I}{I}{:?} => TokenType::{},", info.literal, info.name);
+            }
+            swriteln!(f, "{I}}}");
+            f
+        };
+
+        println!("{expected}");
+
+        let grammar = include_str!("grammar.lalrpop");
+        assert!(grammar.contains(&expected));
     }
 }
