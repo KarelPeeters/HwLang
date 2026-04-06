@@ -1,5 +1,6 @@
 use hwl_common::pos::Span;
 use hwl_common::util::data::NonEmptyVec;
+use hwl_common::util::Indent;
 
 // LRM 3.2 Entity declarations
 #[derive(Debug)]
@@ -263,6 +264,27 @@ pub enum PortInterfaceDeclaration {
     Variable(/*TODO*/),
 }
 
+// LRM 8 Names
+// LRM 8.1 General
+#[derive(Debug)]
+pub enum Name {
+    // TODO
+    Simple(Identifier),
+    Selected(Box<SelectedName>),
+}
+
+// LRM 8.3 Selected names
+#[derive(Debug)]
+pub struct SelectedName {
+    pub prefix: Name,
+    pub suffix: Suffix,
+}
+#[derive(Debug)]
+pub enum Suffix {
+    Identifier(Identifier),
+    All,
+}
+
 // LRM 9 Expressions
 #[derive(Debug)]
 pub struct ConditionalOrUnAffectedExpression {
@@ -408,13 +430,6 @@ pub enum MultiplyingOperator {
     Rem,
 }
 
-// LRM 9.3 Operands
-// LRM 9.3.2 Literals
-pub enum Literal {
-    // TODO expand
-    DecimalLiteral,
-}
-
 // LRM 10 Sequential statements
 // LRM 10.5 Simple assignment statement
 // LRM 10.5.2 Simple signal assignments
@@ -482,6 +497,13 @@ pub enum ConcurrentSignalAssignmentKind {
     Selected(/*TODO*/),
 }
 
+// LRM 12 Scope and visibility
+// LRM 12.4 Use clauses
+#[derive(Debug)]
+pub struct UseClause {
+    pub names: NonEmptyVec<SelectedName>,
+}
+
 // LRM 13.1 Design units
 #[derive(Debug)]
 pub struct DesignFile {
@@ -511,13 +533,20 @@ pub enum LibraryUnit {
 // LRM 13.2 Design libraries
 #[derive(Debug)]
 pub struct LibraryClause {
-    pub logical_name_list: NonEmptyVec<Identifier>,
+    pub names: NonEmptyVec<Identifier>,
 }
 
 // LRM 13.4 Context clauses
 #[derive(Debug)]
 pub struct ContextClause {
-    // TODO
+    pub items: Vec<ContextItem>,
+}
+
+#[derive(Debug)]
+pub enum ContextItem {
+    Library(LibraryClause),
+    Use(UseClause),
+    Context(/*TODO*/),
 }
 
 // LRM 15 Lexical elements

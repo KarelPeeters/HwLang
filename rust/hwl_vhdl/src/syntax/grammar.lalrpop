@@ -198,6 +198,22 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
     InterfaceSignalDeclaration => PortInterfaceDeclaration::Signal(<>),
 }
 
+// LRM 8 Names
+// LRM 8.1 General
+Name: Name = {
+    Identifier => Name::Simple(<>),
+    SelectedName => Name::Selected(Box::new(<>)),
+}
+
+// LRM 8.3 Selected names
+SelectedName: SelectedName = {
+     <prefix:Name> "." <suffix:Suffix> => SelectedName { prefix, suffix }
+}
+Suffix: Suffix = {
+    Identifier => Suffix::Identifier(<>),
+    "all" => Suffix::All,
+}
+
 // LRM 9 Expressions
 ConditionalOrUnAffectedExpression: ConditionalOrUnAffectedExpression = {
     <conditional:ConditionalExpressionT<ExpressionOrUnAffected>> <final_condition:("when" <Expression>)?>
@@ -352,6 +368,12 @@ ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
         => ConcurrentSignalAssignmentKind::Simple { target, guarded: guarded.is_some(), delay, waveform }
 }
 
+// LRM 12 Scope and visibility
+// LRM 12.4 Use clauses
+UseClause: UseClause = {
+    "use" <names:SeparatedNonEmptyNoTrail<SelectedName, ",">> ";" => UseClause { names: <> }
+}
+
 // LRM 13.1 Design units
 pub DesignFile: DesignFile = {
     <units:DesignUnit*> => DesignFile { units }
@@ -371,12 +393,16 @@ LibraryUnit: LibraryUnit = {
 
 // LRM 13.2 Design libraries
 LibraryClause: LibraryClause = {
-    "library" <SeparatedNonEmptyNoTrail<Identifier, ".">> ";" => LibraryClause { logical_name_list: <> }
+    "library" <SeparatedNonEmptyNoTrail<Identifier, ".">> ";" => LibraryClause { names: <> }
 }
 
 // LRM 13.4 Context clauses
 ContextClause: ContextClause = {
-    => ContextClause {}
+    <ContextItem*> => ContextClause { items: <> }
+}
+ContextItem: ContextItem = {
+    LibraryClause => ContextItem::Library(<>),
+    UseClause => ContextItem::Use(<>),
 }
 
 // LRM 15 Lexical elements
