@@ -28,14 +28,18 @@ EntityStatement: EntityStatement = {
 // LRM 3.3 Architecture bodies
 ArchitectureBody: ArchitectureBody = {
     "architecture" <name:Identifier> "of" <entity_name:Identifier> "is"
-        <decl:ArchitectureDeclarativeItem*>
+        <decl:BlockDeclarativeItem*>
         "begin" <stmt:ConcurrentStatement*>
         "end" "architecture"? <end_name:Identifier?> ";"
     => ArchitectureBody { name, entity_name, decl, stmt, end_name }
 }
 
-ArchitectureDeclarativeItem: ArchitectureDeclarativeItem = {
-    // TODO
+BlockDeclarativeItem: BlockDeclarativeItem = {
+    PackageDeclaration => BlockDeclarativeItem::Package(<>),
+    PackageBody => BlockDeclarativeItem::PackageBody(<>),
+    TypeDeclaration => BlockDeclarativeItem::Type(<>),
+    ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
+    UseClause => BlockDeclarativeItem::Use(<>),
 }
 
 // LRM 4 Subprograms and packages

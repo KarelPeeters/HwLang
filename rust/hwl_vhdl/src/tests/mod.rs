@@ -71,10 +71,10 @@ pub fn test_parse_files(paths: &[&str]) {
     }
 
     let diags = diags.finish();
-    let any_diag = !diags.is_empty();
+    let diag_count = diags.len();
     println!("{}", diags_to_string(&source, diags, true));
 
-    if any_diag {
-        panic!("failed");
+    if diag_count > 0 {
+        panic!("failed, {diag_count} diagnostics");
     }
 }

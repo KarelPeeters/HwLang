@@ -28,14 +28,18 @@ pub enum EntityStatement {
 pub struct ArchitectureBody {
     pub name: Identifier,
     pub entity_name: Identifier,
-    pub decl: Vec<ArchitectureDeclarativeItem>,
+    pub decl: Vec<BlockDeclarativeItem>,
     pub stmt: Vec<ConcurrentStatement>,
     pub end_name: Option<Identifier>,
 }
 
 #[derive(Debug)]
-pub enum ArchitectureDeclarativeItem {
-    // TODO
+pub enum BlockDeclarativeItem {
+    Package(PackageDeclaration),
+    PackageBody(PackageBody),
+    Type(TypeDeclaration),
+    Constant(ConstantDeclaration),
+    Use(UseClause),
 }
 
 // LRM 4 Subprograms and packages
