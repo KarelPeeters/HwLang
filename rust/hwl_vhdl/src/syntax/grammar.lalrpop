@@ -82,7 +82,7 @@ RangeConstraint: RangeConstraint = {
 }
 
 Range: Range = {
-    <left: SimpleExpression> <direction:RangeDirection> <right: SimpleExpression>
+    <left:Box<SimpleExpression>> <direction:RangeDirection> <right:Box<SimpleExpression>>
         => Range::Simple(SimpleRange { left, direction, right }),
     Expression => Range::Expression(<>),
 }
@@ -219,72 +219,97 @@ Suffix: Suffix = {
 }
 
 // LRM 9 Expressions
-ConditionalOrUnAffectedExpression: ConditionalOrUnAffectedExpression = {
-    <conditional:ConditionalExpressionT<ExpressionOrUnAffected>> <final_condition:("when" <Expression>)?>
-        => ConditionalOrUnAffectedExpression { conditional, final_condition }
+ConditionalExpression: ConditionalExpression = {
+    <value_first:Box<Expression>> <branches:ConditionalExpressionBranch*>
+        => ConditionalExpression { value_first, branches, condition_final: None }
 }
-ExpressionOrUnAffected: ExpressionOrUnAffected = {
-    Expression => ExpressionOrUnAffected::Expression(<>),
-    "unaffected" => ExpressionOrUnAffected::Unaffected,
-}
-
-ConditionalExpression = ConditionalExpressionT<Expression>;
-
-ConditionalExpressionT<T>: ConditionalExpression<T> = {
-    <value_first:T> <branches:ConditionalExpressionBranchT<T>*>
-        => ConditionalExpression { value_first, branches }
-}
-ConditionalExpressionBranchT<T>: ConditionalExpressionBranch<T> = {
-    "when" <condition:Expression> "else" <value_else:T> => ConditionalExpressionBranch { condition, value_else }
+ConditionalExpressionBranch: ConditionalExpressionBranch<Box<Expression>> = {
+    "when" <condition:Expression> "else" <value_else:Box<Expression>>
+        => ConditionalExpressionBranch { condition, value_else }
 }
 
 Expression: Expression = {
-    "??" <PrimaryExpression> => Expression::ConditionOperator(<>),
-    LogicalExpression => Expression::Logical(<>),
+    "??" <inner:Box<PrimaryExpression>>
+        => Expression::Unary { op: UnaryOperator::Condition, inner },
+    LogicalExpression,
 }
-LogicalExpression: LogicalExpression = {
-    RelationExpression => LogicalExpression::Relation(<>),
+LogicalExpression: Expression = {
+    RelationExpression,
 
     <first:RelationExpression> "and" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "and">>
-        => LogicalExpression::And(first, rest),
+        => rest.into_iter().fold(first, |left, right| {
+            build_binary_op(BinaryOperator::Logical(LogicalOperator::And), left, right)
+        }),
     <first:RelationExpression> "or" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "or">>
-        => LogicalExpression::Or(first, rest),
+        => rest.into_iter().fold(first, |left, right| {
+            build_binary_op(BinaryOperator::Logical(LogicalOperator::Or), left, right)
+        }),
     <first:RelationExpression> "xor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xor">>
-        => LogicalExpression::Xor(first, rest),
+        => rest.into_iter().fold(first, |left, right| {
+            build_binary_op(BinaryOperator::Logical(LogicalOperator::Xor), left, right)
+        }),
     <first:RelationExpression> "xnor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xnor">>
-        => LogicalExpression::Xnor(first, rest),
+        => rest.into_iter().fold(first, |left, right| {
+            build_binary_op(BinaryOperator::Logical(LogicalOperator::Xnor), left, right)
+        }),
 
     <left:RelationExpression> "nand" <right:RelationExpression>
-        => LogicalExpression::Nand(left, right),
+        => build_binary_op(BinaryOperator::Logical(LogicalOperator::Nand), left, right),
     <left:RelationExpression> "nor" <right:RelationExpression>
-        => LogicalExpression::Nor(left, right),
+        => build_binary_op(BinaryOperator::Logical(LogicalOperator::Nor), left, right),
 }
-RelationExpression: RelationExpression = {
-    <left:ShiftExpression> <op_right:(RelationalOperator ShiftExpression)?> => RelationExpression { left, op_right }
+RelationExpression: Expression = {
+    <left:ShiftExpression> <op_right:(RelationalOperator ShiftExpression)?> => match op_right {
+        Some((op, right)) => build_binary_op(BinaryOperator::Relational(op), left, right),
+        None => left,
+    }
 }
-ShiftExpression: ShiftExpression = {
-    <left:SimpleExpression> <op_right:(ShiftOperator SimpleExpression)?> => ShiftExpression { left, op_right }
+ShiftExpression: Expression = {
+    <left:SimpleExpression> <op_right:(ShiftOperator SimpleExpression)?> => match op_right {
+        Some((op, right)) => build_binary_op(BinaryOperator::Shift(op), left, right),
+        None => left,
+    }
 }
-SimpleExpression: SimpleExpression = {
-    <sign:Sign?> <left:TermExpression> <op_right:(AddingOperator TermExpression)*>
-        => SimpleExpression { sign, left, op_right }
+SimpleExpression: Expression = {
+    <sign:Sign?> <left:TermExpression> <op_right:(AddingOperator TermExpression)*> => {
+        let mut res = match sign {
+            Some(sign) => Expression::Signed { sign, inner: Box::new(left) },
+            None => left,
+        };
+        for (op, right) in op_right {
+            res = build_binary_op(BinaryOperator::Adding(op), res, right);
+        }
+        res
+    }
 }
-TermExpression: TermExpression = {
-    <left:Factor> <op_right:(MultiplyingOperator Factor)*> => TermExpression { left, op_right }
+TermExpression: Expression = {
+    <left:Factor> <op_right:(MultiplyingOperator Factor)*> => {
+        let mut res = left;
+        for (op, right) in op_right {
+            res = build_binary_op(BinaryOperator::Multiplying(op), res, right);
+        }
+        res
+    }
 }
-Factor: Factor = {
-    <left:UnaryExpression> <power_right:("**" <UnaryExpression>)?> => Factor { left, power_right }
+Factor: Expression = {
+    <left:UnaryExpression> <power_right:("**" <UnaryExpression>)?> => match power_right {
+        Some(right) => build_binary_op(BinaryOperator::Power, left, right),
+        None => left,
+    }
 }
-UnaryExpression: UnaryExpression = {
-    PrimaryExpression => UnaryExpression::Primary(<>),
-    "abs" <PrimaryExpression> => UnaryExpression::Abs(<>),
-    "not" <PrimaryExpression> => UnaryExpression::Not(<>),
-    <op:LogicalOperator> <inner:PrimaryExpression> => UnaryExpression::Logical(op, inner),
+UnaryExpression: Expression = {
+    PrimaryExpression,
+    "abs" <inner:Box<PrimaryExpression>>
+        => Expression::Unary { op: UnaryOperator::Abs, inner },
+    "not" <inner:Box<PrimaryExpression>>
+        => Expression::Unary { op: UnaryOperator::Not, inner },
+    <op:LogicalOperator> <inner:Box<PrimaryExpression>>
+        => Expression::Unary { op: UnaryOperator::Logical(op), inner },
 }
-PrimaryExpression: PrimaryExpression = {
+PrimaryExpression: Expression = {
     // TODO expand
-    Identifier => PrimaryExpression::Name(<>),
-    TokenDecimalLiteral => PrimaryExpression::DecimalLiteral,
+    Identifier => Expression::Name(<>),
+    TokenDecimalLiteral => Expression::DecimalLiteral,
 }
 
 LogicalOperator: LogicalOperator = {

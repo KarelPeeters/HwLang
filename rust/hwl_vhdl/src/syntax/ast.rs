@@ -1,6 +1,5 @@
 use hwl_common::pos::Span;
 use hwl_common::util::data::NonEmptyVec;
-use hwl_common::util::Indent;
 
 // LRM 3.2 Entity declarations
 #[derive(Debug)]
@@ -95,9 +94,9 @@ pub enum Range {
 
 #[derive(Debug)]
 pub struct SimpleRange {
-    pub left: SimpleExpression,
+    pub left: Box<Expression>,
     pub direction: RangeDirection,
-    pub right: SimpleExpression,
+    pub right: Box<Expression>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -290,21 +289,39 @@ pub enum Suffix {
 }
 
 // LRM 9 Expressions
+// For expressions and related constructs we take a complete different approach from the LRM. The LRM grammars are
+// trying to capture too many semantics already. This makes it hard to parse VHDL without already resolving symbols and
+// types, which we want to avoid.
 #[derive(Debug)]
-pub struct ConditionalOrUnAffectedExpression {
-    pub conditional: ConditionalExpression<ExpressionOrUnAffected>,
-    pub final_condition: Option<Expression>,
-}
-#[derive(Debug)]
-pub enum ExpressionOrUnAffected {
-    Expression(Expression),
+pub enum Expression {
+    // primary
+    Name(Identifier),
+    DecimalLiteral,
+
+    // LRM 9.1 General
+    Conditional(ConditionalExpression),
     Unaffected,
+
+    Signed {
+        sign: Sign,
+        inner: Box<Expression>,
+    },
+    Unary {
+        op: UnaryOperator,
+        inner: Box<Expression>,
+    },
+    Binary {
+        op: BinaryOperator,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
 }
 
 #[derive(Debug)]
-pub struct ConditionalExpression<T = Expression> {
-    pub value_first: T,
-    pub branches: Vec<ConditionalExpressionBranch<T>>,
+pub struct ConditionalExpression {
+    pub value_first: Box<Expression>,
+    pub branches: Vec<ConditionalExpressionBranch<Box<Expression>>>,
+    pub condition_final: Option<Box<Expression>>,
 }
 #[derive(Debug)]
 pub struct ConditionalExpressionBranch<T> {
@@ -312,69 +329,22 @@ pub struct ConditionalExpressionBranch<T> {
     pub value_else: T,
 }
 
-// TODO flatten this into a single enum, we only need these levels in the parser itself
-#[derive(Debug)]
-pub enum Expression {
-    ConditionOperator(PrimaryExpression),
-    Logical(LogicalExpression),
+#[derive(Debug, Copy, Clone)]
+pub enum BinaryOperator {
+    Relational(RelationalOperator),
+    Logical(LogicalOperator),
+    Shift(ShiftOperator),
+    Adding(AddingOperator),
+    Multiplying(MultiplyingOperator),
+    Power,
 }
 
-#[derive(Debug)]
-pub enum LogicalExpression {
-    Relation(RelationExpression),
-
-    And(RelationExpression, NonEmptyVec<RelationExpression>),
-    Or(RelationExpression, NonEmptyVec<RelationExpression>),
-    Nand(RelationExpression, RelationExpression),
-    Nor(RelationExpression, RelationExpression),
-    Xor(RelationExpression, NonEmptyVec<RelationExpression>),
-    Xnor(RelationExpression, NonEmptyVec<RelationExpression>),
-}
-
-#[derive(Debug)]
-pub struct RelationExpression {
-    pub left: ShiftExpression,
-    pub op_right: Option<(RelationalOperator, ShiftExpression)>,
-}
-
-#[derive(Debug)]
-pub struct ShiftExpression {
-    pub left: SimpleExpression,
-    pub op_right: Option<(ShiftOperator, SimpleExpression)>,
-}
-
-#[derive(Debug)]
-pub struct SimpleExpression {
-    pub sign: Option<Sign>,
-    pub left: TermExpression,
-    pub op_right: Vec<(AddingOperator, TermExpression)>,
-}
-
-#[derive(Debug)]
-pub struct TermExpression {
-    pub left: Factor,
-    pub op_right: Vec<(MultiplyingOperator, Factor)>,
-}
-
-#[derive(Debug)]
-pub struct Factor {
-    pub left: UnaryExpression,
-    pub power_right: Option<UnaryExpression>,
-}
-
-#[derive(Debug)]
-pub enum UnaryExpression {
-    Primary(PrimaryExpression),
-    Abs(PrimaryExpression),
-    Not(PrimaryExpression),
-    Logical(LogicalOperator, PrimaryExpression),
-}
-
-#[derive(Debug)]
-pub enum PrimaryExpression {
-    // TODO expand, maybe name is not even correct
-    Name(Identifier),
-    DecimalLiteral,
+pub fn build_binary_op(op: BinaryOperator, left: Expression, right: Expression) -> Expression {
+    Expression::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -432,6 +402,14 @@ pub enum MultiplyingOperator {
     Div,
     Mod,
     Rem,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum UnaryOperator {
+    Condition,
+    Abs,
+    Not,
+    Logical(LogicalOperator),
 }
 
 // LRM 10 Sequential statements
