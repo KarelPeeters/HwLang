@@ -15,6 +15,7 @@ pub struct EntityDeclaration {
 #[derive(Debug)]
 pub enum EntityDeclarativeItem {
     Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
 }
 
 #[derive(Debug)]
@@ -37,6 +38,7 @@ pub enum BlockDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
     Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
     Use(UseClause),
 }
@@ -54,6 +56,7 @@ pub struct PackageDeclaration {
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
     Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
 }
 
@@ -68,6 +71,7 @@ pub struct PackageBody {
 #[derive(Debug)]
 pub enum PackageBodyDeclarativeItem {
     Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
 }
 
@@ -343,33 +347,38 @@ pub enum Suffix {
 // types, which we want to avoid.
 #[derive(Debug)]
 pub enum Expression {
-    // primary
-    Name(Identifier),
-    DecimalLiteral,
+    // LRM 6.3 Subtype declarations
+    SubtypeIndication {
+        type_mark: TypeMark,
+        constraint: Box<Constraint>,
+    },
 
-    // LRM 9.1 General
+    // LRM  5.2 Scalar types
+    Range {
+        left: Box<Expression>,
+        direction: RangeDirection,
+        right: Box<Expression>,
+    },
+
+    // LRM 9 Expressions
     Conditional(ConditionalExpression),
     Unaffected,
-
-    Signed {
-        sign: Sign,
-        inner: Box<Expression>,
-    },
-    Unary {
-        op: UnaryOperator,
-        inner: Box<Expression>,
-    },
     Binary {
         op: BinaryOperator,
         left: Box<Expression>,
         right: Box<Expression>,
     },
-
-    Range {
-        left: Box<Expression>,
-        direction: RangeDirection,
-        right: Box<Expression>,
-    }
+    Unary {
+        op: UnaryOperator,
+        inner: Box<Expression>,
+    },
+    Signed {
+        sign: Sign,
+        inner: Box<Expression>,
+    },
+    // primary
+    Name(Name),
+    DecimalLiteral,
 }
 
 #[derive(Debug)]

@@ -20,6 +20,7 @@ EntityDeclaration: EntityDeclaration = {
 
 EntityDeclarativeItem: EntityDeclarativeItem = {
     TypeDeclaration => EntityDeclarativeItem::Type(<>),
+    SubTypeDeclaration => EntityDeclarativeItem::Subtype(<>),
 }
 EntityStatement: EntityStatement = {
     // TODO
@@ -38,6 +39,7 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
     PackageDeclaration => BlockDeclarativeItem::Package(<>),
     PackageBody => BlockDeclarativeItem::PackageBody(<>),
     TypeDeclaration => BlockDeclarativeItem::Type(<>),
+    SubTypeDeclaration => BlockDeclarativeItem::Subtype(<>),
     ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
     UseClause => BlockDeclarativeItem::Use(<>),
 }
@@ -53,6 +55,7 @@ PackageDeclaration: PackageDeclaration = {
 }
 PackageDeclarativeItem: PackageDeclarativeItem = {
     TypeDeclaration => PackageDeclarativeItem::Type(<>),
+    SubTypeDeclaration => PackageDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageDeclarativeItem::Constant(<>),
 }
 
@@ -65,6 +68,7 @@ PackageBody: PackageBody = {
 }
 PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
     TypeDeclaration => PackageBodyDeclarativeItem::Type(<>),
+    SubTypeDeclaration => PackageBodyDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageBodyDeclarativeItem::Constant(<>),
 }
 
@@ -82,9 +86,9 @@ RangeConstraint: RangeConstraint = {
 }
 
 Range: Expression = {
-    <left:Box<Expr>> <direction:RangeDirection> <right:Box<Expr>>
+    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
         => Expression::Range { left, direction, right },
-    Expr,
+    ExprLevelSimple,
 }
 
 RangeDirection: RangeDirection = {
@@ -134,23 +138,71 @@ FullTypeDeclaration: FullTypeDeclaration = {
 
 TypeDefinition: TypeDefinition = {
     ScalarTypeDefinition => TypeDefinition::Scalar(<>),
-    //CompositeTypeDefinition => TypeDefinition::Composite(<>),
+    CompositeTypeDefinition => TypeDefinition::Composite(<>),
 }
 
 // LRM 6.3 Subtype declarations
+SubTypeDeclaration: SubTypeDeclaration = {
+    "subtype" <name:Identifier> "is" <indication:SubTypeExpr> ";" => SubTypeDeclaration { name, indication }
+}
+
+Constraint: Constraint = {
+    RangeConstraint => Constraint::Range(<>),
+    ArrayConstraint => Constraint::Array(<>),
+}
+
+ElementConstraint: ElementConstraint = {
+    ArrayConstraint => ElementConstraint::Array(<>),
+}
+
+ArrayConstraint: ArrayConstraint = {
+    <index_constraint:IndexConstraintOrOpen> <array_element_constraint:Box<ElementConstraint>?>
+        => ArrayConstraint { index_constraint, array_element_constraint },
+}
+
+IndexConstraintOrOpen: IndexConstraintOrOpen = {
+    IndexConstraint => IndexConstraintOrOpen::Constraint(<>),
+    "(" "open" ")" => IndexConstraintOrOpen::Open,
+}
+
+IndexConstraint: IndexConstraint = {
+    "(" <ranges:SeparatedNonEmptyNoTrail<Range, ",">> ")" => IndexConstraint { ranges },
+}
+
+CompositeTypeDefinition: CompositeTypeDefinition = {
+    ArrayTypeDefinition => CompositeTypeDefinition::Array(<>),
+}
+
+ArrayTypeDefinition: ArrayTypeDefinition = {
+    "array" "(" <index_types:SeparatedNonEmptyNoTrail<IndexSubTypeDefinition, ",">> ")" "of" <element_type:SubTypeExpr>
+        => ArrayTypeDefinition::Unbounded(UnboundedArrayTypeDefinition { index_types, element_type }),
+    "array" <index_constraint:IndexConstraint> "of" <element_type:SubTypeExpr>
+        => ArrayTypeDefinition::Constrained(ConstrainedArrayTypeDefinition { index_constraint, element_type }),
+}
+
+IndexSubTypeDefinition: IndexSubTypeDefinition = {
+    <type_mark:Name> "range" "<" ">" => IndexSubTypeDefinition { type_mark },
+}
+
+SubTypeExpr: Expression = {
+    <type_mark:Name> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { type_mark, constraint: Box::new(constraint) },
+        None => Expression::Name(type_mark),
+    },
+}
 
 // LRM 6.4 Objects
 // LRM 6.4.2 Object declarations
 // LRM 6.4.2.2 Constant declarations
 ConstantDeclaration: ConstantDeclaration = {
-    "constant" <names:IdentifierList> ":" <ty:Expr> <init:(":=" <ExprLevelConditional>)?> ";"
+    "constant" <names:IdentifierList> ":" <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?> ";"
         => ConstantDeclaration { names, ty, init }
 }
 
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
-    "constant"? <names:IdentifierList> ":" "in"? <ty:Expr> <init:(":=" <ExprLevelConditional>)?>
+    "constant"? <names:IdentifierList> ":" "in"? <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?>
         => InterfaceConstantDeclaration { names, ty, init }
 }
 
@@ -171,7 +223,7 @@ Mode: Mode = {
 }
 
 InterfaceTypeIndication: InterfaceTypeIndication = {
-    // SubTypeIndication => InterfaceTypeIndication::Subtype(<>),
+    SubTypeExpr => InterfaceTypeIndication::Subtype(<>),
     // TODO unspecified
 }
 
@@ -308,14 +360,8 @@ UnaryExpression: Expression = {
 }
 ExprLevelPrimary: Expression = {
     // TODO expand
-    Identifier => Expression::Name(<>),
+    Name => Expression::Name(<>),
     TokenDecimalLiteral => Expression::DecimalLiteral,
-
-    // extra cases that got merged to avoid parsing ambiguities:
-    // call, this also handles subtype indication and array indexing
-    // <base:Identifier> <constraint:Constraint> => todo!(),
-    //<left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
-    //        => Range::Simple(SimpleRange { left, direction, right }),
 }
 
 LogicalOperator: LogicalOperator = {
