@@ -41,6 +41,9 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
     TypeDeclaration => BlockDeclarativeItem::Type(<>),
     SubTypeDeclaration => BlockDeclarativeItem::Subtype(<>),
     ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
+    SignalDeclaration => BlockDeclarativeItem::Signal(<>),
+    ProcedureDeclaration => BlockDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => BlockDeclarativeItem::Function(<>),
     UseClause => BlockDeclarativeItem::Use(<>),
 }
 
@@ -199,6 +202,16 @@ ConstantDeclaration: ConstantDeclaration = {
         => ConstantDeclaration { names, ty, init }
 }
 
+// LRM 6.4.2.3 Signal declarations
+SignalDeclaration: SignalDeclaration = {
+    "signal" <names:IdentifierList> ":" <ty:SubTypeExpr> <kind:SignalKind?> <init:(":=" <ExprLevelConditional>)?> ";"
+        => SignalDeclaration { names, ty, kind, init }
+}
+SignalKind: SignalKind = {
+    "register" => SignalKind::Register,
+    "bus" => SignalKind::Bus,
+}
+
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
@@ -244,6 +257,16 @@ PortClause: PortClause = {
 }
 PortInterfaceDeclaration: PortInterfaceDeclaration = {
     InterfaceSignalDeclaration => PortInterfaceDeclaration::Signal(<>),
+}
+
+// LRM 4.2 Subprogram declarations
+ProcedureDeclaration: ProcedureDeclaration = {
+    "procedure" <name:Identifier> ";" => ProcedureDeclaration { name },
+}
+
+FunctionDeclaration: FunctionDeclaration = {
+    "function" <name:Identifier> "return" <return_type:SubTypeExpr> ";"
+        => FunctionDeclaration { name, return_type },
 }
 
 // LRM 8 Names
@@ -411,6 +434,10 @@ MultiplyingOperator: MultiplyingOperator = {
 }
 
 // LRM 10 Sequential statements
+SequentialStatement: SequentialStatement = {
+    "null" ";" => SequentialStatement::Null,
+}
+
 // LRM 10.5 Simple assignment statement
 // LRM 10.5.2 Simple signal assignments
 DelayMechanism: DelayMechanism = {
@@ -438,11 +465,53 @@ WaveformElementValue: WaveformElementValue = {
 
 // LRM 11 Concurrent statements
 ConcurrentStatement: ConcurrentStatement = {
+    // LRM 11.2 Block statements
+    <label:MaybeLabel> <guard_expression:("block" ("(" <Expr> ")")?)> <decl:("is" <BlockDeclarativeItem*>)?> "begin" <stmt:ConcurrentStatement*> "end" "block"? <end_label:Identifier?> ";"
+        => ConcurrentStatement::Block(BlockStatement {
+            label,
+            guard_expression: guard_expression.1,
+            decl: decl.unwrap_or_default(),
+            stmt,
+            end_label,
+        }),
+
+    // LRM 11.3 Process statements
+    <label:MaybeLabel> <postponed:"postponed"?> "process" <sensitivity:ProcessSensitivityList?> <decl:("is" <ProcessDeclarativeItem*>)?> "begin" <stmt:SequentialStatement*> "end" "postponed"? "process" <end_label:Identifier?> ";"
+        => ConcurrentStatement::Process(ProcessStatement {
+            label,
+            postponed: postponed.is_some(),
+            sensitivity,
+            decl: decl.unwrap_or_default(),
+            stmt,
+            end_label,
+        }),
+
+    // LRM 11.4 Concurrent procedure call statements
+    <label:MaybeLabel> <postponed:"postponed"?> <procedure:Name> ";"
+        => ConcurrentStatement::ProcedureCall(ConcurrentProcedureCallStatement {
+            label,
+            postponed: postponed.is_some(),
+            procedure,
+        }),
+
     // signal assignment
     <label:MaybeLabel> <postponed:"postponed"?> <kind:ConcurrentSignalAssignmentKind> => {
         let stmt = ConcurrentSignalAssignmentStatement { label, postponed: postponed.is_some(), kind };
         ConcurrentStatement::SignalAssignment(stmt)
     }
+}
+
+// LRM 11.3 Process statements
+ProcessSensitivityList: ProcessSensitivityList = {
+    "(" "all" ")" => ProcessSensitivityList::All,
+    "(" <names:SeparatedNonEmptyNoTrail<Name, ",">> ")" => ProcessSensitivityList::Names(names),
+}
+
+ProcessDeclarativeItem: ProcessDeclarativeItem = {
+    TypeDeclaration => ProcessDeclarativeItem::Type(<>),
+    SubTypeDeclaration => ProcessDeclarativeItem::Subtype(<>),
+    ConstantDeclaration => ProcessDeclarativeItem::Constant(<>),
+    UseClause => ProcessDeclarativeItem::Use(<>),
 }
 ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
     <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <waveform:Waveform> ";"

@@ -40,6 +40,9 @@ pub enum BlockDeclarativeItem {
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
+    Signal(SignalDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
     Use(UseClause),
 }
 
@@ -246,6 +249,21 @@ pub struct ConstantDeclaration {
     pub init: Option<Expression>,
 }
 
+// LRM 6.4.2.3 Signal declarations
+#[derive(Debug)]
+pub struct SignalDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: SubTypeIndication,
+    pub kind: Option<SignalKind>,
+    pub init: Option<Expression>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum SignalKind {
+    Register,
+    Bus,
+}
+
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 #[derive(Debug)]
@@ -318,6 +336,18 @@ pub struct PortClause {
 pub enum PortInterfaceDeclaration {
     Signal(InterfaceSignalDeclaration),
     Variable(/*TODO*/),
+}
+
+// LRM 4.2 Subprogram declarations
+#[derive(Debug)]
+pub struct ProcedureDeclaration {
+    pub name: Identifier,
+}
+
+#[derive(Debug)]
+pub struct FunctionDeclaration {
+    pub name: Identifier,
+    pub return_type: SubTypeIndication,
 }
 
 // LRM 8 Names
@@ -514,13 +544,61 @@ pub enum WaveformElementValue {
 // LRM 11 Concurrent statements
 #[derive(Debug)]
 pub enum ConcurrentStatement {
-    Block(/*TODO*/),
-    Process(/*TODO*/),
-    ProcedureCall(/*TODO*/),
+    Block(BlockStatement),
+    Process(ProcessStatement),
+    ProcedureCall(ConcurrentProcedureCallStatement),
     Assertion(/*TODO*/),
     SignalAssignment(ConcurrentSignalAssignmentStatement),
     ComponentInstantiation(/*TODO*/),
     Generate(/*TODO*/),
+}
+
+// LRM 11.2 Block statements
+#[derive(Debug)]
+pub struct BlockStatement {
+    pub label: Option<Identifier>,
+    pub guard_expression: Option<Expression>,
+    pub decl: Vec<BlockDeclarativeItem>,
+    pub stmt: Vec<ConcurrentStatement>,
+    pub end_label: Option<Identifier>,
+}
+
+// LRM 11.3 Process statements
+#[derive(Debug)]
+pub struct ProcessStatement {
+    pub label: Option<Identifier>,
+    pub postponed: bool,
+    pub sensitivity: Option<ProcessSensitivityList>,
+    pub decl: Vec<ProcessDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum ProcessSensitivityList {
+    Names(NonEmptyVec<Name>),
+    All,
+}
+
+#[derive(Debug)]
+pub enum ProcessDeclarativeItem {
+    Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
+    Constant(ConstantDeclaration),
+    Use(UseClause),
+}
+
+#[derive(Debug)]
+pub enum SequentialStatement {
+    Null,
+}
+
+// LRM 11.4 Concurrent procedure call statements
+#[derive(Debug)]
+pub struct ConcurrentProcedureCallStatement {
+    pub label: Option<Identifier>,
+    pub postponed: bool,
+    pub procedure: Name,
 }
 
 // LRM 11.6 Concurrent signal assignment statements

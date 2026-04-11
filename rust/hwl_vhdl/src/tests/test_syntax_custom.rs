@@ -69,3 +69,82 @@ fn array_type_definitions_with_constraints() {
         ",
     )
 }
+
+#[test]
+fn architecture_signal_and_subprogram_declarations() {
+    test_parse(
+        "
+        entity top is
+        end;
+        architecture rtl of top is
+            signal a, b: std_logic;
+            signal c: std_logic bus := a;
+            signal d: std_logic register;
+            procedure clear;
+            function id_bit return std_logic;
+        begin
+            a <= b;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn concurrent_block_statement_basic() {
+    test_parse(
+        "
+        entity top is
+        end;
+        architecture rtl of top is
+            signal a, b: std_logic;
+        begin
+            guard_blk: block (a = b)
+            is
+                signal c: std_logic;
+            begin
+                c <= a;
+                a <= c;
+            end block guard_blk;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn concurrent_process_statement_basic() {
+    test_parse(
+        "
+        entity top is
+        end;
+        architecture rtl of top is
+        begin
+            p1: process (all)
+            is
+                constant one: integer := 1;
+            begin
+                null;
+            end process p1;
+
+            postponed process (clk, rst)
+            begin
+                null;
+            end postponed process;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn concurrent_procedure_call_statement_basic() {
+    test_parse(
+        "
+        entity top is
+        end;
+        architecture rtl of top is
+        begin
+            tick;
+            call1: postponed work_pkg.step;
+        end rtl;
+        ",
+    )
+}
