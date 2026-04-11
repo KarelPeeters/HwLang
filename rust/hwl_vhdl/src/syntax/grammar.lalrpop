@@ -19,11 +19,25 @@ EntityDeclaration: EntityDeclaration = {
 }
 
 EntityDeclarativeItem: EntityDeclarativeItem = {
+    PackageDeclaration => EntityDeclarativeItem::Package(<>),
+    PackageBody => EntityDeclarativeItem::PackageBody(<>),
     TypeDeclaration => EntityDeclarativeItem::Type(<>),
     SubTypeDeclaration => EntityDeclarativeItem::Subtype(<>),
+    ConstantDeclaration => EntityDeclarativeItem::Constant(<>),
+    SignalDeclaration => EntityDeclarativeItem::Signal(<>),
+    VariableDeclaration => EntityDeclarativeItem::Variable(<>),
+    FileDeclaration => EntityDeclarativeItem::File(<>),
+    AliasDeclaration => EntityDeclarativeItem::Alias(<>),
+    AttributeDeclaration => EntityDeclarativeItem::Attribute(<>),
+    ComponentDeclaration => EntityDeclarativeItem::Component(<>),
+    ProcedureDeclaration => EntityDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => EntityDeclarativeItem::Function(<>),
+    ProcedureBody => EntityDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => EntityDeclarativeItem::FunctionBody(<>),
+    UseClause => EntityDeclarativeItem::Use(<>),
 }
 EntityStatement: EntityStatement = {
-    // TODO
+    ConcurrentStatement => EntityStatement::Concurrent(<>),
 }
 
 // LRM 3.3 Architecture bodies
@@ -42,8 +56,15 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
     SubTypeDeclaration => BlockDeclarativeItem::Subtype(<>),
     ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
     SignalDeclaration => BlockDeclarativeItem::Signal(<>),
+    VariableDeclaration => BlockDeclarativeItem::Variable(<>),
+    FileDeclaration => BlockDeclarativeItem::File(<>),
+    AliasDeclaration => BlockDeclarativeItem::Alias(<>),
+    AttributeDeclaration => BlockDeclarativeItem::Attribute(<>),
+    ComponentDeclaration => BlockDeclarativeItem::Component(<>),
     ProcedureDeclaration => BlockDeclarativeItem::Procedure(<>),
     FunctionDeclaration => BlockDeclarativeItem::Function(<>),
+    ProcedureBody => BlockDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => BlockDeclarativeItem::FunctionBody(<>),
     UseClause => BlockDeclarativeItem::Use(<>),
 }
 
@@ -57,9 +78,21 @@ PackageDeclaration: PackageDeclaration = {
     => PackageDeclaration { name, generic, decl, end_name }
 }
 PackageDeclarativeItem: PackageDeclarativeItem = {
+    PackageDeclaration => PackageDeclarativeItem::Package(<>),
     TypeDeclaration => PackageDeclarativeItem::Type(<>),
     SubTypeDeclaration => PackageDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageDeclarativeItem::Constant(<>),
+    SignalDeclaration => PackageDeclarativeItem::Signal(<>),
+    VariableDeclaration => PackageDeclarativeItem::Variable(<>),
+    FileDeclaration => PackageDeclarativeItem::File(<>),
+    AliasDeclaration => PackageDeclarativeItem::Alias(<>),
+    ComponentDeclaration => PackageDeclarativeItem::Component(<>),
+    AttributeDeclaration => PackageDeclarativeItem::Attribute(<>),
+    ProcedureDeclaration => PackageDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => PackageDeclarativeItem::Function(<>),
+    ProcedureBody => PackageDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => PackageDeclarativeItem::FunctionBody(<>),
+    UseClause => PackageDeclarativeItem::Use(<>),
 }
 
 // LRM 4.8 Package bodies
@@ -70,9 +103,20 @@ PackageBody: PackageBody = {
     => PackageBody { name, decl, end_name }
 }
 PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
+    PackageDeclaration => PackageBodyDeclarativeItem::Package(<>),
+    PackageBody => PackageBodyDeclarativeItem::PackageBody(<>),
     TypeDeclaration => PackageBodyDeclarativeItem::Type(<>),
     SubTypeDeclaration => PackageBodyDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageBodyDeclarativeItem::Constant(<>),
+    VariableDeclaration => PackageBodyDeclarativeItem::Variable(<>),
+    FileDeclaration => PackageBodyDeclarativeItem::File(<>),
+    AliasDeclaration => PackageBodyDeclarativeItem::Alias(<>),
+    AttributeDeclaration => PackageBodyDeclarativeItem::Attribute(<>),
+    ProcedureDeclaration => PackageBodyDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => PackageBodyDeclarativeItem::Function(<>),
+    ProcedureBody => PackageBodyDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => PackageBodyDeclarativeItem::FunctionBody(<>),
+    UseClause => PackageBodyDeclarativeItem::Use(<>),
 }
 
 // LRM 5 Types
@@ -212,6 +256,39 @@ SignalKind: SignalKind = {
     "bus" => SignalKind::Bus,
 }
 
+// LRM 6.4.2.4 Variable declarations
+VariableDeclaration: VariableDeclaration = {
+    <shared:"shared"?> "variable" <names:IdentifierList> ":" <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?> ";"
+        => VariableDeclaration { shared: shared.is_some(), names, ty, init }
+}
+
+// LRM 6.4.2.5 File declarations
+FileDeclaration: FileDeclaration = {
+    "file" <names:IdentifierList> ":" <ty:SubTypeExpr> ";"
+        => FileDeclaration { names, ty }
+}
+
+// LRM 6.6 Alias declarations
+AliasDeclaration: AliasDeclaration = {
+    "alias" <name:Identifier> <ty:(":" <SubTypeExpr>)?> "is" <target:Name> ";"
+        => AliasDeclaration { name, ty, target }
+}
+
+// LRM 7.2 Attribute declarations
+AttributeDeclaration: AttributeDeclaration = {
+    "attribute" <name:Identifier> ":" <ty:Name> ";"
+        => AttributeDeclaration { name, ty }
+}
+
+// LRM 6.8 Component declarations
+ComponentDeclaration: ComponentDeclaration = {
+    "component" <name:Identifier>
+        <generic:GenericClause?>
+        <port:PortClause?>
+    "end" "component"? <end_name:Identifier?> ";"
+        => ComponentDeclaration { name, generic, port, end_name }
+}
+
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
@@ -267,6 +344,42 @@ ProcedureDeclaration: ProcedureDeclaration = {
 FunctionDeclaration: FunctionDeclaration = {
     "function" <name:Identifier> "return" <return_type:SubTypeExpr> ";"
         => FunctionDeclaration { name, return_type },
+}
+
+// LRM 4.3 Subprogram bodies
+ProcedureBody: ProcedureBody = {
+    "procedure" <name:Identifier> "is"
+        <decl:SubprogramDeclarativeItem*>
+    "begin"
+        <stmt:SequentialStatement*>
+    "end" "procedure"? <end_name:Identifier?> ";"
+    => ProcedureBody { name, decl, stmt, end_name }
+}
+
+FunctionBody: FunctionBody = {
+    "function" <name:Identifier> "return" <return_type:SubTypeExpr> "is"
+        <decl:SubprogramDeclarativeItem*>
+    "begin"
+        <stmt:SequentialStatement*>
+    "end" "function"? <end_name:Identifier?> ";"
+    => FunctionBody { name, return_type, decl, stmt, end_name }
+}
+
+SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
+    PackageDeclaration => SubprogramDeclarativeItem::Package(<>),
+    PackageBody => SubprogramDeclarativeItem::PackageBody(<>),
+    TypeDeclaration => SubprogramDeclarativeItem::Type(<>),
+    SubTypeDeclaration => SubprogramDeclarativeItem::Subtype(<>),
+    ConstantDeclaration => SubprogramDeclarativeItem::Constant(<>),
+    VariableDeclaration => SubprogramDeclarativeItem::Variable(<>),
+    FileDeclaration => SubprogramDeclarativeItem::File(<>),
+    AliasDeclaration => SubprogramDeclarativeItem::Alias(<>),
+    AttributeDeclaration => SubprogramDeclarativeItem::Attribute(<>),
+    ProcedureDeclaration => SubprogramDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => SubprogramDeclarativeItem::Function(<>),
+    ProcedureBody => SubprogramDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => SubprogramDeclarativeItem::FunctionBody(<>),
+    UseClause => SubprogramDeclarativeItem::Use(<>),
 }
 
 // LRM 8 Names
@@ -435,7 +548,43 @@ MultiplyingOperator: MultiplyingOperator = {
 
 // LRM 10 Sequential statements
 SequentialStatement: SequentialStatement = {
-    "null" ";" => SequentialStatement::Null,
+    WaitStatement => SequentialStatement::Wait(<>),
+    AssertionStatement => SequentialStatement::Assertion(<>),
+    ReportStatement => SequentialStatement::Report(<>),
+    SequentialSignalAssignmentStatement => SequentialStatement::SignalAssignment(<>),
+    VariableAssignmentStatement => SequentialStatement::VariableAssignment(<>),
+    ProcedureCallStatement => SequentialStatement::ProcedureCall(<>),
+    IfStatement => SequentialStatement::If(<>),
+    CaseStatement => SequentialStatement::Case(<>),
+    LoopStatement => SequentialStatement::Loop(<>),
+    NextStatement => SequentialStatement::Next(<>),
+    ExitStatement => SequentialStatement::Exit(<>),
+    ReturnStatement => SequentialStatement::Return(<>),
+    SequentialBlockStatement => SequentialStatement::Block(<>),
+    NullStatement => SequentialStatement::Null,
+}
+
+// LRM 10.2 Wait statements
+WaitStatement: WaitStatement = {
+    <label:MaybeLabel> "wait" <sensitivity:("on" <SeparatedNonEmptyNoTrail<Name, ",">>)?> <condition:("until" <Expr>)?> <timeout:("for" <Expr>)?> ";"
+        => WaitStatement {
+            label,
+            sensitivity,
+            condition,
+            timeout,
+        },
+}
+
+// LRM 10.3 Assertion statements
+AssertionStatement: AssertionStatement = {
+    <label:MaybeLabel> "assert" <condition:Expr> <report:("report" <Expr>)?> <severity:("severity" <Expr>)?> ";"
+        => AssertionStatement { label, condition, report, severity },
+}
+
+// LRM 10.4 Report statements
+ReportStatement: ReportStatement = {
+    <label:MaybeLabel> "report" <report:Expr> <severity:("severity" <Expr>)?> ";"
+        => ReportStatement { label, report, severity },
 }
 
 // LRM 10.5 Simple assignment statement
@@ -462,6 +611,88 @@ WaveformElementValue: WaveformElementValue = {
 }
 
 // LRM 10.5.2.2 Executing a simple assignment statement
+SequentialSignalAssignmentStatement: SequentialSignalAssignmentStatement = {
+    <label:MaybeLabel> <target:Target> "<=" <delay:DelayMechanism?> <waveform:Waveform> ";"
+        => SequentialSignalAssignmentStatement { label, target, delay, waveform }
+}
+
+// LRM 10.5.1 Variable assignment statements
+VariableAssignmentStatement: VariableAssignmentStatement = {
+    <label:MaybeLabel> <target:Target> ":=" <value:ExprLevelConditional> ";"
+        => VariableAssignmentStatement { label, target, value }
+}
+
+// LRM 10.6 Procedure call statements
+ProcedureCallStatement: ProcedureCallStatement = {
+    <label:MaybeLabel> <procedure:Name> ";"
+        => ProcedureCallStatement { label, procedure }
+}
+
+// LRM 10.7 If statements
+IfStatement: IfStatement = {
+    <label:MaybeLabel>
+    "if" <first_condition:Expr> "then" <first_body:SequentialStatement*>
+    <elsif:("elsif" <Expr> "then" <SequentialStatement*>) *>
+    <else_body:("else" <SequentialStatement*>)?>
+    "end" "if" <end_label:Identifier?> ";"
+    => {
+        let elsif = elsif.into_iter().map(|(condition, body)| (condition, body)).collect();
+        IfStatement { label, first_condition, first_body, elsif, else_body, end_label }
+    },
+}
+
+// LRM 10.8 Case statements
+CaseStatement: CaseStatement = {
+    <label:MaybeLabel> "case" <expression:Expr> "is" <prefix:(CaseAlternative)*> <last:CaseAlternative> "end" "case" <end_label:Identifier?> ";"
+        => CaseStatement { label, expression, alternatives: NonEmptyVec::new_vec_push(prefix, last), end_label },
+}
+CaseAlternative: CaseAlternative = {
+    "when" <choices:SeparatedNonEmptyNoTrail<Choice, "|">> "=>" <body:SequentialStatement*>
+        => CaseAlternative { choices, body },
+}
+Choice: Choice = {
+    "others" => Choice::Others,
+    Expr => Choice::Expr(<>),
+}
+
+// LRM 10.9 Loop statements
+LoopStatement: LoopStatement = {
+    <label:MaybeLabel> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
+        => LoopStatement { label, scheme: LoopScheme::Infinite, body, end_label },
+    <label:MaybeLabel> "while" <condition:Expr> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
+        => LoopStatement { label, scheme: LoopScheme::While(condition), body, end_label },
+    <label:MaybeLabel> "for" <param:Identifier> "in" <range:Range> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
+        => LoopStatement { label, scheme: LoopScheme::For { param, range }, body, end_label },
+}
+
+// LRM 10.10 Next statements
+NextStatement: NextStatement = {
+    <label:MaybeLabel> "next" <loop_label:Identifier?> <condition:("when" <Expr>)?> ";"
+        => NextStatement { label, loop_label, condition },
+}
+
+// LRM 10.11 Exit statements
+ExitStatement: ExitStatement = {
+    <label:MaybeLabel> "exit" <loop_label:Identifier?> <condition:("when" <Expr>)?> ";"
+        => ExitStatement { label, loop_label, condition },
+}
+
+// LRM 10.12 Return statements
+ReturnStatement: ReturnStatement = {
+    <label:MaybeLabel> "return" ";" => ReturnStatement::Plain { label },
+    <label:MaybeLabel> "return" <value:Expr> ";" => ReturnStatement::Value { label, value },
+}
+
+// LRM 10.13 Null statements
+NullStatement: () = {
+    <MaybeLabel> "null" ";" => (),
+}
+
+// LRM 10.14 Sequential block statements
+SequentialBlockStatement: SequentialBlockStatement = {
+    <label:MaybeLabel> "block" "is"? <decl:ProcessDeclarativeItem*> "begin" <stmt:SequentialStatement*> "end" "block"? <end_label:Identifier?> ";"
+        => SequentialBlockStatement { label, decl, stmt, end_label },
+}
 
 // LRM 11 Concurrent statements
 ConcurrentStatement: ConcurrentStatement = {
@@ -494,11 +725,56 @@ ConcurrentStatement: ConcurrentStatement = {
             procedure,
         }),
 
+    // LRM 11.5 Concurrent assertion statements
+    <label:MaybeLabel> <postponed:"postponed"?> "assert" <condition:Expr> <report:("report" <Expr>)?> <severity:("severity" <Expr>)?> ";"
+        => ConcurrentStatement::Assertion(ConcurrentAssertionStatement {
+            label,
+            postponed: postponed.is_some(),
+            condition,
+            report,
+            severity,
+        }),
+
+    // LRM 11.7 Component instantiation statements
+    <label:Identifier> ":" "component" <unit:Name> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit }),
+
+    // LRM 11.8 Generate statements
+    <label:Identifier> ":" "for" <param:Identifier> "in" <range:Range> "generate" <body:GenerateBody> "end" "generate" <end_label:Identifier?> ";"
+        => ConcurrentStatement::Generate(GenerateStatement::For(ForGenerateStatement {
+            label,
+            param,
+            range,
+            decl: body.decl,
+            stmt: body.stmt,
+            end_label,
+        })),
+    <label:Identifier> ":" "if" <first_condition:Expr> "generate" <first_body:GenerateBody>
+        <elsif:("elsif" <Expr> "generate" <GenerateBody>)*>
+        <else_body:("else" "generate" <GenerateBody>)?>
+        "end" "generate" <end_label:Identifier?> ";"
+        => {
+            let elsif = elsif.into_iter().map(|(condition, body)| (condition, body)).collect();
+            ConcurrentStatement::Generate(GenerateStatement::If(IfGenerateStatement {
+                label,
+                first_condition,
+                first_body,
+                elsif,
+                else_body,
+                end_label,
+            }))
+        },
+
     // signal assignment
     <label:MaybeLabel> <postponed:"postponed"?> <kind:ConcurrentSignalAssignmentKind> => {
         let stmt = ConcurrentSignalAssignmentStatement { label, postponed: postponed.is_some(), kind };
         ConcurrentStatement::SignalAssignment(stmt)
     }
+}
+
+GenerateBody: GenerateBody = {
+    <decl:("is" <BlockDeclarativeItem*>)?> "begin" <stmt:ConcurrentStatement*>
+        => GenerateBody { decl: decl.unwrap_or_default(), stmt }
 }
 
 // LRM 11.3 Process statements
@@ -508,9 +784,19 @@ ProcessSensitivityList: ProcessSensitivityList = {
 }
 
 ProcessDeclarativeItem: ProcessDeclarativeItem = {
+    PackageDeclaration => ProcessDeclarativeItem::Package(<>),
+    PackageBody => ProcessDeclarativeItem::PackageBody(<>),
     TypeDeclaration => ProcessDeclarativeItem::Type(<>),
     SubTypeDeclaration => ProcessDeclarativeItem::Subtype(<>),
     ConstantDeclaration => ProcessDeclarativeItem::Constant(<>),
+    VariableDeclaration => ProcessDeclarativeItem::Variable(<>),
+    FileDeclaration => ProcessDeclarativeItem::File(<>),
+    AliasDeclaration => ProcessDeclarativeItem::Alias(<>),
+    AttributeDeclaration => ProcessDeclarativeItem::Attribute(<>),
+    ProcedureDeclaration => ProcessDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => ProcessDeclarativeItem::Function(<>),
+    ProcedureBody => ProcessDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => ProcessDeclarativeItem::FunctionBody(<>),
     UseClause => ProcessDeclarativeItem::Use(<>),
 }
 ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {

@@ -148,3 +148,115 @@ fn concurrent_procedure_call_statement_basic() {
         ",
     )
 }
+
+#[test]
+fn broad_declarative_items_and_subprogram_bodies() {
+    test_parse(
+        "
+        entity top is
+            component child
+            end component;
+            attribute keep : std_logic;
+            signal es: std_logic;
+            variable ev: integer := 0;
+            file ef: text;
+            alias ea is es;
+            procedure ep;
+            function efn return integer;
+            procedure ep2 is
+            begin
+                null;
+            end procedure ep2;
+            function efn2 return integer is
+            begin
+                return 0;
+            end function efn2;
+        end;
+
+        architecture rtl of top is
+            component child
+            end component;
+            signal s: std_logic;
+            variable v: integer := 0;
+            file f: text;
+            alias a is s;
+            attribute mark : std_logic;
+            procedure p;
+            function fn return integer;
+            procedure p_body is
+            begin
+                null;
+            end procedure p_body;
+            function f_body return integer is
+            begin
+                return 0;
+            end function f_body;
+        begin
+            assert v = 0 report s severity v;
+            u1: component child;
+            g_for: for i in 0 to 3 generate
+            begin
+                s <= s;
+            end generate g_for;
+            g_if: if v = 0 generate
+            begin
+                s <= s;
+            end generate g_if;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn sequential_statements_coverage() {
+    test_parse(
+        "
+        entity top is
+        end;
+        architecture rtl of top is
+            signal s: std_logic;
+            signal t: std_logic;
+            variable v: integer := 0;
+        begin
+            process (all)
+            begin
+                wait on s, t until v = 0 for 1;
+                assert v = 0 report s severity v;
+                report s severity v;
+                s <= t;
+                v := v + 1;
+                do_work;
+                if v = 0 then
+                    null;
+                elsif v = 1 then
+                    report s;
+                else
+                    return;
+                end if;
+                case v is
+                    when 0 => null;
+                    when others => null;
+                end case;
+                loop
+                    exit when v = 4;
+                end loop;
+                while v = 0 loop
+                    next when v = 1;
+                    exit;
+                end loop;
+                for i in 0 to 2 loop
+                    null;
+                end loop;
+                next;
+                return 0;
+                block is
+                    constant c: integer := 1;
+                begin
+                    null;
+                end block;
+                null;
+            end process;
+        end rtl;
+        ",
+    )
+}

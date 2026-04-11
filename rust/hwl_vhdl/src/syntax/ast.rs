@@ -14,13 +14,27 @@ pub struct EntityDeclaration {
 
 #[derive(Debug)]
 pub enum EntityDeclarativeItem {
+    Package(PackageDeclaration),
+    PackageBody(PackageBody),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
+    Constant(ConstantDeclaration),
+    Signal(SignalDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    Component(ComponentDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
+    Use(UseClause),
 }
 
 #[derive(Debug)]
 pub enum EntityStatement {
-    // TODO
+    Concurrent(ConcurrentStatement),
 }
 
 // LRM 3.3 Architecture bodies
@@ -41,8 +55,15 @@ pub enum BlockDeclarativeItem {
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
     Signal(SignalDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    Component(ComponentDeclaration),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
     Use(UseClause),
 }
 
@@ -58,9 +79,21 @@ pub struct PackageDeclaration {
 
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
+    Package(PackageDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
+    Signal(SignalDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Component(ComponentDeclaration),
+    Attribute(AttributeDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
+    Use(UseClause),
 }
 
 // LRM 4.8 Package bodies
@@ -73,9 +106,20 @@ pub struct PackageBody {
 
 #[derive(Debug)]
 pub enum PackageBodyDeclarativeItem {
+    Package(PackageDeclaration),
+    PackageBody(PackageBody),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
+    Use(UseClause),
 }
 
 // LRM 5 Types
@@ -264,6 +308,46 @@ pub enum SignalKind {
     Bus,
 }
 
+// LRM 6.4.2.4 Variable declarations
+#[derive(Debug)]
+pub struct VariableDeclaration {
+    pub shared: bool,
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: SubTypeIndication,
+    pub init: Option<Expression>,
+}
+
+// LRM 6.4.2.5 File declarations
+#[derive(Debug)]
+pub struct FileDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: SubTypeIndication,
+}
+
+// LRM 6.6 Alias declarations
+#[derive(Debug)]
+pub struct AliasDeclaration {
+    pub name: Identifier,
+    pub ty: Option<SubTypeIndication>,
+    pub target: Name,
+}
+
+// LRM 7.2 Attribute declarations
+#[derive(Debug)]
+pub struct AttributeDeclaration {
+    pub name: Identifier,
+    pub ty: Name,
+}
+
+// LRM 6.8 Component declarations
+#[derive(Debug)]
+pub struct ComponentDeclaration {
+    pub name: Identifier,
+    pub generic: Option<GenericClause>,
+    pub port: Option<PortClause>,
+    pub end_name: Option<Identifier>,
+}
+
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 #[derive(Debug)]
@@ -348,6 +432,42 @@ pub struct ProcedureDeclaration {
 pub struct FunctionDeclaration {
     pub name: Identifier,
     pub return_type: SubTypeIndication,
+}
+
+// LRM 4.3 Subprogram bodies
+#[derive(Debug)]
+pub struct ProcedureBody {
+    pub name: Identifier,
+    pub decl: Vec<SubprogramDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct FunctionBody {
+    pub name: Identifier,
+    pub return_type: SubTypeIndication,
+    pub decl: Vec<SubprogramDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum SubprogramDeclarativeItem {
+    Package(PackageDeclaration),
+    PackageBody(PackageBody),
+    Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
+    Constant(ConstantDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
+    Use(UseClause),
 }
 
 // LRM 8 Names
@@ -547,10 +667,10 @@ pub enum ConcurrentStatement {
     Block(BlockStatement),
     Process(ProcessStatement),
     ProcedureCall(ConcurrentProcedureCallStatement),
-    Assertion(/*TODO*/),
+    Assertion(ConcurrentAssertionStatement),
     SignalAssignment(ConcurrentSignalAssignmentStatement),
-    ComponentInstantiation(/*TODO*/),
-    Generate(/*TODO*/),
+    ComponentInstantiation(ComponentInstantiationStatement),
+    Generate(GenerateStatement),
 }
 
 // LRM 11.2 Block statements
@@ -582,15 +702,38 @@ pub enum ProcessSensitivityList {
 
 #[derive(Debug)]
 pub enum ProcessDeclarativeItem {
+    Package(PackageDeclaration),
+    PackageBody(PackageBody),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
     Use(UseClause),
 }
 
 #[derive(Debug)]
 pub enum SequentialStatement {
+    Wait(WaitStatement),
+    Assertion(AssertionStatement),
+    Report(ReportStatement),
+    SignalAssignment(SequentialSignalAssignmentStatement),
+    VariableAssignment(VariableAssignmentStatement),
+    ProcedureCall(ProcedureCallStatement),
+    If(IfStatement),
+    Case(CaseStatement),
+    Loop(LoopStatement),
+    Next(NextStatement),
+    Exit(ExitStatement),
+    Return(ReturnStatement),
     Null,
+    Block(SequentialBlockStatement),
 }
 
 // LRM 11.4 Concurrent procedure call statements
@@ -599,6 +742,142 @@ pub struct ConcurrentProcedureCallStatement {
     pub label: Option<Identifier>,
     pub postponed: bool,
     pub procedure: Name,
+}
+
+// LRM 11.5 Concurrent assertion statements
+#[derive(Debug)]
+pub struct ConcurrentAssertionStatement {
+    pub label: Option<Identifier>,
+    pub postponed: bool,
+    pub condition: Expression,
+    pub report: Option<Expression>,
+    pub severity: Option<Expression>,
+}
+
+// LRM 10 Sequential statements
+#[derive(Debug)]
+pub struct WaitStatement {
+    pub label: Option<Identifier>,
+    pub sensitivity: Option<NonEmptyVec<Name>>,
+    pub condition: Option<Expression>,
+    pub timeout: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct AssertionStatement {
+    pub label: Option<Identifier>,
+    pub condition: Expression,
+    pub report: Option<Expression>,
+    pub severity: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct ReportStatement {
+    pub label: Option<Identifier>,
+    pub report: Expression,
+    pub severity: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct SequentialSignalAssignmentStatement {
+    pub label: Option<Identifier>,
+    pub target: Target,
+    pub delay: Option<DelayMechanism>,
+    pub waveform: Waveform,
+}
+
+#[derive(Debug)]
+pub struct VariableAssignmentStatement {
+    pub label: Option<Identifier>,
+    pub target: Target,
+    pub value: Expression,
+}
+
+#[derive(Debug)]
+pub struct ProcedureCallStatement {
+    pub label: Option<Identifier>,
+    pub procedure: Name,
+}
+
+#[derive(Debug)]
+pub struct IfStatement {
+    pub label: Option<Identifier>,
+    pub first_condition: Expression,
+    pub first_body: Vec<SequentialStatement>,
+    pub elsif: Vec<(Expression, Vec<SequentialStatement>)>,
+    pub else_body: Option<Vec<SequentialStatement>>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct CaseStatement {
+    pub label: Option<Identifier>,
+    pub expression: Expression,
+    pub alternatives: NonEmptyVec<CaseAlternative>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct CaseAlternative {
+    pub choices: NonEmptyVec<Choice>,
+    pub body: Vec<SequentialStatement>,
+}
+
+#[derive(Debug)]
+pub enum Choice {
+    Expr(Expression),
+    Others,
+}
+
+#[derive(Debug)]
+pub struct LoopStatement {
+    pub label: Option<Identifier>,
+    pub scheme: LoopScheme,
+    pub body: Vec<SequentialStatement>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum LoopScheme {
+    Infinite,
+    While(Expression),
+    For {
+        param: Identifier,
+        range: Expression,
+    },
+}
+
+#[derive(Debug)]
+pub struct NextStatement {
+    pub label: Option<Identifier>,
+    pub loop_label: Option<Identifier>,
+    pub condition: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct ExitStatement {
+    pub label: Option<Identifier>,
+    pub loop_label: Option<Identifier>,
+    pub condition: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub enum ReturnStatement {
+    Plain {
+        label: Option<Identifier>,
+    },
+    Value {
+        label: Option<Identifier>,
+        value: Expression,
+    },
+}
+
+#[derive(Debug)]
+pub struct SequentialBlockStatement {
+    pub label: Option<Identifier>,
+    pub decl: Vec<ProcessDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_label: Option<Identifier>,
 }
 
 // LRM 11.6 Concurrent signal assignment statements
@@ -619,6 +898,46 @@ pub enum ConcurrentSignalAssignmentKind {
     },
     Conditional(/*TODO*/),
     Selected(/*TODO*/),
+}
+
+// LRM 11.7 Component instantiation statements
+#[derive(Debug)]
+pub struct ComponentInstantiationStatement {
+    pub label: Identifier,
+    pub unit: Name,
+}
+
+// LRM 11.8 Generate statements
+#[derive(Debug)]
+pub enum GenerateStatement {
+    For(ForGenerateStatement),
+    If(IfGenerateStatement),
+}
+
+#[derive(Debug)]
+pub struct ForGenerateStatement {
+    pub label: Identifier,
+    pub param: Identifier,
+    pub range: Expression,
+    pub decl: Vec<BlockDeclarativeItem>,
+    pub stmt: Vec<ConcurrentStatement>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct IfGenerateStatement {
+    pub label: Identifier,
+    pub first_condition: Expression,
+    pub first_body: GenerateBody,
+    pub elsif: Vec<(Expression, GenerateBody)>,
+    pub else_body: Option<GenerateBody>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct GenerateBody {
+    pub decl: Vec<BlockDeclarativeItem>,
+    pub stmt: Vec<ConcurrentStatement>,
 }
 
 // LRM 12 Scope and visibility
