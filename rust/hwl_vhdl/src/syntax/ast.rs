@@ -82,7 +82,7 @@ pub enum ScalarTypeDefinition {
 
 #[derive(Debug)]
 pub struct RangeConstraint {
-    pub range: Range,
+    pub range: Expression,
 }
 
 #[derive(Debug)]
@@ -143,6 +143,51 @@ pub struct PhysicalLiteral {
     pub unit: Identifier,
 }
 
+// LRM 5.3 Composite types
+#[derive(Debug)]
+pub enum CompositeTypeDefinition {
+    Array(ArrayTypeDefinition),
+    Record(/*TODO*/),
+}
+
+// LRM 5.3.2 Array types
+#[derive(Debug)]
+pub enum ArrayTypeDefinition {
+    Unbounded(UnboundedArrayTypeDefinition),
+    Constrained(ConstrainedArrayTypeDefinition),
+}
+#[derive(Debug)]
+pub struct UnboundedArrayTypeDefinition {
+    pub index_types: NonEmptyVec<IndexSubTypeDefinition>,
+    pub element_type: SubTypeIndication,
+}
+#[derive(Debug)]
+pub struct ConstrainedArrayTypeDefinition {
+    pub index_constraint: IndexConstraint,
+    pub element_type: SubTypeIndication,
+}
+
+#[derive(Debug)]
+pub struct IndexSubTypeDefinition {
+    pub type_mark: TypeMark,
+}
+#[derive(Debug)]
+pub struct ArrayConstraint {
+    pub index_constraint: IndexConstraintOrOpen,
+    pub array_element_constraint: Option<Box<ElementConstraint>>,
+}
+#[derive(Debug)]
+pub enum IndexConstraintOrOpen {
+    Open,
+    Constraint(IndexConstraint),
+}
+#[derive(Debug)]
+pub struct IndexConstraint {
+    pub ranges: NonEmptyVec<Expression>,
+}
+
+// LRM 5.3.3 Record types
+
 // LRM 6 Declarations
 
 // LRM 6.2 Type declarations
@@ -161,6 +206,7 @@ pub struct FullTypeDeclaration {
 #[derive(Debug)]
 pub enum TypeDefinition {
     Scalar(ScalarTypeDefinition),
+    Composite(CompositeTypeDefinition),
 }
 
 // LRM 6.3 Subtype declarations
@@ -170,17 +216,20 @@ pub struct SubTypeDeclaration {
     pub indication: SubTypeIndication,
 }
 
-#[derive(Debug)]
-pub struct SubTypeIndication {
-    // TODO resolution
-    // TODO name instead of identifier
-    pub type_mark: Identifier,
-    pub constraint: Option<Constraint>,
-}
+pub type SubTypeIndication = Expression;
+
+pub type TypeMark = Name;
 
 #[derive(Debug)]
 pub enum Constraint {
     Range(RangeConstraint),
+    Array(ArrayConstraint),
+    Record(/*TODO*/),
+}
+#[derive(Debug)]
+pub enum ElementConstraint {
+    Array(ArrayConstraint),
+    Record(/*TODO*/),
 }
 
 // LRM 6.4 Objects
@@ -190,7 +239,7 @@ pub enum Constraint {
 pub struct ConstantDeclaration {
     pub names: NonEmptyVec<Identifier>,
     pub ty: SubTypeIndication,
-    pub init: Option<ConditionalExpression>,
+    pub init: Option<Expression>,
 }
 
 // LRM 6.5 Interface declarations
@@ -198,8 +247,8 @@ pub struct ConstantDeclaration {
 #[derive(Debug)]
 pub struct InterfaceConstantDeclaration {
     pub names: NonEmptyVec<Identifier>,
-    pub ty: InterfaceTypeIndication,
-    pub init: Option<ConditionalExpression>,
+    pub ty: Expression,
+    pub init: Option<Expression>,
 }
 
 #[derive(Debug)]
@@ -220,7 +269,7 @@ pub enum ModeIndication {
         mode: Option<Mode>,
         ty: InterfaceTypeIndication,
         bus: bool,
-        init: Option<ConditionalExpression>,
+        init: Option<Expression>,
     },
     RecordView(/*TODO*/),
 }
@@ -315,6 +364,12 @@ pub enum Expression {
         left: Box<Expression>,
         right: Box<Expression>,
     },
+
+    Range {
+        left: Box<Expression>,
+        direction: RangeDirection,
+        right: Box<Expression>,
+    }
 }
 
 #[derive(Debug)]

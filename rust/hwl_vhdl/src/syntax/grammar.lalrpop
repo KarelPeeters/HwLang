@@ -81,10 +81,10 @@ RangeConstraint: RangeConstraint = {
     "range" <Range> => RangeConstraint { range: <> } ,
 }
 
-Range: Range = {
-    <left:Box<SimpleExpression>> <direction:RangeDirection> <right:Box<SimpleExpression>>
-        => Range::Simple(SimpleRange { left, direction, right }),
-    Expression => Range::Expression(<>),
+Range: Expression = {
+    <left:Box<Expr>> <direction:RangeDirection> <right:Box<Expr>>
+        => Expression::Range { left, direction, right },
+    Expr,
 }
 
 RangeDirection: RangeDirection = {
@@ -134,31 +134,23 @@ FullTypeDeclaration: FullTypeDeclaration = {
 
 TypeDefinition: TypeDefinition = {
     ScalarTypeDefinition => TypeDefinition::Scalar(<>),
+    //CompositeTypeDefinition => TypeDefinition::Composite(<>),
 }
 
 // LRM 6.3 Subtype declarations
-SubTypeIndication: SubTypeIndication = {
-    // TODO
-    <type_mark:Identifier> <constraint:Constraint?>
-        => SubTypeIndication { type_mark, constraint },
-}
-
-Constraint: Constraint = {
-    RangeConstraint => Constraint::Range(<>),
-}
 
 // LRM 6.4 Objects
 // LRM 6.4.2 Object declarations
 // LRM 6.4.2.2 Constant declarations
 ConstantDeclaration: ConstantDeclaration = {
-    "constant" <names:IdentifierList> ":" <ty:SubTypeIndication> <init:(":=" <ConditionalExpression>)?> ";"
+    "constant" <names:IdentifierList> ":" <ty:Expr> <init:(":=" <ExprLevelConditional>)?> ";"
         => ConstantDeclaration { names, ty, init }
 }
 
 // LRM 6.5 Interface declarations
 // LRM 6.5.2 Interface object declarations
 InterfaceConstantDeclaration: InterfaceConstantDeclaration = {
-    "constant"? <names:IdentifierList> ":" "in"? <ty:InterfaceTypeIndication> <init:(":=" <ConditionalExpression>)?>
+    "constant"? <names:IdentifierList> ":" "in"? <ty:Expr> <init:(":=" <ExprLevelConditional>)?>
         => InterfaceConstantDeclaration { names, ty, init }
 }
 
@@ -167,7 +159,7 @@ InterfaceSignalDeclaration: InterfaceSignalDeclaration = {
         => InterfaceSignalDeclaration { names, mode_indication }
 }
 ModeIndication: ModeIndication = {
-    <mode:Mode?> <ty:InterfaceTypeIndication> <bus:"bus"?> <init:(":=" <ConditionalExpression>)?>
+    <mode:Mode?> <ty:InterfaceTypeIndication> <bus:"bus"?> <init:(":=" <ExprLevelConditional>)?>
         => ModeIndication::Simple { mode, ty, bus: bus.is_some(), init }
 }
 Mode: Mode = {
@@ -179,7 +171,7 @@ Mode: Mode = {
 }
 
 InterfaceTypeIndication: InterfaceTypeIndication = {
-    SubTypeIndication => InterfaceTypeIndication::Subtype(<>),
+    // SubTypeIndication => InterfaceTypeIndication::Subtype(<>),
     // TODO unspecified
 }
 
@@ -219,58 +211,66 @@ Suffix: Suffix = {
 }
 
 // LRM 9 Expressions
-ConditionalExpression: ConditionalExpression = {
-    <value_first:Box<Expression>> <branches:ConditionalExpressionBranch*>
-        => ConditionalExpression { value_first, branches, condition_final: None }
+// Here we diverge significantly from the LRM grammar, which is too ambiguous.
+// We add some some extra expression kinds here, in particular ranges and other type-related constructs.
+
+// the top-level expression, for general-purpose use
+Expr: Expression = ExprLevelConditional;
+// the top-level expression right below conditional expressions
+ExprSubConditional: Expression = ExprLevelUnaryConditional;
+
+ExprLevelConditional: Expression = {
+    <value_first:Box<ExprSubConditional>> <branches:ConditionalExpressionBranch*>
+        => Expression::Conditional(ConditionalExpression { value_first, branches, condition_final: None })
 }
 ConditionalExpressionBranch: ConditionalExpressionBranch<Box<Expression>> = {
-    "when" <condition:Expression> "else" <value_else:Box<Expression>>
+    "when" <condition:ExprSubConditional> "else" <value_else:Box<ExprSubConditional>>
         => ConditionalExpressionBranch { condition, value_else }
 }
 
-Expression: Expression = {
-    "??" <inner:Box<PrimaryExpression>>
+ExprLevelUnaryConditional: Expression = {
+    ExprLevelLogical,
+    "??" <inner:Box<ExprLevelPrimary>>
         => Expression::Unary { op: UnaryOperator::Condition, inner },
-    LogicalExpression,
 }
-LogicalExpression: Expression = {
-    RelationExpression,
+ExprLevelLogical: Expression = {
+    ExprLevelRelational,
 
-    <first:RelationExpression> "and" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "and">>
+    <first:ExprLevelRelational> "and" <rest:SeparatedNonEmptyNoTrail<ExprLevelRelational, "and">>
         => rest.into_iter().fold(first, |left, right| {
             build_binary_op(BinaryOperator::Logical(LogicalOperator::And), left, right)
         }),
-    <first:RelationExpression> "or" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "or">>
+    <first:ExprLevelRelational> "or" <rest:SeparatedNonEmptyNoTrail<ExprLevelRelational, "or">>
         => rest.into_iter().fold(first, |left, right| {
             build_binary_op(BinaryOperator::Logical(LogicalOperator::Or), left, right)
         }),
-    <first:RelationExpression> "xor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xor">>
+    <first:ExprLevelRelational> "xor" <rest:SeparatedNonEmptyNoTrail<ExprLevelRelational, "xor">>
         => rest.into_iter().fold(first, |left, right| {
             build_binary_op(BinaryOperator::Logical(LogicalOperator::Xor), left, right)
         }),
-    <first:RelationExpression> "xnor" <rest:SeparatedNonEmptyNoTrail<RelationExpression, "xnor">>
+    <first:ExprLevelRelational> "xnor" <rest:SeparatedNonEmptyNoTrail<ExprLevelRelational, "xnor">>
         => rest.into_iter().fold(first, |left, right| {
             build_binary_op(BinaryOperator::Logical(LogicalOperator::Xnor), left, right)
         }),
 
-    <left:RelationExpression> "nand" <right:RelationExpression>
+    <left:ExprLevelRelational> "nand" <right:ExprLevelRelational>
         => build_binary_op(BinaryOperator::Logical(LogicalOperator::Nand), left, right),
-    <left:RelationExpression> "nor" <right:RelationExpression>
+    <left:ExprLevelRelational> "nor" <right:ExprLevelRelational>
         => build_binary_op(BinaryOperator::Logical(LogicalOperator::Nor), left, right),
 }
-RelationExpression: Expression = {
-    <left:ShiftExpression> <op_right:(RelationalOperator ShiftExpression)?> => match op_right {
+ExprLevelRelational: Expression = {
+    <left:ExprLevelShift> <op_right:(RelationalOperator ExprLevelShift)?> => match op_right {
         Some((op, right)) => build_binary_op(BinaryOperator::Relational(op), left, right),
         None => left,
     }
 }
-ShiftExpression: Expression = {
-    <left:SimpleExpression> <op_right:(ShiftOperator SimpleExpression)?> => match op_right {
+ExprLevelShift: Expression = {
+    <left:ExprLevelSimple> <op_right:(ShiftOperator ExprLevelSimple)?> => match op_right {
         Some((op, right)) => build_binary_op(BinaryOperator::Shift(op), left, right),
         None => left,
     }
 }
-SimpleExpression: Expression = {
+ExprLevelSimple: Expression = {
     <sign:Sign?> <left:TermExpression> <op_right:(AddingOperator TermExpression)*> => {
         let mut res = match sign {
             Some(sign) => Expression::Signed { sign, inner: Box::new(left) },
@@ -298,18 +298,24 @@ Factor: Expression = {
     }
 }
 UnaryExpression: Expression = {
-    PrimaryExpression,
-    "abs" <inner:Box<PrimaryExpression>>
+    ExprLevelPrimary,
+    "abs" <inner:Box<ExprLevelPrimary>>
         => Expression::Unary { op: UnaryOperator::Abs, inner },
-    "not" <inner:Box<PrimaryExpression>>
+    "not" <inner:Box<ExprLevelPrimary>>
         => Expression::Unary { op: UnaryOperator::Not, inner },
-    <op:LogicalOperator> <inner:Box<PrimaryExpression>>
+    <op:LogicalOperator> <inner:Box<ExprLevelPrimary>>
         => Expression::Unary { op: UnaryOperator::Logical(op), inner },
 }
-PrimaryExpression: Expression = {
+ExprLevelPrimary: Expression = {
     // TODO expand
     Identifier => Expression::Name(<>),
     TokenDecimalLiteral => Expression::DecimalLiteral,
+
+    // extra cases that got merged to avoid parsing ambiguities:
+    // call, this also handles subtype indication and array indexing
+    // <base:Identifier> <constraint:Constraint> => todo!(),
+    //<left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
+    //        => Range::Simple(SimpleRange { left, direction, right }),
 }
 
 LogicalOperator: LogicalOperator = {
@@ -363,7 +369,7 @@ MultiplyingOperator: MultiplyingOperator = {
 // LRM 10.5.2 Simple signal assignments
 DelayMechanism: DelayMechanism = {
     "transport" => DelayMechanism::Transport,
-    <reject_time:("reject" <Expression>)?> "inertial" => DelayMechanism::Inertial { reject_time }
+    <reject_time:("reject" <Expr>)?> "inertial" => DelayMechanism::Inertial { reject_time }
 }
 
 Target: Target = {
@@ -375,10 +381,10 @@ Waveform: Waveform = {
     "unaffected" => Waveform::Unaffected,
 }
 WaveformElement: WaveformElement = {
-    <value:WaveformElementValue> <after:("after" <Expression>)?> => WaveformElement { value, after }
+    <value:WaveformElementValue> <after:("after" <Expr>)?> => WaveformElement { value, after }
 }
 WaveformElementValue: WaveformElementValue = {
-    Expression => WaveformElementValue::Expression(<>),
+    Expr => WaveformElementValue::Expression(<>),
     "null" => WaveformElementValue::Null,
 }
 
