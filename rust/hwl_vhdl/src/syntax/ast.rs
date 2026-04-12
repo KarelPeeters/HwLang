@@ -426,11 +426,13 @@ pub enum PortInterfaceDeclaration {
 #[derive(Debug)]
 pub struct ProcedureDeclaration {
     pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
 }
 
 #[derive(Debug)]
 pub struct FunctionDeclaration {
     pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub return_type: SubTypeIndication,
 }
 
@@ -438,6 +440,7 @@ pub struct FunctionDeclaration {
 #[derive(Debug)]
 pub struct ProcedureBody {
     pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub decl: Vec<SubprogramDeclarativeItem>,
     pub stmt: Vec<SequentialStatement>,
     pub end_name: Option<Identifier>,
@@ -446,10 +449,28 @@ pub struct ProcedureBody {
 #[derive(Debug)]
 pub struct FunctionBody {
     pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub return_type: SubTypeIndication,
     pub decl: Vec<SubprogramDeclarativeItem>,
     pub stmt: Vec<SequentialStatement>,
     pub end_name: Option<Identifier>,
+}
+
+// LRM 4.2.1 Formal parameters
+#[derive(Debug)]
+pub struct SubprogramParameterDeclaration {
+    pub class: Option<SubprogramParameterClass>,
+    pub names: NonEmptyVec<Identifier>,
+    pub mode: Option<Mode>,
+    pub ty: SubTypeIndication,
+    pub init: Option<Expression>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum SubprogramParameterClass {
+    Constant,
+    Variable,
+    Signal,
 }
 
 #[derive(Debug)]
@@ -528,7 +549,21 @@ pub enum Expression {
     },
     // primary
     Name(Name),
+    Call {
+        name: Name,
+        args: Vec<Expression>,
+    },
+    Attribute {
+        name: Name,
+        attr: Identifier,
+    },
+    PhysicalLiteral {
+        value: AbstractLiteral,
+        unit: Identifier,
+    },
     DecimalLiteral,
+    StringLiteral,
+    CharLiteral,
 }
 
 #[derive(Debug)]
@@ -742,6 +777,7 @@ pub struct ConcurrentProcedureCallStatement {
     pub label: Option<Identifier>,
     pub postponed: bool,
     pub procedure: Name,
+    pub args: Vec<Expression>,
 }
 
 // LRM 11.5 Concurrent assertion statements
@@ -797,6 +833,7 @@ pub struct VariableAssignmentStatement {
 pub struct ProcedureCallStatement {
     pub label: Option<Identifier>,
     pub procedure: Name,
+    pub args: Vec<Expression>,
 }
 
 #[derive(Debug)]
@@ -905,6 +942,8 @@ pub enum ConcurrentSignalAssignmentKind {
 pub struct ComponentInstantiationStatement {
     pub label: Identifier,
     pub unit: Name,
+    pub generic_map: Option<Vec<Expression>>,
+    pub port_map: Option<Vec<Expression>>,
 }
 
 // LRM 11.8 Generate statements

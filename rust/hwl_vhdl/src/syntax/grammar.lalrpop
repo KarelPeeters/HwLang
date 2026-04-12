@@ -338,31 +338,46 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
 
 // LRM 4.2 Subprogram declarations
 ProcedureDeclaration: ProcedureDeclaration = {
-    "procedure" <name:Identifier> ";" => ProcedureDeclaration { name },
+    "procedure" <name:Identifier> <params:SubprogramParameterList?> ";" => ProcedureDeclaration { name, params },
 }
 
 FunctionDeclaration: FunctionDeclaration = {
-    "function" <name:Identifier> "return" <return_type:SubTypeExpr> ";"
-        => FunctionDeclaration { name, return_type },
+    "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> ";"
+        => FunctionDeclaration { name, params, return_type },
+}
+
+SubprogramParameterList: NonEmptyVec<SubprogramParameterDeclaration> = {
+    "(" <InterfaceList<SubprogramParameterDeclaration>> ")"
+}
+
+SubprogramParameterDeclaration: SubprogramParameterDeclaration = {
+    <class:SubprogramParameterClass?> <names:IdentifierList> ":" <mode:Mode?> <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?>
+        => SubprogramParameterDeclaration { class, names, mode, ty, init },
+}
+
+SubprogramParameterClass: SubprogramParameterClass = {
+    "constant" => SubprogramParameterClass::Constant,
+    "variable" => SubprogramParameterClass::Variable,
+    "signal" => SubprogramParameterClass::Signal,
 }
 
 // LRM 4.3 Subprogram bodies
 ProcedureBody: ProcedureBody = {
-    "procedure" <name:Identifier> "is"
+    "procedure" <name:Identifier> <params:SubprogramParameterList?> "is"
         <decl:SubprogramDeclarativeItem*>
     "begin"
         <stmt:SequentialStatement*>
     "end" "procedure"? <end_name:Identifier?> ";"
-    => ProcedureBody { name, decl, stmt, end_name }
+    => ProcedureBody { name, params, decl, stmt, end_name }
 }
 
 FunctionBody: FunctionBody = {
-    "function" <name:Identifier> "return" <return_type:SubTypeExpr> "is"
+    "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> "is"
         <decl:SubprogramDeclarativeItem*>
     "begin"
         <stmt:SequentialStatement*>
     "end" "function"? <end_name:Identifier?> ";"
-    => FunctionBody { name, return_type, decl, stmt, end_name }
+    => FunctionBody { name, params, return_type, decl, stmt, end_name }
 }
 
 SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
@@ -496,8 +511,23 @@ UnaryExpression: Expression = {
 }
 ExprLevelPrimary: Expression = {
     // TODO expand
+    <name:Name> <args:CallArgs> => Expression::Call { name, args },
+    <name:Name> TokenAttributeQuote <attr:AttributeIdentifier> => Expression::Attribute { name, attr },
+    <value:AbstractLiteral> <unit:Identifier> => Expression::PhysicalLiteral { value, unit },
+    "(" <Expr> ")",
     Name => Expression::Name(<>),
     TokenDecimalLiteral => Expression::DecimalLiteral,
+    TokenStringLiteral => Expression::StringLiteral,
+    TokenCharacterLiteral => Expression::CharLiteral,
+}
+
+CallArgs: Vec<Expression> = {
+    "(" <SeparatedNoTrail<Expr, ",">> ")",
+}
+
+AttributeIdentifier: Identifier = {
+    Identifier,
+    Span<"range"> => Identifier { span: <> },
 }
 
 LogicalOperator: LogicalOperator = {
@@ -624,8 +654,8 @@ VariableAssignmentStatement: VariableAssignmentStatement = {
 
 // LRM 10.6 Procedure call statements
 ProcedureCallStatement: ProcedureCallStatement = {
-    <label:MaybeLabel> <procedure:Name> ";"
-        => ProcedureCallStatement { label, procedure }
+    <label:MaybeLabel> <procedure:Name> <args:CallArgs?> ";"
+        => ProcedureCallStatement { label, procedure, args: args.unwrap_or_default() }
 }
 
 // LRM 10.7 If statements
@@ -697,32 +727,33 @@ SequentialBlockStatement: SequentialBlockStatement = {
 // LRM 11 Concurrent statements
 ConcurrentStatement: ConcurrentStatement = {
     // LRM 11.2 Block statements
-    <label:MaybeLabel> <guard_expression:("block" ("(" <Expr> ")")?)> <decl:("is" <BlockDeclarativeItem*>)?> "begin" <stmt:ConcurrentStatement*> "end" "block"? <end_label:Identifier?> ";"
+    <label:MaybeLabel> <guard_expression:("block" ("(" <Expr> ")")?)> "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*> "end" "block"? <end_label:Identifier?> ";"
         => ConcurrentStatement::Block(BlockStatement {
             label,
             guard_expression: guard_expression.1,
-            decl: decl.unwrap_or_default(),
+            decl,
             stmt,
             end_label,
         }),
 
     // LRM 11.3 Process statements
-    <label:MaybeLabel> <postponed:"postponed"?> "process" <sensitivity:ProcessSensitivityList?> <decl:("is" <ProcessDeclarativeItem*>)?> "begin" <stmt:SequentialStatement*> "end" "postponed"? "process" <end_label:Identifier?> ";"
+    <label:MaybeLabel> <postponed:"postponed"?> "process" <sensitivity:ProcessSensitivityList?> "is"? <decl:ProcessDeclarativeItem*> "begin" <stmt:SequentialStatement*> "end" "postponed"? "process" <end_label:Identifier?> ";"
         => ConcurrentStatement::Process(ProcessStatement {
             label,
             postponed: postponed.is_some(),
             sensitivity,
-            decl: decl.unwrap_or_default(),
+            decl,
             stmt,
             end_label,
         }),
 
     // LRM 11.4 Concurrent procedure call statements
-    <label:MaybeLabel> <postponed:"postponed"?> <procedure:Name> ";"
+    <label:MaybeLabel> <postponed:"postponed"?> <procedure:Name> <args:CallArgs?> ";"
         => ConcurrentStatement::ProcedureCall(ConcurrentProcedureCallStatement {
             label,
             postponed: postponed.is_some(),
             procedure,
+            args: args.unwrap_or_default(),
         }),
 
     // LRM 11.5 Concurrent assertion statements
@@ -736,8 +767,10 @@ ConcurrentStatement: ConcurrentStatement = {
         }),
 
     // LRM 11.7 Component instantiation statements
-    <label:Identifier> ":" "component" <unit:Name> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit }),
+    <label:Identifier> ":" "component" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, generic_map, port_map }),
+    <label:Identifier> ":" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, generic_map, port_map: Some(port_map) }),
 
     // LRM 11.8 Generate statements
     <label:Identifier> ":" "for" <param:Identifier> "in" <range:Range> "generate" <body:GenerateBody> "end" "generate" <end_label:Identifier?> ";"
@@ -773,8 +806,8 @@ ConcurrentStatement: ConcurrentStatement = {
 }
 
 GenerateBody: GenerateBody = {
-    <decl:("is" <BlockDeclarativeItem*>)?> "begin" <stmt:ConcurrentStatement*>
-        => GenerateBody { decl: decl.unwrap_or_default(), stmt }
+    "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*>
+        => GenerateBody { decl, stmt }
 }
 
 // LRM 11.3 Process statements
@@ -1034,10 +1067,10 @@ extern {
 // utilities
 SeparatedNoTrail<T, S>: Vec<T> = {
     => vec![],
-    <v:(<T> S)*> <e:T> => {
-        let mut v = v;
-        if let Some(e) = e {
-            v.push(e);
+    <first:T> <rest:(S <T>)*> => {
+        let mut v = vec![first];
+        for item in rest {
+            v.push(item);
         }
         v
     }

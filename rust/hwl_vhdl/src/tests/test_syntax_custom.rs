@@ -260,3 +260,26 @@ fn sequential_statements_coverage() {
         ",
     )
 }
+
+#[test]
+fn subprogram_parameter_lists_and_process_decl_without_is() {
+    test_parse(
+        "
+        entity top is
+            procedure p_decl(one: out integer);
+            function f_decl(constant x: integer; y: in integer) return integer;
+        end;
+        architecture rtl of top is
+        begin
+            process
+                function returns_last(p: bit_vector) return bit is
+                begin
+                    return p;
+                end function returns_last;
+            begin
+                null;
+            end process;
+        end rtl;
+        ",
+    )
+}
