@@ -33,7 +33,7 @@ pub fn test_parse(src: &str) {
 
     match result {
         Ok(result) => {
-            println!("{:#?}", result);
+            let _ = result;
         }
         Err(e) => {
             any_fail = true;
@@ -62,7 +62,7 @@ pub fn test_parse_files(paths: &[&str]) {
 
         match result {
             Ok(result) => {
-                println!("{:#?}", result);
+                let _ = result;
             }
             Err(e) => {
                 let _ = parse_error_to_diagnostic(e).report(&diags);

@@ -218,6 +218,7 @@ IndexConstraint: IndexConstraint = {
 
 CompositeTypeDefinition: CompositeTypeDefinition = {
     ArrayTypeDefinition => CompositeTypeDefinition::Array(<>),
+    RecordTypeDefinition => CompositeTypeDefinition::Record(<>),
 }
 
 ArrayTypeDefinition: ArrayTypeDefinition = {
@@ -231,9 +232,22 @@ IndexSubTypeDefinition: IndexSubTypeDefinition = {
     <type_mark:Name> "range" "<" ">" => IndexSubTypeDefinition { type_mark },
 }
 
+// LRM 5.3.3 Record types
+RecordTypeDefinition: RecordTypeDefinition = {
+    "record" <prefix:ElementDeclaration*> <last:ElementDeclaration> "end" "record" <end_name:Identifier?>
+        => RecordTypeDefinition { elements: NonEmptyVec::new_vec_push(prefix, last), end_name },
+}
+ElementDeclaration: ElementDeclaration = {
+    <names:IdentifierList> ":" <ty:SubTypeExpr> ";" => ElementDeclaration { names, ty },
+}
+
 SubTypeExpr: Expression = {
+    <resolution:Name> <type_mark:Name> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Box::new(constraint) },
+        None => Expression::Name(type_mark),
+    },
     <type_mark:Name> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { type_mark, constraint: Box::new(constraint) },
+        Some(constraint) => Expression::SubtypeIndication { resolution: None, type_mark, constraint: Box::new(constraint) },
         None => Expression::Name(type_mark),
     },
 }
@@ -336,14 +350,19 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
     InterfaceSignalDeclaration => PortInterfaceDeclaration::Signal(<>),
 }
 
+FunctionPurity: FunctionPurity = {
+    "pure" => FunctionPurity::Pure,
+    "impure" => FunctionPurity::Impure,
+}
+
 // LRM 4.2 Subprogram declarations
 ProcedureDeclaration: ProcedureDeclaration = {
     "procedure" <name:Identifier> <params:SubprogramParameterList?> ";" => ProcedureDeclaration { name, params },
 }
 
 FunctionDeclaration: FunctionDeclaration = {
-    "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> ";"
-        => FunctionDeclaration { name, params, return_type },
+    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> ";"
+        => FunctionDeclaration { purity, name, params, return_type },
 }
 
 SubprogramParameterList: NonEmptyVec<SubprogramParameterDeclaration> = {
@@ -372,12 +391,12 @@ ProcedureBody: ProcedureBody = {
 }
 
 FunctionBody: FunctionBody = {
-    "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> "is"
+    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> "is"
         <decl:SubprogramDeclarativeItem*>
     "begin"
         <stmt:SequentialStatement*>
     "end" "function"? <end_name:Identifier?> ";"
-    => FunctionBody { name, params, return_type, decl, stmt, end_name }
+        => FunctionBody { purity, name, params, return_type, decl, stmt, end_name }
 }
 
 SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
@@ -511,23 +530,61 @@ UnaryExpression: Expression = {
 }
 ExprLevelPrimary: Expression = {
     // TODO expand
-    <name:Name> <args:CallArgs> => Expression::Call { name, args },
-    <name:Name> TokenAttributeQuote <attr:AttributeIdentifier> => Expression::Attribute { name, attr },
+    <PostfixExpression>,
     <value:AbstractLiteral> <unit:Identifier> => Expression::PhysicalLiteral { value, unit },
-    "(" <Expr> ")",
+    "(" <elements:SeparatedNonEmptyNoTrail<AssociationElementExpr, ",">> ")"
+        => Expression::Aggregate(elements),
     Name => Expression::Name(<>),
+    TokenBitStringLiteral => Expression::BitStringLiteral,
     TokenDecimalLiteral => Expression::DecimalLiteral,
     TokenStringLiteral => Expression::StringLiteral,
     TokenCharacterLiteral => Expression::CharLiteral,
 }
 
 CallArgs: Vec<Expression> = {
-    "(" <SeparatedNoTrail<Expr, ",">> ")",
+    "(" <SeparatedNoTrail<AssociationElementExpr, ",">> ")",
+}
+
+AssociationElementExpr: Expression = {
+    <formal:Name> "=>" <actual:Expr> => Expression::Association {
+        formal: Box::new(Expression::Name(formal)),
+        actual: Box::new(actual),
+    },
+    "others" "=>" <actual:Expr> => Expression::Association {
+        formal: Box::new(Expression::OthersChoice),
+        actual: Box::new(actual),
+    },
+    Expr,
 }
 
 AttributeIdentifier: Identifier = {
     Identifier,
     Span<"range"> => Identifier { span: <> },
+}
+
+PostfixExpression: Expression = {
+    <base:Name> <suffixes:PostfixSuffix+> => {
+        let mut expr = Expression::Name(base);
+        for (attr, args) in suffixes {
+            expr = match attr {
+                Some(attr) => Expression::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    args,
+                },
+                None => Expression::Call {
+                    callee: Box::new(expr),
+                    args,
+                },
+            };
+        }
+        expr
+    },
+}
+
+PostfixSuffix: (Option<Identifier>, Vec<Expression>) = {
+    <args:CallArgs> => (None, args),
+    TokenAttributeQuote <attr:AttributeIdentifier> => (Some(attr), vec![]),
 }
 
 LogicalOperator: LogicalOperator = {
@@ -625,7 +682,7 @@ DelayMechanism: DelayMechanism = {
 }
 
 Target: Target = {
-    Identifier => Target::Name(<>),
+    ExprLevelPrimary => Target::Expr(<>),
 }
 
 Waveform: Waveform = {
@@ -768,9 +825,17 @@ ConcurrentStatement: ConcurrentStatement = {
 
     // LRM 11.7 Component instantiation statements
     <label:Identifier> ":" "component" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, generic_map, port_map }),
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, architecture: None, generic_map, port_map }),
     <label:Identifier> ":" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, generic_map, port_map: Some(port_map) }),
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, architecture: None, generic_map, port_map: Some(port_map) }),
+    <label:Identifier> ":" "entity" <unit:SelectedName> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
+            label,
+            unit: Name::Selected(Box::new(unit)),
+            architecture,
+            generic_map,
+            port_map,
+        }),
 
     // LRM 11.8 Generate statements
     <label:Identifier> ":" "for" <param:Identifier> "in" <range:Range> "generate" <body:GenerateBody> "end" "generate" <end_label:Identifier?> ";"
@@ -862,7 +927,7 @@ LibraryUnit: LibraryUnit = {
 
 // LRM 13.2 Design libraries
 LibraryClause: LibraryClause = {
-    "library" <SeparatedNonEmptyNoTrail<Identifier, ".">> ";" => LibraryClause { names: <> }
+    "library" <SeparatedNonEmptyNoTrail<Identifier, ",">> ";" => LibraryClause { names: <> }
 }
 
 // LRM 13.4 Context clauses

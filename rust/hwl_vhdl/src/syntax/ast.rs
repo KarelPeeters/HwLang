@@ -198,7 +198,7 @@ pub struct PhysicalLiteral {
 #[derive(Debug)]
 pub enum CompositeTypeDefinition {
     Array(ArrayTypeDefinition),
-    Record(/*TODO*/),
+    Record(RecordTypeDefinition),
 }
 
 // LRM 5.3.2 Array types
@@ -238,6 +238,17 @@ pub struct IndexConstraint {
 }
 
 // LRM 5.3.3 Record types
+#[derive(Debug)]
+pub struct RecordTypeDefinition {
+    pub elements: NonEmptyVec<ElementDeclaration>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct ElementDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: SubTypeIndication,
+}
 
 // LRM 6 Declarations
 
@@ -431,6 +442,7 @@ pub struct ProcedureDeclaration {
 
 #[derive(Debug)]
 pub struct FunctionDeclaration {
+    pub purity: Option<FunctionPurity>,
     pub name: Identifier,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub return_type: SubTypeIndication,
@@ -448,12 +460,19 @@ pub struct ProcedureBody {
 
 #[derive(Debug)]
 pub struct FunctionBody {
+    pub purity: Option<FunctionPurity>,
     pub name: Identifier,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub return_type: SubTypeIndication,
     pub decl: Vec<SubprogramDeclarativeItem>,
     pub stmt: Vec<SequentialStatement>,
     pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum FunctionPurity {
+    Pure,
+    Impure,
 }
 
 // LRM 4.2.1 Formal parameters
@@ -520,6 +539,7 @@ pub enum Suffix {
 pub enum Expression {
     // LRM 6.3 Subtype declarations
     SubtypeIndication {
+        resolution: Option<Name>,
         type_mark: TypeMark,
         constraint: Box<Constraint>,
     },
@@ -550,17 +570,25 @@ pub enum Expression {
     // primary
     Name(Name),
     Call {
-        name: Name,
+        callee: Box<Expression>,
         args: Vec<Expression>,
     },
+    Association {
+        formal: Box<Expression>,
+        actual: Box<Expression>,
+    },
     Attribute {
-        name: Name,
+        value: Box<Expression>,
         attr: Identifier,
+        args: Vec<Expression>,
     },
     PhysicalLiteral {
         value: AbstractLiteral,
         unit: Identifier,
     },
+    BitStringLiteral,
+    Aggregate(NonEmptyVec<Expression>),
+    OthersChoice,
     DecimalLiteral,
     StringLiteral,
     CharLiteral,
@@ -673,7 +701,7 @@ pub enum DelayMechanism {
 #[derive(Debug)]
 pub enum Target {
     // TODO LRM syntax implies this can be many other things too, is that true?
-    Name(Identifier),
+    Expr(Expression),
     Aggregate(/*TODO*/),
 }
 
@@ -942,6 +970,7 @@ pub enum ConcurrentSignalAssignmentKind {
 pub struct ComponentInstantiationStatement {
     pub label: Identifier,
     pub unit: Name,
+    pub architecture: Option<Identifier>,
     pub generic_map: Option<Vec<Expression>>,
     pub port_map: Option<Vec<Expression>>,
 }

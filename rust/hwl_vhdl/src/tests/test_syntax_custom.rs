@@ -283,3 +283,72 @@ fn subprogram_parameter_lists_and_process_decl_without_is() {
         ",
     )
 }
+
+#[test]
+fn record_types_named_associations_and_entity_instantiation() {
+    test_parse(
+        "
+        entity child is
+            port (x: in std_logic; y: out std_logic);
+        end;
+        architecture rtl of child is
+        begin
+            y <= x;
+        end rtl;
+
+        entity top is
+            type pair_t is record
+                a: integer;
+                b: integer;
+            end record;
+            subtype pair_word_t is pair_t;
+        end;
+        architecture rtl of top is
+            signal s, t: std_logic;
+        begin
+            u0: entity work.child(rtl) port map (x => s, y => t);
+            process (all)
+                variable v: integer := 0;
+            begin
+                v := add_one(x => v);
+                report pair_t'image((a => 1, b => 2));
+            end process;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn library_clause_and_impure_function() {
+    test_parse(
+        "
+        library ieee, work;
+        use ieee.std_logic_1164.all;
+
+        package p is
+            impure function f(x: integer) return integer;
+        end;
+
+        package body p is
+            impure function f(x: integer) return integer is
+            begin
+                return x;
+            end function;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn ast_captures_function_purity_and_subtype_resolution() {
+    test_parse(
+        "
+        package p is
+            impure function f return integer;
+            pure function g return integer;
+            function h return integer;
+            subtype bounded_int is resolve_fn integer range 0 to 3;
+        end;
+    ",
+    );
+}

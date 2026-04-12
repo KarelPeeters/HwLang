@@ -344,7 +344,8 @@ impl<'s> Tokenizer<'s> {
                 if matches!(
                     self.prev_token,
                     Some(TokenType::CloseS | TokenType::CloseR | TokenType::ResAll | TokenType::Identifier)
-                ) {
+                ) || c2 != '\''
+                {
                     // must be attribute
                     self.skip(1);
                     TokenType::AttributeQuote
@@ -968,7 +969,7 @@ impl TokenError {
 
 #[cfg(test)]
 mod test {
-    use crate::syntax::token::{Token, TokenType, tokenize};
+    use crate::syntax::token::{tokenize, Token, TokenType};
     use hwl_common::pos::Span;
     use hwl_common::source::FileId;
     use hwl_util::swriteln;
