@@ -53,6 +53,45 @@ pub struct ArchitectureBody {
     pub end_name: Option<Identifier>,
 }
 
+// LRM 3.4 Configuration declarations
+#[derive(Debug)]
+pub struct ConfigurationDeclaration {
+    pub name: Identifier,
+    pub entity_name: Name,
+    pub decl: Vec<ConfigurationDeclarativeItem>,
+    pub block_config: BlockConfiguration,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum ConfigurationDeclarativeItem {
+    UseClause(UseClause),
+    AttributeSpecification(AttributeSpecification),
+    GroupDeclaration(GroupDeclaration),
+}
+
+// LRM 3.4.2 Block configuration
+#[derive(Debug)]
+pub struct BlockConfiguration {
+    pub block_spec: Expression,
+    pub use_clauses: Vec<UseClause>,
+    pub items: Vec<ConfigurationItem>,
+}
+
+#[derive(Debug)]
+pub enum ConfigurationItem {
+    Block(BlockConfiguration),
+    Component(ComponentConfiguration),
+}
+
+// LRM 3.4.3 Component configuration
+#[derive(Debug)]
+pub struct ComponentConfiguration {
+    pub spec: ComponentSpecification,
+    pub binding: Option<BindingIndication>,
+    pub block_config: Option<BlockConfiguration>,
+}
+
 // LRM 3.3.2 Architecture declarative part
 #[derive(Debug)]
 pub enum BlockDeclarativeItem {
@@ -96,7 +135,7 @@ pub enum SubprogramSpecification {
 
 #[derive(Debug)]
 pub struct ProcedureSpecification {
-    pub name: Identifier,
+    pub name: Designator,
     pub header: SubprogramHeader,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
 }
@@ -104,8 +143,11 @@ pub struct ProcedureSpecification {
 #[derive(Debug)]
 pub struct FunctionSpecification {
     pub purity: Option<FunctionPurity>,
-    pub name: Identifier,
+    pub name: Designator,
+    pub header: SubprogramHeader,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+    // LRM 4.2.1 return [return_identifier of] type_mark
+    pub return_identifier: Option<Identifier>,
     pub return_type: SubTypeIndication,
 }
 
@@ -130,30 +172,34 @@ pub enum SubprogramKind {
 #[derive(Debug)]
 pub struct SubprogramInstantiationDeclaration {
     pub kind: SubprogramKind,
-    pub designator: Identifier,
+    pub designator: Designator,
     pub uninstantiated: Name,
+    pub signature: Option<Signature>,
     pub generic_map: Option<Vec<Expression>>,
 }
 
 // LRM 4.3 Subprogram bodies
 #[derive(Debug)]
 pub struct ProcedureBody {
-    pub name: Identifier,
+    pub name: Designator,
+    pub header: SubprogramHeader,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
     pub decl: Vec<SubprogramDeclarativeItem>,
     pub stmt: Vec<SequentialStatement>,
-    pub end_name: Option<Identifier>,
+    pub end_name: Option<Designator>,
 }
 
 #[derive(Debug)]
 pub struct FunctionBody {
     pub purity: Option<FunctionPurity>,
-    pub name: Identifier,
+    pub name: Designator,
+    pub header: SubprogramHeader,
     pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+    pub return_identifier: Option<Identifier>,
     pub return_type: SubTypeIndication,
     pub decl: Vec<SubprogramDeclarativeItem>,
     pub stmt: Vec<SequentialStatement>,
-    pub end_name: Option<Identifier>,
+    pub end_name: Option<Designator>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -167,6 +213,7 @@ pub enum FunctionPurity {
 pub struct PackageDeclaration {
     pub name: Identifier,
     pub generic: Option<GenericClause>,
+    pub generic_map: Option<Vec<Expression>>,
     pub decl: Vec<PackageDeclarativeItem>,
     pub end_name: Option<Identifier>,
 }
@@ -256,8 +303,8 @@ pub struct ModeViewElementDefinition {
 #[derive(Debug)]
 pub enum ElementModeIndication {
     Mode(Mode),
-    RecordView(Name),
-    ArrayView(Name),
+    RecordView(Expression),
+    ArrayView(Expression),
 }
 
 #[derive(Debug)]
@@ -307,7 +354,7 @@ pub struct BindingIndication {
 
 #[derive(Debug)]
 pub enum EntityAspect {
-    Entity(Name),
+    Entity(Name, Option<Identifier>),
     Configuration(Name),
     Open,
 }
@@ -405,7 +452,7 @@ pub struct SecondaryUnitDeclaration {
 }
 #[derive(Debug)]
 pub struct PhysicalLiteral {
-    pub value: AbstractLiteral,
+    pub value: Option<AbstractLiteral>,
     pub unit: Identifier,
 }
 
@@ -455,7 +502,7 @@ pub struct IndexConstraint {
 // LRM 5.3.3 Record types
 #[derive(Debug)]
 pub struct RecordTypeDefinition {
-    pub elements: NonEmptyVec<ElementDeclaration>,
+    pub elements: Vec<ElementDeclaration>,
     pub end_name: Option<Identifier>,
 }
 
@@ -474,6 +521,7 @@ pub struct ElementDeclaration {
 #[derive(Debug)]
 pub enum TypeDeclaration {
     Full(FullTypeDeclaration),
+    Incomplete(IncompleteTypeDeclaration),
 }
 
 #[derive(Debug)]
@@ -487,6 +535,7 @@ pub enum TypeDefinition {
     Scalar(ScalarTypeDefinition),
     Composite(CompositeTypeDefinition),
     Access(AccessTypeDefinition),
+    File(FileTypeDefinition),
     Protected(ProtectedTypeDefinition),
     ProtectedBody(ProtectedTypeBody),
 }
@@ -494,6 +543,18 @@ pub enum TypeDefinition {
 #[derive(Debug)]
 pub struct AccessTypeDefinition {
     pub designated_subtype: SubTypeIndication,
+}
+
+// LRM 5.5 File types
+#[derive(Debug)]
+pub struct FileTypeDefinition {
+    pub type_mark: TypeMark,
+}
+
+// LRM 6.2 Incomplete type declarations
+#[derive(Debug)]
+pub struct IncompleteTypeDeclaration {
+    pub name: Identifier,
 }
 
 #[derive(Debug)]
@@ -601,14 +662,31 @@ pub struct VariableDeclaration {
 pub struct FileDeclaration {
     pub names: NonEmptyVec<Identifier>,
     pub ty: SubTypeIndication,
+    pub open_info: Option<FileOpenInformation>,
+}
+
+// LRM 6.4.2.5 File open information
+#[derive(Debug)]
+pub struct FileOpenInformation {
+    pub open_kind: Option<Expression>,
+    pub mode: Option<Mode>, // VHDL-87 compatibility: is [in|out] "filename"
+    pub logical_name: Expression,
 }
 
 // LRM 6.6 Alias declarations
+// LRM 4.7 Signatures
+#[derive(Debug)]
+pub struct Signature {
+    pub parameter_types: Vec<Name>,
+    pub return_type: Option<Name>,
+}
+
 #[derive(Debug)]
 pub struct AliasDeclaration {
-    pub name: Identifier,
+    pub name: Designator,
     pub ty: Option<SubTypeIndication>,
     pub target: Expression,
+    pub signature: Option<Signature>,
 }
 
 // LRM 7.2 Attribute declarations
@@ -626,9 +704,18 @@ pub struct AttributeSpecification {
     pub expr: Expression,
 }
 
+// LRM 7.2 Attribute entity designator
 #[derive(Debug)]
-pub enum AttributeEntityDesignator {
+pub struct AttributeEntityDesignator {
+    pub tag: EntityTag,
+    pub signature: Option<Signature>,
+}
+
+#[derive(Debug)]
+pub enum EntityTag {
     Name(Name),
+    OperatorSymbol(Span),
+    CharacterLiteral(Span),
     Others,
     All,
 }
@@ -682,6 +769,13 @@ pub struct InterfaceSignalDeclaration {
     pub mode_indication: ModeIndication,
 }
 
+// LRM 6.5.2 Interface variable declarations
+#[derive(Debug)]
+pub struct InterfaceVariableDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub mode_indication: ModeIndication,
+}
+
 #[derive(Debug)]
 pub enum InterfaceTypeIndication {
     Subtype(SubTypeIndication),
@@ -696,7 +790,16 @@ pub enum ModeIndication {
         bus: bool,
         init: Option<Expression>,
     },
-    RecordView(/*TODO*/),
+    // LRM 6.5.2.2 record_mode_view_indication
+    RecordView {
+        view_name: Expression,
+        subtype: Option<Expression>,
+    },
+    // LRM 6.5.2.2 array_mode_view_indication
+    ArrayView {
+        view_name: Expression,
+        subtype: Option<Expression>,
+    },
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -712,6 +815,35 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct InterfaceTypeDeclaration {
     pub name: Identifier,
+    pub constraint: Option<IncompleteTypeDefinition>,
+}
+
+// LRM 5.4.2 Incomplete type definitions
+#[derive(Debug)]
+pub enum IncompleteTypeDefinition {
+    Private,
+    Scalar,
+    Discrete,
+    Integer,
+    Floating,
+    Access(Box<ElementIncompleteType>),
+    File(Box<ElementIncompleteType>),
+    Array { indexes: NonEmptyVec<ArrayIncompleteIndex>, element: Box<ElementIncompleteType> },
+    Physical,
+}
+
+// LRM 5.4.2 element_incomplete_type_definition
+#[derive(Debug)]
+pub enum ElementIncompleteType {
+    Subtype(Expression),
+    Incomplete(IncompleteTypeDefinition),
+}
+
+#[derive(Debug)]
+pub enum ArrayIncompleteIndex {
+    Incomplete(IncompleteTypeDefinition),
+    Unspecified,
+    Range(Expression),
 }
 
 // LRM 6.5.4 Interface subprogram declarations
@@ -730,8 +862,36 @@ pub struct GenericClause {
 pub enum GenericInterfaceDeclaration {
     Constant(InterfaceConstantDeclaration),
     Type(InterfaceTypeDeclaration),
-    Subprogram(/*TODO*/),
-    Package(/*TODO*/),
+    Subprogram(InterfaceSubprogramDeclaration),
+    Package(InterfacePackageDeclaration),
+}
+
+// LRM 6.5.4 Interface subprogram declarations
+#[derive(Debug)]
+pub struct InterfaceSubprogramDeclaration {
+    pub spec: SubprogramSpecification,
+    pub default: Option<InterfaceSubprogramDefault>,
+}
+
+#[derive(Debug)]
+pub enum InterfaceSubprogramDefault {
+    Name(Name),
+    Box,
+}
+
+// LRM 6.5.5 Interface package declarations
+#[derive(Debug)]
+pub struct InterfacePackageDeclaration {
+    pub name: Identifier,
+    pub uninstantiated: Name,
+    pub generic_map: InterfacePackageGenericMap,
+}
+
+#[derive(Debug)]
+pub enum InterfacePackageGenericMap {
+    Map(Vec<Expression>),
+    Box,
+    Default,
 }
 
 #[derive(Debug)]
@@ -742,7 +902,7 @@ pub struct PortClause {
 #[derive(Debug)]
 pub enum PortInterfaceDeclaration {
     Signal(InterfaceSignalDeclaration),
-    Variable(/*TODO*/),
+    Variable(InterfaceVariableDeclaration),
 }
 
 // LRM 4.2.1 Formal parameters
@@ -750,9 +910,7 @@ pub enum PortInterfaceDeclaration {
 pub struct SubprogramParameterDeclaration {
     pub class: Option<SubprogramParameterClass>,
     pub names: NonEmptyVec<Identifier>,
-    pub mode: Option<Mode>,
-    pub ty: SubTypeIndication,
-    pub init: Option<Expression>,
+    pub mode_indication: ModeIndication,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -760,6 +918,7 @@ pub enum SubprogramParameterClass {
     Constant,
     Variable,
     Signal,
+    File,
 }
 
 #[derive(Debug)]
@@ -801,7 +960,10 @@ pub struct SelectedName {
 #[derive(Debug)]
 pub enum Suffix {
     Identifier(Identifier),
+    OperatorSymbol(Span),
+    CharacterLiteral(Span),
     All,
+    Attribute(Identifier),
 }
 
 // LRM 9 Expressions
@@ -812,7 +974,7 @@ pub enum Suffix {
 pub enum Expression {
     // LRM 6.3 Subtype declarations
     SubtypeIndication {
-        resolution: Option<Name>,
+        resolution: Option<Box<Expression>>,
         type_mark: TypeMark,
         constraint: Option<Box<Constraint>>,
     },
@@ -843,13 +1005,19 @@ pub enum Expression {
     // primary
     Name(Name),
     New(Box<Expression>),
+    Null,
+    Open,
+    QualifiedExpression {
+        type_mark: Box<Expression>,
+        args: Vec<Expression>,
+    },
     Call {
         callee: Box<Expression>,
         args: Vec<Expression>,
     },
     Select {
         value: Box<Expression>,
-        field: Identifier,
+        suffix: Suffix,
     },
     Association {
         formal: Box<Expression>,
@@ -864,12 +1032,38 @@ pub enum Expression {
         value: AbstractLiteral,
         unit: Identifier,
     },
+    // LRM 8.7 External names
+    ExternalName {
+        class: ExternalNameClass,
+        path: NonEmptyVec<ExternalPathElement>,
+        ty: Box<Expression>,
+    },
     BitStringLiteral,
     Aggregate(NonEmptyVec<Expression>),
     OthersChoice,
+    // LRM 9.3.3.3 Choices in aggregates (choice | choice | ...)
+    Choices(NonEmptyVec<Expression>),
     DecimalLiteral,
+    BasedLiteral,
     StringLiteral,
     CharLiteral,
+    // LRM 6.5.7.1 Port map aspects
+    Inertial(Box<Expression>),
+    // LRM 4.7 Signature (name[signature])
+    WithSignature {
+        value: Box<Expression>,
+        signature: Signature,
+    },
+}
+
+// Helper for parsing chained postfix: name(args)'attr[sig] etc.
+#[derive(Debug)]
+pub enum PostfixSuffix {
+    Call(Vec<Expression>),
+    Select(Suffix),
+    Attribute(Identifier),
+    QualifiedExpression(Vec<Expression>),
+    Signature(Signature),
 }
 
 #[derive(Debug)]
@@ -882,6 +1076,50 @@ pub struct ConditionalExpression {
 pub struct ConditionalExpressionBranch<T> {
     pub condition: Expression,
     pub value_else: T,
+}
+
+// LRM 8.7 External names
+#[derive(Debug, Copy, Clone)]
+pub enum ExternalNameClass {
+    Constant,
+    Signal,
+    Variable,
+}
+
+#[derive(Debug)]
+pub enum ExternalPathElement {
+    // LRM 8.7 pathname_element: identifier [ ( static_expression ) ]
+    Identifier(Identifier, Option<Expression>),
+    // LRM 8.7 absolute pathname: leading .
+    Absolute,
+    // LRM 8.7 relative pathname: ^
+    Relative,
+    // LRM 8.7 package pathname: @
+    Package,
+    // instantiation label (selected name element)
+    All,
+}
+
+// LRM 10.5.2 Simple signal assignments
+#[derive(Debug, Copy, Clone)]
+pub enum ForceMode {
+    In,
+    Out,
+}
+
+#[derive(Debug)]
+pub struct SignalForceAssignmentStatement {
+    pub label: Option<Identifier>,
+    pub target: Target,
+    pub force_mode: Option<ForceMode>,
+    pub value: Expression,
+}
+
+#[derive(Debug)]
+pub struct SignalReleaseAssignmentStatement {
+    pub label: Option<Identifier>,
+    pub target: Target,
+    pub force_mode: Option<ForceMode>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -910,12 +1148,12 @@ pub fn build_call(callee: Expression, args: Vec<Expression>) -> Expression {
 }
 
 pub fn build_subtype_indication(
-    resolution: Option<Name>,
+    resolution: Option<Expression>,
     type_mark: TypeMark,
     constraint: Option<Constraint>,
 ) -> Expression {
     Expression::SubtypeIndication {
-        resolution,
+        resolution: resolution.map(Box::new),
         type_mark,
         constraint: constraint.map(Box::new),
     }
@@ -1029,15 +1267,25 @@ pub enum ConcurrentStatement {
     ProcedureCall(ConcurrentProcedureCallStatement),
     Assertion(ConcurrentAssertionStatement),
     SignalAssignment(ConcurrentSignalAssignmentStatement),
+    SelectedSignalAssignment(SelectedWaveformAssignment),
     ComponentInstantiation(ComponentInstantiationStatement),
     Generate(GenerateStatement),
 }
 
 // LRM 11.2 Block statements
+#[derive(Debug, Default)]
+pub struct BlockHeader {
+    pub generic: Option<GenericClause>,
+    pub generic_map: Option<Vec<Expression>>,
+    pub port: Option<PortClause>,
+    pub port_map: Option<Vec<Expression>>,
+}
+
 #[derive(Debug)]
 pub struct BlockStatement {
     pub label: Option<Identifier>,
     pub guard_expression: Option<Expression>,
+    pub header: BlockHeader,
     pub decl: Vec<BlockDeclarativeItem>,
     pub stmt: Vec<ConcurrentStatement>,
     pub end_label: Option<Identifier>,
@@ -1056,7 +1304,7 @@ pub struct ProcessStatement {
 
 #[derive(Debug)]
 pub enum ProcessSensitivityList {
-    Names(NonEmptyVec<Name>),
+    Names(NonEmptyVec<Expression>),
     All,
 }
 
@@ -1087,6 +1335,10 @@ pub enum SequentialStatement {
     Assertion(AssertionStatement),
     Report(ReportStatement),
     SignalAssignment(SequentialSignalAssignmentStatement),
+    SignalForceAssignment(SignalForceAssignmentStatement),
+    SignalReleaseAssignment(SignalReleaseAssignmentStatement),
+    SelectedSignalAssignment(SelectedWaveformAssignment),
+    SelectedVariableAssignment(SelectedVariableAssignment),
     VariableAssignment(VariableAssignmentStatement),
     ProcedureCall(ProcedureCallStatement),
     If(IfStatement),
@@ -1122,7 +1374,7 @@ pub struct ConcurrentAssertionStatement {
 #[derive(Debug)]
 pub struct WaitStatement {
     pub label: Option<Identifier>,
-    pub sensitivity: Option<NonEmptyVec<Name>>,
+    pub sensitivity: Option<NonEmptyVec<Expression>>,
     pub condition: Option<Expression>,
     pub timeout: Option<Expression>,
 }
@@ -1147,7 +1399,50 @@ pub struct SequentialSignalAssignmentStatement {
     pub label: Option<Identifier>,
     pub target: Target,
     pub delay: Option<DelayMechanism>,
+    pub kind: SequentialSignalAssignmentKind,
+}
+
+#[derive(Debug)]
+pub enum SequentialSignalAssignmentKind {
+    Simple {
+        waveform: Waveform,
+    },
+    // LRM 10.5.3 Conditional signal assignments
+    Conditional {
+        conditionals: Vec<ConditionalWaveform>,
+        else_waveform: Option<Waveform>,
+    },
+}
+
+// LRM 10.5.4 Selected signal assignments
+#[derive(Debug)]
+pub struct SelectedWaveformAssignment {
+    pub label: Option<Identifier>,
+    pub selector: Expression,
+    pub matching: bool,
+    pub target: Target,
+    pub delay: Option<DelayMechanism>,
+    pub alternatives: NonEmptyVec<SelectedWaveform>,
+}
+#[derive(Debug)]
+pub struct SelectedWaveform {
     pub waveform: Waveform,
+    pub choices: NonEmptyVec<Choice>,
+}
+
+// LRM 10.5.4 Selected variable assignments
+#[derive(Debug)]
+pub struct SelectedVariableAssignment {
+    pub label: Option<Identifier>,
+    pub selector: Expression,
+    pub matching: bool,
+    pub target: Target,
+    pub alternatives: NonEmptyVec<SelectedExpression>,
+}
+#[derive(Debug)]
+pub struct SelectedExpression {
+    pub value: Expression,
+    pub choices: NonEmptyVec<Choice>,
 }
 
 #[derive(Debug)]
@@ -1177,6 +1472,7 @@ pub struct IfStatement {
 #[derive(Debug)]
 pub struct CaseStatement {
     pub label: Option<Identifier>,
+    pub matching: bool,
     pub expression: Expression,
     pub alternatives: NonEmptyVec<CaseAlternative>,
     pub end_label: Option<Identifier>,
@@ -1228,9 +1524,12 @@ pub struct ExitStatement {
 
 #[derive(Debug)]
 pub enum ReturnStatement {
+    // LRM 10.12.1 plain_return_statement: return [when condition];
     Plain {
         label: Option<Identifier>,
+        condition: Option<Expression>,
     },
+    // LRM 10.12.1 value_return_statement
     Value {
         label: Option<Identifier>,
         value: Expression,
@@ -1261,8 +1560,21 @@ pub enum ConcurrentSignalAssignmentKind {
         delay: Option<DelayMechanism>,
         waveform: Waveform,
     },
-    Conditional(/*TODO*/),
-    Selected(/*TODO*/),
+    // LRM 11.6 Concurrent conditional signal assignment
+    Conditional {
+        target: Target,
+        guarded: bool,
+        delay: Option<DelayMechanism>,
+        conditionals: Vec<ConditionalWaveform>,
+        else_waveform: Option<Waveform>,
+    },
+}
+
+// LRM 11.6 conditional_waveforms
+#[derive(Debug)]
+pub struct ConditionalWaveform {
+    pub waveform: Waveform,
+    pub condition: Expression,
 }
 
 // LRM 11.7 Component instantiation statements
@@ -1280,6 +1592,8 @@ pub struct ComponentInstantiationStatement {
 pub enum GenerateStatement {
     For(ForGenerateStatement),
     If(IfGenerateStatement),
+    // LRM 11.8 Case generate statements
+    Case(CaseGenerateStatement),
 }
 
 #[derive(Debug)]
@@ -1302,11 +1616,136 @@ pub struct IfGenerateStatement {
     pub end_label: Option<Identifier>,
 }
 
+// LRM 11.8 Case generate statements
+#[derive(Debug)]
+pub struct CaseGenerateStatement {
+    pub label: Identifier,
+    pub expression: Expression,
+    pub alternatives: Vec<CaseGenerateAlternative>,
+    pub end_label: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct CaseGenerateAlternative {
+    pub choices: NonEmptyVec<Choice>,
+    pub body: GenerateBody,
+}
+
 #[derive(Debug)]
 pub struct GenerateBody {
     pub alternative_label: Option<Identifier>,
     pub decl: Vec<BlockDeclarativeItem>,
     pub stmt: Vec<ConcurrentStatement>,
+    pub end_label: Option<Identifier>,
+}
+
+// Intermediate parse types for generate statement inner end disambiguation.
+// After ConcurrentStatement* "end", the next token disambiguates:
+// "generate" = outer end, Identifier/; = inner end (LRM 11.8).
+
+/// Recursive tail of an if-generate statement (elsif/else/end chains).
+#[derive(Debug)]
+pub(crate) enum IfGenTail {
+    End {
+        prev_inner_end: Option<Identifier>,
+        end_label: Option<Identifier>,
+    },
+    Elsif {
+        prev_inner_end: Option<Identifier>,
+        alt_label: Option<Identifier>,
+        condition: Expression,
+        body: (Vec<BlockDeclarativeItem>, Vec<ConcurrentStatement>),
+        rest: Box<IfGenTail>,
+    },
+    Else {
+        prev_inner_end: Option<Identifier>,
+        alt_label: Option<Identifier>,
+        body: (Vec<BlockDeclarativeItem>, Vec<ConcurrentStatement>),
+        else_inner_end: Option<Identifier>,
+        end_label: Option<Identifier>,
+    },
+}
+
+/// Recursive tail of a case-generate statement (when/end chains).
+#[derive(Debug)]
+pub(crate) enum CaseGenTail {
+    End {
+        prev_inner_end: Option<Identifier>,
+        end_label: Option<Identifier>,
+    },
+    When {
+        prev_inner_end: Option<Identifier>,
+        alt_label: Option<Identifier>,
+        choices: NonEmptyVec<Choice>,
+        body: (Vec<BlockDeclarativeItem>, Vec<ConcurrentStatement>),
+        rest: Box<CaseGenTail>,
+    },
+}
+
+impl IfGenTail {
+    /// Flatten the recursive tail into (elsif_branches, else_body, end_label),
+    /// assigning each inner end label to the preceding body.
+    pub(crate) fn flatten(self, prev_body: &mut GenerateBody) -> (
+        Vec<(Expression, GenerateBody)>,
+        Option<GenerateBody>,
+        Option<Identifier>,
+    ) {
+        match self {
+            IfGenTail::End { prev_inner_end, end_label } => {
+                prev_body.end_label = prev_inner_end;
+                (vec![], None, end_label)
+            }
+            IfGenTail::Elsif { prev_inner_end, alt_label, condition, body, rest } => {
+                prev_body.end_label = prev_inner_end;
+                let mut branch_body = GenerateBody {
+                    alternative_label: alt_label,
+                    decl: body.0,
+                    stmt: body.1,
+                    end_label: None,
+                };
+                let (mut elsifs, else_body, end_label) = rest.flatten(&mut branch_body);
+                elsifs.insert(0, (condition, branch_body));
+                (elsifs, else_body, end_label)
+            }
+            IfGenTail::Else { prev_inner_end, alt_label, body, else_inner_end, end_label } => {
+                prev_body.end_label = prev_inner_end;
+                let else_body = GenerateBody {
+                    alternative_label: alt_label,
+                    decl: body.0,
+                    stmt: body.1,
+                    end_label: else_inner_end,
+                };
+                (vec![], Some(else_body), end_label)
+            }
+        }
+    }
+}
+
+impl CaseGenTail {
+    /// Flatten the recursive tail into (alternatives, end_label).
+    pub(crate) fn flatten(self, prev_body: &mut GenerateBody) -> (
+        Vec<CaseGenerateAlternative>,
+        Option<Identifier>,
+    ) {
+        match self {
+            CaseGenTail::End { prev_inner_end, end_label } => {
+                prev_body.end_label = prev_inner_end;
+                (vec![], end_label)
+            }
+            CaseGenTail::When { prev_inner_end, alt_label, choices, body, rest } => {
+                prev_body.end_label = prev_inner_end;
+                let mut alt_body = GenerateBody {
+                    alternative_label: alt_label,
+                    decl: body.0,
+                    stmt: body.1,
+                    end_label: None,
+                };
+                let (mut alts, end_label) = rest.flatten(&mut alt_body);
+                alts.insert(0, CaseGenerateAlternative { choices, body: alt_body });
+                (alts, end_label)
+            }
+        }
+    }
 }
 
 // LRM 12 Scope and visibility
@@ -1332,10 +1771,10 @@ pub struct DesignUnit {
 pub enum LibraryUnit {
     // primary unit
     EntityDeclaration(EntityDeclaration),
-    ConfigurationDeclaration(/*TODO*/),
+    ConfigurationDeclaration(ConfigurationDeclaration),
     PackageDeclaration(PackageDeclaration),
     PackageInstantiationDeclaration(PackageInstantiationDeclaration),
-    ContextDeclaration(/*TODO*/),
+    ContextDeclaration(ContextDeclaration),
 
     // secondary unit
     ArchitectureBody(ArchitectureBody),
@@ -1348,6 +1787,14 @@ pub struct LibraryClause {
     pub names: NonEmptyVec<Identifier>,
 }
 
+// LRM 13.3 Context declarations
+#[derive(Debug)]
+pub struct ContextDeclaration {
+    pub name: Identifier,
+    pub items: ContextClause,
+    pub end_name: Option<Identifier>,
+}
+
 // LRM 13.4 Context clauses
 #[derive(Debug)]
 pub struct ContextClause {
@@ -1358,7 +1805,13 @@ pub struct ContextClause {
 pub enum ContextItem {
     Library(LibraryClause),
     Use(UseClause),
-    Context(/*TODO*/),
+    Context(ContextReference),
+}
+
+// LRM 13.4.2 Context references
+#[derive(Debug)]
+pub struct ContextReference {
+    pub names: NonEmptyVec<Name>,
 }
 
 // LRM 15 Lexical elements
@@ -1367,6 +1820,13 @@ pub enum ContextItem {
 #[derive(Debug)]
 pub struct Identifier {
     pub span: Span,
+}
+
+// LRM 4.2 Subprogram declarations: designator
+#[derive(Debug)]
+pub enum Designator {
+    Identifier(Identifier),
+    OperatorSymbol(Span),
 }
 
 // LRM 15.5 Abstract literals

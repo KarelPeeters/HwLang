@@ -638,3 +638,244 @@ fn aggregate_attribute_choice() {
         ",
     )
 }
+
+#[test]
+fn selected_waveform_multi_element() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            signal x, y : integer;
+            signal sel : boolean;
+        begin
+            with sel select
+                x <= 1, 2 after 5 ns when true,
+                     3 when false;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn nested_resolution_indication() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            subtype my_type is (resolved) my_utype;
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn default_as_identifier() {
+    test_parse(
+        "
+        entity top is
+            port (default : in integer := 22);
+        end;
+        architecture default of top is
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn character_literal_star() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            type t is array (natural range <>) of character;
+            constant c : t := ('/', '*', 'X', '0');
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn empty_bit_string() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            constant c1 : bit_vector := x\"\";
+            constant c2 : bit_vector := 4x\"\";
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn based_literal_colon_delimiter() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            constant c1 : integer := 16:E:E1;
+            constant c2 : real := 5:1234.4321:E-10;
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn access_incomplete_type() {
+    test_parse(
+        "
+        entity top is
+            generic (
+                type t1 is access type is private;
+                type t2 is file of type is private
+            );
+        end;
+        ",
+    )
+}
+
+#[test]
+fn physical_incomplete_type_units() {
+    test_parse(
+        "
+        entity top is
+            generic (
+                type t is units <>
+            );
+        end;
+        ",
+    )
+}
+
+#[test]
+fn physical_literal_without_value() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            type my_time is range 0 to 100
+                units
+                    fs;
+                    ps = 1000 fs;
+                    foo = fs;
+                end units;
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn postfix_chain_call_select_attr() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            signal s : integer;
+        begin
+            process
+            begin
+                s <= foo(1).bar(2).baz;
+                s <= foo(1)'length;
+                wait;
+            end process;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn empty_record() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            type empty_rec is record
+            end record;
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn generate_inner_end_for() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+        begin
+            gen: for i in 0 to 3 generate
+            begin
+            end gen;
+            end generate gen;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn generate_inner_end_if() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            signal test : natural := 3;
+        begin
+            ll: if test = 10 generate
+            begin
+            end;
+            elsif test = 5 generate
+            begin
+            end;
+            end generate;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn generate_inner_end_if_else() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            signal test : boolean := true;
+        begin
+            g: if test generate
+            begin
+            end g_true;
+            else generate
+            begin
+            end g_false;
+            end generate g;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn generate_inner_end_case() {
+    test_parse(
+        "
+        entity top is end;
+        architecture rtl of top is
+            constant c : integer := 1;
+        begin
+            gen: case c generate
+                when 0 =>
+                begin
+                end case0;
+                when 1 =>
+                begin
+                end case1;
+            end generate gen;
+        end;
+        ",
+    )
+}

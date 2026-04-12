@@ -10,7 +10,7 @@ grammar(ctx: &mut ParseContext);
 // LRM 3.2 Entity declarations
 EntityDeclaration: EntityDeclaration = {
     "entity"  <name:Identifier> "is"
-        <generic:GenericClause?>
+        <generic:(<GenericClause> ";")?>
         <port:PortClause?>
         <decl:EntityDeclarativeItem*>
         <stmt:("begin" <EntityStatement*>)?>
@@ -84,10 +84,11 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
 // LRM 4.7 Package declarations
 PackageDeclaration: PackageDeclaration = {
     "package" <name:Identifier> "is"
-        <generic:GenericClause?>
+        <generic:(<GenericClause> ";")?>
+        <generic_map:("generic" "map" <CallArgs> ";")?> 
         <decl:PackageDeclarativeItem*>
     "end" "package"? <end_name:Identifier?> ";"
-    => PackageDeclaration { name, generic, decl, end_name }
+    => PackageDeclaration { name, generic, generic_map, decl, end_name }
 }
 
 PackageDeclarativeItem: PackageDeclarativeItem = {
@@ -172,8 +173,27 @@ ModeViewElementDefinition: ModeViewElementDefinition = {
 
 ElementModeIndication: ElementModeIndication = {
     Mode => ElementModeIndication::Mode(<>),
-    "view" "(" <Name> ")" => ElementModeIndication::ArrayView(<>),
-    "view" <Name> => ElementModeIndication::RecordView(<>),
+    "view" "(" <ExprLevelPrimary> ")" => ElementModeIndication::ArrayView(<>),
+    "view" <name:Name> <suffix:NonDotPostfixSuffix?> => match suffix {
+        Some(suffix) => {
+            let mut expr = Expression::Name(name);
+            expr = match suffix {
+                PostfixSuffix::Call(args) => build_call(expr, args),
+                PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                    value: Box::new(expr), attr, args: vec![],
+                },
+                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                    type_mark: Box::new(expr), args,
+                },
+                PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                    value: Box::new(expr), signature: sig,
+                },
+                PostfixSuffix::Select(_) => unreachable!(),
+            };
+            ElementModeIndication::RecordView(expr)
+        },
+        None => ElementModeIndication::RecordView(Expression::Name(name)),
+    },
 }
 
 // LRM 5 Types
@@ -190,9 +210,20 @@ RangeConstraint: RangeConstraint = {
 }
 
 Range: Expression = {
-    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
-        => Expression::Range { left, direction, right },
+    ExplicitRange,
     ExprLevelSimple,
+}
+
+// LRM 5.3.2.1 discrete_range ::= discrete_subtype_indication | range
+// Handles type_mark range explicit_range (e.g. integer range 0 to 5)
+DiscreteRange: Expression = {
+    Range,
+    <type_mark:Name> "range" <range:Range>
+        => Expression::SubtypeIndication {
+            resolution: None,
+            type_mark: type_mark,
+            constraint: Some(Box::new(Constraint::Range(RangeConstraint { range }))),
+        },
 }
 
 RangeDirection: RangeDirection = {
@@ -226,7 +257,8 @@ SecondaryUnitDeclaration: SecondaryUnitDeclaration = {
     <name:Identifier> "=" <value:PhysicalLiteral> ";" => SecondaryUnitDeclaration { name, value }
 }
 PhysicalLiteral: PhysicalLiteral = {
-    <value:AbstractLiteral> <unit:Identifier> => PhysicalLiteral { value, unit }
+    <value:AbstractLiteral> <unit:Identifier> => PhysicalLiteral { value: Some(value), unit },
+    <unit:Identifier> => PhysicalLiteral { value: None, unit },
 }
 
 // LRM 6 Declarations
@@ -234,6 +266,8 @@ PhysicalLiteral: PhysicalLiteral = {
 // LRM 6.2 Type declarations
 TypeDeclaration: TypeDeclaration = {
     FullTypeDeclaration => TypeDeclaration::Full(<>),
+    // LRM 6.2 Incomplete type declarations
+    "type" <name:Identifier> ";" => TypeDeclaration::Incomplete(IncompleteTypeDeclaration { name }),
 }
 
 FullTypeDeclaration: FullTypeDeclaration = {
@@ -244,6 +278,8 @@ TypeDefinition: TypeDefinition = {
     ScalarTypeDefinition => TypeDefinition::Scalar(<>),
     CompositeTypeDefinition => TypeDefinition::Composite(<>),
     AccessTypeDefinition => TypeDefinition::Access(<>),
+    // LRM 5.5 File types
+    "file" "of" <type_mark:Name> => TypeDefinition::File(FileTypeDefinition { type_mark }),
     ProtectedTypeDefinition => TypeDefinition::Protected(<>),
     ProtectedTypeBody => TypeDefinition::ProtectedBody(<>),
 }
@@ -282,8 +318,7 @@ IndexConstraint: IndexConstraint = {
 }
 
 IndexConstraintRangeElem: Expression = {
-    Range,
-    <_type_mark:Name> "range" <range:Range> => range,
+    DiscreteRange,
 }
 
 CompositeTypeDefinition: CompositeTypeDefinition = {
@@ -304,23 +339,34 @@ IndexSubTypeDefinition: IndexSubTypeDefinition = {
 
 // LRM 5.3.3 Record types
 RecordTypeDefinition: RecordTypeDefinition = {
-    "record" <prefix:ElementDeclaration*> <last:ElementDeclaration> "end" "record" <end_name:Identifier?>
-        => RecordTypeDefinition { elements: NonEmptyVec::new_vec_push(prefix, last), end_name },
+    "record" <elements:ElementDeclaration*> "end" "record" <end_name:Identifier?>
+        => RecordTypeDefinition { elements, end_name },
 }
 ElementDeclaration: ElementDeclaration = {
     <names:IdentifierList> ":" <ty:SubTypeExpr> ";" => ElementDeclaration { names, ty },
 }
 
+// LRM 6.1 Type marks
+// type_mark ::= name, but we also allow name'attribute as a pragmatic extension
+TypeMark: Name = {
+    Name,
+    <prefix:Name> TokenAttributeQuote <attr:AttributeIdentifier> => Name::Selected(Box::new(SelectedName {
+        prefix,
+        suffix: Suffix::Attribute(attr),
+    })),
+}
+
 SubTypeExpr: Expression = {
-    "(" <resolution:Name> ")" <type_mark:Name> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Some(Box::new(constraint)) },
-        None => Expression::Name(type_mark),
+    // LRM 6.3 Subtype declarations - resolution indication + type_mark + constraint
+    "(" <resolution:ExprLevelPrimary> ")" <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark, constraint: Some(Box::new(constraint)) },
+        None => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark, constraint: None },
     },
-    <resolution:Name> <type_mark:Name> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Some(Box::new(constraint)) },
-        None => Expression::Name(type_mark),
+    <resolution:Name> <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark, constraint: Some(Box::new(constraint)) },
+        None => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark, constraint: None },
     },
-    <type_mark:Name> <constraint:Constraint?> => match constraint {
+    <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
         Some(constraint) => Expression::SubtypeIndication { resolution: None, type_mark, constraint: Some(Box::new(constraint)) },
         None => Expression::Name(type_mark),
     },
@@ -402,14 +448,25 @@ PrivateVariableDeclaration: PrivateVariableDeclaration = {
 
 // LRM 6.4.2.5 File declarations
 FileDeclaration: FileDeclaration = {
-    "file" <names:IdentifierList> ":" <ty:SubTypeExpr> ";"
-        => FileDeclaration { names, ty }
+    "file" <names:IdentifierList> ":" <ty:SubTypeExpr> <open_info:FileOpenInformation?> ";"
+        => FileDeclaration { names, ty, open_info }
+}
+
+FileOpenInformation: FileOpenInformation = {
+    <open_kind:("open" <Expr>)?> "is" <mode:Mode?> <logical_name:Expr>
+        => FileOpenInformation { open_kind, mode, logical_name }
 }
 
 // LRM 6.6 Alias declarations
 AliasDeclaration: AliasDeclaration = {
-    "alias" <name:Identifier> <ty:(":" <SubTypeExpr>)?> "is" <target:ExprLevelPrimary> ";"
-        => AliasDeclaration { name, ty, target }
+    "alias" <name:Designator> <ty:(":" <SubTypeExpr>)?> "is" <target:ExprLevelPrimary> ";"
+        => AliasDeclaration { name, ty, target, signature: None }
+}
+
+// LRM 4.7 Signature
+Signature: Signature = {
+    "[" <parameter_types:SeparatedNoTrail<Name, ",">> <return_type:("return" <Name>)?> "]"
+        => Signature { parameter_types, return_type },
 }
 
 // LRM 7.2 Attribute declarations
@@ -425,9 +482,14 @@ AttributeSpecification: AttributeSpecification = {
 }
 
 AttributeEntityDesignator: AttributeEntityDesignator = {
-    Name => AttributeEntityDesignator::Name(<>),
-    "others" => AttributeEntityDesignator::Others,
-    "all" => AttributeEntityDesignator::All,
+    <tag:EntityTag> <signature:Signature?> => AttributeEntityDesignator { tag, signature },
+}
+EntityTag: EntityTag = {
+    Name => EntityTag::Name(<>),
+    Span<TokenStringLiteral> => EntityTag::OperatorSymbol(<>),
+    Span<TokenCharacterLiteral> => EntityTag::CharacterLiteral(<>),
+    "others" => EntityTag::Others,
+    "all" => EntityTag::All,
 }
 
 EntityClass: EntityClass = {
@@ -498,7 +560,7 @@ BindingIndication: BindingIndication = {
 }
 
 EntityAspect: EntityAspect = {
-    "entity" <Name> => EntityAspect::Entity(<>),
+    "entity" <name:Name> <arch:("(" <Identifier> ")")?> => EntityAspect::Entity(name, arch),
     "configuration" <Name> => EntityAspect::Configuration(<>),
     "open" => EntityAspect::Open,
 }
@@ -523,7 +585,7 @@ SignalList: SignalList = {
 ComponentDeclaration: ComponentDeclaration = {
     "component" <name:Identifier>
         <has_is:"is"?>
-        <generic:GenericClause?>
+        <generic:(<GenericClause> ";")?>
         <port:PortClause?>
     "end" "component"? <end_name:Identifier?> ";"
         => ComponentDeclaration { name, has_is: has_is.is_some(), generic, port, end_name }
@@ -542,7 +604,35 @@ InterfaceSignalDeclaration: InterfaceSignalDeclaration = {
 }
 ModeIndication: ModeIndication = {
     <mode:Mode?> <ty:InterfaceTypeIndication> <bus:"bus"?> <init:(":=" <ExprLevelConditional>)?>
-        => ModeIndication::Simple { mode, ty, bus: bus.is_some(), init }
+        => ModeIndication::Simple { mode, ty, bus: bus.is_some(), init },
+    // LRM 6.5.2.2 record_mode_view_indication
+    "view" <view_name:Name> <suffixes:NonDotPostfixSuffix?> <subtype:("of" <Expr>)?>
+        => {
+            let view_name = match suffixes {
+                Some(suffix) => {
+                    let mut expr = Expression::Name(view_name);
+                    expr = match suffix {
+                        PostfixSuffix::Call(args) => build_call(expr, args),
+                        PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                            value: Box::new(expr), attr, args: vec![],
+                        },
+                        PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                            type_mark: Box::new(expr), args,
+                        },
+                        PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                            value: Box::new(expr), signature: sig,
+                        },
+                        PostfixSuffix::Select(_) => unreachable!(),
+                    };
+                    expr
+                }
+                None => Expression::Name(view_name),
+            };
+            ModeIndication::RecordView { view_name, subtype }
+        },
+    // LRM 6.5.2.2 array_mode_view_indication
+    "view" "(" <view_name:ExprLevelPrimary> ")" <subtype:("of" <Expr>)?>
+        => ModeIndication::ArrayView { view_name, subtype },
 }
 Mode: Mode = {
     "in" => Mode::In,
@@ -562,15 +652,69 @@ InterfaceList<T>: NonEmptyVec<T> = SeparatedNonEmptyAllowTrail<T, ";">;
 
 // LRM 6.5.6.2 Generic clauses
 GenericClause: GenericClause = {
-    "generic" "(" <InterfaceList<GenericInterfaceDeclaration>> ")" ";" => GenericClause { list: <> }
+    "generic" "(" <InterfaceList<GenericInterfaceDeclaration>> ")" => GenericClause { list: <> }
 }
 GenericInterfaceDeclaration: GenericInterfaceDeclaration = {
     InterfaceConstantDeclaration => GenericInterfaceDeclaration::Constant(<>),
     InterfaceTypeDeclaration => GenericInterfaceDeclaration::Type(<>),
+    // LRM 6.5.4 Interface subprogram declarations
+    <spec:InterfaceSubprogramSpecification> <default:("is" <InterfaceSubprogramDefault>)?>
+        => GenericInterfaceDeclaration::Subprogram(InterfaceSubprogramDeclaration { spec, default }),
+    // LRM 6.5.5 Interface package declarations
+    "package" <name:Identifier> "is" "new" <uninstantiated:Name> <generic_map:InterfacePackageGenericMap>
+        => GenericInterfaceDeclaration::Package(InterfacePackageDeclaration { name, uninstantiated, generic_map }),
+}
+
+InterfaceSubprogramSpecification: SubprogramSpecification = {
+    "procedure" <name:Designator> <params:SubprogramParameterList?>
+        => SubprogramSpecification::Procedure(ProcedureSpecification {
+            name, header: SubprogramHeader { generic: None, generic_map: None }, params
+        }),
+    <purity:FunctionPurity?> "function" <name:Designator> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr>
+        => SubprogramSpecification::Function(FunctionSpecification {
+            purity, name, header: SubprogramHeader { generic: None, generic_map: None }, params, return_identifier: None, return_type
+        }),
+}
+
+InterfaceSubprogramDefault: InterfaceSubprogramDefault = {
+    Name => InterfaceSubprogramDefault::Name(<>),
+    "<" ">" => InterfaceSubprogramDefault::Box,
+}
+
+InterfacePackageGenericMap: InterfacePackageGenericMap = {
+    "generic" "map" "(" "<" ">" ")" => InterfacePackageGenericMap::Box,
+    "generic" "map" <CallArgs> => InterfacePackageGenericMap::Map(<>),
 }
 
 InterfaceTypeDeclaration: InterfaceTypeDeclaration = {
-    "type" <name:Identifier> => InterfaceTypeDeclaration { name },
+    "type" <name:Identifier> <constraint:("is" <IncompleteTypeDefinition>)?> => InterfaceTypeDeclaration { name, constraint },
+}
+
+// LRM 5.4.2 Incomplete type definitions (for generic type constraints)
+IncompleteTypeDefinition: IncompleteTypeDefinition = {
+    "private" => IncompleteTypeDefinition::Private,
+    "<" ">" => IncompleteTypeDefinition::Scalar,
+    "(" "<" ">" ")" => IncompleteTypeDefinition::Discrete,
+    "range" "<" ">" => IncompleteTypeDefinition::Integer,
+    "range" "<" ">" "." "<" ">" => IncompleteTypeDefinition::Floating,
+    "access" <Box<ElementIncompleteType>> => IncompleteTypeDefinition::Access(<>),
+    "file" "of" <Box<ElementIncompleteType>> => IncompleteTypeDefinition::File(<>),
+    "array" "(" <indexes:SeparatedNonEmptyNoTrail<ArrayIncompleteIndex, ",">> ")" "of" <element:Box<ElementIncompleteType>>
+        => IncompleteTypeDefinition::Array { indexes, element },
+    "(" "<" ">" ")" "of" <Box<SubTypeExpr>> => IncompleteTypeDefinition::Physical,
+    "units" "<" ">" => IncompleteTypeDefinition::Physical,
+}
+
+// LRM 5.4.2 element_incomplete_type_definition
+ElementIncompleteType: ElementIncompleteType = {
+    "type" "is" <IncompleteTypeDefinition> => ElementIncompleteType::Incomplete(<>),
+    SubTypeExpr => ElementIncompleteType::Subtype(<>),
+}
+
+ArrayIncompleteIndex: ArrayIncompleteIndex = {
+    "type" "is" <IncompleteTypeDefinition> => ArrayIncompleteIndex::Incomplete(<>),
+    Name "range" "<" ">" => ArrayIncompleteIndex::Unspecified,
+    Range => ArrayIncompleteIndex::Range(<>),
 }
 
 // LRM 6.5.6.3 Port clauses
@@ -579,6 +723,9 @@ PortClause: PortClause = {
 }
 PortInterfaceDeclaration: PortInterfaceDeclaration = {
     InterfaceSignalDeclaration => PortInterfaceDeclaration::Signal(<>),
+    // LRM 6.5.2 Interface variable declarations
+    "variable" <names:IdentifierList> ":" <mode_indication:ModeIndication>
+        => PortInterfaceDeclaration::Variable(InterfaceVariableDeclaration { names, mode_indication }),
 }
 
 FunctionPurity: FunctionPurity = {
@@ -587,48 +734,67 @@ FunctionPurity: FunctionPurity = {
 }
 
 // LRM 4.2 Subprogram declarations
+// LRM 4.7 Subprogram designators
+Designator: Designator = {
+    Identifier => Designator::Identifier(<>),
+    Span<TokenStringLiteral> => Designator::OperatorSymbol(<>),
+}
+
 ProcedureSpecification: ProcedureSpecification = {
-    "procedure" <name:Identifier> <params:SubprogramParameterList?>
-        => ProcedureSpecification { name, header: SubprogramHeader { generic: None, generic_map: None }, params },
+    "procedure" <name:Designator>
+        <generic:GenericClause?>
+        <generic_map:("generic" "map" <CallArgs> ";")?> 
+        <params:SubprogramParameterList?>
+        => ProcedureSpecification { name, header: SubprogramHeader { generic, generic_map }, params },
 }
 
 FunctionSpecification: FunctionSpecification = {
-    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr>
-        => FunctionSpecification { purity, name, params, return_type },
+    <purity:FunctionPurity?> "function" <name:Designator>
+        <generic:GenericClause?>
+        <generic_map:("generic" "map" <CallArgs> ";")?> 
+        <params:SubprogramParameterList?> "return" <return_identifier:(<Identifier> "of")?> <return_type:SubTypeExpr>
+        => FunctionSpecification { purity, name, header: SubprogramHeader { generic, generic_map }, params, return_identifier, return_type },
 }
 
 SubprogramParameterList: NonEmptyVec<SubprogramParameterDeclaration> = {
-    "(" <InterfaceList<SubprogramParameterDeclaration>> ")"
+    "parameter"? "(" <InterfaceList<SubprogramParameterDeclaration>> ")"
 }
 
 SubprogramParameterDeclaration: SubprogramParameterDeclaration = {
-    <class:SubprogramParameterClass?> <names:IdentifierList> ":" <mode:Mode?> <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?>
-        => SubprogramParameterDeclaration { class, names, mode, ty, init },
+    <class:SubprogramParameterClass?> <names:IdentifierList> ":" <mode_indication:ModeIndication>
+        => SubprogramParameterDeclaration { class, names, mode_indication },
 }
 
 SubprogramParameterClass: SubprogramParameterClass = {
     "constant" => SubprogramParameterClass::Constant,
     "variable" => SubprogramParameterClass::Variable,
     "signal" => SubprogramParameterClass::Signal,
+    "file" => SubprogramParameterClass::File,
 }
 
 // LRM 4.3 Subprogram bodies
 ProcedureBody: ProcedureBody = {
-    "procedure" <name:Identifier> <params:SubprogramParameterList?> "is"
+    "procedure" <name:Designator>
+        <generic:GenericClause?>
+        <generic_map:("generic" "map" <CallArgs> ";")?> 
+        <params:SubprogramParameterList?> "is"
         <decl:SubprogramDeclarativeItem*>
     "begin"
         <stmt:SequentialStatement*>
-    "end" "procedure"? <end_name:Identifier?> ";"
-    => ProcedureBody { name, params, decl, stmt, end_name }
+    "end" "procedure"? <end_name:Designator?> ";"
+    => ProcedureBody { name, header: SubprogramHeader { generic, generic_map }, params, decl, stmt, end_name },
 }
 
 FunctionBody: FunctionBody = {
-    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> "is"
+    <purity:FunctionPurity?> "function" <name:Designator>
+        <generic:GenericClause?>
+        <generic_map:("generic" "map" <CallArgs> ";")?> 
+        <params:SubprogramParameterList?> "return" <return_identifier:(<Identifier> "of")?> <return_type:SubTypeExpr> "is"
         <decl:SubprogramDeclarativeItem*>
     "begin"
         <stmt:SequentialStatement*>
-    "end" "function"? <end_name:Identifier?> ";"
-        => FunctionBody { purity, name, params, return_type, decl, stmt, end_name }
+    "end" "function"? <end_name:Designator?> ";"
+        => FunctionBody { purity, name, header: SubprogramHeader { generic, generic_map }, params, return_identifier, return_type, decl, stmt, end_name },
 }
 
 #[inline]
@@ -639,8 +805,8 @@ SubprogramKind: SubprogramKind = {
 
 // LRM 4.4 Subprogram instantiation declarations
 SubprogramInstantiationDeclaration: SubprogramInstantiationDeclaration = {
-    <kind:SubprogramKind> <designator:Identifier> "is" "new" <uninstantiated:Name> <generic_map:("generic" "map" <CallArgs>)?> ";"
-        => SubprogramInstantiationDeclaration { kind, designator, uninstantiated, generic_map },
+    <kind:SubprogramKind> <designator:Designator> "is" "new" <uninstantiated:Name> <signature:Signature?> <generic_map:("generic" "map" <CallArgs>)?> ";"
+        => SubprogramInstantiationDeclaration { kind, designator, uninstantiated, signature, generic_map },
 }
 
 // LRM 4.3 Subprogram declarative part
@@ -677,6 +843,8 @@ SelectedName: SelectedName = {
 }
 Suffix: Suffix = {
     Identifier => Suffix::Identifier(<>),
+    Span<TokenStringLiteral> => Suffix::OperatorSymbol(<>),
+    Span<TokenCharacterLiteral> => Suffix::CharacterLiteral(<>),
     "all" => Suffix::All,
 }
 
@@ -690,12 +858,32 @@ Expr: Expression = ExprLevelConditional;
 ExprSubConditional: Expression = ExprLevelUnaryConditional;
 
 ExprLevelConditional: Expression = {
-    <value_first:Box<ExprSubConditional>> <branches:ConditionalExpressionBranch*>
-        => Expression::Conditional(ConditionalExpression { value_first, branches, condition_final: None })
-}
-ConditionalExpressionBranch: ConditionalExpressionBranch<Box<Expression>> = {
-    "when" <condition:ExprSubConditional> "else" <value_else:Box<ExprSubConditional>>
-        => ConditionalExpressionBranch { condition, value_else }
+    // LRM 9.1 / 10.5.3 Conditional expressions
+    // value when condition else rest
+    <value_first:Box<ExprSubConditional>> "when" <condition:ExprSubConditional> "else" <rest:ExprLevelConditional>
+        => {
+            match rest {
+                Expression::Conditional(mut ce) => {
+                    let value_else = ce.value_first;
+                    ce.value_first = value_first;
+                    ce.branches.insert(0, ConditionalExpressionBranch { condition, value_else });
+                    Expression::Conditional(ce)
+                }
+                other => Expression::Conditional(ConditionalExpression {
+                    value_first,
+                    branches: vec![ConditionalExpressionBranch { condition, value_else: Box::new(other) }],
+                    condition_final: None,
+                }),
+            }
+        },
+    // value when condition (trailing, no else — for conditional waveforms/assignments)
+    <value_first:Box<ExprSubConditional>> "when" <condition_final:Box<ExprSubConditional>>
+        => Expression::Conditional(ConditionalExpression {
+            value_first,
+            branches: vec![],
+            condition_final: Some(condition_final),
+        }),
+    ExprSubConditional,
 }
 
 ExprLevelUnaryConditional: Expression = {
@@ -777,11 +965,6 @@ UnaryExpression: Expression = {
         => Expression::Unary { op: UnaryOperator::Logical(op), inner },
 }
 ExprLevelPrimary: Expression = {
-    // TODO expand
-    <base:Name> <args:CallArgs> "." <field:Identifier> => Expression::Select {
-        value: Box::new(build_call(Expression::Name(base), args)),
-        field,
-    },
     <PostfixExpression>,
     <OperatorSymbolCall>,
     <value:AbstractLiteral> <unit:Identifier> => Expression::PhysicalLiteral { value, unit },
@@ -797,21 +980,127 @@ ExprLevelPrimary: Expression = {
         }
     },
     "new" <value:Box<ExprLevelPrimary>> => Expression::New(value),
+    "null" => Expression::Null,
+    "unaffected" => Expression::Unaffected,
+    // LRM 8.7 External names
+    "<<" <class:ExternalNameClass> <path:ExternalPathname> ":" <ty:Box<SubTypeExpr>> ">>"
+        => Expression::ExternalName { class, path, ty },
     Name => Expression::Name(<>),
     TokenBitStringLiteral => Expression::BitStringLiteral,
     TokenDecimalLiteral => Expression::DecimalLiteral,
+    TokenBasedLiteral => Expression::BasedLiteral,
     TokenStringLiteral => Expression::StringLiteral,
     TokenCharacterLiteral => Expression::CharLiteral,
 }
 
+ExternalNameClass: ExternalNameClass = {
+    "constant" => ExternalNameClass::Constant,
+    "signal" => ExternalNameClass::Signal,
+    "variable" => ExternalNameClass::Variable,
+}
+
+ExternalPathname: NonEmptyVec<ExternalPathElement> = {
+    // LRM 8.7 External names
+    // absolute_pathname: .name{.name}
+    "." <elements:SeparatedNonEmptyNoTrail<ExternalPathElement, ".">>
+        => {
+            let mut v = vec![ExternalPathElement::Absolute];
+            v.extend(elements.into_iter());
+            NonEmptyVec::try_from(v).unwrap()
+        },
+    // package_pathname: @lib.{pkg.}name
+    "@" <elements:SeparatedNonEmptyNoTrail<ExternalPathElement, ".">>
+        => {
+            let mut v = vec![ExternalPathElement::Package];
+            v.extend(elements.into_iter());
+            NonEmptyVec::try_from(v).unwrap()
+        },
+    // relative_pathname: ^{.^}.name{.name}
+    <elements:SeparatedNonEmptyNoTrail<ExternalPathElement, ".">> => elements,
+}
+
+ExternalPathElement: ExternalPathElement = {
+    <name:Identifier> <index:("(" <Expr> ")")?> => ExternalPathElement::Identifier(name, index),
+    "^" => ExternalPathElement::Relative,
+}
+
 OperatorSymbolCall: Expression = {
-    <_op:TokenStringLiteral> <args:CallArgs> => build_call(Expression::StringLiteral, args),
+    <_op:TokenStringLiteral> <suffixes:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
+        let mut expr = Expression::StringLiteral;
+        expr = match suffixes {
+            PostfixSuffix::Call(args) => build_call(expr, args),
+            PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                value: Box::new(expr), attr, args: vec![],
+            },
+            PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                type_mark: Box::new(expr), args,
+            },
+            PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                value: Box::new(expr), signature: sig,
+            },
+            PostfixSuffix::Select(_) => unreachable!(),
+        };
+        for suffix in tail {
+            expr = match suffix {
+                PostfixSuffix::Call(args) => build_call(expr, args),
+                PostfixSuffix::Select(suffix) => Expression::Select {
+                    value: Box::new(expr),
+                    suffix,
+                },
+                PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    args: vec![],
+                },
+                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                    type_mark: Box::new(expr),
+                    args,
+                },
+                PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                    value: Box::new(expr),
+                    signature: sig,
+                },
+            };
+        }
+        expr
+    },
+    // LRM 8.3 operator_symbol.suffix (selected name with operator symbol prefix)
+    <_op:TokenStringLiteral> "." <suffix:Suffix> <tail:PostfixSuffix*> => {
+        let mut expr = Expression::Select {
+            value: Box::new(Expression::StringLiteral),
+            suffix,
+        };
+        for suffix in tail {
+            expr = match suffix {
+                PostfixSuffix::Call(args) => build_call(expr, args),
+                PostfixSuffix::Select(suffix) => Expression::Select {
+                    value: Box::new(expr),
+                    suffix,
+                },
+                PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    args: vec![],
+                },
+                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                    type_mark: Box::new(expr),
+                    args,
+                },
+                PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                    value: Box::new(expr),
+                    signature: sig,
+                },
+            };
+        }
+        expr
+    },
 }
 
 CallArgs: Vec<Expression> = {
     "(" <SeparatedNoTrail<AssociationElementExpr, ",">> ")",
 }
 
+#[inline]
 ExplicitRange: Expression = {
     <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
         => Expression::Range { left, direction, right },
@@ -819,6 +1108,13 @@ ExplicitRange: Expression = {
 
 CallArgExpr: Expression = {
     ExplicitRange,
+    // LRM 5.2.1 type_mark range simple_expression direction simple_expression
+    <type_mark:Name> "range" <range:Range>
+        => Expression::SubtypeIndication {
+            resolution: None,
+            type_mark: type_mark,
+            constraint: Some(Box::new(Constraint::Range(RangeConstraint { range }))),
+        },
     Expr,
 }
 
@@ -827,43 +1123,110 @@ AssociationElementExpr: Expression = {
         formal: Box::new(formal),
         actual: Box::new(actual),
     },
+    <formal:AssociationFormalExpr> "=>" "inertial" <actual:CallArgExpr> => Expression::Association {
+        formal: Box::new(formal),
+        actual: Box::new(Expression::Inertial(Box::new(actual))),
+    },
+    <formal:AssociationFormalExpr> "=>" "open" => Expression::Association {
+        formal: Box::new(formal),
+        actual: Box::new(Expression::Open),
+    },
+    "open" => Expression::Open,
+    "inertial" <inner:Box<CallArgExpr>> => Expression::Inertial(inner),
     CallArgExpr,
 }
 
 AssociationFormalExpr: Expression = {
     "others" => Expression::OthersChoice,
-    PostfixExpression,
-    Name => Expression::Name(<>),
-    TokenCharacterLiteral => Expression::CharLiteral,
-    TokenDecimalLiteral => Expression::DecimalLiteral,
+    ExprLevelSimple,
+    // explicit range as choice (e.g. 1 to 5 => value)
+    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
+        => Expression::Range { left, direction, right },
+    // LRM 9.3.3.3 Choices in aggregates: choice | choice | ...
+    <first:AssociationFormalSingleChoice> <rest:("|" <AssociationFormalSingleChoice>)+>
+        => Expression::Choices({
+            let mut v = vec![first];
+            v.extend(rest);
+            NonEmptyVec::try_from(v).unwrap()
+        }),
+}
+AssociationFormalSingleChoice: Expression = {
+    ExprLevelSimple,
+    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
+        => Expression::Range { left, direction, right },
 }
 
 AttributeIdentifier: Identifier = {
     Identifier,
     Span<"range"> => Identifier { span: <> },
+    Span<"subtype"> => Identifier { span: <> },
 }
 
 PostfixExpression: Expression = {
-    <base:Name> <suffixes:PostfixSuffix+> => {
+    <base:Name> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
         let mut expr = Expression::Name(base);
-        for (kind, args, attr_or_field) in suffixes {
-            expr = match kind {
-                0 => build_call(expr, args),
-                1 => Expression::Attribute {
+        expr = match first {
+            PostfixSuffix::Call(args) => build_call(expr, args),
+            PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                value: Box::new(expr),
+                attr,
+                args: vec![],
+            },
+            PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                type_mark: Box::new(expr),
+                args,
+            },
+            PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                value: Box::new(expr),
+                signature: sig,
+            },
+            PostfixSuffix::Select(_) => unreachable!(),
+        };
+        for suffix in tail {
+            expr = match suffix {
+                PostfixSuffix::Call(args) => build_call(expr, args),
+                PostfixSuffix::Select(suffix) => Expression::Select {
                     value: Box::new(expr),
-                    attr: attr_or_field.unwrap(),
+                    suffix,
+                },
+                PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                    value: Box::new(expr),
+                    attr,
                     args: vec![],
                 },
-                _ => unreachable!(),
+                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                    type_mark: Box::new(expr),
+                    args,
+                },
+                PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                    value: Box::new(expr),
+                    signature: sig,
+                },
             };
         }
         expr
     },
 }
 
-PostfixSuffix: (u8, Vec<Expression>, Option<Identifier>) = {
-    <args:CallArgs> => (0, args, None),
-    TokenAttributeQuote <attr:AttributeIdentifier> => (1, vec![], Some(attr)),
+// First suffix in PostfixExpression: no "." to avoid conflict with Name's SelectedName
+#[inline]
+NonDotPostfixSuffix: PostfixSuffix = {
+    <args:CallArgs> => PostfixSuffix::Call(args),
+    TokenAttributeQuote <attr:AttributeIdentifier> => PostfixSuffix::Attribute(attr),
+    TokenAttributeQuote <args:CallArgs> => PostfixSuffix::QualifiedExpression(args),
+    <sig:Signature> => PostfixSuffix::Signature(sig),
+}
+
+// Tail suffixes: includes "." for chained field access after calls/attributes
+#[inline]
+PostfixSuffix: PostfixSuffix = {
+    <args:CallArgs> => PostfixSuffix::Call(args),
+    "." <suffix:Suffix> => PostfixSuffix::Select(suffix),
+    TokenAttributeQuote <attr:AttributeIdentifier> => PostfixSuffix::Attribute(attr),
+    // LRM 9.3.5 Qualified expressions: type_mark'(expr) / type_mark'aggregate
+    TokenAttributeQuote <args:CallArgs> => PostfixSuffix::QualifiedExpression(args),
+    // LRM 4.7 Signature
+    <sig:Signature> => PostfixSuffix::Signature(sig),
 }
 
 LogicalOperator: LogicalOperator = {
@@ -918,6 +1281,10 @@ SequentialStatement: SequentialStatement = {
     AssertionStatement => SequentialStatement::Assertion(<>),
     ReportStatement => SequentialStatement::Report(<>),
     SequentialSignalAssignmentStatement => SequentialStatement::SignalAssignment(<>),
+    SignalForceAssignmentStatement => SequentialStatement::SignalForceAssignment(<>),
+    SignalReleaseAssignmentStatement => SequentialStatement::SignalReleaseAssignment(<>),
+    SelectedWaveformAssignment => SequentialStatement::SelectedSignalAssignment(<>),
+    SelectedVariableAssignment => SequentialStatement::SelectedVariableAssignment(<>),
     VariableAssignmentStatement => SequentialStatement::VariableAssignment(<>),
     ProcedureCallStatement => SequentialStatement::ProcedureCall(<>),
     IfStatement => SequentialStatement::If(<>),
@@ -932,7 +1299,7 @@ SequentialStatement: SequentialStatement = {
 
 // LRM 10.2 Wait statements
 WaitStatement: WaitStatement = {
-    <label:MaybeLabel> "wait" <sensitivity:("on" <SeparatedNonEmptyNoTrail<Name, ",">>)?> <condition:("until" <Expr>)?> <timeout:("for" <Expr>)?> ";"
+    <label:MaybeLabel> "wait" <sensitivity:("on" <SeparatedNonEmptyNoTrail<Expr, ",">>)?> <condition:("until" <Expr>)?> <timeout:("for" <Expr>)?> ";"
         => WaitStatement {
             label,
             sensitivity,
@@ -966,20 +1333,71 @@ Target: Target = {
 
 Waveform: Waveform = {
     <elements:SeparatedNonEmptyNoTrail<WaveformElement, ",">> => Waveform::Elements(elements),
-    "unaffected" => Waveform::Unaffected,
 }
 WaveformElement: WaveformElement = {
-    <value:WaveformElementValue> <after:("after" <Expr>)?> => WaveformElement { value, after }
+    <value:WaveformElementValue> <after:("after" <ExprSubConditional>)?> => WaveformElement { value, after }
 }
 WaveformElementValue: WaveformElementValue = {
-    Expr => WaveformElementValue::Expression(<>),
-    "null" => WaveformElementValue::Null,
+    ExprSubConditional => WaveformElementValue::Expression(<>),
 }
 
-// LRM 10.5.2.2 Executing a simple assignment statement
+// LRM 10.5.3 Conditional signal assignments / LRM 10.5.2.2 Simple signal assignment
 SequentialSignalAssignmentStatement: SequentialSignalAssignmentStatement = {
-    <label:MaybeLabel> <target:Target> "<=" <delay:DelayMechanism?> <waveform:Waveform> ";"
-        => SequentialSignalAssignmentStatement { label, target, delay, waveform }
+    <label:MaybeLabel> <target:Target> "<=" <delay:DelayMechanism?> <waveform:Waveform>
+        <conditional:("when" <ExprSubConditional> <("else" <Waveform> "when" <ExprSubConditional>)*> <("else" <Waveform>)?>)?>
+        ";"
+        => match conditional {
+            None => SequentialSignalAssignmentStatement { label, target, delay, kind: SequentialSignalAssignmentKind::Simple { waveform } },
+            Some((first_condition, rest, else_waveform)) => {
+                let mut conditionals = vec![ConditionalWaveform { waveform, condition: first_condition }];
+                for (wf, cond) in rest {
+                    conditionals.push(ConditionalWaveform { waveform: wf, condition: cond });
+                }
+                SequentialSignalAssignmentStatement { label, target, delay, kind: SequentialSignalAssignmentKind::Conditional { conditionals, else_waveform } }
+            },
+        }
+}
+
+// LRM 10.5.2.1 Simple force assignment
+SignalForceAssignmentStatement: SignalForceAssignmentStatement = {
+    <label:MaybeLabel> <target:Target> "<=" "force" <force_mode:ForceMode?> <value:Expr> ";"
+        => SignalForceAssignmentStatement { label, target, force_mode, value }
+}
+
+// LRM 10.5.2.1 Simple release assignment
+SignalReleaseAssignmentStatement: SignalReleaseAssignmentStatement = {
+    <label:MaybeLabel> <target:Target> "<=" "release" <force_mode:ForceMode?> ";"
+        => SignalReleaseAssignmentStatement { label, target, force_mode }
+}
+
+ForceMode: ForceMode = {
+    "in" => ForceMode::In,
+    "out" => ForceMode::Out,
+}
+
+// LRM 10.5.4 Selected signal assignments
+SelectedWaveformAssignment: SelectedWaveformAssignment = {
+    <label:MaybeLabel> "with" <selector:Expr> "select" <matching:"?"?>
+        <target:Target> "<=" <delay:DelayMechanism?> <alternatives:SeparatedNonEmptyNoTrail<SelectedWaveform, ",">> ";"
+        => SelectedWaveformAssignment {
+            label, selector, matching: matching.is_some(), target, delay, alternatives
+        }
+}
+SelectedWaveform: SelectedWaveform = {
+    <elements:SeparatedNonEmptyNoTrail<WaveformElement, ",">> "when" <choices:SeparatedNonEmptyNoTrail<Choice, "|">>
+        => SelectedWaveform { waveform: Waveform::Elements(elements), choices },
+}
+
+// LRM 10.5.4 Selected variable assignments
+SelectedVariableAssignment: SelectedVariableAssignment = {
+    <label:MaybeLabel> "with" <selector:Expr> "select" <matching:"?"?>
+        <target:Target> ":=" <alternatives:SeparatedNonEmptyNoTrail<SelectedExpression, ",">> ";"
+        => SelectedVariableAssignment {
+            label, selector, matching: matching.is_some(), target, alternatives
+        }
+}
+SelectedExpression: SelectedExpression = {
+    <value:ExprSubConditional> "when" <choices:SeparatedNonEmptyNoTrail<Choice, "|">> => SelectedExpression { value, choices },
 }
 
 // LRM 10.5.1 Variable assignment statements
@@ -1009,8 +1427,8 @@ IfStatement: IfStatement = {
 
 // LRM 10.8 Case statements
 CaseStatement: CaseStatement = {
-    <label:MaybeLabel> "case" <expression:Expr> "is" <prefix:(CaseAlternative)*> <last:CaseAlternative> "end" "case" <end_label:Identifier?> ";"
-        => CaseStatement { label, expression, alternatives: NonEmptyVec::new_vec_push(prefix, last), end_label },
+    <label:MaybeLabel> "case" <matching:"?"?> <expression:Expr> "is" <prefix:(CaseAlternative)*> <last:CaseAlternative> "end" "case" "?"? <end_label:Identifier?> ";"
+        => CaseStatement { label, matching: matching.is_some(), expression, alternatives: NonEmptyVec::new_vec_push(prefix, last), end_label },
 }
 CaseAlternative: CaseAlternative = {
     "when" <choices:SeparatedNonEmptyNoTrail<Choice, "|">> "=>" <body:SequentialStatement*>
@@ -1018,6 +1436,9 @@ CaseAlternative: CaseAlternative = {
 }
 Choice: Choice = {
     "others" => Choice::Others,
+    // LRM 9.3.4 Range as choice
+    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
+        => Choice::Expr(Expression::Range { left, direction, right }),
     Expr => Choice::Expr(<>),
 }
 
@@ -1027,7 +1448,7 @@ LoopStatement: LoopStatement = {
         => LoopStatement { label, scheme: LoopScheme::Infinite, body, end_label },
     <label:MaybeLabel> "while" <condition:Expr> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
         => LoopStatement { label, scheme: LoopScheme::While(condition), body, end_label },
-    <label:MaybeLabel> "for" <param:Identifier> "in" <range:Range> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
+    <label:MaybeLabel> "for" <param:Identifier> "in" <range:DiscreteRange> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
         => LoopStatement { label, scheme: LoopScheme::For { param, range }, body, end_label },
 }
 
@@ -1045,7 +1466,7 @@ ExitStatement: ExitStatement = {
 
 // LRM 10.12 Return statements
 ReturnStatement: ReturnStatement = {
-    <label:MaybeLabel> "return" ";" => ReturnStatement::Plain { label },
+    <label:MaybeLabel> "return" <condition:("when" <Expr>)?> ";" => ReturnStatement::Plain { label, condition },
     <label:MaybeLabel> "return" <value:Expr> ";" => ReturnStatement::Value { label, value },
 }
 
@@ -1060,13 +1481,34 @@ SequentialBlockStatement: SequentialBlockStatement = {
         => SequentialBlockStatement { label, decl, stmt, end_label },
 }
 
+// LRM 11.2 Block header
+// block_header ::= [generic_clause [generic_map_aspect ;]] [port_clause [port_map_aspect ;]]
+// Enumerated explicitly to avoid LALRPOP state explosion from 4 optional clauses
+BlockHeader: BlockHeader = {
+    // neither generic nor port
+    => BlockHeader::default(),
+    // generic only
+    <generic:GenericClause> ";" <generic_map:("generic" "map" <CallArgs> ";")?> 
+        => BlockHeader { generic: Some(generic), generic_map, ..BlockHeader::default() },
+    // port only
+    <port:PortClause> <port_map:("port" "map" <CallArgs> ";")?> 
+        => BlockHeader { port: Some(port), port_map, ..BlockHeader::default() },
+    // generic then port
+    <generic:GenericClause> ";" <generic_map:("generic" "map" <CallArgs> ";")?> 
+        <port:PortClause> <port_map:("port" "map" <CallArgs> ";")?> 
+        => BlockHeader { generic: Some(generic), generic_map, port: Some(port), port_map },
+}
+
 // LRM 11 Concurrent statements
 ConcurrentStatement: ConcurrentStatement = {
     // LRM 11.2 Block statements
-    <label:MaybeLabel> <guard_expression:("block" ("(" <Expr> ")")?)> "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*> "end" "block"? <end_label:Identifier?> ";"
+    <label:MaybeLabel> <guard_expression:("block" ("(" <Expr> ")")?)>
+        "is"? <header:BlockHeader>
+        <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*> "end" "block"? <end_label:Identifier?> ";"
         => ConcurrentStatement::Block(BlockStatement {
             label,
             guard_expression: guard_expression.1,
+            header,
             decl,
             stmt,
             end_label,
@@ -1105,41 +1547,64 @@ ConcurrentStatement: ConcurrentStatement = {
     // LRM 11.7 Component instantiation statements
     <label:Identifier> ":" "component" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
         => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map, port_map }),
-    <label:Identifier> ":" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map, port_map: Some(port_map) }),
-    <label:Identifier> ":" "entity" <unit:SelectedName> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+    <label:Identifier> ":" <unit:Name> <generic_map:("generic" "map" <CallArgs>)> <port_map:("port" "map" <CallArgs>)?> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map: Some(generic_map), port_map }),
+    <label:Identifier> ":" <unit:Name> <port_map:("port" "map" <CallArgs>)> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map: None, port_map: Some(port_map) }),
+    <label:Identifier> ":" "entity" <unit:Name> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
         => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
             label: Some(label),
-            unit: Name::Selected(Box::new(unit)),
+            unit,
             architecture,
             generic_map,
             port_map,
         }),
-    "entity" <unit:SelectedName> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+    "entity" <unit:Name> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
         => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
             label: None,
-            unit: Name::Selected(Box::new(unit)),
+            unit,
             architecture,
+            generic_map,
+            port_map,
+        }),
+    // LRM 11.7 configuration instantiation
+    <label:Identifier> ":" "configuration" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
+            label: Some(label),
+            unit,
+            architecture: None,
             generic_map,
             port_map,
         }),
 
     // LRM 11.8 Generate statements
-    <label:Identifier> ":" "for" <param:Identifier> "in" <range:Range> "generate" <body:GenerateBody> "end" "generate" <end_label:Identifier?> ";"
-        => ConcurrentStatement::Generate(GenerateStatement::For(ForGenerateStatement {
-            label,
-            param,
-            range,
-            decl: body.decl,
-            stmt: body.stmt,
-            end_label,
-        })),
-    <label:Identifier> ":" "if" <first_condition:Expr> "generate" <first_body:GenerateBody>
-        <elsif:("elsif" <Expr> "generate" <GenerateBody>)*>
-        <else_body:("else" "generate" <GenerateBody>)?>
-        "end" "generate" <end_label:Identifier?> ";"
+    // For-generate: absorb "end" to disambiguate inner end [label] ; from outer end generate
+    <label:Identifier> ":" "for" <param:Identifier> "in" <range:DiscreteRange> "generate"
+        <body:GenerateBodyContent>
+        "end" <e:ForGenAfterEnd> ";"
         => {
-            let elsif = elsif.into_iter().map(|(condition, body)| (condition, body)).collect();
+            ConcurrentStatement::Generate(GenerateStatement::For(ForGenerateStatement {
+                label,
+                param,
+                range,
+                decl: body.0,
+                stmt: body.1,
+                end_label: e,
+            }))
+        },
+
+    // If-generate: recursive tail handles inner end disambiguation
+    <label:Identifier> ":" "if" <first_alt_label:(<Identifier> ":")?> <first_condition:Expr> "generate"
+        <first_body_content:GenerateBodyContent>
+        <tail:IfGenTail>
+        => {
+            let mut first_body = GenerateBody {
+                alternative_label: first_alt_label,
+                decl: first_body_content.0,
+                stmt: first_body_content.1,
+                end_label: None,
+            };
+            let (elsif, else_body, end_label) = tail.flatten(&mut first_body);
             ConcurrentStatement::Generate(GenerateStatement::If(IfGenerateStatement {
                 label,
                 first_condition,
@@ -1150,24 +1615,124 @@ ConcurrentStatement: ConcurrentStatement = {
             }))
         },
 
+    // LRM 11.8 Case generate statements: recursive tail handles inner end
+    <label:Identifier> ":" "case" <expression:Expr> "generate"
+        "when" <first_alt:(<Identifier> ":")?> <first_choices:SeparatedNonEmptyNoTrail<Choice, "|">> "=>"
+        <first_body_content:GenerateBodyContent>
+        <tail:CaseGenTail>
+        => {
+            let mut first_body = GenerateBody {
+                alternative_label: first_alt,
+                decl: first_body_content.0,
+                stmt: first_body_content.1,
+                end_label: None,
+            };
+            let (mut alternatives, end_label) = tail.flatten(&mut first_body);
+            alternatives.insert(0, CaseGenerateAlternative { choices: first_choices, body: first_body });
+            ConcurrentStatement::Generate(GenerateStatement::Case(CaseGenerateStatement {
+                label,
+                expression,
+                alternatives,
+                end_label,
+            }))
+        },
+
     // signal assignment
     <label:MaybeLabel> <postponed:"postponed"?> <kind:ConcurrentSignalAssignmentKind> => {
         let stmt = ConcurrentSignalAssignmentStatement { label, postponed: postponed.is_some(), kind };
         ConcurrentStatement::SignalAssignment(stmt)
-    }
+    },
+
+    // LRM 11.6 Concurrent selected signal assignment
+    <label:MaybeLabel> <postponed:"postponed"?> "with" <selector:Expr> "select" <matching:"?"?>
+        <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <alternatives:SeparatedNonEmptyNoTrail<SelectedWaveform, ",">> ";"
+        => ConcurrentStatement::SelectedSignalAssignment(SelectedWaveformAssignment {
+            label, selector, matching: matching.is_some(), target, delay, alternatives
+        }),
 }
 
-GenerateBody: GenerateBody = {
-    <alternative_label:(<Identifier> ":")?> "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*>
-        => GenerateBody { alternative_label, decl, stmt },
-    <alternative_label:(<Identifier> ":")> <stmt:ConcurrentStatement+>
-        => GenerateBody { alternative_label: Some(alternative_label), decl: vec![], stmt: stmt.into_iter().collect() }
+// LRM 11.8 generate_statement_body content (without end)
+GenerateBodyContent: (Vec<BlockDeclarativeItem>, Vec<ConcurrentStatement>) = {
+    <decl:BlockDeclarativeItem+> "begin" <stmt:ConcurrentStatement*>
+        => (decl, stmt),
+    "begin" <stmt:ConcurrentStatement*>
+        => (vec![], stmt),
+    <stmt:ConcurrentStatement*>
+        => (vec![], stmt),
+}
+
+// After "end" in for-generate: "generate" label? = outer end, or Identifier? ";" "end" "generate" = inner + outer
+ForGenAfterEnd: Option<Identifier> = {
+    "generate" <end_label:Identifier?> => end_label,
+    Identifier? ";" "end" "generate" <end_label:Identifier?> => end_label,
+}
+
+// Recursive tail of if-generate: handles elsif/else/end with optional inner end
+IfGenTail: IfGenTail = {
+    // Direct elsif (no inner end on previous body)
+    "elsif" <alt:(<Identifier> ":")?> <cond:Expr> "generate" <body:GenerateBodyContent> <rest:IfGenTail>
+        => IfGenTail::Elsif { prev_inner_end: None, alt_label: alt, condition: cond, body, rest: Box::new(rest) },
+    // Direct else (no inner end)
+    "else" <alt:(<Identifier> ":")?> "generate" <body:GenerateBodyContent> "end" <e:ElseGenAfterEnd> ";"
+        => IfGenTail::Else { prev_inner_end: None, alt_label: alt, body, else_inner_end: e.0, end_label: e.1 },
+    // End token: dispatch based on next token
+    "end" <after:IfGenAfterEnd>
+        => after,
+}
+
+// After "end" in if-generate body
+IfGenAfterEnd: IfGenTail = {
+    // Outer end (no inner end on previous body)
+    "generate" <end_label:Identifier?> ";"
+        => IfGenTail::End { prev_inner_end: None, end_label },
+    // Inner end + elsif
+    <inner:Identifier?> ";" "elsif" <alt:(<Identifier> ":")?> <cond:Expr> "generate" <body:GenerateBodyContent> <rest:IfGenTail>
+        => IfGenTail::Elsif { prev_inner_end: inner, alt_label: alt, condition: cond, body, rest: Box::new(rest) },
+    // Inner end + else
+    <inner:Identifier?> ";" "else" <alt:(<Identifier> ":")?> "generate" <body:GenerateBodyContent> "end" <e:ElseGenAfterEnd> ";"
+        => IfGenTail::Else { prev_inner_end: inner, alt_label: alt, body, else_inner_end: e.0, end_label: e.1 },
+    // Inner end + outer end
+    <inner:Identifier?> ";" "end" "generate" <end_label:Identifier?> ";"
+        => IfGenTail::End { prev_inner_end: inner, end_label },
+}
+
+// After "end" in else-generate body (or last case-generate body)
+ElseGenAfterEnd: (Option<Identifier>, Option<Identifier>) = {
+    <inner:Identifier?> ";" "end" "generate" <outer:Identifier?>
+        => (inner, outer),
+    "generate" <outer:Identifier?>
+        => (None, outer),
+}
+
+// Recursive tail of case-generate: handles when/end with optional inner end
+CaseGenTail: CaseGenTail = {
+    // Direct when (no inner end on previous body)
+    "when" <alt:(<Identifier> ":")?> <choices:SeparatedNonEmptyNoTrail<Choice, "|">> "=>"
+        <body:GenerateBodyContent> <rest:CaseGenTail>
+        => CaseGenTail::When { prev_inner_end: None, alt_label: alt, choices, body, rest: Box::new(rest) },
+    // End token: dispatch
+    "end" <after:CaseGenAfterEnd>
+        => after,
+}
+
+// After "end" in case-generate body
+CaseGenAfterEnd: CaseGenTail = {
+    // Outer end
+    "generate" <end_label:Identifier?> ";"
+        => CaseGenTail::End { prev_inner_end: None, end_label },
+    // Inner end + when
+    <inner:Identifier?> ";" "when" <alt:(<Identifier> ":")?> <choices:SeparatedNonEmptyNoTrail<Choice, "|">> "=>"
+        <body:GenerateBodyContent> <rest:CaseGenTail>
+        => CaseGenTail::When { prev_inner_end: inner, alt_label: alt, choices, body, rest: Box::new(rest) },
+    // Inner end + outer end
+    <inner:Identifier?> ";" "end" "generate" <end_label:Identifier?> ";"
+        => CaseGenTail::End { prev_inner_end: inner, end_label },
 }
 
 // LRM 11.3 Process statements
 ProcessSensitivityList: ProcessSensitivityList = {
     "(" "all" ")" => ProcessSensitivityList::All,
-    "(" <names:SeparatedNonEmptyNoTrail<Name, ",">> ")" => ProcessSensitivityList::Names(names),
+    "(" <names:SeparatedNonEmptyNoTrail<Expr, ",">> ")" => ProcessSensitivityList::Names(names),
 }
 
 ProcessDeclarativeItem: ProcessDeclarativeItem = {
@@ -1191,8 +1756,20 @@ ProcessDeclarativeItem: ProcessDeclarativeItem = {
     GroupDeclaration => ProcessDeclarativeItem::GroupDeclaration(<>),
 }
 ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
-    <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <waveform:Waveform> ";"
-        => ConcurrentSignalAssignmentKind::Simple { target, guarded: guarded.is_some(), delay, waveform }
+    // LRM 11.6 Concurrent signal assignment (simple or conditional)
+    <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <waveform:Waveform>
+        <conditional:("when" <ExprSubConditional> <("else" <Waveform> "when" <ExprSubConditional>)*> <("else" <Waveform>)?>)?>
+        ";"
+        => match conditional {
+            None => ConcurrentSignalAssignmentKind::Simple { target, guarded: guarded.is_some(), delay, waveform },
+            Some((first_condition, rest, else_waveform)) => {
+                let mut conditionals = vec![ConditionalWaveform { waveform, condition: first_condition }];
+                for (wf, cond) in rest {
+                    conditionals.push(ConditionalWaveform { waveform: wf, condition: cond });
+                }
+                ConcurrentSignalAssignmentKind::Conditional { target, guarded: guarded.is_some(), delay, conditionals, else_waveform }
+            },
+        },
 }
 
 // LRM 12 Scope and visibility
@@ -1208,15 +1785,53 @@ pub DesignFile: DesignFile = {
 
 DesignUnit: DesignUnit = {
     <context_clause:ContextClause> <library_unit:LibraryUnit>
-        => DesignUnit { context_clause, library_unit }
+        => DesignUnit { context_clause, library_unit },
 }
 
+#[inline]
 LibraryUnit: LibraryUnit = {
     EntityDeclaration => LibraryUnit::EntityDeclaration(<>),
+    ConfigurationDeclaration => LibraryUnit::ConfigurationDeclaration(<>),
     PackageDeclaration => LibraryUnit::PackageDeclaration(<>),
     PackageInstantiationDeclaration => LibraryUnit::PackageInstantiationDeclaration(<>),
+    ContextDeclaration => LibraryUnit::ContextDeclaration(<>),
     ArchitectureBody => LibraryUnit::ArchitectureBody(<>),
     PackageBody => LibraryUnit::PackageBody(<>),
+}
+
+// LRM 3.4 Configuration declarations
+ConfigurationDeclaration: ConfigurationDeclaration = {
+    "configuration" <name:Identifier> "of" <entity_name:Name> "is"
+        <decl:ConfigurationDeclarativeItem*>
+        <block_config:BlockConfiguration>
+    "end" "configuration"? <end_name:Identifier?> ";"
+        => ConfigurationDeclaration { name, entity_name, decl, block_config, end_name }
+}
+ConfigurationDeclarativeItem: ConfigurationDeclarativeItem = {
+    UseClause => ConfigurationDeclarativeItem::UseClause(<>),
+    AttributeSpecification => ConfigurationDeclarativeItem::AttributeSpecification(<>),
+    GroupDeclaration => ConfigurationDeclarativeItem::GroupDeclaration(<>),
+}
+
+// LRM 3.4.2 Block configuration
+BlockConfiguration: BlockConfiguration = {
+    "for" <block_spec:Expr> <use_clauses:UseClause*> <items:ConfigurationItem*> "end" "for" ";"
+        => BlockConfiguration { block_spec, use_clauses, items }
+}
+ConfigurationItem: ConfigurationItem = {
+    // Block configuration: for block_spec {use_clause} {config_item} end for ;
+    BlockConfiguration => ConfigurationItem::Block(<>),
+    // Component configuration: for instantiation_list : component_name [binding ;] [block_config] end for ;
+    ComponentConfiguration => ConfigurationItem::Component(<>),
+}
+
+// LRM 3.4.3 Component configuration
+ComponentConfiguration: ComponentConfiguration = {
+    "for" <spec:ComponentSpecification> <binding:BindingIndicationSemicolon?> <block_config:BlockConfiguration?> "end" "for" ";"
+        => ComponentConfiguration { spec, binding, block_config }
+}
+BindingIndicationSemicolon: BindingIndication = {
+    <BindingIndication> ";" => <>
 }
 
 // LRM 13.2 Design libraries
@@ -1224,19 +1839,40 @@ LibraryClause: LibraryClause = {
     "library" <SeparatedNonEmptyNoTrail<Identifier, ",">> ";" => LibraryClause { names: <> }
 }
 
+// LRM 13.3 Context declarations
+ContextDeclaration: ContextDeclaration = {
+    "context" <name:Identifier> "is"
+        <items:ContextClause>
+    "end" "context"? <end_name:Identifier?> ";"
+        => ContextDeclaration { name, items, end_name }
+}
+
 // LRM 13.4 Context clauses
+#[inline]
 ContextClause: ContextClause = {
     <ContextItem*> => ContextClause { items: <> }
 }
+#[inline]
 ContextItem: ContextItem = {
     LibraryClause => ContextItem::Library(<>),
     UseClause => ContextItem::Use(<>),
+    ContextReference => ContextItem::Context(<>),
+}
+
+// LRM 13.4.2 Context references
+#[inline]
+ContextReference: ContextReference = {
+    "context" <names:SeparatedNonEmptyNoTrail<Name, ",">> ";"
+        => ContextReference { names }
 }
 
 // LRM 15 Lexical elements
 // LRM 15.4 Identifiers
 Identifier: Identifier = {
-    Span<TokenIdentifier> => Identifier { span: <> }
+    Span<TokenIdentifier> => Identifier { span: <> },
+    // Soft keywords that may also be used as identifiers
+    Span<"parameter"> => Identifier { span: <> },
+    Span<"default"> => Identifier { span: <> },
 }
 IdentifierList: NonEmptyVec<Identifier> = SeparatedNonEmptyNoTrail<Identifier, ",">;
 
@@ -1406,8 +2042,10 @@ extern {
         "/=" => TokenType::SlashEq,
         "<" => TokenType::Lt,
         "<=" => TokenType::LtEq,
+        "<<" => TokenType::LtLt,
         ">" => TokenType::Gt,
         ">=" => TokenType::GtEq,
+        ">>" => TokenType::GtGt,
         "?=" => TokenType::QuestEq,
         "?/=" => TokenType::QuestSlashEq,
         "?<" => TokenType::QuestLt,

@@ -67,7 +67,7 @@ macro_rules! define_patterns { () => {
     macro_rules! pattern_lower_case_letter { () => { 'a'..='z' } }
     macro_rules! pattern_digit { () => { '0'..='9' } }
     macro_rules! pattern_special_character { () => {
-        '"' | '&' | '\'' | '(' | ')' | '+' | ',' | '-' | '.' | '/' | ':' | ';'  | '<' | '=' | '>' | '?' | '@'|
+        '"' | '#' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/' | ':' | ';'  | '<' | '=' | '>' | '?' | '@'|
         '[' | ']' | '_' | '`' | '|'
     } }
     macro_rules! pattern_other_special_character { () => {
@@ -239,11 +239,19 @@ impl<'s> Tokenizer<'s> {
                         TokenType::BitStringLiteral
                     }
                     _ => {
-                        // check for based literal
-                        let pos_before_pound = self.curr_pos();
-                        let ty = if self.accept('#') {
-                            let span_base = Span::new(start.file, start.byte, pos_before_pound.byte);
-                            let base = start_left_str[..pos_before_pound.byte - start.byte]
+                        // check for based literal (LRM 15.5.3)
+                        // Note: VHDL-87/93 also allows ':' as delimiter instead of '#'
+                        let pos_before_delim = self.curr_pos();
+                        let delim = if self.accept('#') {
+                            Some('#')
+                        } else if self.accept(':') {
+                            Some(':')
+                        } else {
+                            None
+                        };
+                        let ty = if let Some(delim) = delim {
+                            let span_base = Span::new(start.file, start.byte, pos_before_delim.byte);
+                            let base = start_left_str[..pos_before_delim.byte - start.byte]
                                 .replace('_', "")
                                 .parse::<u32>()
                                 .map_err(|_| TokenError::IntLiteralInvalidBase { start, base: span_base })?;
@@ -254,7 +262,7 @@ impl<'s> Tokenizer<'s> {
 
                             self.skip_int(start, Some(base))?;
                             self.skip_maybe_fractional(start, Some(base))?;
-                            self.skip_expect(start, "based literal", '#')?;
+                            self.skip_expect(start, "based literal", delim)?;
 
                             TokenType::BasedLiteral
                         } else {
@@ -343,7 +351,7 @@ impl<'s> Tokenizer<'s> {
                 // break the ambiguity by following https://www.eda-twiki.org/isac/IRs-VHDL-93/IR1045.txt
                 if matches!(
                     self.prev_token,
-                    Some(TokenType::CloseS | TokenType::CloseR | TokenType::ResAll | TokenType::Identifier)
+                    Some(TokenType::CloseS | TokenType::CloseR | TokenType::ResAll | TokenType::Identifier | TokenType::CharacterLiteral)
                 ) || c2 != '\''
                 {
                     // must be attribute
@@ -460,7 +468,9 @@ impl<'s> Tokenizer<'s> {
             ['=', '>', _] => skip_fixed(2, TokenType::Arrow),
             [':', '=', _] => skip_fixed(2, TokenType::ColonEq),
             ['/', '=', _] => skip_fixed(2, TokenType::SlashEq),
+            ['>', '>', _] => skip_fixed(2, TokenType::GtGt),
             ['>', '=', _] => skip_fixed(2, TokenType::GtEq),
+            ['<', '<', _] => skip_fixed(2, TokenType::LtLt),
             ['<', '=', _] => skip_fixed(2, TokenType::LtEq),
             ['?', '?', _] => skip_fixed(2, TokenType::QuestQuest),
             ['?', '=', _] => skip_fixed(2, TokenType::QuestEq),
@@ -547,23 +557,8 @@ impl<'s> Tokenizer<'s> {
     }
 
     fn skip_bit_string(&mut self, start: Pos) -> Result<(), TokenError> {
-        // require at least one real character
+        // accept characters until closing "
         let pos = self.curr_pos();
-        match self.pop() {
-            Some(c) if c != '"' && c != '_' && matches!(c, pattern_graphic_character!()) => {
-                // accept
-            }
-            Some(c) => return Err(TokenError::UnexpectedChar { start, pos, actual: c }),
-            None => {
-                return Err(TokenError::UnexpectedEof {
-                    kind: "bit string",
-                    start,
-                    eof: pos,
-                });
-            }
-        }
-
-        // we can accept more characters or underlines
         #[allow(unreachable_patterns)]
         loop {
             match self.pop() {
@@ -898,8 +893,10 @@ declare_tokens! {
         SlashEq("/=", TC::Symbol),
         Lt("<", TC::Symbol),
         LtEq("<=", TC::Symbol),
+        LtLt("<<", TC::Symbol),
         Gt(">", TC::Symbol),
         GtEq(">=", TC::Symbol),
+        GtGt(">>", TC::Symbol),
         QuestEq("?=", TC::Symbol),
         QuestSlashEq("?/=", TC::Symbol),
         QuestLt("?<", TC::Symbol),

@@ -66,9 +66,9 @@ yastl = "0.1.2"
 [profile.release]
 debug = 2
 
-#[profile.dev.build-override]
 # Enable optimization for larlpop build
-#opt-level = 3
+[profile.dev.build-override]
+opt-level = 3
 
 [workspace.metadata.clippy]
 allow-print-in-tests = true
