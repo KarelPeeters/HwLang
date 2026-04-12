@@ -2,7 +2,8 @@
 // Source: nvc (16 directories, 1765 files)
 // Do not edit manually - regenerate with the script above.
 
-use crate::tests::test_parse_files;
+use crate::tests::{test_parse, test_parse_files};
+use crate::util::string_from_bytes_iso8859_1;
 
 #[test]
 fn nvc_test() {
@@ -64,11 +65,21 @@ fn nvc_bounds() {
 
 #[test]
 fn nvc_charset() {
-    test_parse_files(&[
+    // Files encoded in iso8859-1.
+    let paths_iso = [
         "../../external/nvc/test/charset/iso8859-1.vhd",
         "../../external/nvc/test/charset/strings.vhd",
-        "../../external/nvc/test/charset/utf8.vhd",
-    ]);
+    ];
+    for path in paths_iso {
+        let bytes = std::fs::read(path).unwrap();
+        let src = string_from_bytes_iso8859_1(&bytes);
+        test_parse(&src);
+    }
+
+    // File encoded in utf-8.
+    {
+        test_parse_files(&["../../external/nvc/test/charset/utf8.vhd"]);
+    }
 }
 
 #[test]

@@ -4,6 +4,7 @@
 // TODO tokenizer newlines do not agree with newlines for the purposes of LineOffsets, is that a problem?
 
 pub mod syntax;
+pub mod util;
 
 #[cfg(test)]
 mod tests;
