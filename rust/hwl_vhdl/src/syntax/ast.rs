@@ -16,6 +16,7 @@ pub struct EntityDeclaration {
 pub enum EntityDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -24,6 +25,7 @@ pub enum EntityDeclarativeItem {
     File(FileDeclaration),
     Alias(AliasDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Component(ComponentDeclaration),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
@@ -51,6 +53,7 @@ pub struct ArchitectureBody {
 pub enum BlockDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -59,6 +62,7 @@ pub enum BlockDeclarativeItem {
     File(FileDeclaration),
     Alias(AliasDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Component(ComponentDeclaration),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
@@ -80,6 +84,7 @@ pub struct PackageDeclaration {
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
     Package(PackageDeclaration),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -89,6 +94,7 @@ pub enum PackageDeclarativeItem {
     Alias(AliasDeclaration),
     Component(ComponentDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
     ProcedureBody(ProcedureBody),
@@ -105,9 +111,17 @@ pub struct PackageBody {
 }
 
 #[derive(Debug)]
+pub struct PackageInstantiationDeclaration {
+    pub name: Identifier,
+    pub uninstantiated: Name,
+    pub generic_map: Option<Vec<Expression>>,
+}
+
+#[derive(Debug)]
 pub enum PackageBodyDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -115,6 +129,7 @@ pub enum PackageBodyDeclarativeItem {
     File(FileDeclaration),
     Alias(AliasDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
     ProcedureBody(ProcedureBody),
@@ -269,6 +284,49 @@ pub struct FullTypeDeclaration {
 pub enum TypeDefinition {
     Scalar(ScalarTypeDefinition),
     Composite(CompositeTypeDefinition),
+    Access(AccessTypeDefinition),
+    Protected(ProtectedTypeDefinition),
+    ProtectedBody(ProtectedTypeBody),
+}
+
+#[derive(Debug)]
+pub struct AccessTypeDefinition {
+    pub designated_subtype: SubTypeIndication,
+}
+
+#[derive(Debug)]
+pub struct ProtectedTypeDefinition {
+    pub decl: Vec<ProtectedTypeDeclarativeItem>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum ProtectedTypeDeclarativeItem {
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+}
+
+#[derive(Debug)]
+pub struct ProtectedTypeBody {
+    pub decl: Vec<ProtectedTypeBodyDeclarativeItem>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub enum ProtectedTypeBodyDeclarativeItem {
+    Type(TypeDeclaration),
+    Subtype(SubTypeDeclaration),
+    Constant(ConstantDeclaration),
+    Variable(VariableDeclaration),
+    File(FileDeclaration),
+    Alias(AliasDeclaration),
+    Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
+    Procedure(ProcedureDeclaration),
+    Function(FunctionDeclaration),
+    ProcedureBody(ProcedureBody),
+    FunctionBody(FunctionBody),
+    Use(UseClause),
 }
 
 // LRM 6.3 Subtype declarations
@@ -340,7 +398,7 @@ pub struct FileDeclaration {
 pub struct AliasDeclaration {
     pub name: Identifier,
     pub ty: Option<SubTypeIndication>,
-    pub target: Name,
+    pub target: Expression,
 }
 
 // LRM 7.2 Attribute declarations
@@ -350,10 +408,46 @@ pub struct AttributeDeclaration {
     pub ty: Name,
 }
 
+#[derive(Debug)]
+pub struct AttributeSpecification {
+    pub name: Identifier,
+    pub entities: NonEmptyVec<AttributeEntityDesignator>,
+    pub entity_class: EntityClass,
+    pub expr: Expression,
+}
+
+#[derive(Debug)]
+pub enum AttributeEntityDesignator {
+    Name(Name),
+    Others,
+    All,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum EntityClass {
+    Entity,
+    Architecture,
+    Configuration,
+    Procedure,
+    Function,
+    Package,
+    Type,
+    Subtype,
+    Constant,
+    Signal,
+    Variable,
+    Component,
+    Label,
+    Literal,
+    Units,
+    File,
+}
+
 // LRM 6.8 Component declarations
 #[derive(Debug)]
 pub struct ComponentDeclaration {
     pub name: Identifier,
+    pub has_is: bool,
     pub generic: Option<GenericClause>,
     pub port: Option<PortClause>,
     pub end_name: Option<Identifier>,
@@ -401,6 +495,10 @@ pub enum Mode {
 }
 
 // LRM 6.5.3 Interface type declarations
+#[derive(Debug)]
+pub struct InterfaceTypeDeclaration {
+    pub name: Identifier,
+}
 
 // LRM 6.5.4 Interface subprogram declarations
 
@@ -417,7 +515,7 @@ pub struct GenericClause {
 #[derive(Debug)]
 pub enum GenericInterfaceDeclaration {
     Constant(InterfaceConstantDeclaration),
-    Type(/*TODO*/),
+    Type(InterfaceTypeDeclaration),
     Subprogram(/*TODO*/),
     Package(/*TODO*/),
 }
@@ -496,6 +594,7 @@ pub enum SubprogramParameterClass {
 pub enum SubprogramDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -503,6 +602,7 @@ pub enum SubprogramDeclarativeItem {
     File(FileDeclaration),
     Alias(AliasDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
     ProcedureBody(ProcedureBody),
@@ -541,7 +641,7 @@ pub enum Expression {
     SubtypeIndication {
         resolution: Option<Name>,
         type_mark: TypeMark,
-        constraint: Box<Constraint>,
+        constraint: Option<Box<Constraint>>,
     },
 
     // LRM  5.2 Scalar types
@@ -569,9 +669,14 @@ pub enum Expression {
     },
     // primary
     Name(Name),
+    New(Box<Expression>),
     Call {
         callee: Box<Expression>,
         args: Vec<Expression>,
+    },
+    Select {
+        value: Box<Expression>,
+        field: Identifier,
     },
     Association {
         formal: Box<Expression>,
@@ -621,6 +726,25 @@ pub fn build_binary_op(op: BinaryOperator, left: Expression, right: Expression) 
         op,
         left: Box::new(left),
         right: Box::new(right),
+    }
+}
+
+pub fn build_call(callee: Expression, args: Vec<Expression>) -> Expression {
+    Expression::Call {
+        callee: Box::new(callee),
+        args,
+    }
+}
+
+pub fn build_subtype_indication(
+    resolution: Option<Name>,
+    type_mark: TypeMark,
+    constraint: Option<Constraint>,
+) -> Expression {
+    Expression::SubtypeIndication {
+        resolution,
+        type_mark,
+        constraint: constraint.map(Box::new),
     }
 }
 
@@ -767,6 +891,7 @@ pub enum ProcessSensitivityList {
 pub enum ProcessDeclarativeItem {
     Package(PackageDeclaration),
     PackageBody(PackageBody),
+    PackageInstantiation(PackageInstantiationDeclaration),
     Type(TypeDeclaration),
     Subtype(SubTypeDeclaration),
     Constant(ConstantDeclaration),
@@ -774,6 +899,7 @@ pub enum ProcessDeclarativeItem {
     File(FileDeclaration),
     Alias(AliasDeclaration),
     Attribute(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
     Procedure(ProcedureDeclaration),
     Function(FunctionDeclaration),
     ProcedureBody(ProcedureBody),
@@ -968,7 +1094,7 @@ pub enum ConcurrentSignalAssignmentKind {
 // LRM 11.7 Component instantiation statements
 #[derive(Debug)]
 pub struct ComponentInstantiationStatement {
-    pub label: Identifier,
+    pub label: Option<Identifier>,
     pub unit: Name,
     pub architecture: Option<Identifier>,
     pub generic_map: Option<Vec<Expression>>,
@@ -1004,6 +1130,7 @@ pub struct IfGenerateStatement {
 
 #[derive(Debug)]
 pub struct GenerateBody {
+    pub alternative_label: Option<Identifier>,
     pub decl: Vec<BlockDeclarativeItem>,
     pub stmt: Vec<ConcurrentStatement>,
 }
@@ -1033,7 +1160,7 @@ pub enum LibraryUnit {
     EntityDeclaration(EntityDeclaration),
     ConfigurationDeclaration(/*TODO*/),
     PackageDeclaration(PackageDeclaration),
-    PackageInstantiationDeclaration(/*TODO*/),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
     ContextDeclaration(/*TODO*/),
 
     // secondary unit

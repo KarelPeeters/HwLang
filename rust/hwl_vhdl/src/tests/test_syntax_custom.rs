@@ -352,3 +352,149 @@ fn ast_captures_function_purity_and_subtype_resolution() {
     ",
     );
 }
+
+#[test]
+fn aggregate_choices_operator_symbol_and_select_suffix() {
+    test_parse(
+        "
+        entity top is
+            type vec_t is array (natural range <>) of bit_vector(3 downto 0);
+        end;
+        architecture rtl of top is
+            constant c: vec_t := (1 => \"0000\", 2 => \"0001\", others => \"0011\");
+        begin
+            process
+                variable i: integer := 1;
+                variable v: bit;
+            begin
+                v := \"not\"(v);
+                report integer'image(i) & c(i)(0);
+                wait;
+            end process;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn generic_type_package_instantiation_and_generate_alt_labels() {
+    test_parse(
+        "
+        package p_gen is
+            generic (type el_t);
+            type arr_t is array (integer range <>) of el_t;
+        end;
+        package p is new work.p_gen generic map (el_t => bit);
+
+        entity child is
+            port (x: in bit; y: out bit);
+        end;
+        architecture rtl of child is begin y <= x; end;
+
+        entity top is
+            generic (type t);
+            port (x: in bit; y: out bit);
+        end;
+        architecture rtl of top is
+            component child is
+                port (x: in bit; y: out bit);
+            end component;
+        begin
+            g: if x = x generate
+                begin
+                a1: entity work.child(rtl) port map (x => x, y => y);
+            else generate
+                begin
+                a2: component child port map (x => x, y => y);
+            end generate;
+        end rtl;
+        ",
+    )
+}
+
+#[test]
+fn attribute_specifications_for_subprograms_and_signals() {
+    test_parse(
+        "
+        package p is
+            attribute foreign : string;
+            procedure house(reg: in integer);
+            attribute foreign of house : procedure is \"VHPIDIRECT house\";
+        end;
+
+        package body p is
+            procedure house(reg: in integer) is
+            begin
+                null;
+            end procedure;
+            attribute foreign of house : procedure is \"VHPIDIRECT house_body\";
+        end;
+
+        entity top is
+            port (s, t: in bit);
+            attribute keep : string;
+        end;
+
+        architecture rtl of top is
+        begin
+        end;
+
+        architecture attr of top is
+            signal x, y: bit;
+            attribute keep of x, y : signal is \"true\";
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn access_and_protected_type_definitions() {
+    test_parse(
+        "
+        package p is
+            type line is access string(1 to 7);
+            procedure rep1(variable msg: line := new string(1 to 7));
+            type prot is protected
+                procedure get(a: integer);
+            end protected prot;
+        end;
+
+        package body p is
+            type prot is protected body
+                variable v: integer;
+
+                function inc(a: integer) return integer is
+                begin
+                    return a + 1;
+                end function;
+
+                procedure get(a: integer) is
+                begin
+                    v := inc(a);
+                end procedure;
+            end protected body prot;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn aggregate_attribute_choice() {
+    test_parse(
+        "
+        entity top is
+        end;
+
+        architecture rtl of top is
+        begin
+            process
+                variable msg: string(1 to 7);
+            begin
+                msg := (msg'range => ' ');
+                wait;
+            end process;
+        end;
+        ",
+    )
+}

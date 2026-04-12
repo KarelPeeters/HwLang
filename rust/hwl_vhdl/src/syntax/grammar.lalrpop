@@ -21,6 +21,7 @@ EntityDeclaration: EntityDeclaration = {
 EntityDeclarativeItem: EntityDeclarativeItem = {
     PackageDeclaration => EntityDeclarativeItem::Package(<>),
     PackageBody => EntityDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => EntityDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => EntityDeclarativeItem::Type(<>),
     SubTypeDeclaration => EntityDeclarativeItem::Subtype(<>),
     ConstantDeclaration => EntityDeclarativeItem::Constant(<>),
@@ -29,6 +30,7 @@ EntityDeclarativeItem: EntityDeclarativeItem = {
     FileDeclaration => EntityDeclarativeItem::File(<>),
     AliasDeclaration => EntityDeclarativeItem::Alias(<>),
     AttributeDeclaration => EntityDeclarativeItem::Attribute(<>),
+    AttributeSpecification => EntityDeclarativeItem::AttributeSpecification(<>),
     ComponentDeclaration => EntityDeclarativeItem::Component(<>),
     ProcedureDeclaration => EntityDeclarativeItem::Procedure(<>),
     FunctionDeclaration => EntityDeclarativeItem::Function(<>),
@@ -52,6 +54,7 @@ ArchitectureBody: ArchitectureBody = {
 BlockDeclarativeItem: BlockDeclarativeItem = {
     PackageDeclaration => BlockDeclarativeItem::Package(<>),
     PackageBody => BlockDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => BlockDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => BlockDeclarativeItem::Type(<>),
     SubTypeDeclaration => BlockDeclarativeItem::Subtype(<>),
     ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
@@ -60,6 +63,7 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
     FileDeclaration => BlockDeclarativeItem::File(<>),
     AliasDeclaration => BlockDeclarativeItem::Alias(<>),
     AttributeDeclaration => BlockDeclarativeItem::Attribute(<>),
+    AttributeSpecification => BlockDeclarativeItem::AttributeSpecification(<>),
     ComponentDeclaration => BlockDeclarativeItem::Component(<>),
     ProcedureDeclaration => BlockDeclarativeItem::Procedure(<>),
     FunctionDeclaration => BlockDeclarativeItem::Function(<>),
@@ -79,6 +83,7 @@ PackageDeclaration: PackageDeclaration = {
 }
 PackageDeclarativeItem: PackageDeclarativeItem = {
     PackageDeclaration => PackageDeclarativeItem::Package(<>),
+    PackageInstantiationDeclaration => PackageDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => PackageDeclarativeItem::Type(<>),
     SubTypeDeclaration => PackageDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageDeclarativeItem::Constant(<>),
@@ -88,6 +93,7 @@ PackageDeclarativeItem: PackageDeclarativeItem = {
     AliasDeclaration => PackageDeclarativeItem::Alias(<>),
     ComponentDeclaration => PackageDeclarativeItem::Component(<>),
     AttributeDeclaration => PackageDeclarativeItem::Attribute(<>),
+    AttributeSpecification => PackageDeclarativeItem::AttributeSpecification(<>),
     ProcedureDeclaration => PackageDeclarativeItem::Procedure(<>),
     FunctionDeclaration => PackageDeclarativeItem::Function(<>),
     ProcedureBody => PackageDeclarativeItem::ProcedureBody(<>),
@@ -105,6 +111,7 @@ PackageBody: PackageBody = {
 PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
     PackageDeclaration => PackageBodyDeclarativeItem::Package(<>),
     PackageBody => PackageBodyDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => PackageBodyDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => PackageBodyDeclarativeItem::Type(<>),
     SubTypeDeclaration => PackageBodyDeclarativeItem::Subtype(<>),
     ConstantDeclaration => PackageBodyDeclarativeItem::Constant(<>),
@@ -112,11 +119,17 @@ PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
     FileDeclaration => PackageBodyDeclarativeItem::File(<>),
     AliasDeclaration => PackageBodyDeclarativeItem::Alias(<>),
     AttributeDeclaration => PackageBodyDeclarativeItem::Attribute(<>),
+    AttributeSpecification => PackageBodyDeclarativeItem::AttributeSpecification(<>),
     ProcedureDeclaration => PackageBodyDeclarativeItem::Procedure(<>),
     FunctionDeclaration => PackageBodyDeclarativeItem::Function(<>),
     ProcedureBody => PackageBodyDeclarativeItem::ProcedureBody(<>),
     FunctionBody => PackageBodyDeclarativeItem::FunctionBody(<>),
     UseClause => PackageBodyDeclarativeItem::Use(<>),
+}
+
+PackageInstantiationDeclaration: PackageInstantiationDeclaration = {
+    "package" <name:Identifier> "is" "new" <uninstantiated:Name> <generic_map:("generic" "map" <CallArgs>)?> ";"
+        => PackageInstantiationDeclaration { name, uninstantiated, generic_map },
 }
 
 // LRM 5 Types
@@ -161,12 +174,12 @@ IntegerTypeDefinition: IntegerTypeDefinition = {
 // LRM 5.2.4 Physical types
 PhysicalTypeDefinition: PhysicalTypeDefinition = {
     <range:RangeConstraint> "units"
-        <primary_unit:Identifier> <secondary_units:SecondaryUnitDeclaration*>
+        <primary_unit:Identifier> ";" <secondary_units:SecondaryUnitDeclaration*>
         "end" "units" <end_name:Identifier?>
     => PhysicalTypeDefinition { range, primary_unit, secondary_units, end_name },
 }
 SecondaryUnitDeclaration: SecondaryUnitDeclaration = {
-    <name:Identifier> "=" <value:PhysicalLiteral> => SecondaryUnitDeclaration { name, value }
+    <name:Identifier> "=" <value:PhysicalLiteral> ";" => SecondaryUnitDeclaration { name, value }
 }
 PhysicalLiteral: PhysicalLiteral = {
     <value:AbstractLiteral> <unit:Identifier> => PhysicalLiteral { value, unit }
@@ -186,6 +199,14 @@ FullTypeDeclaration: FullTypeDeclaration = {
 TypeDefinition: TypeDefinition = {
     ScalarTypeDefinition => TypeDefinition::Scalar(<>),
     CompositeTypeDefinition => TypeDefinition::Composite(<>),
+    AccessTypeDefinition => TypeDefinition::Access(<>),
+    ProtectedTypeDefinition => TypeDefinition::Protected(<>),
+    ProtectedTypeBody => TypeDefinition::ProtectedBody(<>),
+}
+
+// LRM 5.4 Access types
+AccessTypeDefinition: AccessTypeDefinition = {
+    "access" <designated_subtype:SubTypeExpr> => AccessTypeDefinition { designated_subtype },
 }
 
 // LRM 6.3 Subtype declarations
@@ -213,7 +234,12 @@ IndexConstraintOrOpen: IndexConstraintOrOpen = {
 }
 
 IndexConstraint: IndexConstraint = {
-    "(" <ranges:SeparatedNonEmptyNoTrail<Range, ",">> ")" => IndexConstraint { ranges },
+    "(" <ranges:SeparatedNonEmptyNoTrail<IndexConstraintRangeElem, ",">> ")" => IndexConstraint { ranges },
+}
+
+IndexConstraintRangeElem: Expression = {
+    Range,
+    <_type_mark:Name> "range" <range:Range> => range,
 }
 
 CompositeTypeDefinition: CompositeTypeDefinition = {
@@ -242,14 +268,54 @@ ElementDeclaration: ElementDeclaration = {
 }
 
 SubTypeExpr: Expression = {
+    "(" <resolution:Name> ")" <type_mark:Name> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Some(Box::new(constraint)) },
+        None => Expression::Name(type_mark),
+    },
     <resolution:Name> <type_mark:Name> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Box::new(constraint) },
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(resolution), type_mark, constraint: Some(Box::new(constraint)) },
         None => Expression::Name(type_mark),
     },
     <type_mark:Name> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: None, type_mark, constraint: Box::new(constraint) },
+        Some(constraint) => Expression::SubtypeIndication { resolution: None, type_mark, constraint: Some(Box::new(constraint)) },
         None => Expression::Name(type_mark),
     },
+}
+
+// LRM 5.6 Protected types
+ProtectedTypeDefinition: ProtectedTypeDefinition = {
+    "protected"
+        <decl:ProtectedTypeDeclarativeItem*>
+    "end" "protected" <end_name:Identifier?>
+        => ProtectedTypeDefinition { decl, end_name },
+}
+
+ProtectedTypeDeclarativeItem: ProtectedTypeDeclarativeItem = {
+    ProcedureDeclaration => ProtectedTypeDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => ProtectedTypeDeclarativeItem::Function(<>),
+}
+
+ProtectedTypeBody: ProtectedTypeBody = {
+    "protected" "body"
+        <decl:ProtectedTypeBodyDeclarativeItem*>
+    "end" "protected" "body" <end_name:Identifier?>
+        => ProtectedTypeBody { decl, end_name },
+}
+
+ProtectedTypeBodyDeclarativeItem: ProtectedTypeBodyDeclarativeItem = {
+    TypeDeclaration => ProtectedTypeBodyDeclarativeItem::Type(<>),
+    SubTypeDeclaration => ProtectedTypeBodyDeclarativeItem::Subtype(<>),
+    ConstantDeclaration => ProtectedTypeBodyDeclarativeItem::Constant(<>),
+    VariableDeclaration => ProtectedTypeBodyDeclarativeItem::Variable(<>),
+    FileDeclaration => ProtectedTypeBodyDeclarativeItem::File(<>),
+    AliasDeclaration => ProtectedTypeBodyDeclarativeItem::Alias(<>),
+    AttributeDeclaration => ProtectedTypeBodyDeclarativeItem::Attribute(<>),
+    AttributeSpecification => ProtectedTypeBodyDeclarativeItem::AttributeSpecification(<>),
+    ProcedureDeclaration => ProtectedTypeBodyDeclarativeItem::Procedure(<>),
+    FunctionDeclaration => ProtectedTypeBodyDeclarativeItem::Function(<>),
+    ProcedureBody => ProtectedTypeBodyDeclarativeItem::ProcedureBody(<>),
+    FunctionBody => ProtectedTypeBodyDeclarativeItem::FunctionBody(<>),
+    UseClause => ProtectedTypeBodyDeclarativeItem::Use(<>),
 }
 
 // LRM 6.4 Objects
@@ -284,7 +350,7 @@ FileDeclaration: FileDeclaration = {
 
 // LRM 6.6 Alias declarations
 AliasDeclaration: AliasDeclaration = {
-    "alias" <name:Identifier> <ty:(":" <SubTypeExpr>)?> "is" <target:Name> ";"
+    "alias" <name:Identifier> <ty:(":" <SubTypeExpr>)?> "is" <target:ExprLevelPrimary> ";"
         => AliasDeclaration { name, ty, target }
 }
 
@@ -294,13 +360,45 @@ AttributeDeclaration: AttributeDeclaration = {
         => AttributeDeclaration { name, ty }
 }
 
+// LRM 7.3 Attribute specifications
+AttributeSpecification: AttributeSpecification = {
+    "attribute" <name:Identifier> "of" <entities:SeparatedNonEmptyNoTrail<AttributeEntityDesignator, ",">> ":" <entity_class:EntityClass> "is" <expr:Expr> ";"
+        => AttributeSpecification { name, entities, entity_class, expr }
+}
+
+AttributeEntityDesignator: AttributeEntityDesignator = {
+    Name => AttributeEntityDesignator::Name(<>),
+    "others" => AttributeEntityDesignator::Others,
+    "all" => AttributeEntityDesignator::All,
+}
+
+EntityClass: EntityClass = {
+    "entity" => EntityClass::Entity,
+    "architecture" => EntityClass::Architecture,
+    "configuration" => EntityClass::Configuration,
+    "procedure" => EntityClass::Procedure,
+    "function" => EntityClass::Function,
+    "package" => EntityClass::Package,
+    "type" => EntityClass::Type,
+    "subtype" => EntityClass::Subtype,
+    "constant" => EntityClass::Constant,
+    "signal" => EntityClass::Signal,
+    "variable" => EntityClass::Variable,
+    "component" => EntityClass::Component,
+    "label" => EntityClass::Label,
+    "literal" => EntityClass::Literal,
+    "units" => EntityClass::Units,
+    "file" => EntityClass::File,
+}
+
 // LRM 6.8 Component declarations
 ComponentDeclaration: ComponentDeclaration = {
     "component" <name:Identifier>
+        <has_is:"is"?>
         <generic:GenericClause?>
         <port:PortClause?>
     "end" "component"? <end_name:Identifier?> ";"
-        => ComponentDeclaration { name, generic, port, end_name }
+        => ComponentDeclaration { name, has_is: has_is.is_some(), generic, port, end_name }
 }
 
 // LRM 6.5 Interface declarations
@@ -340,6 +438,11 @@ GenericClause: GenericClause = {
 }
 GenericInterfaceDeclaration: GenericInterfaceDeclaration = {
     InterfaceConstantDeclaration => GenericInterfaceDeclaration::Constant(<>),
+    InterfaceTypeDeclaration => GenericInterfaceDeclaration::Type(<>),
+}
+
+InterfaceTypeDeclaration: InterfaceTypeDeclaration = {
+    "type" <name:Identifier> => InterfaceTypeDeclaration { name },
 }
 
 // LRM 6.5.6.3 Port clauses
@@ -402,6 +505,7 @@ FunctionBody: FunctionBody = {
 SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
     PackageDeclaration => SubprogramDeclarativeItem::Package(<>),
     PackageBody => SubprogramDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => SubprogramDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => SubprogramDeclarativeItem::Type(<>),
     SubTypeDeclaration => SubprogramDeclarativeItem::Subtype(<>),
     ConstantDeclaration => SubprogramDeclarativeItem::Constant(<>),
@@ -409,6 +513,7 @@ SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
     FileDeclaration => SubprogramDeclarativeItem::File(<>),
     AliasDeclaration => SubprogramDeclarativeItem::Alias(<>),
     AttributeDeclaration => SubprogramDeclarativeItem::Attribute(<>),
+    AttributeSpecification => SubprogramDeclarativeItem::AttributeSpecification(<>),
     ProcedureDeclaration => SubprogramDeclarativeItem::Procedure(<>),
     FunctionDeclaration => SubprogramDeclarativeItem::Function(<>),
     ProcedureBody => SubprogramDeclarativeItem::ProcedureBody(<>),
@@ -530,10 +635,25 @@ UnaryExpression: Expression = {
 }
 ExprLevelPrimary: Expression = {
     // TODO expand
+    <base:Name> <args:CallArgs> "." <field:Identifier> => Expression::Select {
+        value: Box::new(build_call(Expression::Name(base), args)),
+        field,
+    },
     <PostfixExpression>,
+    <OperatorSymbolCall>,
     <value:AbstractLiteral> <unit:Identifier> => Expression::PhysicalLiteral { value, unit },
-    "(" <elements:SeparatedNonEmptyNoTrail<AssociationElementExpr, ",">> ")"
-        => Expression::Aggregate(elements),
+    "(" <elements:SeparatedNonEmptyNoTrail<AssociationElementExpr, ",">> ")" => {
+        if elements.len() == 1 {
+            let element = elements.into_iter().next().unwrap();
+            match element {
+                Expression::Association { .. } => Expression::Aggregate(NonEmptyVec::new_single(element)),
+                other => other,
+            }
+        } else {
+            Expression::Aggregate(elements)
+        }
+    },
+    "new" <value:Box<ExprLevelPrimary>> => Expression::New(value),
     Name => Expression::Name(<>),
     TokenBitStringLiteral => Expression::BitStringLiteral,
     TokenDecimalLiteral => Expression::DecimalLiteral,
@@ -541,20 +661,38 @@ ExprLevelPrimary: Expression = {
     TokenCharacterLiteral => Expression::CharLiteral,
 }
 
+OperatorSymbolCall: Expression = {
+    <_op:TokenStringLiteral> <args:CallArgs> => build_call(Expression::StringLiteral, args),
+}
+
 CallArgs: Vec<Expression> = {
     "(" <SeparatedNoTrail<AssociationElementExpr, ",">> ")",
 }
 
-AssociationElementExpr: Expression = {
-    <formal:Name> "=>" <actual:Expr> => Expression::Association {
-        formal: Box::new(Expression::Name(formal)),
-        actual: Box::new(actual),
-    },
-    "others" "=>" <actual:Expr> => Expression::Association {
-        formal: Box::new(Expression::OthersChoice),
-        actual: Box::new(actual),
-    },
+ExplicitRange: Expression = {
+    <left:Box<ExprLevelSimple>> <direction:RangeDirection> <right:Box<ExprLevelSimple>>
+        => Expression::Range { left, direction, right },
+}
+
+CallArgExpr: Expression = {
+    ExplicitRange,
     Expr,
+}
+
+AssociationElementExpr: Expression = {
+    <formal:AssociationFormalExpr> "=>" <actual:CallArgExpr> => Expression::Association {
+        formal: Box::new(formal),
+        actual: Box::new(actual),
+    },
+    CallArgExpr,
+}
+
+AssociationFormalExpr: Expression = {
+    "others" => Expression::OthersChoice,
+    PostfixExpression,
+    Name => Expression::Name(<>),
+    TokenCharacterLiteral => Expression::CharLiteral,
+    TokenDecimalLiteral => Expression::DecimalLiteral,
 }
 
 AttributeIdentifier: Identifier = {
@@ -565,26 +703,24 @@ AttributeIdentifier: Identifier = {
 PostfixExpression: Expression = {
     <base:Name> <suffixes:PostfixSuffix+> => {
         let mut expr = Expression::Name(base);
-        for (attr, args) in suffixes {
-            expr = match attr {
-                Some(attr) => Expression::Attribute {
+        for (kind, args, attr_or_field) in suffixes {
+            expr = match kind {
+                0 => build_call(expr, args),
+                1 => Expression::Attribute {
                     value: Box::new(expr),
-                    attr,
-                    args,
+                    attr: attr_or_field.unwrap(),
+                    args: vec![],
                 },
-                None => Expression::Call {
-                    callee: Box::new(expr),
-                    args,
-                },
+                _ => unreachable!(),
             };
         }
         expr
     },
 }
 
-PostfixSuffix: (Option<Identifier>, Vec<Expression>) = {
-    <args:CallArgs> => (None, args),
-    TokenAttributeQuote <attr:AttributeIdentifier> => (Some(attr), vec![]),
+PostfixSuffix: (u8, Vec<Expression>, Option<Identifier>) = {
+    <args:CallArgs> => (0, args, None),
+    TokenAttributeQuote <attr:AttributeIdentifier> => (1, vec![], Some(attr)),
 }
 
 LogicalOperator: LogicalOperator = {
@@ -825,12 +961,20 @@ ConcurrentStatement: ConcurrentStatement = {
 
     // LRM 11.7 Component instantiation statements
     <label:Identifier> ":" "component" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, architecture: None, generic_map, port_map }),
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map, port_map }),
     <label:Identifier> ":" <unit:Name> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)> ";"
-        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label, unit, architecture: None, generic_map, port_map: Some(port_map) }),
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement { label: Some(label), unit, architecture: None, generic_map, port_map: Some(port_map) }),
     <label:Identifier> ":" "entity" <unit:SelectedName> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
         => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
-            label,
+            label: Some(label),
+            unit: Name::Selected(Box::new(unit)),
+            architecture,
+            generic_map,
+            port_map,
+        }),
+    "entity" <unit:SelectedName> <architecture:("(" <Identifier> ")")?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?> ";"
+        => ConcurrentStatement::ComponentInstantiation(ComponentInstantiationStatement {
+            label: None,
             unit: Name::Selected(Box::new(unit)),
             architecture,
             generic_map,
@@ -871,8 +1015,10 @@ ConcurrentStatement: ConcurrentStatement = {
 }
 
 GenerateBody: GenerateBody = {
-    "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*>
-        => GenerateBody { decl, stmt }
+    <alternative_label:(<Identifier> ":")?> "is"? <decl:BlockDeclarativeItem*> "begin" <stmt:ConcurrentStatement*>
+        => GenerateBody { alternative_label, decl, stmt },
+    <alternative_label:(<Identifier> ":")> <stmt:ConcurrentStatement+>
+        => GenerateBody { alternative_label: Some(alternative_label), decl: vec![], stmt: stmt.into_iter().collect() }
 }
 
 // LRM 11.3 Process statements
@@ -884,6 +1030,7 @@ ProcessSensitivityList: ProcessSensitivityList = {
 ProcessDeclarativeItem: ProcessDeclarativeItem = {
     PackageDeclaration => ProcessDeclarativeItem::Package(<>),
     PackageBody => ProcessDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => ProcessDeclarativeItem::PackageInstantiation(<>),
     TypeDeclaration => ProcessDeclarativeItem::Type(<>),
     SubTypeDeclaration => ProcessDeclarativeItem::Subtype(<>),
     ConstantDeclaration => ProcessDeclarativeItem::Constant(<>),
@@ -891,6 +1038,7 @@ ProcessDeclarativeItem: ProcessDeclarativeItem = {
     FileDeclaration => ProcessDeclarativeItem::File(<>),
     AliasDeclaration => ProcessDeclarativeItem::Alias(<>),
     AttributeDeclaration => ProcessDeclarativeItem::Attribute(<>),
+    AttributeSpecification => ProcessDeclarativeItem::AttributeSpecification(<>),
     ProcedureDeclaration => ProcessDeclarativeItem::Procedure(<>),
     FunctionDeclaration => ProcessDeclarativeItem::Function(<>),
     ProcedureBody => ProcessDeclarativeItem::ProcedureBody(<>),
@@ -921,6 +1069,7 @@ DesignUnit: DesignUnit = {
 LibraryUnit: LibraryUnit = {
     EntityDeclaration => LibraryUnit::EntityDeclaration(<>),
     PackageDeclaration => LibraryUnit::PackageDeclaration(<>),
+    PackageInstantiationDeclaration => LibraryUnit::PackageInstantiationDeclaration(<>),
     ArchitectureBody => LibraryUnit::ArchitectureBody(<>),
     PackageBody => LibraryUnit::PackageBody(<>),
 }
