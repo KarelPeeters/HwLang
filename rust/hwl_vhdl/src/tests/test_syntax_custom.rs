@@ -154,11 +154,9 @@ fn broad_declarative_items_and_subprogram_bodies() {
     test_parse(
         "
         entity top is
-            component child
-            end component;
             attribute keep : std_logic;
             signal es: std_logic;
-            variable ev: integer := 0;
+            shared variable ev: integer := 0;
             file ef: text;
             alias ea is es;
             procedure ep;
@@ -177,7 +175,7 @@ fn broad_declarative_items_and_subprogram_bodies() {
             component child
             end component;
             signal s: std_logic;
-            variable v: integer := 0;
+            shared variable v: integer := 0;
             file f: text;
             alias a is s;
             attribute mark : std_logic;
@@ -216,7 +214,7 @@ fn sequential_statements_coverage() {
         architecture rtl of top is
             signal s: std_logic;
             signal t: std_logic;
-            variable v: integer := 0;
+            shared variable v: integer := 0;
         begin
             process (all)
             begin
@@ -457,6 +455,7 @@ fn access_and_protected_type_definitions() {
             procedure rep1(variable msg: line := new string(1 to 7));
             type prot is protected
                 procedure get(a: integer);
+                private variable state: integer := 0;
             end protected prot;
         end;
 
@@ -474,6 +473,147 @@ fn access_and_protected_type_definitions() {
                     v := inc(a);
                 end procedure;
             end protected body prot;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn shared_and_private_variable_declarations() {
+    test_parse(
+        "
+        entity top is
+            shared variable ev: integer := 0;
+        end;
+
+        architecture rtl of top is
+            shared variable av: integer := 0;
+        begin
+            process
+                variable pv: integer := 0;
+            begin
+                pv := av + ev;
+                wait;
+            end process;
+        end;
+
+        package p is
+            type prot is protected
+                private variable state: integer := 0;
+            end protected prot;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn declarative_mode_view_group_and_specifications() {
+    test_parse(
+        "
+        package p is
+            type rec_t is record
+                a: bit;
+                b: bit;
+            end record;
+
+            view nested_view of rec_t is
+                a : in;
+                b : out;
+            end view nested_view;
+
+            view rec_view of rec_t is
+                a : in;
+                b : view nested_view;
+            end view rec_view;
+
+            group signal_pair is (signal, signal);
+            group g1 : signal_pair (a, b);
+        end;
+
+        entity child is
+        end;
+
+        entity top is
+            signal es : bit bus;
+            disconnect es : bit after 1 ns;
+            group entity_group is (signal <>);
+            group eg : entity_group (es);
+        end;
+
+        architecture rtl of top is
+            component child
+            end component;
+            signal s : bit bus;
+            for all : child use entity work.child;
+            disconnect s : bit after 1 ns;
+            group arch_group is (signal <>);
+            group ag : arch_group (s);
+        begin
+            u1: component child;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn subprogram_instantiation_declarations() {
+    test_parse(
+        "
+        package p is
+            procedure base_p(x: integer);
+            function base_f(x: integer) return integer;
+            procedure p_inst is new base_p;
+            function f_inst is new base_f;
+
+            type prot is protected
+                procedure get(x: integer);
+                procedure get_inst is new get;
+                function inc(x: integer) return integer;
+                function inc_inst is new inc;
+                private variable state: integer := 0;
+            end protected prot;
+        end;
+
+        package body p is
+            procedure body_base is
+            begin
+                null;
+            end procedure;
+
+            procedure body_inst is new body_base;
+
+            function body_fun return integer is
+            begin
+                return 0;
+            end function;
+
+            function body_fun_inst is new body_fun;
+
+            type prot is protected body
+                procedure get(x: integer) is
+                begin
+                    null;
+                end procedure;
+
+                procedure get_alias is new get;
+            end protected body prot;
+        end;
+
+        entity top is
+            procedure ent_base;
+            procedure ent_inst is new ent_base;
+        end;
+
+        architecture rtl of top is
+            procedure arch_base;
+            procedure arch_inst is new arch_base;
+        begin
+            process
+                procedure proc_base;
+                procedure proc_inst is new proc_base;
+            begin
+                null;
+            end process;
         end;
         ",
     )

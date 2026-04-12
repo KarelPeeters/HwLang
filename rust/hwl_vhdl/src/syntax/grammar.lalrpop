@@ -18,25 +18,28 @@ EntityDeclaration: EntityDeclaration = {
     => EntityDeclaration { name, generic, port, decl, stmt, end_name }
 }
 
+// LRM 3.2.3 Entity declarative part
 EntityDeclarativeItem: EntityDeclarativeItem = {
-    PackageDeclaration => EntityDeclarativeItem::Package(<>),
+    SubprogramDeclaration => EntityDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => EntityDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => EntityDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => EntityDeclarativeItem::PackageDeclaration(<>),
     PackageBody => EntityDeclarativeItem::PackageBody(<>),
-    PackageInstantiationDeclaration => EntityDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => EntityDeclarativeItem::Type(<>),
-    SubTypeDeclaration => EntityDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => EntityDeclarativeItem::Constant(<>),
-    SignalDeclaration => EntityDeclarativeItem::Signal(<>),
-    VariableDeclaration => EntityDeclarativeItem::Variable(<>),
-    FileDeclaration => EntityDeclarativeItem::File(<>),
-    AliasDeclaration => EntityDeclarativeItem::Alias(<>),
-    AttributeDeclaration => EntityDeclarativeItem::Attribute(<>),
+    PackageInstantiationDeclaration => EntityDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => EntityDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => EntityDeclarativeItem::SubtypeDeclaration(<>),
+    ModeViewDeclaration => EntityDeclarativeItem::ModeViewDeclaration(<>),
+    ConstantDeclaration => EntityDeclarativeItem::ConstantDeclaration(<>),
+    SignalDeclaration => EntityDeclarativeItem::SignalDeclaration(<>),
+    VariableDeclaration => EntityDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => EntityDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => EntityDeclarativeItem::AliasDeclaration(<>),
+    AttributeDeclaration => EntityDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => EntityDeclarativeItem::AttributeSpecification(<>),
-    ComponentDeclaration => EntityDeclarativeItem::Component(<>),
-    ProcedureDeclaration => EntityDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => EntityDeclarativeItem::Function(<>),
-    ProcedureBody => EntityDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => EntityDeclarativeItem::FunctionBody(<>),
-    UseClause => EntityDeclarativeItem::Use(<>),
+    DisconnectionSpecification => EntityDeclarativeItem::DisconnectionSpecification(<>),
+    UseClause => EntityDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => EntityDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => EntityDeclarativeItem::GroupDeclaration(<>),
 }
 EntityStatement: EntityStatement = {
     ConcurrentStatement => EntityStatement::Concurrent(<>),
@@ -51,25 +54,30 @@ ArchitectureBody: ArchitectureBody = {
     => ArchitectureBody { name, entity_name, decl, stmt, end_name }
 }
 
+// LRM 3.3.2 Architecture declarative part / 11.2 Block statements
 BlockDeclarativeItem: BlockDeclarativeItem = {
-    PackageDeclaration => BlockDeclarativeItem::Package(<>),
+    SubprogramDeclaration => BlockDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => BlockDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => BlockDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => BlockDeclarativeItem::PackageDeclaration(<>),
     PackageBody => BlockDeclarativeItem::PackageBody(<>),
-    PackageInstantiationDeclaration => BlockDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => BlockDeclarativeItem::Type(<>),
-    SubTypeDeclaration => BlockDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => BlockDeclarativeItem::Constant(<>),
-    SignalDeclaration => BlockDeclarativeItem::Signal(<>),
-    VariableDeclaration => BlockDeclarativeItem::Variable(<>),
-    FileDeclaration => BlockDeclarativeItem::File(<>),
-    AliasDeclaration => BlockDeclarativeItem::Alias(<>),
-    AttributeDeclaration => BlockDeclarativeItem::Attribute(<>),
+    PackageInstantiationDeclaration => BlockDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => BlockDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => BlockDeclarativeItem::SubtypeDeclaration(<>),
+    ModeViewDeclaration => BlockDeclarativeItem::ModeViewDeclaration(<>),
+    ConstantDeclaration => BlockDeclarativeItem::ConstantDeclaration(<>),
+    SignalDeclaration => BlockDeclarativeItem::SignalDeclaration(<>),
+    VariableDeclaration => BlockDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => BlockDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => BlockDeclarativeItem::AliasDeclaration(<>),
+    ComponentDeclaration => BlockDeclarativeItem::ComponentDeclaration(<>),
+    AttributeDeclaration => BlockDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => BlockDeclarativeItem::AttributeSpecification(<>),
-    ComponentDeclaration => BlockDeclarativeItem::Component(<>),
-    ProcedureDeclaration => BlockDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => BlockDeclarativeItem::Function(<>),
-    ProcedureBody => BlockDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => BlockDeclarativeItem::FunctionBody(<>),
-    UseClause => BlockDeclarativeItem::Use(<>),
+    ConfigurationSpecification => BlockDeclarativeItem::ConfigurationSpecification(<>),
+    DisconnectionSpecification => BlockDeclarativeItem::DisconnectionSpecification(<>),
+    UseClause => BlockDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => BlockDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => BlockDeclarativeItem::GroupDeclaration(<>),
 }
 
 // LRM 4 Subprograms and packages
@@ -81,24 +89,27 @@ PackageDeclaration: PackageDeclaration = {
     "end" "package"? <end_name:Identifier?> ";"
     => PackageDeclaration { name, generic, decl, end_name }
 }
+
 PackageDeclarativeItem: PackageDeclarativeItem = {
-    PackageDeclaration => PackageDeclarativeItem::Package(<>),
-    PackageInstantiationDeclaration => PackageDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => PackageDeclarativeItem::Type(<>),
-    SubTypeDeclaration => PackageDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => PackageDeclarativeItem::Constant(<>),
-    SignalDeclaration => PackageDeclarativeItem::Signal(<>),
-    VariableDeclaration => PackageDeclarativeItem::Variable(<>),
-    FileDeclaration => PackageDeclarativeItem::File(<>),
-    AliasDeclaration => PackageDeclarativeItem::Alias(<>),
-    ComponentDeclaration => PackageDeclarativeItem::Component(<>),
-    AttributeDeclaration => PackageDeclarativeItem::Attribute(<>),
+    SubprogramDeclaration => PackageDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramInstantiationDeclaration => PackageDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => PackageDeclarativeItem::PackageDeclaration(<>),
+    PackageInstantiationDeclaration => PackageDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => PackageDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => PackageDeclarativeItem::SubtypeDeclaration(<>),
+    ModeViewDeclaration => PackageDeclarativeItem::ModeViewDeclaration(<>),
+    ConstantDeclaration => PackageDeclarativeItem::ConstantDeclaration(<>),
+    SignalDeclaration => PackageDeclarativeItem::SignalDeclaration(<>),
+    VariableDeclaration => PackageDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => PackageDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => PackageDeclarativeItem::AliasDeclaration(<>),
+    ComponentDeclaration => PackageDeclarativeItem::ComponentDeclaration(<>),
+    AttributeDeclaration => PackageDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => PackageDeclarativeItem::AttributeSpecification(<>),
-    ProcedureDeclaration => PackageDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => PackageDeclarativeItem::Function(<>),
-    ProcedureBody => PackageDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => PackageDeclarativeItem::FunctionBody(<>),
-    UseClause => PackageDeclarativeItem::Use(<>),
+    DisconnectionSpecification => PackageDeclarativeItem::DisconnectionSpecification(<>),
+    UseClause => PackageDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => PackageDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => PackageDeclarativeItem::GroupDeclaration(<>),
 }
 
 // LRM 4.8 Package bodies
@@ -108,28 +119,61 @@ PackageBody: PackageBody = {
     "end" ("package" "body")? <end_name:Identifier?> ";"
     => PackageBody { name, decl, end_name }
 }
+
 PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
-    PackageDeclaration => PackageBodyDeclarativeItem::Package(<>),
+    SubprogramDeclaration => PackageBodyDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => PackageBodyDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => PackageBodyDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => PackageBodyDeclarativeItem::PackageDeclaration(<>),
     PackageBody => PackageBodyDeclarativeItem::PackageBody(<>),
-    PackageInstantiationDeclaration => PackageBodyDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => PackageBodyDeclarativeItem::Type(<>),
-    SubTypeDeclaration => PackageBodyDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => PackageBodyDeclarativeItem::Constant(<>),
-    VariableDeclaration => PackageBodyDeclarativeItem::Variable(<>),
-    FileDeclaration => PackageBodyDeclarativeItem::File(<>),
-    AliasDeclaration => PackageBodyDeclarativeItem::Alias(<>),
-    AttributeDeclaration => PackageBodyDeclarativeItem::Attribute(<>),
+    PackageInstantiationDeclaration => PackageBodyDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => PackageBodyDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => PackageBodyDeclarativeItem::SubtypeDeclaration(<>),
+    ConstantDeclaration => PackageBodyDeclarativeItem::ConstantDeclaration(<>),
+    VariableDeclaration => PackageBodyDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => PackageBodyDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => PackageBodyDeclarativeItem::AliasDeclaration(<>),
+    AttributeDeclaration => PackageBodyDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => PackageBodyDeclarativeItem::AttributeSpecification(<>),
-    ProcedureDeclaration => PackageBodyDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => PackageBodyDeclarativeItem::Function(<>),
-    ProcedureBody => PackageBodyDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => PackageBodyDeclarativeItem::FunctionBody(<>),
-    UseClause => PackageBodyDeclarativeItem::Use(<>),
+    UseClause => PackageBodyDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => PackageBodyDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => PackageBodyDeclarativeItem::GroupDeclaration(<>),
 }
 
 PackageInstantiationDeclaration: PackageInstantiationDeclaration = {
     "package" <name:Identifier> "is" "new" <uninstantiated:Name> <generic_map:("generic" "map" <CallArgs>)?> ";"
         => PackageInstantiationDeclaration { name, uninstantiated, generic_map },
+}
+
+// LRM 4.2 Subprogram declarations
+SubprogramDeclaration: SubprogramDeclaration = {
+    <spec:ProcedureSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Procedure(spec) },
+    <spec:FunctionSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Function(spec) },
+}
+
+// LRM 4.3 Subprogram bodies
+SubprogramBody: SubprogramBody = {
+    ProcedureBody => SubprogramBody::Procedure(<>),
+    FunctionBody => SubprogramBody::Function(<>),
+}
+
+// LRM 6.3.4 Mode view declarations
+ModeViewDeclaration: ModeViewDeclaration = {
+    "view" <name:Identifier> "of" <subtype:SubTypeExpr> "is"
+        <elements:ModeViewElementDefinition*>
+    "end" "view" <end_name:Identifier?> ";"
+        => ModeViewDeclaration { name, subtype, elements, end_name },
+}
+
+ModeViewElementDefinition: ModeViewElementDefinition = {
+    <names:IdentifierList> ":" <indication:ElementModeIndication> ";"
+        => ModeViewElementDefinition { names, indication },
+}
+
+ElementModeIndication: ElementModeIndication = {
+    Mode => ElementModeIndication::Mode(<>),
+    "view" "(" <Name> ")" => ElementModeIndication::ArrayView(<>),
+    "view" <Name> => ElementModeIndication::RecordView(<>),
 }
 
 // LRM 5 Types
@@ -291,8 +335,13 @@ ProtectedTypeDefinition: ProtectedTypeDefinition = {
 }
 
 ProtectedTypeDeclarativeItem: ProtectedTypeDeclarativeItem = {
-    ProcedureDeclaration => ProtectedTypeDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => ProtectedTypeDeclarativeItem::Function(<>),
+    // LRM 5.6.2 Protected type declarative part
+    SubprogramDeclaration => ProtectedTypeDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramInstantiationDeclaration => ProtectedTypeDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    AttributeSpecification => ProtectedTypeDeclarativeItem::AttributeSpecification(<>),
+    UseClause => ProtectedTypeDeclarativeItem::UseClause(<>),
+    PrivateVariableDeclaration => ProtectedTypeDeclarativeItem::PrivateVariableDeclaration(<>),
+    AliasDeclaration => ProtectedTypeDeclarativeItem::AliasDeclaration(<>),
 }
 
 ProtectedTypeBody: ProtectedTypeBody = {
@@ -303,19 +352,24 @@ ProtectedTypeBody: ProtectedTypeBody = {
 }
 
 ProtectedTypeBodyDeclarativeItem: ProtectedTypeBodyDeclarativeItem = {
-    TypeDeclaration => ProtectedTypeBodyDeclarativeItem::Type(<>),
-    SubTypeDeclaration => ProtectedTypeBodyDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => ProtectedTypeBodyDeclarativeItem::Constant(<>),
-    VariableDeclaration => ProtectedTypeBodyDeclarativeItem::Variable(<>),
-    FileDeclaration => ProtectedTypeBodyDeclarativeItem::File(<>),
-    AliasDeclaration => ProtectedTypeBodyDeclarativeItem::Alias(<>),
-    AttributeDeclaration => ProtectedTypeBodyDeclarativeItem::Attribute(<>),
+    // LRM 5.6.3 Protected type body declarative part
+    SubprogramDeclaration => ProtectedTypeBodyDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => ProtectedTypeBodyDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => ProtectedTypeBodyDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => ProtectedTypeBodyDeclarativeItem::PackageDeclaration(<>),
+    PackageBody => ProtectedTypeBodyDeclarativeItem::PackageBody(<>),
+    PackageInstantiationDeclaration => ProtectedTypeBodyDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => ProtectedTypeBodyDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => ProtectedTypeBodyDeclarativeItem::SubtypeDeclaration(<>),
+    ConstantDeclaration => ProtectedTypeBodyDeclarativeItem::ConstantDeclaration(<>),
+    VariableDeclaration => ProtectedTypeBodyDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => ProtectedTypeBodyDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => ProtectedTypeBodyDeclarativeItem::AliasDeclaration(<>),
+    AttributeDeclaration => ProtectedTypeBodyDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => ProtectedTypeBodyDeclarativeItem::AttributeSpecification(<>),
-    ProcedureDeclaration => ProtectedTypeBodyDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => ProtectedTypeBodyDeclarativeItem::Function(<>),
-    ProcedureBody => ProtectedTypeBodyDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => ProtectedTypeBodyDeclarativeItem::FunctionBody(<>),
-    UseClause => ProtectedTypeBodyDeclarativeItem::Use(<>),
+    UseClause => ProtectedTypeBodyDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => ProtectedTypeBodyDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => ProtectedTypeBodyDeclarativeItem::GroupDeclaration(<>),
 }
 
 // LRM 6.4 Objects
@@ -340,6 +394,10 @@ SignalKind: SignalKind = {
 VariableDeclaration: VariableDeclaration = {
     <shared:"shared"?> "variable" <names:IdentifierList> ":" <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?> ";"
         => VariableDeclaration { shared: shared.is_some(), names, ty, init }
+}
+
+PrivateVariableDeclaration: PrivateVariableDeclaration = {
+    "private" <decl:VariableDeclaration> => PrivateVariableDeclaration { decl },
 }
 
 // LRM 6.4.2.5 File declarations
@@ -388,7 +446,77 @@ EntityClass: EntityClass = {
     "label" => EntityClass::Label,
     "literal" => EntityClass::Literal,
     "units" => EntityClass::Units,
+    "group" => EntityClass::Group,
     "file" => EntityClass::File,
+    "property" => EntityClass::Property,
+    "sequence" => EntityClass::Sequence,
+    "view" => EntityClass::View,
+}
+
+// LRM 6.9 Group template declarations
+GroupTemplateDeclaration: GroupTemplateDeclaration = {
+    "group" <name:Identifier> "is" "(" <entries:SeparatedNonEmptyNoTrail<EntityClassEntry, ",">> ")" ";"
+        => GroupTemplateDeclaration { name, entries },
+}
+
+EntityClassEntry: EntityClassEntry = {
+    <class:EntityClass> <boxed:("<" ">")?> => EntityClassEntry { class, boxed: boxed.is_some() },
+}
+
+// LRM 6.10 Group declarations
+GroupDeclaration: GroupDeclaration = {
+    "group" <name:Identifier> ":" <template:Name> "(" <constituents:SeparatedNonEmptyNoTrail<GroupConstituent, ",">> ")" ";"
+        => GroupDeclaration { name, template, constituents },
+}
+
+GroupConstituent: GroupConstituent = {
+    Name => GroupConstituent::Name(<>),
+    TokenCharacterLiteral => GroupConstituent::CharLiteral,
+}
+
+// LRM 7.4 Configuration specifications
+ConfigurationSpecification: ConfigurationSpecification = {
+    "for" <component_specification:ComponentSpecification> <binding_indication:BindingIndication> ";"
+        ("end" "for" ";")?
+        => ConfigurationSpecification { component_specification, binding_indication },
+}
+
+ComponentSpecification: ComponentSpecification = {
+    <instantiation_list:InstantiationList> ":" <component_name:Name>
+        => ComponentSpecification { instantiation_list, component_name },
+}
+
+InstantiationList: InstantiationList = {
+    SeparatedNonEmptyNoTrail<Identifier, ","> => InstantiationList::Labels(<>),
+    "others" => InstantiationList::Others,
+    "all" => InstantiationList::All,
+}
+
+BindingIndication: BindingIndication = {
+    <entity_aspect:("use" <EntityAspect>)?> <generic_map:("generic" "map" <CallArgs>)?> <port_map:("port" "map" <CallArgs>)?>
+        => BindingIndication { entity_aspect, generic_map, port_map },
+}
+
+EntityAspect: EntityAspect = {
+    "entity" <Name> => EntityAspect::Entity(<>),
+    "configuration" <Name> => EntityAspect::Configuration(<>),
+    "open" => EntityAspect::Open,
+}
+
+// LRM 7.5 Disconnection specifications
+DisconnectionSpecification: DisconnectionSpecification = {
+    "disconnect" <guarded_signal_specification:GuardedSignalSpecification> "after" <after:ExprLevelConditional> ";"
+        => DisconnectionSpecification { guarded_signal_specification, after },
+}
+
+GuardedSignalSpecification: GuardedSignalSpecification = {
+    <signals:SignalList> ":" <ty:Name> => GuardedSignalSpecification { signals, ty },
+}
+
+SignalList: SignalList = {
+    SeparatedNonEmptyNoTrail<Name, ","> => SignalList::Names(<>),
+    "others" => SignalList::Others,
+    "all" => SignalList::All,
 }
 
 // LRM 6.8 Component declarations
@@ -459,13 +587,14 @@ FunctionPurity: FunctionPurity = {
 }
 
 // LRM 4.2 Subprogram declarations
-ProcedureDeclaration: ProcedureDeclaration = {
-    "procedure" <name:Identifier> <params:SubprogramParameterList?> ";" => ProcedureDeclaration { name, params },
+ProcedureSpecification: ProcedureSpecification = {
+    "procedure" <name:Identifier> <params:SubprogramParameterList?>
+        => ProcedureSpecification { name, header: SubprogramHeader { generic: None, generic_map: None }, params },
 }
 
-FunctionDeclaration: FunctionDeclaration = {
-    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr> ";"
-        => FunctionDeclaration { purity, name, params, return_type },
+FunctionSpecification: FunctionSpecification = {
+    <purity:FunctionPurity?> "function" <name:Identifier> <params:SubprogramParameterList?> "return" <return_type:SubTypeExpr>
+        => FunctionSpecification { purity, name, params, return_type },
 }
 
 SubprogramParameterList: NonEmptyVec<SubprogramParameterDeclaration> = {
@@ -502,23 +631,37 @@ FunctionBody: FunctionBody = {
         => FunctionBody { purity, name, params, return_type, decl, stmt, end_name }
 }
 
+#[inline]
+SubprogramKind: SubprogramKind = {
+    "procedure" => SubprogramKind::Procedure,
+    "function" => SubprogramKind::Function,
+}
+
+// LRM 4.4 Subprogram instantiation declarations
+SubprogramInstantiationDeclaration: SubprogramInstantiationDeclaration = {
+    <kind:SubprogramKind> <designator:Identifier> "is" "new" <uninstantiated:Name> <generic_map:("generic" "map" <CallArgs>)?> ";"
+        => SubprogramInstantiationDeclaration { kind, designator, uninstantiated, generic_map },
+}
+
+// LRM 4.3 Subprogram declarative part
 SubprogramDeclarativeItem: SubprogramDeclarativeItem = {
-    PackageDeclaration => SubprogramDeclarativeItem::Package(<>),
+    SubprogramDeclaration => SubprogramDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => SubprogramDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => SubprogramDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => SubprogramDeclarativeItem::PackageDeclaration(<>),
     PackageBody => SubprogramDeclarativeItem::PackageBody(<>),
-    PackageInstantiationDeclaration => SubprogramDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => SubprogramDeclarativeItem::Type(<>),
-    SubTypeDeclaration => SubprogramDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => SubprogramDeclarativeItem::Constant(<>),
-    VariableDeclaration => SubprogramDeclarativeItem::Variable(<>),
-    FileDeclaration => SubprogramDeclarativeItem::File(<>),
-    AliasDeclaration => SubprogramDeclarativeItem::Alias(<>),
-    AttributeDeclaration => SubprogramDeclarativeItem::Attribute(<>),
+    PackageInstantiationDeclaration => SubprogramDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => SubprogramDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => SubprogramDeclarativeItem::SubtypeDeclaration(<>),
+    ConstantDeclaration => SubprogramDeclarativeItem::ConstantDeclaration(<>),
+    VariableDeclaration => SubprogramDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => SubprogramDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => SubprogramDeclarativeItem::AliasDeclaration(<>),
+    AttributeDeclaration => SubprogramDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => SubprogramDeclarativeItem::AttributeSpecification(<>),
-    ProcedureDeclaration => SubprogramDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => SubprogramDeclarativeItem::Function(<>),
-    ProcedureBody => SubprogramDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => SubprogramDeclarativeItem::FunctionBody(<>),
-    UseClause => SubprogramDeclarativeItem::Use(<>),
+    UseClause => SubprogramDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => SubprogramDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => SubprogramDeclarativeItem::GroupDeclaration(<>),
 }
 
 // LRM 8 Names
@@ -1028,22 +1171,24 @@ ProcessSensitivityList: ProcessSensitivityList = {
 }
 
 ProcessDeclarativeItem: ProcessDeclarativeItem = {
-    PackageDeclaration => ProcessDeclarativeItem::Package(<>),
+    // LRM 11.3 Process declarative part
+    SubprogramDeclaration => ProcessDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => ProcessDeclarativeItem::SubprogramBody(<>),
+    SubprogramInstantiationDeclaration => ProcessDeclarativeItem::SubprogramInstantiationDeclaration(<>),
+    PackageDeclaration => ProcessDeclarativeItem::PackageDeclaration(<>),
     PackageBody => ProcessDeclarativeItem::PackageBody(<>),
-    PackageInstantiationDeclaration => ProcessDeclarativeItem::PackageInstantiation(<>),
-    TypeDeclaration => ProcessDeclarativeItem::Type(<>),
-    SubTypeDeclaration => ProcessDeclarativeItem::Subtype(<>),
-    ConstantDeclaration => ProcessDeclarativeItem::Constant(<>),
-    VariableDeclaration => ProcessDeclarativeItem::Variable(<>),
-    FileDeclaration => ProcessDeclarativeItem::File(<>),
-    AliasDeclaration => ProcessDeclarativeItem::Alias(<>),
-    AttributeDeclaration => ProcessDeclarativeItem::Attribute(<>),
+    PackageInstantiationDeclaration => ProcessDeclarativeItem::PackageInstantiationDeclaration(<>),
+    TypeDeclaration => ProcessDeclarativeItem::TypeDeclaration(<>),
+    SubTypeDeclaration => ProcessDeclarativeItem::SubtypeDeclaration(<>),
+    ConstantDeclaration => ProcessDeclarativeItem::ConstantDeclaration(<>),
+    VariableDeclaration => ProcessDeclarativeItem::VariableDeclaration(<>),
+    FileDeclaration => ProcessDeclarativeItem::FileDeclaration(<>),
+    AliasDeclaration => ProcessDeclarativeItem::AliasDeclaration(<>),
+    AttributeDeclaration => ProcessDeclarativeItem::AttributeDeclaration(<>),
     AttributeSpecification => ProcessDeclarativeItem::AttributeSpecification(<>),
-    ProcedureDeclaration => ProcessDeclarativeItem::Procedure(<>),
-    FunctionDeclaration => ProcessDeclarativeItem::Function(<>),
-    ProcedureBody => ProcessDeclarativeItem::ProcedureBody(<>),
-    FunctionBody => ProcessDeclarativeItem::FunctionBody(<>),
-    UseClause => ProcessDeclarativeItem::Use(<>),
+    UseClause => ProcessDeclarativeItem::UseClause(<>),
+    GroupTemplateDeclaration => ProcessDeclarativeItem::GroupTemplateDeclaration(<>),
+    GroupDeclaration => ProcessDeclarativeItem::GroupDeclaration(<>),
 }
 ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
     <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <waveform:Waveform> ";"

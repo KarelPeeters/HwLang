@@ -1,6 +1,7 @@
 use hwl_common::pos::Span;
 use hwl_common::util::data::NonEmptyVec;
 
+// LRM 3 Design entities and configurations
 // LRM 3.2 Entity declarations
 #[derive(Debug)]
 pub struct EntityDeclaration {
@@ -14,26 +15,29 @@ pub struct EntityDeclaration {
 
 #[derive(Debug)]
 pub enum EntityDeclarativeItem {
-    Package(PackageDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
     PackageBody(PackageBody),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Signal(SignalDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ModeViewDeclaration(ModeViewDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    SignalDeclaration(SignalDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Component(ComponentDeclaration),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    DisconnectionSpecification(DisconnectionSpecification),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
+// LRM 3.2.4 Entity statement part
 #[derive(Debug)]
 pub enum EntityStatement {
     Concurrent(ConcurrentStatement),
@@ -49,29 +53,115 @@ pub struct ArchitectureBody {
     pub end_name: Option<Identifier>,
 }
 
+// LRM 3.3.2 Architecture declarative part
 #[derive(Debug)]
 pub enum BlockDeclarativeItem {
-    Package(PackageDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
     PackageBody(PackageBody),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Signal(SignalDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ModeViewDeclaration(ModeViewDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    SignalDeclaration(SignalDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    ComponentDeclaration(ComponentDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Component(ComponentDeclaration),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    ConfigurationSpecification(ConfigurationSpecification),
+    DisconnectionSpecification(DisconnectionSpecification),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
 // LRM 4 Subprograms and packages
+
+// LRM 4.2 Subprogram declarations
+#[derive(Debug)]
+pub struct SubprogramDeclaration {
+    pub spec: SubprogramSpecification,
+}
+
+#[derive(Debug)]
+pub enum SubprogramSpecification {
+    Procedure(ProcedureSpecification),
+    Function(FunctionSpecification),
+}
+
+#[derive(Debug)]
+pub struct ProcedureSpecification {
+    pub name: Identifier,
+    pub header: SubprogramHeader,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+}
+
+#[derive(Debug)]
+pub struct FunctionSpecification {
+    pub purity: Option<FunctionPurity>,
+    pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+    pub return_type: SubTypeIndication,
+}
+
+#[derive(Debug)]
+pub struct SubprogramHeader {
+    pub generic: Option<GenericClause>,
+    pub generic_map: Option<Vec<Expression>>,
+}
+
+#[derive(Debug)]
+pub enum SubprogramBody {
+    Procedure(ProcedureBody),
+    Function(FunctionBody),
+}
+
+#[derive(Debug)]
+pub enum SubprogramKind {
+    Procedure,
+    Function,
+}
+
+#[derive(Debug)]
+pub struct SubprogramInstantiationDeclaration {
+    pub kind: SubprogramKind,
+    pub designator: Identifier,
+    pub uninstantiated: Name,
+    pub generic_map: Option<Vec<Expression>>,
+}
+
+// LRM 4.3 Subprogram bodies
+#[derive(Debug)]
+pub struct ProcedureBody {
+    pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+    pub decl: Vec<SubprogramDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct FunctionBody {
+    pub purity: Option<FunctionPurity>,
+    pub name: Identifier,
+    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
+    pub return_type: SubTypeIndication,
+    pub decl: Vec<SubprogramDeclarativeItem>,
+    pub stmt: Vec<SequentialStatement>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum FunctionPurity {
+    Pure,
+    Impure,
+}
+
 // LRM 4.7 Package declarations
 #[derive(Debug)]
 pub struct PackageDeclaration {
@@ -83,23 +173,25 @@ pub struct PackageDeclaration {
 
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
-    Package(PackageDeclaration),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Signal(SignalDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Component(ComponentDeclaration),
-    Attribute(AttributeDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ModeViewDeclaration(ModeViewDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    SignalDeclaration(SignalDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    ComponentDeclaration(ComponentDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    DisconnectionSpecification(DisconnectionSpecification),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
 // LRM 4.8 Package bodies
@@ -111,30 +203,138 @@ pub struct PackageBody {
 }
 
 #[derive(Debug)]
+pub enum PackageBodyDeclarativeItem {
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
+    PackageBody(PackageBody),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
+    AttributeSpecification(AttributeSpecification),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
+}
+
+
+// LRM 4.9 Package instantiation declarations
+#[derive(Debug)]
 pub struct PackageInstantiationDeclaration {
     pub name: Identifier,
     pub uninstantiated: Name,
     pub generic_map: Option<Vec<Expression>>,
 }
 
+// LRM 5.6.2 Protected type declarations
 #[derive(Debug)]
-pub enum PackageBodyDeclarativeItem {
-    Package(PackageDeclaration),
-    PackageBody(PackageBody),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
-    AttributeSpecification(AttributeSpecification),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+pub struct PrivateVariableDeclaration {
+    pub decl: VariableDeclaration,
+}
+
+// LRM 6.3.4 Mode view declarations
+#[derive(Debug)]
+pub struct ModeViewDeclaration {
+    pub name: Identifier,
+    pub subtype: SubTypeIndication,
+    pub elements: Vec<ModeViewElementDefinition>,
+    pub end_name: Option<Identifier>,
+}
+
+#[derive(Debug)]
+pub struct ModeViewElementDefinition {
+    pub names: NonEmptyVec<Identifier>,
+    pub indication: ElementModeIndication,
+}
+
+#[derive(Debug)]
+pub enum ElementModeIndication {
+    Mode(Mode),
+    RecordView(Name),
+    ArrayView(Name),
+}
+
+#[derive(Debug)]
+pub struct DisconnectionSpecification {
+    pub guarded_signal_specification: GuardedSignalSpecification,
+    pub after: Expression,
+}
+
+#[derive(Debug)]
+pub struct GuardedSignalSpecification {
+    pub signals: SignalList,
+    pub ty: Name,
+}
+
+#[derive(Debug)]
+pub enum SignalList {
+    Names(NonEmptyVec<Name>),
+    Others,
+    All,
+}
+
+#[derive(Debug)]
+pub struct ConfigurationSpecification {
+    pub component_specification: ComponentSpecification,
+    pub binding_indication: BindingIndication,
+}
+
+#[derive(Debug)]
+pub struct ComponentSpecification {
+    pub instantiation_list: InstantiationList,
+    pub component_name: Name,
+}
+
+#[derive(Debug)]
+pub enum InstantiationList {
+    Labels(NonEmptyVec<Identifier>),
+    Others,
+    All,
+}
+
+#[derive(Debug)]
+pub struct BindingIndication {
+    pub entity_aspect: Option<EntityAspect>,
+    pub generic_map: Option<Vec<Expression>>,
+    pub port_map: Option<Vec<Expression>>,
+}
+
+#[derive(Debug)]
+pub enum EntityAspect {
+    Entity(Name),
+    Configuration(Name),
+    Open,
+}
+
+#[derive(Debug)]
+pub struct GroupTemplateDeclaration {
+    pub name: Identifier,
+    pub entries: NonEmptyVec<EntityClassEntry>,
+}
+
+#[derive(Debug)]
+pub struct EntityClassEntry {
+    pub class: EntityClass,
+    pub boxed: bool,
+}
+
+#[derive(Debug)]
+pub struct GroupDeclaration {
+    pub name: Identifier,
+    pub template: Name,
+    pub constituents: NonEmptyVec<GroupConstituent>,
+}
+
+#[derive(Debug)]
+pub enum GroupConstituent {
+    Name(Name),
+    CharLiteral,
 }
 
 // LRM 5 Types
@@ -265,10 +465,12 @@ pub struct ElementDeclaration {
     pub ty: SubTypeIndication,
 }
 
+// LRM 5.6.2 Protected type declarations
+
+// LRM 5.6.3 Protected type bodies
+
 // LRM 6 Declarations
-
 // LRM 6.2 Type declarations
-
 #[derive(Debug)]
 pub enum TypeDeclaration {
     Full(FullTypeDeclaration),
@@ -302,8 +504,12 @@ pub struct ProtectedTypeDefinition {
 
 #[derive(Debug)]
 pub enum ProtectedTypeDeclarativeItem {
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    AttributeSpecification(AttributeSpecification),
+    UseClause(UseClause),
+    PrivateVariableDeclaration(PrivateVariableDeclaration),
+    AliasDeclaration(AliasDeclaration),
 }
 
 #[derive(Debug)]
@@ -314,19 +520,23 @@ pub struct ProtectedTypeBody {
 
 #[derive(Debug)]
 pub enum ProtectedTypeBodyDeclarativeItem {
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
+    PackageBody(PackageBody),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
 // LRM 6.3 Subtype declarations
@@ -440,7 +650,11 @@ pub enum EntityClass {
     Label,
     Literal,
     Units,
+    Group,
     File,
+    Property,
+    Sequence,
+    View,
 }
 
 // LRM 6.8 Component declarations
@@ -531,48 +745,6 @@ pub enum PortInterfaceDeclaration {
     Variable(/*TODO*/),
 }
 
-// LRM 4.2 Subprogram declarations
-#[derive(Debug)]
-pub struct ProcedureDeclaration {
-    pub name: Identifier,
-    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
-}
-
-#[derive(Debug)]
-pub struct FunctionDeclaration {
-    pub purity: Option<FunctionPurity>,
-    pub name: Identifier,
-    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
-    pub return_type: SubTypeIndication,
-}
-
-// LRM 4.3 Subprogram bodies
-#[derive(Debug)]
-pub struct ProcedureBody {
-    pub name: Identifier,
-    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
-    pub decl: Vec<SubprogramDeclarativeItem>,
-    pub stmt: Vec<SequentialStatement>,
-    pub end_name: Option<Identifier>,
-}
-
-#[derive(Debug)]
-pub struct FunctionBody {
-    pub purity: Option<FunctionPurity>,
-    pub name: Identifier,
-    pub params: Option<NonEmptyVec<SubprogramParameterDeclaration>>,
-    pub return_type: SubTypeIndication,
-    pub decl: Vec<SubprogramDeclarativeItem>,
-    pub stmt: Vec<SequentialStatement>,
-    pub end_name: Option<Identifier>,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum FunctionPurity {
-    Pure,
-    Impure,
-}
-
 // LRM 4.2.1 Formal parameters
 #[derive(Debug)]
 pub struct SubprogramParameterDeclaration {
@@ -592,22 +764,23 @@ pub enum SubprogramParameterClass {
 
 #[derive(Debug)]
 pub enum SubprogramDeclarativeItem {
-    Package(PackageDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
     PackageBody(PackageBody),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
 // LRM 8 Names
@@ -889,22 +1062,23 @@ pub enum ProcessSensitivityList {
 
 #[derive(Debug)]
 pub enum ProcessDeclarativeItem {
-    Package(PackageDeclaration),
+    SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
+    SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
+    PackageDeclaration(PackageDeclaration),
     PackageBody(PackageBody),
-    PackageInstantiation(PackageInstantiationDeclaration),
-    Type(TypeDeclaration),
-    Subtype(SubTypeDeclaration),
-    Constant(ConstantDeclaration),
-    Variable(VariableDeclaration),
-    File(FileDeclaration),
-    Alias(AliasDeclaration),
-    Attribute(AttributeDeclaration),
+    PackageInstantiationDeclaration(PackageInstantiationDeclaration),
+    TypeDeclaration(TypeDeclaration),
+    SubtypeDeclaration(SubTypeDeclaration),
+    ConstantDeclaration(ConstantDeclaration),
+    VariableDeclaration(VariableDeclaration),
+    FileDeclaration(FileDeclaration),
+    AliasDeclaration(AliasDeclaration),
+    AttributeDeclaration(AttributeDeclaration),
     AttributeSpecification(AttributeSpecification),
-    Procedure(ProcedureDeclaration),
-    Function(FunctionDeclaration),
-    ProcedureBody(ProcedureBody),
-    FunctionBody(FunctionBody),
-    Use(UseClause),
+    UseClause(UseClause),
+    GroupTemplateDeclaration(GroupTemplateDeclaration),
+    GroupDeclaration(GroupDeclaration),
 }
 
 #[derive(Debug)]
