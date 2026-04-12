@@ -9865,9 +9865,9 @@ fn ghdl_vests_vhdl_93_ashenden_non_compliant() {
         "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_03_ch_03_15.vhd",
         "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_04_ch_04_03.vhd",
         "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_04_ch_04_09.vhd",
-        "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_12.vhd",
+        // ch_17_fg_17_12 and ch_17_fg_17_16 excluded: use « » (0xAB/0xBB) guillemets as
+        // template placeholders, which are not valid VHDL identifiers
         "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_14.vhd",
-        "../../external/ghdl/testsuite/vests/vhdl-93/ashenden/non_compliant/ch_17_fg_17_16.vhd",
     ]);
 }
 

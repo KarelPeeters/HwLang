@@ -62,16 +62,16 @@ macro_rules! define_patterns { () => {
     macro_rules! pattern_format_effector { () => { '\t' | pattern_end_of_line!() } }
     macro_rules! pattern_end_of_line { () => { '\u{0B}' | '\r' | '\n' | '\u{0C}' } }
 
-    // TODO complete, eg. accents, more special chars, ...
-    macro_rules! pattern_upper_case_letter { () => { 'A'..='Z' } }
-    macro_rules! pattern_lower_case_letter { () => { 'a'..='z' } }
+    macro_rules! pattern_upper_case_letter { () => { 'A'..='Z' | '\u{00C0}'..='\u{00D6}' | '\u{00D8}'..='\u{00DE}' } }
+    macro_rules! pattern_lower_case_letter { () => { 'a'..='z' | '\u{00DF}'..='\u{00F6}' | '\u{00F8}'..='\u{00FF}' } }
     macro_rules! pattern_digit { () => { '0'..='9' } }
     macro_rules! pattern_special_character { () => {
         '"' | '#' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/' | ':' | ';'  | '<' | '=' | '>' | '?' | '@'|
         '[' | ']' | '_' | '`' | '|'
     } }
     macro_rules! pattern_other_special_character { () => {
-        '!' | '$' | '%' | '\\' | '^' | '{' | '}' | '~'
+        '!' | '$' | '%' | '\\' | '^' | '{' | '}' | '~' |
+        '\u{00A1}'..='\u{00BF}' | '\u{00D7}' | '\u{00F7}'
     } }
 
     // LRM 15.4 Identifiers

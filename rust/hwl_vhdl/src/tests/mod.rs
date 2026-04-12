@@ -1,5 +1,6 @@
 use crate::syntax::parser::{parse_error_to_diagnostic, parse_file_content_without_recovery};
 use crate::syntax::token::tokenize;
+use crate::util::string_from_bytes_iso8859_1;
 use hwl_common::diagnostic::{diags_to_string, Diagnostics};
 use hwl_common::source::SourceDatabase;
 use std::path::Path;
@@ -55,7 +56,8 @@ pub fn test_parse_files(paths: &[&str]) {
         let path = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(path_rel);
         println!("{:?}", path);
 
-        let src = std::fs::read_to_string(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let src = string_from_bytes_iso8859_1(&bytes);
 
         let file = source.add_file(path_rel.to_owned(), src.to_owned());
         let result = parse_file_content_without_recovery(file, &src);

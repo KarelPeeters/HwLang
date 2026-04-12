@@ -47,7 +47,7 @@ pub enum EntityStatement {
 #[derive(Debug)]
 pub struct ArchitectureBody {
     pub name: Identifier,
-    pub entity_name: Identifier,
+    pub entity_name: Expression,
     pub decl: Vec<BlockDeclarativeItem>,
     pub stmt: Vec<ConcurrentStatement>,
     pub end_name: Option<Identifier>,
@@ -173,7 +173,7 @@ pub enum SubprogramKind {
 pub struct SubprogramInstantiationDeclaration {
     pub kind: SubprogramKind,
     pub designator: Designator,
-    pub uninstantiated: Name,
+    pub uninstantiated: Expression,
     pub signature: Option<Signature>,
     pub generic_map: Option<Vec<Expression>>,
 }
@@ -221,6 +221,7 @@ pub struct PackageDeclaration {
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
     SubprogramDeclaration(SubprogramDeclaration),
+    SubprogramBody(SubprogramBody),
     SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
     PackageDeclaration(PackageDeclaration),
     PackageInstantiationDeclaration(PackageInstantiationDeclaration),
@@ -275,7 +276,7 @@ pub enum PackageBodyDeclarativeItem {
 #[derive(Debug)]
 pub struct PackageInstantiationDeclaration {
     pub name: Identifier,
-    pub uninstantiated: Name,
+    pub uninstantiated: Expression,
     pub generic_map: Option<Vec<Expression>>,
 }
 
@@ -864,6 +865,10 @@ pub enum GenericInterfaceDeclaration {
     Type(InterfaceTypeDeclaration),
     Subprogram(InterfaceSubprogramDeclaration),
     Package(InterfacePackageDeclaration),
+    // Not valid per LRM, but needed to parse syntactically for error recovery
+    Signal(InterfaceSignalDeclaration),
+    Variable(InterfaceVariableDeclaration),
+    File(InterfaceFileDeclaration),
 }
 
 // LRM 6.5.4 Interface subprogram declarations
@@ -883,7 +888,7 @@ pub enum InterfaceSubprogramDefault {
 #[derive(Debug)]
 pub struct InterfacePackageDeclaration {
     pub name: Identifier,
-    pub uninstantiated: Name,
+    pub uninstantiated: Expression,
     pub generic_map: InterfacePackageGenericMap,
 }
 
@@ -903,14 +908,26 @@ pub struct PortClause {
 pub enum PortInterfaceDeclaration {
     Signal(InterfaceSignalDeclaration),
     Variable(InterfaceVariableDeclaration),
+    Constant(InterfaceConstantDeclaration),
+    File(InterfaceFileDeclaration),
+}
+
+// LRM 6.5.2 Interface file declarations
+#[derive(Debug)]
+pub struct InterfaceFileDeclaration {
+    pub names: NonEmptyVec<Identifier>,
+    pub ty: Expression,
 }
 
 // LRM 4.2.1 Formal parameters
 #[derive(Debug)]
-pub struct SubprogramParameterDeclaration {
-    pub class: Option<SubprogramParameterClass>,
-    pub names: NonEmptyVec<Identifier>,
-    pub mode_indication: ModeIndication,
+pub enum SubprogramParameterDeclaration {
+    Object {
+        class: Option<SubprogramParameterClass>,
+        names: NonEmptyVec<Identifier>,
+        mode_indication: ModeIndication,
+    },
+    Type(InterfaceTypeDeclaration),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1147,6 +1164,14 @@ pub fn build_call(callee: Expression, args: Vec<Expression>) -> Expression {
     }
 }
 
+pub fn build_name_call(name: Name, args: Option<Vec<Expression>>) -> Expression {
+    let expr = Expression::Name(name);
+    match args {
+        Some(args) => build_call(expr, args),
+        None => expr,
+    }
+}
+
 pub fn build_subtype_indication(
     resolution: Option<Expression>,
     type_mark: TypeMark,
@@ -1356,8 +1381,7 @@ pub enum SequentialStatement {
 pub struct ConcurrentProcedureCallStatement {
     pub label: Option<Identifier>,
     pub postponed: bool,
-    pub procedure: Name,
-    pub args: Vec<Expression>,
+    pub call: Expression,
 }
 
 // LRM 11.5 Concurrent assertion statements
@@ -1455,8 +1479,7 @@ pub struct VariableAssignmentStatement {
 #[derive(Debug)]
 pub struct ProcedureCallStatement {
     pub label: Option<Identifier>,
-    pub procedure: Name,
-    pub args: Vec<Expression>,
+    pub call: Expression,
 }
 
 #[derive(Debug)]
@@ -1752,7 +1775,7 @@ impl CaseGenTail {
 // LRM 12.4 Use clauses
 #[derive(Debug)]
 pub struct UseClause {
-    pub names: NonEmptyVec<SelectedName>,
+    pub names: NonEmptyVec<Name>,
 }
 
 // LRM 13.1 Design units

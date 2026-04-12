@@ -879,3 +879,149 @@ fn generate_inner_end_case() {
         ",
     )
 }
+
+// UseClause with simple name (no selection)
+#[test]
+fn use_clause_simple_name() {
+    test_parse(
+        "
+        library ieee;
+        use d;
+        entity e is end;
+        ",
+    )
+}
+
+// Package instantiation with attribute on uninstantiated name (in generic interface)
+#[test]
+fn package_instantiation_attribute_name() {
+    test_parse(
+        "
+        package gen0 is
+            generic (type t);
+            function get return natural;
+        end gen0;
+        entity e is
+            generic (package p is new k'g generic map (<>));
+        end;
+        ",
+    )
+}
+
+// Architecture body with attribute on entity name
+#[test]
+fn architecture_attribute_entity_name() {
+    test_parse(
+        "
+        entity e is end;
+        architecture a of e't is
+        begin
+        end;
+        ",
+    )
+}
+
+// Subprogram instantiation with attribute on uninstantiated name
+#[test]
+fn subprogram_instantiation_attribute_name() {
+    test_parse(
+        "
+        package p is
+            function f is new k'g;
+            procedure p is new k'g;
+        end;
+        ",
+    )
+}
+
+// External name with postfix select
+#[test]
+fn external_name_postfix_select() {
+    test_parse(
+        "
+        entity e is end;
+        architecture a of e is
+            signal s : integer;
+        begin
+            s <= <<signal .tb.top_i.sigb : integer>>.field;
+        end;
+        ",
+    )
+}
+
+// Subprogram body inside package declaration
+#[test]
+fn subprogram_body_in_package() {
+    test_parse(
+        "
+        package p is
+            function f return integer is
+            begin
+                return 0;
+            end;
+        end;
+        ",
+    )
+}
+
+// Interface type declaration in subprogram parameters
+#[test]
+fn subprogram_type_parameter() {
+    test_parse(
+        "
+        package p is
+            function f (type t) return integer;
+        end;
+        ",
+    )
+}
+
+// Port interface with constant and file declarations
+#[test]
+fn port_interface_constant_file() {
+    test_parse(
+        "
+        entity e is
+            port (
+                constant c : integer := 0;
+                file f : integer
+            );
+        end;
+        ",
+    )
+}
+
+// Generic interface with signal, variable, file declarations
+#[test]
+fn generic_interface_signal_variable_file() {
+    test_parse(
+        "
+        entity e is
+            generic (
+                signal s : integer;
+                variable v : integer;
+                file f : integer
+            );
+        end;
+        ",
+    )
+}
+
+// Procedure call with build_name_call (Name + CallArgs)
+#[test]
+fn procedure_call_with_args() {
+    test_parse(
+        "
+        entity e is end;
+        architecture a of e is
+        begin
+            process
+            begin
+                proc(1, 2, 3);
+                pkg.proc;
+                pkg.proc(x);
+            end process;
+        end;
+        ",
+    )
+}

@@ -47,7 +47,7 @@ EntityStatement: EntityStatement = {
 
 // LRM 3.3 Architecture bodies
 ArchitectureBody: ArchitectureBody = {
-    "architecture" <name:Identifier> "of" <entity_name:Identifier> "is"
+    "architecture" <name:Identifier> "of" <entity_name:NameExpr> "is"
         <decl:BlockDeclarativeItem*>
         "begin" <stmt:ConcurrentStatement*>
         "end" "architecture"? <end_name:Identifier?> ";"
@@ -93,6 +93,7 @@ PackageDeclaration: PackageDeclaration = {
 
 PackageDeclarativeItem: PackageDeclarativeItem = {
     SubprogramDeclaration => PackageDeclarativeItem::SubprogramDeclaration(<>),
+    SubprogramBody => PackageDeclarativeItem::SubprogramBody(<>),
     SubprogramInstantiationDeclaration => PackageDeclarativeItem::SubprogramInstantiationDeclaration(<>),
     PackageDeclaration => PackageDeclarativeItem::PackageDeclaration(<>),
     PackageInstantiationDeclaration => PackageDeclarativeItem::PackageInstantiationDeclaration(<>),
@@ -142,7 +143,7 @@ PackageBodyDeclarativeItem: PackageBodyDeclarativeItem = {
 }
 
 PackageInstantiationDeclaration: PackageInstantiationDeclaration = {
-    "package" <name:Identifier> "is" "new" <uninstantiated:Name> <generic_map:("generic" "map" <CallArgs>)?> ";"
+    "package" <name:Identifier> "is" "new" <uninstantiated:NameExpr> <generic_map:("generic" "map" <CallArgs>)?> ";"
         => PackageInstantiationDeclaration { name, uninstantiated, generic_map },
 }
 
@@ -661,8 +662,15 @@ GenericInterfaceDeclaration: GenericInterfaceDeclaration = {
     <spec:InterfaceSubprogramSpecification> <default:("is" <InterfaceSubprogramDefault>)?>
         => GenericInterfaceDeclaration::Subprogram(InterfaceSubprogramDeclaration { spec, default }),
     // LRM 6.5.5 Interface package declarations
-    "package" <name:Identifier> "is" "new" <uninstantiated:Name> <generic_map:InterfacePackageGenericMap>
+    "package" <name:Identifier> "is" "new" <uninstantiated:NameExpr> <generic_map:InterfacePackageGenericMap>
         => GenericInterfaceDeclaration::Package(InterfacePackageDeclaration { name, uninstantiated, generic_map }),
+    // Not valid per LRM, but needed to parse syntactically for error recovery (keyword required to avoid ambiguity)
+    "signal" <names:IdentifierList> ":" <mode_indication:ModeIndication>
+        => GenericInterfaceDeclaration::Signal(InterfaceSignalDeclaration { names, mode_indication }),
+    "variable" <names:IdentifierList> ":" <mode_indication:ModeIndication>
+        => GenericInterfaceDeclaration::Variable(InterfaceVariableDeclaration { names, mode_indication }),
+    "file" <names:IdentifierList> ":" <ty:SubTypeExpr>
+        => GenericInterfaceDeclaration::File(InterfaceFileDeclaration { names, ty }),
 }
 
 InterfaceSubprogramSpecification: SubprogramSpecification = {
@@ -726,6 +734,11 @@ PortInterfaceDeclaration: PortInterfaceDeclaration = {
     // LRM 6.5.2 Interface variable declarations
     "variable" <names:IdentifierList> ":" <mode_indication:ModeIndication>
         => PortInterfaceDeclaration::Variable(InterfaceVariableDeclaration { names, mode_indication }),
+    // LRM 6.5.2 Interface constant declarations
+    "constant" <decl:InterfaceConstantDeclaration> => PortInterfaceDeclaration::Constant(decl),
+    // LRM 6.5.2 Interface file declarations
+    "file" <names:IdentifierList> ":" <ty:SubTypeExpr>
+        => PortInterfaceDeclaration::File(InterfaceFileDeclaration { names, ty }),
 }
 
 FunctionPurity: FunctionPurity = {
@@ -762,7 +775,8 @@ SubprogramParameterList: NonEmptyVec<SubprogramParameterDeclaration> = {
 
 SubprogramParameterDeclaration: SubprogramParameterDeclaration = {
     <class:SubprogramParameterClass?> <names:IdentifierList> ":" <mode_indication:ModeIndication>
-        => SubprogramParameterDeclaration { class, names, mode_indication },
+        => SubprogramParameterDeclaration::Object { class, names, mode_indication },
+    InterfaceTypeDeclaration => SubprogramParameterDeclaration::Type(<>),
 }
 
 SubprogramParameterClass: SubprogramParameterClass = {
@@ -805,7 +819,7 @@ SubprogramKind: SubprogramKind = {
 
 // LRM 4.4 Subprogram instantiation declarations
 SubprogramInstantiationDeclaration: SubprogramInstantiationDeclaration = {
-    <kind:SubprogramKind> <designator:Designator> "is" "new" <uninstantiated:Name> <signature:Signature?> <generic_map:("generic" "map" <CallArgs>)?> ";"
+    <kind:SubprogramKind> <designator:Designator> "is" "new" <uninstantiated:NameExpr> <signature:Signature?> <generic_map:("generic" "map" <CallArgs>)?> ";"
         => SubprogramInstantiationDeclaration { kind, designator, uninstantiated, signature, generic_map },
 }
 
@@ -846,6 +860,18 @@ Suffix: Suffix = {
     Span<TokenStringLiteral> => Suffix::OperatorSymbol(<>),
     Span<TokenCharacterLiteral> => Suffix::CharacterLiteral(<>),
     "all" => Suffix::All,
+}
+
+// Name promoted to Expression, with optional postfix attribute.
+// Narrower than ExprLevelPrimary to avoid LALRPOP state explosion.
+#[inline]
+NameExpr: Expression = {
+    <name:Name> => Expression::Name(name),
+    <base:Name> TokenAttributeQuote <attr:AttributeIdentifier> => Expression::Attribute {
+        value: Box::new(Expression::Name(base)),
+        attr,
+        args: vec![],
+    },
 }
 
 // LRM 9 Expressions
@@ -983,8 +1009,32 @@ ExprLevelPrimary: Expression = {
     "null" => Expression::Null,
     "unaffected" => Expression::Unaffected,
     // LRM 8.7 External names
-    "<<" <class:ExternalNameClass> <path:ExternalPathname> ":" <ty:Box<SubTypeExpr>> ">>"
-        => Expression::ExternalName { class, path, ty },
+    "<<" <class:ExternalNameClass> <path:ExternalPathname> ":" <ty:Box<SubTypeExpr>> ">>" <suffixes:PostfixSuffix*> => {
+        let mut expr = Expression::ExternalName { class, path, ty };
+        for suffix in suffixes {
+            expr = match suffix {
+                PostfixSuffix::Call(args) => build_call(expr, args),
+                PostfixSuffix::Select(suffix) => Expression::Select {
+                    value: Box::new(expr),
+                    suffix,
+                },
+                PostfixSuffix::Attribute(attr) => Expression::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    args: vec![],
+                },
+                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
+                    type_mark: Box::new(expr),
+                    args,
+                },
+                PostfixSuffix::Signature(sig) => Expression::WithSignature {
+                    value: Box::new(expr),
+                    signature: sig,
+                },
+            };
+        }
+        expr
+    },
     Name => Expression::Name(<>),
     TokenBitStringLiteral => Expression::BitStringLiteral,
     TokenDecimalLiteral => Expression::DecimalLiteral,
@@ -1408,8 +1458,8 @@ VariableAssignmentStatement: VariableAssignmentStatement = {
 
 // LRM 10.6 Procedure call statements
 ProcedureCallStatement: ProcedureCallStatement = {
-    <label:MaybeLabel> <procedure:Name> <args:CallArgs?> ";"
-        => ProcedureCallStatement { label, procedure, args: args.unwrap_or_default() }
+    <label:MaybeLabel> <call:Name> <args:CallArgs?> ";"
+        => ProcedureCallStatement { label, call: build_name_call(call, args) }
 }
 
 // LRM 10.7 If statements
@@ -1526,12 +1576,11 @@ ConcurrentStatement: ConcurrentStatement = {
         }),
 
     // LRM 11.4 Concurrent procedure call statements
-    <label:MaybeLabel> <postponed:"postponed"?> <procedure:Name> <args:CallArgs?> ";"
+    <label:MaybeLabel> <postponed:"postponed"?> <call:Name> <args:CallArgs?> ";"
         => ConcurrentStatement::ProcedureCall(ConcurrentProcedureCallStatement {
             label,
             postponed: postponed.is_some(),
-            procedure,
-            args: args.unwrap_or_default(),
+            call: build_name_call(call, args),
         }),
 
     // LRM 11.5 Concurrent assertion statements
@@ -1775,7 +1824,7 @@ ConcurrentSignalAssignmentKind: ConcurrentSignalAssignmentKind = {
 // LRM 12 Scope and visibility
 // LRM 12.4 Use clauses
 UseClause: UseClause = {
-    "use" <names:SeparatedNonEmptyNoTrail<SelectedName, ",">> ";" => UseClause { names: <> }
+    "use" <names:SeparatedNonEmptyNoTrail<Name, ",">> ";" => UseClause { names: <> }
 }
 
 // LRM 13.1 Design units
