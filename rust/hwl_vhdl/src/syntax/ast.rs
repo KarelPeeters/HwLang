@@ -57,7 +57,7 @@ pub struct ArchitectureBody {
 #[derive(Debug)]
 pub struct ConfigurationDeclaration {
     pub name: Identifier,
-    pub entity_name: Name,
+    pub entity_name: Expression,
     pub decl: Vec<ConfigurationDeclarativeItem>,
     pub block_config: BlockConfiguration,
     pub end_name: Option<Identifier>,
@@ -406,20 +406,6 @@ pub struct RangeConstraint {
     pub range: Expression,
 }
 
-#[derive(Debug)]
-pub enum Range {
-    Attribute(/*TODO*/),
-    Simple(SimpleRange),
-    Expression(Expression),
-}
-
-#[derive(Debug)]
-pub struct SimpleRange {
-    pub left: Box<Expression>,
-    pub direction: RangeDirection,
-    pub right: Box<Expression>,
-}
-
 #[derive(Debug, Copy, Clone)]
 pub enum RangeDirection {
     To,
@@ -435,7 +421,7 @@ pub struct EnumTypeDefinition {
 #[derive(Debug)]
 pub enum EnumLiteral {
     Identifier(Identifier),
-    CharLiteral(/*TODO*/),
+    CharLiteral(Span),
 }
 
 // LRM 5.2.3 Integer types / LRM 5.2.5 Floating-point types
@@ -624,27 +610,12 @@ pub type TypeMark = Expression;
 pub enum Constraint {
     Range(RangeConstraint),
     Array(ArrayConstraint),
-    Record(RecordConstraint),
 }
 
 // LRM 5.3.3 element_constraint
 #[derive(Debug)]
 pub enum ElementConstraint {
     Array(ArrayConstraint),
-    Record(RecordConstraint),
-}
-
-// LRM 5.3.3 record_constraint ::= ( record_element_constraint { , record_element_constraint } )
-#[derive(Debug)]
-pub struct RecordConstraint {
-    pub elements: NonEmptyVec<RecordElementConstraint>,
-}
-
-// LRM 5.3.3 record_element_constraint ::= record_element_simple_name element_constraint
-#[derive(Debug)]
-pub struct RecordElementConstraint {
-    pub name: Identifier,
-    pub constraint: ElementConstraint,
 }
 
 // LRM 6.4 Objects
@@ -694,7 +665,6 @@ pub struct FileDeclaration {
 #[derive(Debug)]
 pub struct FileOpenInformation {
     pub open_kind: Option<Expression>,
-    pub mode: Option<Mode>, // VHDL-87 compatibility: is [in|out] "filename"
     pub logical_name: Expression,
 }
 
@@ -774,7 +744,6 @@ pub enum EntityClass {
 #[derive(Debug)]
 pub struct ComponentDeclaration {
     pub name: Identifier,
-    pub has_is: bool,
     pub generic: Option<GenericClause>,
     pub port: Option<PortClause>,
     pub end_name: Option<Identifier>,
@@ -1082,15 +1051,15 @@ pub enum Expression {
         path: NonEmptyVec<ExternalPathElement>,
         ty: Box<Expression>,
     },
-    BitStringLiteral,
+    BitStringLiteral(Span),
     Aggregate(NonEmptyVec<Expression>),
     OthersChoice,
     // LRM 9.3.3.3 Choices in aggregates (choice | choice | ...)
     Choices(NonEmptyVec<Expression>),
-    DecimalLiteral,
-    BasedLiteral,
-    StringLiteral,
-    CharLiteral,
+    DecimalLiteral(Span),
+    BasedLiteral(Span),
+    StringLiteral(Span),
+    CharLiteral(Span),
     // LRM 6.5.7.1 Port map aspects
     Inertial(Box<Expression>),
     // LRM 4.5.3 Signature (name[signature])
@@ -1284,7 +1253,7 @@ pub enum Sign {
 pub enum AddingOperator {
     Add,
     Sub,
-    And,
+    Concat,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1312,11 +1281,10 @@ pub enum DelayMechanism {
     Inertial { reject_time: Option<Expression> },
 }
 
+// LRM 10.5.2 target ::= name | aggregate
 #[derive(Debug)]
 pub enum Target {
-    // TODO LRM syntax implies this can be many other things too, is that true?
     Expr(Expression),
-    Aggregate(/*TODO*/),
 }
 
 #[derive(Debug)]
@@ -1499,6 +1467,7 @@ pub struct SelectedWaveformAssignment {
     pub selector: Expression,
     pub matching: bool,
     pub target: Target,
+    pub guarded: bool,
     pub delay: Option<DelayMechanism>,
     pub alternatives: NonEmptyVec<SelectedWaveform>,
 }
@@ -1904,6 +1873,7 @@ pub struct Identifier {
 pub enum Designator {
     Identifier(Identifier),
     OperatorSymbol(Span),
+    CharLiteral(Span),
 }
 
 // LRM 15.5 Abstract literals

@@ -1150,3 +1150,55 @@ fn record_constraint() {
         ",
     )
 }
+
+#[test]
+fn alias_with_signature() {
+    test_parse(
+        "
+        package p is
+            alias my_add is \"+\" [integer, integer return integer];
+            alias 'a' is my_char;
+            alias \"and\" : std_logic is my_signal;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn concat_operator() {
+    test_parse(
+        "
+        architecture a of e is
+        begin
+            s <= a & b & c;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn guarded_concurrent_selected_signal() {
+    test_parse(
+        "
+        architecture a of e is
+        begin
+            with sel select
+                target <= guarded transport
+                    val1 when \"00\",
+                    val2 when others;
+        end;
+        ",
+    )
+}
+
+#[test]
+fn aggregate_target() {
+    test_parse(
+        "
+        architecture a of e is
+        begin
+            (a, b, c) <= d;
+        end;
+        ",
+    )
+}

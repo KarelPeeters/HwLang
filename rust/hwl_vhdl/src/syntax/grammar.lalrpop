@@ -224,7 +224,7 @@ EnumTypeDefinition: EnumTypeDefinition = {
 
 EnumLiteral: EnumLiteral = {
     Identifier => EnumLiteral::Identifier(<>),
-    TokenCharacterLiteral => EnumLiteral::CharLiteral(),
+    Span<TokenCharacterLiteral> => EnumLiteral::CharLiteral(<>),
 }
 
 // LRM 5.2.3 Integer types / LRM 5.2.5 Floating-point types
@@ -441,8 +441,8 @@ FileDeclaration: FileDeclaration = {
 }
 
 FileOpenInformation: FileOpenInformation = {
-    <open_kind:("open" <Expr>)?> "is" <mode:Mode?> <logical_name:Expr>
-        => FileOpenInformation { open_kind, mode, logical_name }
+    <open_kind:("open" <Expr>)?> "is" <logical_name:Expr>
+        => FileOpenInformation { open_kind, logical_name }
 }
 
 // LRM 6.6 Alias declarations
@@ -572,11 +572,11 @@ SignalList: SignalList = {
 // LRM 6.8 Component declarations
 ComponentDeclaration: ComponentDeclaration = {
     "component" <name:Identifier>
-        <has_is:"is"?>
+        "is"?
         <generic:(<GenericClause> ";")?>
         <port:PortClause?>
     "end" "component"? <end_name:Identifier?> ";"
-        => ComponentDeclaration { name, has_is: has_is.is_some(), generic, port, end_name }
+        => ComponentDeclaration { name, generic, port, end_name }
 }
 
 // LRM 6.5 Interface declarations
@@ -723,6 +723,7 @@ FunctionPurity: FunctionPurity = {
 Designator: Designator = {
     Identifier => Designator::Identifier(<>),
     Span<TokenStringLiteral> => Designator::OperatorSymbol(<>),
+    Span<TokenCharacterLiteral> => Designator::CharLiteral(<>),
 }
 
 ProcedureSpecification: ProcedureSpecification = {
@@ -990,11 +991,11 @@ ExprLevelPrimary: Expression = {
         expr
     },
     Name => Expression::Name(<>),
-    TokenBitStringLiteral => Expression::BitStringLiteral,
-    TokenDecimalLiteral => Expression::DecimalLiteral,
-    TokenBasedLiteral => Expression::BasedLiteral,
-    TokenStringLiteral => Expression::StringLiteral,
-    TokenCharacterLiteral => Expression::CharLiteral,
+    Span<TokenBitStringLiteral> => Expression::BitStringLiteral(<>),
+    Span<TokenDecimalLiteral> => Expression::DecimalLiteral(<>),
+    Span<TokenBasedLiteral> => Expression::BasedLiteral(<>),
+    Span<TokenStringLiteral> => Expression::StringLiteral(<>),
+    Span<TokenCharacterLiteral> => Expression::CharLiteral(<>),
 }
 
 ExternalNameClass: ExternalNameClass = {
@@ -1029,17 +1030,17 @@ ExternalPathElement: ExternalPathElement = {
 }
 
 OperatorSymbolCall: Expression = {
-    <_op:TokenStringLiteral> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
-        let mut expr = apply_nondot_postfix_suffix(Expression::StringLiteral, first);
+    <start:@L> <_op:TokenStringLiteral> <end:@R> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
+        let mut expr = apply_nondot_postfix_suffix(Expression::StringLiteral(ctx.span(start, end)), first);
         for suffix in tail {
             expr = apply_postfix_suffix(expr, suffix);
         }
         expr
     },
     // LRM 8.3 operator_symbol.suffix (selected name with operator symbol prefix)
-    <_op:TokenStringLiteral> "." <suffix:Suffix> <tail:PostfixSuffix*> => {
+    <start:@L> <_op:TokenStringLiteral> <end:@R> "." <suffix:Suffix> <tail:PostfixSuffix*> => {
         let mut expr = Expression::Select {
-            value: Box::new(Expression::StringLiteral),
+            value: Box::new(Expression::StringLiteral(ctx.span(start, end))),
             suffix,
         };
         for suffix in tail {
@@ -1051,8 +1052,8 @@ OperatorSymbolCall: Expression = {
 
 // LRM 8.6 character_literal with signature/attribute suffix (e.g. '1' [return T]'attr)
 CharLiteralPostfix: Expression = {
-    <_c:TokenCharacterLiteral> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
-        let mut expr = apply_nondot_postfix_suffix(Expression::CharLiteral, first);
+    <start:@L> <_c:TokenCharacterLiteral> <end:@R> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
+        let mut expr = apply_nondot_postfix_suffix(Expression::CharLiteral(ctx.span(start, end)), first);
         for suffix in tail {
             expr = apply_postfix_suffix(expr, suffix);
         }
@@ -1200,7 +1201,7 @@ Sign: Sign = {
 AddingOperator: AddingOperator = {
     "+" => AddingOperator::Add,
     "-" => AddingOperator::Sub,
-    "&" => AddingOperator::And,
+    "&" => AddingOperator::Concat,
 }
 MultiplyingOperator: MultiplyingOperator = {
     "*" => MultiplyingOperator::Mul,
@@ -1315,7 +1316,7 @@ SelectedWaveformAssignment: SelectedWaveformAssignment = {
     <label:MaybeLabel> "with" <selector:Expr> "select" <matching:"?"?>
         <target:Target> "<=" <delay:DelayMechanism?> <alternatives:SeparatedNonEmptyNoTrail<SelectedWaveform, ",">> ";"
         => SelectedWaveformAssignment {
-            label, selector, matching: matching.is_some(), target, delay, alternatives
+            label, selector, matching: matching.is_some(), target, guarded: false, delay, alternatives
         }
 }
 SelectedWaveform: SelectedWaveform = {
@@ -1596,7 +1597,7 @@ ConcurrentStatement: ConcurrentStatement = {
     <label:MaybeLabel> <postponed:"postponed"?> "with" <selector:Expr> "select" <matching:"?"?>
         <target:Target> "<=" <guarded:"guarded"?> <delay:DelayMechanism?> <alternatives:SeparatedNonEmptyNoTrail<SelectedWaveform, ",">> ";"
         => ConcurrentStatement::SelectedSignalAssignment(SelectedWaveformAssignment {
-            label, selector, matching: matching.is_some(), target, delay, alternatives
+            label, selector, matching: matching.is_some(), target, guarded: guarded.is_some(), delay, alternatives
         }),
 }
 
@@ -1750,7 +1751,7 @@ LibraryUnit: LibraryUnit = {
 
 // LRM 3.4 Configuration declarations
 ConfigurationDeclaration: ConfigurationDeclaration = {
-    "configuration" <name:Identifier> "of" <entity_name:Name> "is"
+    "configuration" <name:Identifier> "of" <entity_name:NameExpr> "is"
         <decl:ConfigurationDeclarativeItem*>
         <block_config:BlockConfiguration>
     "end" "configuration"? <end_name:Identifier?> ";"

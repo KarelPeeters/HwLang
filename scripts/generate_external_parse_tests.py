@@ -28,7 +28,8 @@ REL_PREFIX = "../../external"
 # bug030: uses VHDL-87 reserved words as identifiers (context, protected, xnor)
 # ashenden ch_18_fg_18_09: incomplete textbook excerpt with elided procedure bodies
 # billowitch tc2862: uses % as string delimiter (VHDL-87 only, removed in VHDL-93)
-GHDL_EXCLUDE_DIRS = {"bug030"}
+# bug096: uses VHDL-87 file open syntax (is in "filename")
+GHDL_EXCLUDE_DIRS = {"bug030", "bug096"}
 GHDL_EXCLUDE_FILES = {
     "ch_18_fg_18_09.vhd",  # ashenden: incomplete textbook excerpt
     "tc2853.vhd",          # billowitch: ! as | replacement (VHDL-87)
