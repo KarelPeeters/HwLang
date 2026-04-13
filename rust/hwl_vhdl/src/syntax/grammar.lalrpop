@@ -300,11 +300,7 @@ IndexConstraintOrOpen: IndexConstraintOrOpen = {
 }
 
 IndexConstraint: IndexConstraint = {
-    "(" <ranges:SeparatedNonEmptyNoTrail<IndexConstraintRangeElem, ",">> ")" => IndexConstraint { ranges },
-}
-
-IndexConstraintRangeElem: Expression = {
-    DiscreteRange,
+    "(" <ranges:SeparatedNonEmptyNoTrail<DiscreteRange, ",">> ")" => IndexConstraint { ranges },
 }
 
 CompositeTypeDefinition: CompositeTypeDefinition = {
