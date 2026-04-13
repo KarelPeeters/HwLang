@@ -93,7 +93,6 @@ PackageDeclaration: PackageDeclaration = {
 
 PackageDeclarativeItem: PackageDeclarativeItem = {
     SubprogramDeclaration => PackageDeclarativeItem::SubprogramDeclaration(<>),
-    SubprogramBody => PackageDeclarativeItem::SubprogramBody(<>),
     SubprogramInstantiationDeclaration => PackageDeclarativeItem::SubprogramInstantiationDeclaration(<>),
     PackageDeclaration => PackageDeclarativeItem::PackageDeclaration(<>),
     PackageInstantiationDeclaration => PackageDeclarativeItem::PackageInstantiationDeclaration(<>),
@@ -159,7 +158,7 @@ SubprogramBody: SubprogramBody = {
     FunctionBody => SubprogramBody::Function(<>),
 }
 
-// LRM 6.3.4 Mode view declarations
+// LRM 6.5.2 Mode view declarations
 ModeViewDeclaration: ModeViewDeclaration = {
     "view" <name:Identifier> "of" <subtype:SubTypeExpr> "is"
         <elements:ModeViewElementDefinition*>
@@ -188,7 +187,7 @@ ElementModeIndication: ElementModeIndication = {
 
 ScalarTypeDefinition: ScalarTypeDefinition = {
     EnumTypeDefinition => ScalarTypeDefinition::Enum(<>),
-    IntegerTypeDefinition => ScalarTypeDefinition::Integer(<>),
+    NumericTypeDefinition => ScalarTypeDefinition::Numeric(<>),
     PhysicalTypeDefinition => ScalarTypeDefinition::Physical(<>),
 }
 
@@ -228,9 +227,9 @@ EnumLiteral: EnumLiteral = {
     TokenCharacterLiteral => EnumLiteral::CharLiteral(),
 }
 
-// LRM 5.2.3 Integer types
-IntegerTypeDefinition: IntegerTypeDefinition = {
-    RangeConstraint => IntegerTypeDefinition { range: <> },
+// LRM 5.2.3 Integer types / LRM 5.2.5 Floating-point types
+NumericTypeDefinition: NumericTypeDefinition = {
+    RangeConstraint => NumericTypeDefinition { range: <> },
 }
 
 // LRM 5.2.4 Physical types
@@ -428,7 +427,7 @@ SignalKind: SignalKind = {
 // LRM 6.4.2.4 Variable declarations
 VariableDeclaration: VariableDeclaration = {
     <shared:"shared"?> "variable" <names:IdentifierList> ":" <ty:SubTypeExpr> <init:(":=" <ExprLevelConditional>)?> ";"
-        => VariableDeclaration { shared: shared.is_some(), names, ty, init }
+        => VariableDeclaration { shared: shared.is_some(), names, ty, generic_map: None, init }
 }
 
 PrivateVariableDeclaration: PrivateVariableDeclaration = {
@@ -452,13 +451,13 @@ AliasDeclaration: AliasDeclaration = {
         => AliasDeclaration { name, ty, target, signature: None }
 }
 
-// LRM 4.7 Signature
+// LRM 4.5.3 Signature
 Signature: Signature = {
     "[" <parameter_types:SeparatedNoTrail<Name, ",">> <return_type:("return" <Name>)?> "]"
         => Signature { parameter_types, return_type },
 }
 
-// LRM 7.2 Attribute declarations
+// LRM 6.7 Attribute declarations
 AttributeDeclaration: AttributeDeclaration = {
     "attribute" <name:Identifier> ":" <ty:Name> ";"
         => AttributeDeclaration { name, ty }
@@ -617,7 +616,7 @@ Mode: Mode = {
 
 InterfaceTypeIndication: InterfaceTypeIndication = {
     SubTypeExpr => InterfaceTypeIndication::Subtype(<>),
-    // LRM 5.3.3 unspecified_type_indication ::= type is incomplete_type_definition
+    // LRM 5.8 unspecified_type_indication ::= type is incomplete_type_definition
     "type" "is" <IncompleteTypeDefinition> => InterfaceTypeIndication::Unspecified(<>),
 }
 
@@ -720,7 +719,7 @@ FunctionPurity: FunctionPurity = {
 }
 
 // LRM 4.2 Subprogram declarations
-// LRM 4.7 Subprogram designators
+// LRM 4.2 Subprogram designators
 Designator: Designator = {
     Identifier => Designator::Identifier(<>),
     Span<TokenStringLiteral> => Designator::OperatorSymbol(<>),
@@ -1158,7 +1157,7 @@ PostfixSuffix: PostfixSuffix = {
     TokenAttributeQuote <attr:AttributeIdentifier> => PostfixSuffix::Attribute(attr),
     // LRM 9.3.5 Qualified expressions: type_mark'(expr) / type_mark'aggregate
     TokenAttributeQuote <args:CallArgs> => PostfixSuffix::QualifiedExpression(args),
-    // LRM 4.7 Signature
+    // LRM 4.5.3 Signature
     <sig:Signature> => PostfixSuffix::Signature(sig),
     // LRM 9.3.4 generic_map_aspect in function/procedure calls
     "generic" "map" <args:CallArgs> => PostfixSuffix::GenericMap(args),
@@ -1276,7 +1275,8 @@ WaveformElementValue: WaveformElementValue = {
     ExprSubConditional => WaveformElementValue::Expression(<>),
 }
 
-// LRM 10.5.3 Conditional signal assignments / LRM 10.5.2.2 Simple signal assignment
+// LRM 10.5.2 Simple signal assignments
+// LRM 10.5.3 Conditional signal assignments
 SequentialSignalAssignmentStatement: SequentialSignalAssignmentStatement = {
     <label:MaybeLabel> <target:Target> "<=" <delay:DelayMechanism?> <waveform:Waveform>
         <conditional:("when" <ExprSubConditional> <("else" <Waveform> "when" <ExprSubConditional>)*> <("else" <Waveform>)?>)?>
@@ -1323,7 +1323,7 @@ SelectedWaveform: SelectedWaveform = {
         => SelectedWaveform { waveform: Waveform::Elements(elements), choices },
 }
 
-// LRM 10.5.4 Selected variable assignments
+// LRM 10.6.3 Selected variable assignments
 SelectedVariableAssignment: SelectedVariableAssignment = {
     <label:MaybeLabel> "with" <selector:Expr> "select" <matching:"?"?>
         <target:Target> ":=" <alternatives:SeparatedNonEmptyNoTrail<SelectedExpression, ",">> ";"
@@ -1335,13 +1335,13 @@ SelectedExpression: SelectedExpression = {
     <value:ExprSubConditional> "when" <choices:SeparatedNonEmptyNoTrail<Choice, "|">> => SelectedExpression { value, choices },
 }
 
-// LRM 10.5.1 Variable assignment statements
+// LRM 10.6 Variable assignment statement
 VariableAssignmentStatement: VariableAssignmentStatement = {
     <label:MaybeLabel> <target:Target> ":=" <value:ExprLevelConditional> ";"
         => VariableAssignmentStatement { label, target, value }
 }
 
-// LRM 10.6 Procedure call statements
+// LRM 10.7 Procedure call statement
 ProcedureCallStatement: ProcedureCallStatement = {
     <label:MaybeLabel> <call:Name> ";"
         => ProcedureCallStatement { label, call: Expression::Name(call) },
@@ -1362,7 +1362,7 @@ ProcedureCallStatement: ProcedureCallStatement = {
         },
 }
 
-// LRM 10.7 If statements
+// LRM 10.8 If statement
 IfStatement: IfStatement = {
     <label:MaybeLabel>
     "if" <first_condition:Expr> "then" <first_body:SequentialStatement*>
@@ -1375,7 +1375,7 @@ IfStatement: IfStatement = {
     },
 }
 
-// LRM 10.8 Case statements
+// LRM 10.9 Case statement
 CaseStatement: CaseStatement = {
     <label:MaybeLabel> "case" <matching:"?"?> <expression:Expr> "is" <prefix:(CaseAlternative)*> <last:CaseAlternative> "end" "case" "?"? <end_label:Identifier?> ";"
         => CaseStatement { label, matching: matching.is_some(), expression, alternatives: NonEmptyVec::new_vec_push(prefix, last), end_label },
@@ -1392,7 +1392,7 @@ Choice: Choice = {
     Expr => Choice::Expr(<>),
 }
 
-// LRM 10.9 Loop statements
+// LRM 10.10 Loop statement
 LoopStatement: LoopStatement = {
     <label:MaybeLabel> "loop" <body:SequentialStatement*> "end" "loop" <end_label:Identifier?> ";"
         => LoopStatement { label, scheme: LoopScheme::Infinite, body, end_label },
@@ -1402,30 +1402,30 @@ LoopStatement: LoopStatement = {
         => LoopStatement { label, scheme: LoopScheme::For { param, range }, body, end_label },
 }
 
-// LRM 10.10 Next statements
+// LRM 10.11 Next statement
 NextStatement: NextStatement = {
     <label:MaybeLabel> "next" <loop_label:Identifier?> <condition:("when" <Expr>)?> ";"
         => NextStatement { label, loop_label, condition },
 }
 
-// LRM 10.11 Exit statements
+// LRM 10.12 Exit statement
 ExitStatement: ExitStatement = {
     <label:MaybeLabel> "exit" <loop_label:Identifier?> <condition:("when" <Expr>)?> ";"
         => ExitStatement { label, loop_label, condition },
 }
 
-// LRM 10.12 Return statements
+// LRM 10.13 Return statement
 ReturnStatement: ReturnStatement = {
     <label:MaybeLabel> "return" <condition:("when" <Expr>)?> ";" => ReturnStatement::Plain { label, condition },
     <label:MaybeLabel> "return" <value:Expr> ";" => ReturnStatement::Value { label, value },
 }
 
-// LRM 10.13 Null statements
+// LRM 10.14 Null statement
 NullStatement: () = {
     <MaybeLabel> "null" ";" => (),
 }
 
-// LRM 10.14 Sequential block statements
+// LRM 10.15 Sequential block statement
 SequentialBlockStatement: SequentialBlockStatement = {
     <label:MaybeLabel> "block" "is"? <decl:ProcessDeclarativeItem*> "begin" <stmt:SequentialStatement*> "end" "block"? <end_label:Identifier?> ";"
         => SequentialBlockStatement { label, decl, stmt, end_label },

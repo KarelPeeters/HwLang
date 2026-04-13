@@ -221,7 +221,6 @@ pub struct PackageDeclaration {
 #[derive(Debug)]
 pub enum PackageDeclarativeItem {
     SubprogramDeclaration(SubprogramDeclaration),
-    SubprogramBody(SubprogramBody),
     SubprogramInstantiationDeclaration(SubprogramInstantiationDeclaration),
     PackageDeclaration(PackageDeclaration),
     PackageInstantiationDeclaration(PackageInstantiationDeclaration),
@@ -286,7 +285,7 @@ pub struct PrivateVariableDeclaration {
     pub decl: VariableDeclaration,
 }
 
-// LRM 6.3.4 Mode view declarations
+// LRM 6.5.2 Mode view declarations
 #[derive(Debug)]
 pub struct ModeViewDeclaration {
     pub name: Identifier,
@@ -308,6 +307,7 @@ pub enum ElementModeIndication {
     ArrayView(Expression),
 }
 
+// LRM 7.4 Disconnection specification
 #[derive(Debug)]
 pub struct DisconnectionSpecification {
     pub guarded_signal_specification: GuardedSignalSpecification,
@@ -327,6 +327,7 @@ pub enum SignalList {
     All,
 }
 
+// LRM 7.3 Configuration specification
 #[derive(Debug)]
 pub struct ConfigurationSpecification {
     pub component_specification: ComponentSpecification,
@@ -346,6 +347,7 @@ pub enum InstantiationList {
     All,
 }
 
+// LRM 7.3.2 Binding indication
 #[derive(Debug)]
 pub struct BindingIndication {
     pub entity_aspect: Option<EntityAspect>,
@@ -353,6 +355,7 @@ pub struct BindingIndication {
     pub port_map: Option<Vec<Expression>>,
 }
 
+// LRM 7.3.2.2 Entity aspect
 #[derive(Debug)]
 pub enum EntityAspect {
     Entity(Name, Option<Identifier>),
@@ -360,6 +363,7 @@ pub enum EntityAspect {
     Open,
 }
 
+// LRM 6.9 Group template declarations
 #[derive(Debug)]
 pub struct GroupTemplateDeclaration {
     pub name: Identifier,
@@ -372,6 +376,7 @@ pub struct EntityClassEntry {
     pub boxed: bool,
 }
 
+// LRM 6.10 Group declarations
 #[derive(Debug)]
 pub struct GroupDeclaration {
     pub name: Identifier,
@@ -390,7 +395,9 @@ pub enum GroupConstituent {
 #[derive(Debug)]
 pub enum ScalarTypeDefinition {
     Enum(EnumTypeDefinition),
-    Integer(IntegerTypeDefinition),
+    // LRM 5.2.3 / 5.2.5: integer and floating types are syntactically identical (range_constraint),
+    // disambiguation requires semantic analysis
+    Numeric(NumericTypeDefinition),
     Physical(PhysicalTypeDefinition),
 }
 
@@ -431,9 +438,9 @@ pub enum EnumLiteral {
     CharLiteral(/*TODO*/),
 }
 
-// LRM 5.2.3 Integer types
+// LRM 5.2.3 Integer types / LRM 5.2.5 Floating-point types
 #[derive(Debug)]
-pub struct IntegerTypeDefinition {
+pub struct NumericTypeDefinition {
     pub range: RangeConstraint,
 }
 
@@ -612,16 +619,32 @@ pub type SubTypeIndication = Expression;
 
 pub type TypeMark = Expression;
 
+// LRM 5.3.3 record_constraint
 #[derive(Debug)]
 pub enum Constraint {
     Range(RangeConstraint),
     Array(ArrayConstraint),
-    Record(/*TODO*/),
+    Record(RecordConstraint),
 }
+
+// LRM 5.3.3 element_constraint
 #[derive(Debug)]
 pub enum ElementConstraint {
     Array(ArrayConstraint),
-    Record(/*TODO*/),
+    Record(RecordConstraint),
+}
+
+// LRM 5.3.3 record_constraint ::= ( record_element_constraint { , record_element_constraint } )
+#[derive(Debug)]
+pub struct RecordConstraint {
+    pub elements: NonEmptyVec<RecordElementConstraint>,
+}
+
+// LRM 5.3.3 record_element_constraint ::= record_element_simple_name element_constraint
+#[derive(Debug)]
+pub struct RecordElementConstraint {
+    pub name: Identifier,
+    pub constraint: ElementConstraint,
 }
 
 // LRM 6.4 Objects
@@ -655,6 +678,7 @@ pub struct VariableDeclaration {
     pub shared: bool,
     pub names: NonEmptyVec<Identifier>,
     pub ty: SubTypeIndication,
+    pub generic_map: Option<Vec<Expression>>,
     pub init: Option<Expression>,
 }
 
@@ -675,7 +699,7 @@ pub struct FileOpenInformation {
 }
 
 // LRM 6.6 Alias declarations
-// LRM 4.7 Signatures
+// LRM 4.5.3 Signatures
 #[derive(Debug)]
 pub struct Signature {
     pub parameter_types: Vec<Name>,
@@ -690,13 +714,14 @@ pub struct AliasDeclaration {
     pub signature: Option<Signature>,
 }
 
-// LRM 7.2 Attribute declarations
+// LRM 6.7 Attribute declarations
 #[derive(Debug)]
 pub struct AttributeDeclaration {
     pub name: Identifier,
     pub ty: Name,
 }
 
+// LRM 7.2 Attribute specification
 #[derive(Debug)]
 pub struct AttributeSpecification {
     pub name: Identifier,
@@ -705,7 +730,7 @@ pub struct AttributeSpecification {
     pub expr: Expression,
 }
 
-// LRM 7.2 Attribute entity designator
+// LRM 7.2 entity_designator
 #[derive(Debug)]
 pub struct AttributeEntityDesignator {
     pub tag: EntityTag,
@@ -781,7 +806,7 @@ pub struct InterfaceVariableDeclaration {
 #[derive(Debug)]
 pub enum InterfaceTypeIndication {
     Subtype(SubTypeIndication),
-    // LRM 5.3.3 unspecified_type_indication ::= type is incomplete_type_definition
+    // LRM 5.8 unspecified_type_indication ::= type is incomplete_type_definition
     Unspecified(IncompleteTypeDefinition),
 }
 
@@ -1068,7 +1093,7 @@ pub enum Expression {
     CharLiteral,
     // LRM 6.5.7.1 Port map aspects
     Inertial(Box<Expression>),
-    // LRM 4.7 Signature (name[signature])
+    // LRM 4.5.3 Signature (name[signature])
     WithSignature {
         value: Box<Expression>,
         signature: Signature,
@@ -1133,6 +1158,7 @@ pub enum ForceMode {
     Out,
 }
 
+// LRM 10.5.2.1 Simple force assignment
 #[derive(Debug)]
 pub struct SignalForceAssignmentStatement {
     pub label: Option<Identifier>,
@@ -1141,6 +1167,7 @@ pub struct SignalForceAssignmentStatement {
     pub value: Expression,
 }
 
+// LRM 10.5.2.1 Simple release assignment
 #[derive(Debug)]
 pub struct SignalReleaseAssignmentStatement {
     pub label: Option<Identifier>,
@@ -1481,7 +1508,7 @@ pub struct SelectedWaveform {
     pub choices: NonEmptyVec<Choice>,
 }
 
-// LRM 10.5.4 Selected variable assignments
+// LRM 10.6.3 Selected variable assignments
 #[derive(Debug)]
 pub struct SelectedVariableAssignment {
     pub label: Option<Identifier>,
@@ -1574,12 +1601,12 @@ pub struct ExitStatement {
 
 #[derive(Debug)]
 pub enum ReturnStatement {
-    // LRM 10.12.1 plain_return_statement: return [when condition];
+    // LRM 10.13 plain_return_statement: return [when condition];
     Plain {
         label: Option<Identifier>,
         condition: Option<Expression>,
     },
-    // LRM 10.12.1 value_return_statement
+    // LRM 10.13 value_return_statement
     Value {
         label: Option<Identifier>,
         value: Expression,

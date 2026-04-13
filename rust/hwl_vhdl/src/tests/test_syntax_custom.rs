@@ -949,21 +949,6 @@ fn external_name_postfix_select() {
     )
 }
 
-// Subprogram body inside package declaration
-#[test]
-fn subprogram_body_in_package() {
-    test_parse(
-        "
-        package p is
-            function f return integer is
-            begin
-                return 0;
-            end;
-        end;
-        ",
-    )
-}
-
 // Interface type declaration in subprogram parameters
 #[test]
 fn subprogram_type_parameter() {
@@ -1147,6 +1132,19 @@ fn record_attribute() {
         "
         architecture a of e is
             type ranges_t is array(natural range <>) of integer'range'record;
+        begin
+        end;
+        ",
+    )
+}
+
+#[test]
+fn record_constraint() {
+    test_parse(
+        "
+        architecture a of e is
+            subtype my_sub is my_rec(field1(0 to 7), field2(0 to 3));
+            signal s : my_rec(field1(0 to 7));
         begin
         end;
         ",
