@@ -177,21 +177,7 @@ ElementModeIndication: ElementModeIndication = {
     "view" "(" <ExprLevelPrimary> ")" => ElementModeIndication::ArrayView(<>),
     "view" <name:Name> <suffix:NonDotPostfixSuffix?> => match suffix {
         Some(suffix) => {
-            let mut expr = Expression::Name(name);
-            expr = match suffix {
-                PostfixSuffix::Call(args) => build_call(expr, args),
-                PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                    value: Box::new(expr), attr, args: vec![],
-                },
-                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                    type_mark: Box::new(expr), args,
-                },
-                PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                    value: Box::new(expr), signature: sig,
-                },
-                PostfixSuffix::Select(_) => unreachable!(),
-            };
-            ElementModeIndication::RecordView(expr)
+            ElementModeIndication::RecordView(apply_nondot_postfix_suffix(Expression::Name(name), suffix))
         },
         None => ElementModeIndication::RecordView(Expression::Name(name)),
     },
@@ -222,7 +208,7 @@ DiscreteRange: Expression = {
     <type_mark:Name> "range" <range:Range>
         => Expression::SubtypeIndication {
             resolution: None,
-            type_mark: type_mark,
+            type_mark: Box::new(Expression::Name(type_mark)),
             constraint: Some(Box::new(Constraint::Range(RangeConstraint { range }))),
         },
 }
@@ -280,7 +266,7 @@ TypeDefinition: TypeDefinition = {
     CompositeTypeDefinition => TypeDefinition::Composite(<>),
     AccessTypeDefinition => TypeDefinition::Access(<>),
     // LRM 5.5 File types
-    "file" "of" <type_mark:Name> => TypeDefinition::File(FileTypeDefinition { type_mark }),
+    "file" "of" <type_mark:Name> => TypeDefinition::File(FileTypeDefinition { type_mark: Expression::Name(type_mark) }),
     ProtectedTypeDefinition => TypeDefinition::Protected(<>),
     ProtectedTypeBody => TypeDefinition::ProtectedBody(<>),
 }
@@ -335,7 +321,7 @@ ArrayTypeDefinition: ArrayTypeDefinition = {
 }
 
 IndexSubTypeDefinition: IndexSubTypeDefinition = {
-    <type_mark:Name> "range" "<" ">" => IndexSubTypeDefinition { type_mark },
+    <type_mark:Name> "range" "<" ">" => IndexSubTypeDefinition { type_mark: Expression::Name(type_mark) },
 }
 
 // LRM 5.3.3 Record types
@@ -347,30 +333,32 @@ ElementDeclaration: ElementDeclaration = {
     <names:IdentifierList> ":" <ty:SubTypeExpr> ";" => ElementDeclaration { names, ty },
 }
 
-// LRM 6.1 Type marks
-// type_mark ::= name, but we also allow name'attribute as a pragmatic extension
-TypeMark: Name = {
-    Name,
-    <prefix:Name> TokenAttributeQuote <attr:AttributeIdentifier> => Name::Selected(Box::new(SelectedName {
-        prefix,
-        suffix: Suffix::Attribute(attr),
-    })),
-}
-
+// LRM 6.3 Subtype indications
+// Array constraints and attributes are handled by PostfixExpression (Name(args), Name'attr,
+// Name(args)'attr etc.) since they're syntactically identical to function calls and attribute names.
+// Semantic analysis distinguishes constrained subtypes from function calls.
 SubTypeExpr: Expression = {
-    // LRM 6.3 Subtype declarations - resolution indication + type_mark + constraint
-    "(" <resolution:ExprLevelPrimary> ")" <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark, constraint: Some(Box::new(constraint)) },
-        None => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark, constraint: None },
+    // LRM 6.3 resolution indication (parenthesized) + type_mark + optional constraint
+    "(" <resolution:ExprLevelPrimary> ")" <type_mark:Name> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark: Box::new(Expression::Name(type_mark)), constraint: Some(Box::new(constraint)) },
+        None => Expression::SubtypeIndication { resolution: Some(Box::new(resolution)), type_mark: Box::new(Expression::Name(type_mark)), constraint: None },
     },
-    <resolution:Name> <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark, constraint: Some(Box::new(constraint)) },
-        None => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark, constraint: None },
+    // LRM 6.3 resolution indication (name) + type_mark + optional constraint
+    <resolution:Name> <type_mark:Name> <constraint:Constraint?> => match constraint {
+        Some(constraint) => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark: Box::new(Expression::Name(type_mark)), constraint: Some(Box::new(constraint)) },
+        None => Expression::SubtypeIndication { resolution: Some(Box::new(Expression::Name(resolution))), type_mark: Box::new(Expression::Name(type_mark)), constraint: None },
     },
-    <type_mark:TypeMark> <constraint:Constraint?> => match constraint {
-        Some(constraint) => Expression::SubtypeIndication { resolution: None, type_mark, constraint: Some(Box::new(constraint)) },
-        None => Expression::Name(type_mark),
-    },
+    // LRM 5.2.1 type_mark range range_expression (explicit range constraint)
+    <name:Name> "range" <range:Range>
+        => Expression::SubtypeIndication {
+            resolution: None,
+            type_mark: Box::new(Expression::Name(name)),
+            constraint: Some(Box::new(Constraint::Range(RangeConstraint { range }))),
+        },
+    // General primary expression: handles Name, Name(args), Name'attr, Name(args)'attr, etc.
+    // via PostfixExpression. Also handles plain names.
+    PostfixExpression,
+    <name:Name> => Expression::Name(name),
 }
 
 // LRM 5.6 Protected types
@@ -610,23 +598,7 @@ ModeIndication: ModeIndication = {
     "view" <view_name:Name> <suffixes:NonDotPostfixSuffix?> <subtype:("of" <Expr>)?>
         => {
             let view_name = match suffixes {
-                Some(suffix) => {
-                    let mut expr = Expression::Name(view_name);
-                    expr = match suffix {
-                        PostfixSuffix::Call(args) => build_call(expr, args),
-                        PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                            value: Box::new(expr), attr, args: vec![],
-                        },
-                        PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                            type_mark: Box::new(expr), args,
-                        },
-                        PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                            value: Box::new(expr), signature: sig,
-                        },
-                        PostfixSuffix::Select(_) => unreachable!(),
-                    };
-                    expr
-                }
+                Some(suffix) => apply_nondot_postfix_suffix(Expression::Name(view_name), suffix),
                 None => Expression::Name(view_name),
             };
             ModeIndication::RecordView { view_name, subtype }
@@ -645,7 +617,8 @@ Mode: Mode = {
 
 InterfaceTypeIndication: InterfaceTypeIndication = {
     SubTypeExpr => InterfaceTypeIndication::Subtype(<>),
-    // TODO unspecified
+    // LRM 5.3.3 unspecified_type_indication ::= type is incomplete_type_definition
+    "type" "is" <IncompleteTypeDefinition> => InterfaceTypeIndication::Unspecified(<>),
 }
 
 // LRM 6.5.6 Interface lists
@@ -993,6 +966,7 @@ UnaryExpression: Expression = {
 ExprLevelPrimary: Expression = {
     <PostfixExpression>,
     <OperatorSymbolCall>,
+    <CharLiteralPostfix>,
     <value:AbstractLiteral> <unit:Identifier> => Expression::PhysicalLiteral { value, unit },
     "(" <elements:SeparatedNonEmptyNoTrail<AssociationElementExpr, ",">> ")" => {
         if elements.len() == 1 {
@@ -1012,26 +986,7 @@ ExprLevelPrimary: Expression = {
     "<<" <class:ExternalNameClass> <path:ExternalPathname> ":" <ty:Box<SubTypeExpr>> ">>" <suffixes:PostfixSuffix*> => {
         let mut expr = Expression::ExternalName { class, path, ty };
         for suffix in suffixes {
-            expr = match suffix {
-                PostfixSuffix::Call(args) => build_call(expr, args),
-                PostfixSuffix::Select(suffix) => Expression::Select {
-                    value: Box::new(expr),
-                    suffix,
-                },
-                PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                    value: Box::new(expr),
-                    attr,
-                    args: vec![],
-                },
-                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                    type_mark: Box::new(expr),
-                    args,
-                },
-                PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                    value: Box::new(expr),
-                    signature: sig,
-                },
-            };
+            expr = apply_postfix_suffix(expr, suffix);
         }
         expr
     },
@@ -1075,42 +1030,10 @@ ExternalPathElement: ExternalPathElement = {
 }
 
 OperatorSymbolCall: Expression = {
-    <_op:TokenStringLiteral> <suffixes:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
-        let mut expr = Expression::StringLiteral;
-        expr = match suffixes {
-            PostfixSuffix::Call(args) => build_call(expr, args),
-            PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                value: Box::new(expr), attr, args: vec![],
-            },
-            PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                type_mark: Box::new(expr), args,
-            },
-            PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                value: Box::new(expr), signature: sig,
-            },
-            PostfixSuffix::Select(_) => unreachable!(),
-        };
+    <_op:TokenStringLiteral> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
+        let mut expr = apply_nondot_postfix_suffix(Expression::StringLiteral, first);
         for suffix in tail {
-            expr = match suffix {
-                PostfixSuffix::Call(args) => build_call(expr, args),
-                PostfixSuffix::Select(suffix) => Expression::Select {
-                    value: Box::new(expr),
-                    suffix,
-                },
-                PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                    value: Box::new(expr),
-                    attr,
-                    args: vec![],
-                },
-                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                    type_mark: Box::new(expr),
-                    args,
-                },
-                PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                    value: Box::new(expr),
-                    signature: sig,
-                },
-            };
+            expr = apply_postfix_suffix(expr, suffix);
         }
         expr
     },
@@ -1121,26 +1044,18 @@ OperatorSymbolCall: Expression = {
             suffix,
         };
         for suffix in tail {
-            expr = match suffix {
-                PostfixSuffix::Call(args) => build_call(expr, args),
-                PostfixSuffix::Select(suffix) => Expression::Select {
-                    value: Box::new(expr),
-                    suffix,
-                },
-                PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                    value: Box::new(expr),
-                    attr,
-                    args: vec![],
-                },
-                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                    type_mark: Box::new(expr),
-                    args,
-                },
-                PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                    value: Box::new(expr),
-                    signature: sig,
-                },
-            };
+            expr = apply_postfix_suffix(expr, suffix);
+        }
+        expr
+    },
+}
+
+// LRM 8.6 character_literal with signature/attribute suffix (e.g. '1' [return T]'attr)
+CharLiteralPostfix: Expression = {
+    <_c:TokenCharacterLiteral> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
+        let mut expr = apply_nondot_postfix_suffix(Expression::CharLiteral, first);
+        for suffix in tail {
+            expr = apply_postfix_suffix(expr, suffix);
         }
         expr
     },
@@ -1162,7 +1077,7 @@ CallArgExpr: Expression = {
     <type_mark:Name> "range" <range:Range>
         => Expression::SubtypeIndication {
             resolution: None,
-            type_mark: type_mark,
+            type_mark: Box::new(Expression::Name(type_mark)),
             constraint: Some(Box::new(Constraint::Range(RangeConstraint { range }))),
         },
     Expr,
@@ -1208,51 +1123,17 @@ AssociationFormalSingleChoice: Expression = {
 
 AttributeIdentifier: Identifier = {
     Identifier,
+    // LRM 16.2.6 predefined attributes that are reserved words
     Span<"range"> => Identifier { span: <> },
     Span<"subtype"> => Identifier { span: <> },
+    Span<"record"> => Identifier { span: <> },
 }
 
 PostfixExpression: Expression = {
     <base:Name> <first:NonDotPostfixSuffix> <tail:PostfixSuffix*> => {
-        let mut expr = Expression::Name(base);
-        expr = match first {
-            PostfixSuffix::Call(args) => build_call(expr, args),
-            PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                value: Box::new(expr),
-                attr,
-                args: vec![],
-            },
-            PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                type_mark: Box::new(expr),
-                args,
-            },
-            PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                value: Box::new(expr),
-                signature: sig,
-            },
-            PostfixSuffix::Select(_) => unreachable!(),
-        };
+        let mut expr = apply_nondot_postfix_suffix(Expression::Name(base), first);
         for suffix in tail {
-            expr = match suffix {
-                PostfixSuffix::Call(args) => build_call(expr, args),
-                PostfixSuffix::Select(suffix) => Expression::Select {
-                    value: Box::new(expr),
-                    suffix,
-                },
-                PostfixSuffix::Attribute(attr) => Expression::Attribute {
-                    value: Box::new(expr),
-                    attr,
-                    args: vec![],
-                },
-                PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression {
-                    type_mark: Box::new(expr),
-                    args,
-                },
-                PostfixSuffix::Signature(sig) => Expression::WithSignature {
-                    value: Box::new(expr),
-                    signature: sig,
-                },
-            };
+            expr = apply_postfix_suffix(expr, suffix);
         }
         expr
     },
@@ -1265,6 +1146,8 @@ NonDotPostfixSuffix: PostfixSuffix = {
     TokenAttributeQuote <attr:AttributeIdentifier> => PostfixSuffix::Attribute(attr),
     TokenAttributeQuote <args:CallArgs> => PostfixSuffix::QualifiedExpression(args),
     <sig:Signature> => PostfixSuffix::Signature(sig),
+    // LRM 9.3.4 generic_map_aspect in function/procedure calls
+    "generic" "map" <args:CallArgs> => PostfixSuffix::GenericMap(args),
 }
 
 // Tail suffixes: includes "." for chained field access after calls/attributes
@@ -1277,6 +1160,8 @@ PostfixSuffix: PostfixSuffix = {
     TokenAttributeQuote <args:CallArgs> => PostfixSuffix::QualifiedExpression(args),
     // LRM 4.7 Signature
     <sig:Signature> => PostfixSuffix::Signature(sig),
+    // LRM 9.3.4 generic_map_aspect in function/procedure calls
+    "generic" "map" <args:CallArgs> => PostfixSuffix::GenericMap(args),
 }
 
 LogicalOperator: LogicalOperator = {
@@ -1458,8 +1343,23 @@ VariableAssignmentStatement: VariableAssignmentStatement = {
 
 // LRM 10.6 Procedure call statements
 ProcedureCallStatement: ProcedureCallStatement = {
-    <label:MaybeLabel> <call:Name> <args:CallArgs?> ";"
-        => ProcedureCallStatement { label, call: build_name_call(call, args) }
+    <label:MaybeLabel> <call:Name> ";"
+        => ProcedureCallStatement { label, call: Expression::Name(call) },
+    <label:MaybeLabel> <call:Name> <args:CallArgs> ";"
+        => ProcedureCallStatement { label, call: build_call(Expression::Name(call), args) },
+    // LRM 9.3.4 procedure call with generic_map_aspect
+    <label:MaybeLabel> <call:Name> "generic" "map" <gen_args:CallArgs> <args:CallArgs?> ";"
+        => {
+            let callee = Expression::GenericMapCall {
+                callee: Box::new(Expression::Name(call)),
+                generic_args: gen_args,
+            };
+            let call = match args {
+                Some(args) => build_call(callee, args),
+                None => callee,
+            };
+            ProcedureCallStatement { label, call }
+        },
 }
 
 // LRM 10.7 If statements
@@ -1949,6 +1849,7 @@ extern {
     enum TokenType {
         TokenSingleLineComment => TokenType::SingleLineComment,
         TokenDelimitedComment => TokenType::DelimitedComment,
+        TokenToolDirective => TokenType::ToolDirective,
         TokenIdentifier => TokenType::Identifier,
         TokenDecimalLiteral => TokenType::DecimalLiteral,
         TokenBasedLiteral => TokenType::BasedLiteral,

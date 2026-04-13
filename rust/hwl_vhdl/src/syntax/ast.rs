@@ -610,7 +610,7 @@ pub struct SubTypeDeclaration {
 
 pub type SubTypeIndication = Expression;
 
-pub type TypeMark = Name;
+pub type TypeMark = Expression;
 
 #[derive(Debug)]
 pub enum Constraint {
@@ -777,10 +777,12 @@ pub struct InterfaceVariableDeclaration {
     pub mode_indication: ModeIndication,
 }
 
+// LRM 6.5.2 interface_type_indication
 #[derive(Debug)]
 pub enum InterfaceTypeIndication {
     Subtype(SubTypeIndication),
-    Unspecified,
+    // LRM 5.3.3 unspecified_type_indication ::= type is incomplete_type_definition
+    Unspecified(IncompleteTypeDefinition),
 }
 
 #[derive(Debug)]
@@ -992,7 +994,7 @@ pub enum Expression {
     // LRM 6.3 Subtype declarations
     SubtypeIndication {
         resolution: Option<Box<Expression>>,
-        type_mark: TypeMark,
+        type_mark: Box<TypeMark>,
         constraint: Option<Box<Constraint>>,
     },
 
@@ -1071,6 +1073,11 @@ pub enum Expression {
         value: Box<Expression>,
         signature: Signature,
     },
+    // LRM 9.3.4 function/procedure call with generic_map_aspect
+    GenericMapCall {
+        callee: Box<Expression>,
+        generic_args: Vec<Expression>,
+    },
 }
 
 // Helper for parsing chained postfix: name(args)'attr[sig] etc.
@@ -1081,6 +1088,8 @@ pub enum PostfixSuffix {
     Attribute(Identifier),
     QualifiedExpression(Vec<Expression>),
     Signature(Signature),
+    // LRM 9.3.4 generic_map_aspect in function/procedure calls
+    GenericMap(Vec<Expression>),
 }
 
 #[derive(Debug)]
@@ -1172,6 +1181,24 @@ pub fn build_name_call(name: Name, args: Option<Vec<Expression>>) -> Expression 
     }
 }
 
+pub fn apply_postfix_suffix(expr: Expression, suffix: PostfixSuffix) -> Expression {
+    match suffix {
+        PostfixSuffix::Call(args) => build_call(expr, args),
+        PostfixSuffix::Select(suffix) => Expression::Select { value: Box::new(expr), suffix },
+        PostfixSuffix::Attribute(attr) => Expression::Attribute { value: Box::new(expr), attr, args: vec![] },
+        PostfixSuffix::QualifiedExpression(args) => Expression::QualifiedExpression { type_mark: Box::new(expr), args },
+        PostfixSuffix::Signature(sig) => Expression::WithSignature { value: Box::new(expr), signature: sig },
+        PostfixSuffix::GenericMap(args) => Expression::GenericMapCall { callee: Box::new(expr), generic_args: args },
+    }
+}
+
+pub fn apply_nondot_postfix_suffix(expr: Expression, suffix: PostfixSuffix) -> Expression {
+    match suffix {
+        PostfixSuffix::Select(_) => unreachable!(),
+        _ => apply_postfix_suffix(expr, suffix),
+    }
+}
+
 pub fn build_subtype_indication(
     resolution: Option<Expression>,
     type_mark: TypeMark,
@@ -1179,7 +1206,7 @@ pub fn build_subtype_indication(
 ) -> Expression {
     Expression::SubtypeIndication {
         resolution: resolution.map(Box::new),
-        type_mark,
+        type_mark: Box::new(type_mark),
         constraint: constraint.map(Box::new),
     }
 }

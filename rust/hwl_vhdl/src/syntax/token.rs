@@ -90,7 +90,7 @@ define_patterns!();
 #[derive(Debug, Copy, Clone)]
 enum NextInnerResult {
     Ty(TokenType),
-    Whitespace,
+    Skip,
     Eof,
 }
 
@@ -200,7 +200,7 @@ impl<'s> Tokenizer<'s> {
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
-                return Ok(NextInnerResult::Whitespace);
+                return Ok(NextInnerResult::Skip);
             }
 
             // LRM 15.5 Abstract literals
@@ -349,11 +349,17 @@ impl<'s> Tokenizer<'s> {
             // LRM 8.6 Attribute names
             ['\'', c1, c2] => {
                 // break the ambiguity by following https://www.eda-twiki.org/isac/IRs-VHDL-93/IR1045.txt
-                if matches!(
+                let prev_token_allow_attr = matches!(
                     self.prev_token,
-                    Some(TokenType::CloseS | TokenType::CloseR | TokenType::ResAll | TokenType::Identifier | TokenType::CharacterLiteral)
-                ) || c2 != '\''
-                {
+                    Some(
+                        TokenType::CloseS
+                            | TokenType::CloseR
+                            | TokenType::ResAll
+                            | TokenType::Identifier
+                            | TokenType::CharacterLiteral
+                    )
+                );
+                if prev_token_allow_attr || c2 != '\'' {
                     // must be attribute
                     self.skip(1);
                     TokenType::AttributeQuote
@@ -457,6 +463,14 @@ impl<'s> Tokenizer<'s> {
                 }
 
                 TokenType::DelimitedComment
+            }
+
+            // LRM 15.11 Tool directives
+            // tool_directive ::= ` identifier { graphic_character }
+            // Skip the entire line (like a comment) — we don't process directives
+            ['`', _, _] => {
+                self.skip_while(|c| !matches!(c, pattern_end_of_line!()));
+                TokenType::ToolDirective
             }
 
             // trigrams
@@ -606,7 +620,7 @@ impl<'s> Tokenizer<'s> {
                     self.prev_token = Some(ty);
                     break (start_byte, ty);
                 }
-                NextInnerResult::Whitespace => continue,
+                NextInnerResult::Skip => continue,
                 NextInnerResult::Eof => return Ok(None),
             };
         };
@@ -717,6 +731,7 @@ macro_rules! declare_tokens {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, strum::Display)]
 pub enum TokenCategory {
     Comment,
+    ToolDirective,
     Identifier,
     IntegerLiteral,
     StringLiteral,
@@ -740,6 +755,7 @@ declare_tokens! {
     custom {
         SingleLineComment(TC::Comment),
         DelimitedComment(TC::Comment),
+        ToolDirective(TC::ToolDirective),
 
         Identifier(TC::Identifier),
         DecimalLiteral(TC::IntegerLiteral),
@@ -909,6 +925,15 @@ declare_tokens! {
         Star("*", TC::Symbol),
         Slash("/", TC::Symbol),
         StarStar("**", TC::Symbol),
+    }
+}
+
+impl TokenType {
+    pub fn skip_in_parser(self) -> bool {
+        matches!(
+            self,
+            TokenType::SingleLineComment | TokenType::DelimitedComment | TokenType::ToolDirective
+        )
     }
 }
 

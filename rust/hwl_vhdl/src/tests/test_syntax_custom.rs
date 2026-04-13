@@ -1025,3 +1025,130 @@ fn procedure_call_with_args() {
         ",
     )
 }
+
+// LRM 5.3.3 Unspecified type indication in interface declarations
+#[test]
+fn unspecified_type_indication() {
+    test_parse(
+        "
+        entity e is
+            port ( p : type is private );
+        end entity;
+        ",
+    )
+}
+
+#[test]
+fn unspecified_type_indication_variants() {
+    test_parse(
+        "
+        entity e is
+            generic (
+                type t is private;
+                type u;
+                type v is (<>);
+                type w is range <>;
+                type x is range <>.<>;
+                type y is access type is private
+            );
+        end entity;
+        ",
+    )
+}
+
+// LRM 9.3.4 Function/procedure call with generic_map_aspect
+#[test]
+fn generic_map_function_call() {
+    test_parse(
+        "
+        architecture a of e is
+            signal x : integer_vector(1 to 8);
+            signal y : x'subtype;
+        begin
+            process
+                variable v : integer_vector := reverse generic map(x'subtype)(x);
+            begin
+                display generic map (x'subtype)(x);
+            end process;
+        end;
+        ",
+    )
+}
+
+// LRM 8.6 Character literal with signature and attribute
+#[test]
+fn char_literal_with_signature_attribute() {
+    test_parse(
+        "
+        architecture a of e is
+        begin
+            process
+            begin
+                report '1' [return my_enum]'test;
+            end process;
+        end;
+        ",
+    )
+}
+
+// LRM 15.11 Tool directives (backtick lines)
+#[test]
+fn tool_directive() {
+    test_parse(
+        "
+        `protect begin
+        entity e is
+        end entity;
+        `protect end
+        ",
+    )
+}
+
+// LRM 8.6 Chained attributes
+#[test]
+fn chained_attributes() {
+    test_parse(
+        "
+        architecture a of e is
+            type ranges_t is array(natural range <>) of integer'range'record;
+            signal s : integer;
+        begin
+            process
+            begin
+                assert s'range'value = (1, 2, ascending);
+                report x'element'element'image;
+            end process;
+        end;
+        ",
+    )
+}
+
+// LRM 8.6 Attribute after indexed name
+#[test]
+fn attribute_after_indexed_name() {
+    test_parse(
+        "
+        architecture a of e is
+        begin
+            process
+            begin
+                report x(0)'subtype'image;
+                report x'range(1)'value;
+            end process;
+        end;
+        ",
+    )
+}
+
+// LRM 16.2.6 Record attribute
+#[test]
+fn record_attribute() {
+    test_parse(
+        "
+        architecture a of e is
+            type ranges_t is array(natural range <>) of integer'range'record;
+        begin
+        end;
+        ",
+    )
+}

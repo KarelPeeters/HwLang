@@ -24,6 +24,24 @@ RUST_TESTS = ROOT / "rust" / "hwl_vhdl" / "src" / "tests"
 # Relative path prefix from the Rust crate root to the repo root
 REL_PREFIX = "../../external"
 
+# Directories/files to exclude (non-VHDL-2019 or broken test code)
+# bug030: uses VHDL-87 reserved words as identifiers (context, protected, xnor)
+# ashenden ch_18_fg_18_09: incomplete textbook excerpt with elided procedure bodies
+# billowitch tc2862: uses % as string delimiter (VHDL-87 only, removed in VHDL-93)
+GHDL_EXCLUDE_DIRS = {"bug030"}
+GHDL_EXCLUDE_FILES = {
+    "ch_18_fg_18_09.vhd",  # ashenden: incomplete textbook excerpt
+    "tc2853.vhd",          # billowitch: ! as | replacement (VHDL-87)
+    "tc2860.vhd",          # billowitch: % as " replacement (VHDL-87)
+    "tc2862.vhd",          # billowitch: % as " replacement (VHDL-87)
+}
+
+# NVC files to exclude (non-VHDL-2019 compliant syntax)
+# range4.vhd: chains relational operators (a > b = false) which is not valid per LRM §9.2
+NVC_EXCLUDE_FILES = {
+    "range4.vhd",
+}
+
 
 def find_nvc_error_files_from_c(c_file, dirname):
     """Parse a NVC test_*.c file to find files that have expected errors."""
@@ -144,6 +162,10 @@ def collect_nvc_files():
 
             # Skip files with expected errors
             if relname in error_files:
+                continue
+
+            # Skip files explicitly excluded (non-VHDL-2019 compliant)
+            if relname in NVC_EXCLUDE_FILES:
                 continue
 
             # Skip PSL files (by name or content)
@@ -396,6 +418,7 @@ def collect_ghdl_files():
             vhd_files = [
                 f for f in vhd_files
                 if is_valid_vhdl_file(f) and not is_vhdl_ams_file(f)
+                   and f.name not in GHDL_EXCLUDE_FILES
             ]
             if vhd_files:
                 groups[str(rel)] = vhd_files
@@ -422,6 +445,9 @@ def _collect_ghdl_testdir(parent_dir, group_prefix, groups):
     """Collect valid VHDL files from a GHDL test directory by parsing testsuite.sh."""
     for subdir in sorted(parent_dir.iterdir()):
         if not subdir.is_dir():
+            continue
+
+        if subdir.name in GHDL_EXCLUDE_DIRS:
             continue
 
         sh_path = subdir / "testsuite.sh"
@@ -456,6 +482,8 @@ def _collect_ghdl_testdir(parent_dir, group_prefix, groups):
 
             valid_files = []
             for name in sorted(selected):
+                if name in GHDL_EXCLUDE_FILES:
+                    continue
                 fpath = subdir / name
                 if not fpath.exists():
                     continue

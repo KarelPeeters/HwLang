@@ -5,7 +5,7 @@ use hwl_common::util::iter::IterExt;
 use itertools::enumerate;
 
 use crate::syntax::ast::DesignFile;
-use crate::syntax::token::{TokenCategory, TokenError, TokenType, Tokenizer};
+use crate::syntax::token::{TokenError, TokenType, Tokenizer};
 use grammar_wrapper::grammar;
 
 #[allow(clippy::all)]
@@ -82,7 +82,7 @@ pub fn parse_file_content_with_recovery(file: FileId, src: &str) -> Result<FileC
     let tokenizer = Tokenizer::new(file, src, false)
         .into_iter()
         .filter(|token| match token {
-            Ok(token) => !matches!(token.ty.category(), TokenCategory::Comment),
+            Ok(token) => !token.ty.skip_in_parser(),
             Err(_) => true,
         })
         .map(|token| token.map(|token| (token.span.start_byte, token.ty, token.span.end_byte)));
