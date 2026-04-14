@@ -1202,3 +1202,42 @@ fn aggregate_target() {
         ",
     )
 }
+
+#[test]
+fn entity_statement_process() {
+    test_parse(
+        "
+        entity e is
+        begin
+            process is
+            begin
+                null;
+            end process;
+        end entity e;
+        ",
+    )
+}
+
+#[test]
+fn entity_statement_assertion() {
+    test_parse(
+        "
+        entity e is
+        begin
+            assert false report \"fail\" severity error;
+        end entity e;
+        ",
+    )
+}
+
+#[test]
+fn entity_statement_procedure_call() {
+    test_parse(
+        "
+        entity e is
+        begin
+            my_proc(a, b);
+        end entity e;
+        ",
+    )
+}

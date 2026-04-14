@@ -37,10 +37,13 @@ pub enum EntityDeclarativeItem {
     GroupDeclaration(GroupDeclaration),
 }
 
-// LRM 3.2.4 Entity statement part
+// LRM 3.2.4 entity_statement
+// Only assertion, passive procedure call, and passive process are allowed in entities.
 #[derive(Debug)]
 pub enum EntityStatement {
-    Concurrent(ConcurrentStatement),
+    Process(ProcessStatement),
+    ProcedureCall(ConcurrentProcedureCallStatement),
+    Assertion(ConcurrentAssertionStatement),
 }
 
 // LRM 3.3 Architecture bodies
@@ -153,8 +156,8 @@ pub struct FunctionSpecification {
 
 #[derive(Debug)]
 pub struct SubprogramHeader {
-    pub generic: Option<GenericClause>,
-    pub generic_map: Option<Vec<Expression>>,
+    pub generic: GenericList,
+    pub generic_map: Vec<Expression>,
 }
 
 #[derive(Debug)]
@@ -852,8 +855,9 @@ pub enum ArrayIncompleteIndex {
 // We keep generics and port separated instead.
 #[derive(Debug)]
 pub struct GenericClause {
-    pub list: NonEmptyVec<GenericInterfaceDeclaration>,
+    pub list: GenericList,
 }
+pub type GenericList = NonEmptyVec<GenericInterfaceDeclaration>;
 
 #[derive(Debug)]
 pub enum GenericInterfaceDeclaration {
