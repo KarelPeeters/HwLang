@@ -27,8 +27,11 @@ pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Resu
         .try_collect()
 }
 
-// TODO remove string here? only deal with offset, simplifying the lifetime
 pub struct Tokenizer<'s> {
+    // fixed settings
+    file: FileId,
+    emit_incomplete_token: bool,
+
     // happy path state
     curr_byte: usize,
     left: std::str::Chars<'s>,
@@ -38,11 +41,6 @@ pub struct Tokenizer<'s> {
     // error path state
     incomplete_err: Option<TokenError>,
     errored: bool,
-
-    // fixed settings
-    file: FileId,
-    emit_incomplete_token: bool,
-    fixed_tokens_grouped_by_length: &'static [Vec<FixedTokenInfo>],
 }
 
 /// https://peps.python.org/pep-0701/
@@ -88,7 +86,6 @@ impl<'s> Tokenizer<'s> {
             emit_incomplete_token,
             incomplete_err: None,
             errored: false,
-            fixed_tokens_grouped_by_length: &FIXED_TOKENS_GROUPED_BY_LENGTH,
         }
     }
 
@@ -220,13 +217,14 @@ impl<'s> Tokenizer<'s> {
         };
 
         let ty = match peek {
-            // custom
+            // whitespace
             [pattern_whitespace!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_whitespace!()));
                 return Ok(NextInnerResult::Whitespace);
             }
 
+            // string
             ['"', _, _] => {
                 let start = self.curr_pos();
                 self.skip(1);
@@ -247,21 +245,19 @@ impl<'s> Tokenizer<'s> {
                 TokenType::StringStart
             }
 
+            // identifier
             [pattern_id_start!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_id_continue!()));
                 let id = &start_left_str[..self.curr_byte - start.byte];
 
-                // TODO speed up with runtime? literal tree
-                match self.fixed_tokens_grouped_by_length.get(id.len()) {
+                match TokenType::FIXED_TOKENS.iter().find(|info| info.literal == id) {
                     None => TokenType::Identifier,
-                    Some(potential) => potential
-                        .iter()
-                        .find_map(|info| if info.literal == id { Some(info.ty) } else { None })
-                        .unwrap_or(TokenType::Identifier),
+                    Some(info) => info.ty,
                 }
             }
 
+            // int literal
             [pattern_int_start!(), _, _] => {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_int_continue!()));
@@ -303,6 +299,12 @@ impl<'s> Tokenizer<'s> {
                 }
             }
 
+            // comments
+            ['/', '/', _] => {
+                self.skip(2);
+                self.skip_while(|c| c != '\n' && c != '\r');
+                TokenType::LineComment
+            }
             ['/', '*', _] => {
                 // block comments are allowed to nest
                 self.skip(2);
@@ -334,11 +336,6 @@ impl<'s> Tokenizer<'s> {
 
                 // end of comment, depth is 0 again
                 TokenType::BlockComment
-            }
-            ['/', '/', _] => {
-                self.skip(2);
-                self.skip_while(|c| c != '\n' && c != '\r');
-                TokenType::LineComment
             }
 
             // trigram
@@ -770,6 +767,14 @@ mod test {
     #[test]
     fn comment() {
         let file = FileId::dummy();
+
+        assert_eq!(
+            Ok(vec![Token {
+                ty: TokenType::LineComment,
+                span: Span::new(file, 0, 7)
+            }]),
+            tokenize(file, "// test", false)
+        );
 
         assert_eq!(
             Ok(vec![Token {
