@@ -10,6 +10,7 @@ grammar(ctx: &mut ParseContext);
 // LRM 3.2 Entity declarations
 EntityDeclaration: EntityDeclaration = {
     "entity"  <name:Identifier> "is"
+        // TODO mismatch: the ";" should be part of GenericClause, subprogram header should use its own generic thing
         <generic:(<GenericClause> ";")?>
         <port:PortClause?>
         <decl:EntityDeclarativeItem*>
@@ -41,6 +42,8 @@ EntityDeclarativeItem: EntityDeclarativeItem = {
     GroupTemplateDeclaration => EntityDeclarativeItem::GroupTemplateDeclaration(<>),
     GroupDeclaration => EntityDeclarativeItem::GroupDeclaration(<>),
 }
+
+// TODO why does this not match the LRM? Either fix or argue why it has to be different.
 EntityStatement: EntityStatement = {
     ConcurrentStatement => EntityStatement::Concurrent(<>),
 }
@@ -80,7 +83,56 @@ BlockDeclarativeItem: BlockDeclarativeItem = {
     GroupDeclaration => BlockDeclarativeItem::GroupDeclaration(<>),
 }
 
+// LRM 3.4 Configuration declarations
+// TODO missing verification_unit_binding_indication?
+ConfigurationDeclaration: ConfigurationDeclaration = {
+    "configuration" <name:Identifier> "of" <entity_name:NameExpr> "is"
+        <decl:ConfigurationDeclarativeItem*>
+        <block_config:BlockConfiguration>
+    "end" "configuration"? <end_name:Identifier?> ";"
+        => ConfigurationDeclaration { name, entity_name, decl, block_config, end_name }
+}
+ConfigurationDeclarativeItem: ConfigurationDeclarativeItem = {
+    UseClause => ConfigurationDeclarativeItem::UseClause(<>),
+    AttributeSpecification => ConfigurationDeclarativeItem::AttributeSpecification(<>),
+    GroupDeclaration => ConfigurationDeclarativeItem::GroupDeclaration(<>),
+}
+
+// LRM 3.4.2 Block configuration
+BlockConfiguration: BlockConfiguration = {
+    "for" <block_spec:Expr> <use_clauses:UseClause*> <items:ConfigurationItem*> "end" "for" ";"
+        => BlockConfiguration { block_spec, use_clauses, items }
+}
+ConfigurationItem: ConfigurationItem = {
+    // Block configuration: for block_spec {use_clause} {config_item} end for ;
+    BlockConfiguration => ConfigurationItem::Block(<>),
+    // Component configuration: for instantiation_list : component_name [binding ;] [block_config] end for ;
+    ComponentConfiguration => ConfigurationItem::Component(<>),
+}
+
+// LRM 3.4.3 Component configuration
+// TODO get rid of BindingIndicationSemicolon, just put that inline
+ComponentConfiguration: ComponentConfiguration = {
+    "for" <spec:ComponentSpecification> <binding:BindingIndicationSemicolon?> <block_config:BlockConfiguration?> "end" "for" ";"
+        => ComponentConfiguration { spec, binding, block_config }
+}
+BindingIndicationSemicolon: BindingIndication = {
+    <BindingIndication> ";" => <>
+}
+
 // LRM 4 Subprograms and packages
+// LRM 4.2 Subprogram declarations
+SubprogramDeclaration: SubprogramDeclaration = {
+    <spec:ProcedureSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Procedure(spec) },
+    <spec:FunctionSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Function(spec) },
+}
+
+// LRM 4.3 Subprogram bodies
+SubprogramBody: SubprogramBody = {
+    ProcedureBody => SubprogramBody::Procedure(<>),
+    FunctionBody => SubprogramBody::Function(<>),
+}
+
 // LRM 4.7 Package declarations
 PackageDeclaration: PackageDeclaration = {
     "package" <name:Identifier> "is"
@@ -146,18 +198,6 @@ PackageInstantiationDeclaration: PackageInstantiationDeclaration = {
         => PackageInstantiationDeclaration { name, uninstantiated, generic_map },
 }
 
-// LRM 4.2 Subprogram declarations
-SubprogramDeclaration: SubprogramDeclaration = {
-    <spec:ProcedureSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Procedure(spec) },
-    <spec:FunctionSpecification> ";" => SubprogramDeclaration { spec: SubprogramSpecification::Function(spec) },
-}
-
-// LRM 4.3 Subprogram bodies
-SubprogramBody: SubprogramBody = {
-    ProcedureBody => SubprogramBody::Procedure(<>),
-    FunctionBody => SubprogramBody::Function(<>),
-}
-
 // LRM 6.5.2 Mode view declarations
 ModeViewDeclaration: ModeViewDeclaration = {
     "view" <name:Identifier> "of" <subtype:SubTypeExpr> "is"
@@ -184,7 +224,6 @@ ElementModeIndication: ElementModeIndication = {
 
 // LRM 5 Types
 // LRM 5.2 Scalar types
-
 ScalarTypeDefinition: ScalarTypeDefinition = {
     EnumTypeDefinition => ScalarTypeDefinition::Enum(<>),
     NumericTypeDefinition => ScalarTypeDefinition::Numeric(<>),
@@ -831,6 +870,7 @@ Suffix: Suffix = {
     "all" => Suffix::All,
 }
 
+// TODO why? can we not use the full expression rules for names?
 // Name promoted to Expression, with optional postfix attribute.
 // Narrower than ExprLevelPrimary to avoid LALRPOP state explosion.
 #[inline]
@@ -1743,41 +1783,6 @@ LibraryUnit: LibraryUnit = {
     ContextDeclaration => LibraryUnit::ContextDeclaration(<>),
     ArchitectureBody => LibraryUnit::ArchitectureBody(<>),
     PackageBody => LibraryUnit::PackageBody(<>),
-}
-
-// LRM 3.4 Configuration declarations
-ConfigurationDeclaration: ConfigurationDeclaration = {
-    "configuration" <name:Identifier> "of" <entity_name:NameExpr> "is"
-        <decl:ConfigurationDeclarativeItem*>
-        <block_config:BlockConfiguration>
-    "end" "configuration"? <end_name:Identifier?> ";"
-        => ConfigurationDeclaration { name, entity_name, decl, block_config, end_name }
-}
-ConfigurationDeclarativeItem: ConfigurationDeclarativeItem = {
-    UseClause => ConfigurationDeclarativeItem::UseClause(<>),
-    AttributeSpecification => ConfigurationDeclarativeItem::AttributeSpecification(<>),
-    GroupDeclaration => ConfigurationDeclarativeItem::GroupDeclaration(<>),
-}
-
-// LRM 3.4.2 Block configuration
-BlockConfiguration: BlockConfiguration = {
-    "for" <block_spec:Expr> <use_clauses:UseClause*> <items:ConfigurationItem*> "end" "for" ";"
-        => BlockConfiguration { block_spec, use_clauses, items }
-}
-ConfigurationItem: ConfigurationItem = {
-    // Block configuration: for block_spec {use_clause} {config_item} end for ;
-    BlockConfiguration => ConfigurationItem::Block(<>),
-    // Component configuration: for instantiation_list : component_name [binding ;] [block_config] end for ;
-    ComponentConfiguration => ConfigurationItem::Component(<>),
-}
-
-// LRM 3.4.3 Component configuration
-ComponentConfiguration: ComponentConfiguration = {
-    "for" <spec:ComponentSpecification> <binding:BindingIndicationSemicolon?> <block_config:BlockConfiguration?> "end" "for" ";"
-        => ComponentConfiguration { spec, binding, block_config }
-}
-BindingIndicationSemicolon: BindingIndication = {
-    <BindingIndication> ";" => <>
 }
 
 // LRM 13.2 Design libraries
