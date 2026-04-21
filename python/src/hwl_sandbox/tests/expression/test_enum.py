@@ -136,3 +136,19 @@ def test_enum_mixed_payload():
     """
     with pytest.raises(hwl.DiagnosticException, match="payload must be consistent"):
         _ = compile_custom(src).resolve("top.Foo")
+
+
+def test_enum_empty():
+    src = """  
+    enum Empty {}
+    enum NonEmpty { A, B, C }
+    module top_empty ports(x: in async Empty) {}    
+    module top_non_empty ports(x: in async NonEmpty) {}    
+    """
+    with pytest.raises(hwl.DiagnosticException, match="port type must be representable in hardware"):
+        _ = compile_custom(src).resolve("top.top_empty")
+    _ = compile_custom(src).resolve("top.top_non_empty")
+
+# TODO test that we can actually get enum instances back from
+#   * compile-time functions
+#   * module port outputs/inputs

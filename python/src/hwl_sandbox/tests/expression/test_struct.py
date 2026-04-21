@@ -48,3 +48,7 @@ def test_struct_generic_basics(tmp_dir: Path):
     e.eval_assert([0, False], (False, 0))
     e.eval_assert([5, False], (False, 5))
     e.eval_assert([0, True], (True, 0))
+
+# TODO test that we can actually get struct instances back from
+#   * compile-time functions
+#   * module port outputs/inputs

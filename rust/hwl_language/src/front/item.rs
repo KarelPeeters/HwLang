@@ -11,7 +11,7 @@ use crate::front::scope::{CaptureFailed, DeclaredValueSingle, ScopeKey, ScopedEn
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
-use crate::mid::ir::IrType;
+use crate::mid::ir::{IrEnumType, IrStructType, IrType};
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumBodyItem,
     EnumDeclaration, EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface,
@@ -28,7 +28,7 @@ use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{zip_eq, Itertools};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -242,15 +242,21 @@ pub struct ElaboratedStructInfo {
     pub span_body: Span,
 
     pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
-    pub fields_hw: Result<Vec<HardwareType>, NonHardwareStruct>,
+    pub hw: Result<HardwareStructInfo, NonHardwareStruct>,
 
     pub members_static: IndexMap<String, DiagResult<CompileValue>>,
     pub methods_self: IndexMap<String, Arc<MethodInfo>>,
 }
 
+#[derive(Debug)]
+pub struct HardwareStructInfo {
+    pub ty_ir: IrStructType,
+    pub fields: Vec<HardwareType>,
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct NonHardwareStruct {
-    pub first_failing_field: usize,
+    pub first_non_hardware_field: usize,
 }
 
 /// Information that can be collected about an enum declaration before filling in generic parameters.
@@ -290,11 +296,12 @@ pub struct ElaboratedEnumVariantInfo {
 #[derive(Debug, Clone)]
 pub enum NonHardwareEnum {
     NoVariants,
-    NonHardwareField(usize),
+    FirstNonHardwareVariant(usize),
 }
 
 #[derive(Debug)]
 pub struct HardwareEnumInfo {
+    pub ty_ir: IrEnumType,
     pub tag_range: ClosedNonEmptyRange<BigInt>,
     pub payload_types: Vec<Option<(HardwareType, IrType)>>,
     // TODO remove once this (or something similar enough) is cached in HardwareType
@@ -309,8 +316,8 @@ impl GenericEnumInfo {
                 variant.span,
                 "attempt to access variant here",
             )
-            .add_info(self.span_body, "enum variants declared here")
-            .report(diags)
+                .add_info(self.span_body, "enum variants declared here")
+                .report(diags)
         })
     }
 }
@@ -323,8 +330,8 @@ impl ElaboratedEnumInfo {
                 variant.span,
                 "attempt to access variant here",
             )
-            .add_info(self.span_body, "enum variants declared here")
-            .report(diags)
+                .add_info(self.span_body, "enum variants declared here")
+                .report(diags)
         })
     }
 }
@@ -571,12 +578,12 @@ impl CompileItemContext<'_, '_> {
                                     variant_span,
                                     format!("redeclared here {} payload", kind_str(payload.is_some())),
                                 )
-                                .add_info(
-                                    span_first_decl,
-                                    format!("previously declared here {} payload", kind_str(has_payload)),
-                                )
-                                .add_footer_info("this would make type inference for enum variants too difficult")
-                                .report(diags);
+                                    .add_info(
+                                        span_first_decl,
+                                        format!("previously declared here {} payload", kind_str(has_payload)),
+                                    )
+                                    .add_footer_info("this would make type inference for enum variants too difficult")
+                                    .report(diags);
                                 any_err = Err(diag);
                             }
                         }
@@ -838,7 +845,7 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
                     item_params,
                     ElaboratedStruct,
-                    |_, item_params| {
+                    |new_elab, item_params| {
                         self.elaborate_struct_new(
                             scope_params,
                             flow,
@@ -846,6 +853,7 @@ impl CompileItemContext<'_, '_> {
                             &item_params.params,
                             body.span,
                             generic_info,
+                            new_elab,
                         )
                     },
                 )?;
@@ -857,8 +865,8 @@ impl CompileItemContext<'_, '_> {
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
                     item_params,
                     ElaboratedEnum,
-                    |_, item_params| {
-                        self.elaborate_enum_new(scope_params, flow, unique, &item_params.params, body.span, variants)
+                    |new_elab, item_params| {
+                        self.elaborate_enum_new(scope_params, flow, unique, &item_params.params, body.span, variants, new_elab)
                     },
                 )?;
 
@@ -875,6 +883,7 @@ impl CompileItemContext<'_, '_> {
         params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
         generic_info: &'a GenericStructInfo,
+        new_elab: ElaboratedStruct,
     ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
@@ -957,6 +966,8 @@ impl CompileItemContext<'_, '_> {
             }
         });
 
+        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
+
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
         let fields_hw = fields_eval
@@ -965,17 +976,27 @@ impl CompileItemContext<'_, '_> {
             .map(|(i, (_, (_, ty)))| {
                 ty.inner
                     .as_hardware_type(elab)
-                    .map_err(|_| NonHardwareStruct { first_failing_field: i })
+                    .map_err(|_| NonHardwareStruct { first_non_hardware_field: i })
             })
             .try_collect_vec();
+        let hw = fields_hw.map(|fields_hw| {
+            let fields_ir = zip_eq(fields_eval.keys(), &fields_hw).map(|(name, ty)| (name.clone(), ty.as_ir(self.refs))).collect();
+            HardwareStructInfo {
+                ty_ir: IrStructType {
+                    ty: HardwareChecked::new_unchecked(new_elab),
+                    debug_info_name: debug_info_name.clone(),
+                    fields: fields_ir,
+                },
+                fields: fields_hw,
+            }
+        });
 
-        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
         Ok(ElaboratedStructInfo {
             unique,
             debug_info_name,
             span_body,
             fields: fields_eval,
-            fields_hw,
+            hw,
             members_static,
             methods_self,
         })
@@ -989,6 +1010,7 @@ impl CompileItemContext<'_, '_> {
         params: &Option<Vec<(Identifier, CompileValue)>>,
         span_body: Span,
         generic_info: &GenericEnumInfo,
+        new_elab: ElaboratedEnum,
     ) -> DiagResult<ElaboratedEnumInfo> {
         let diags = self.refs.diags;
         let source = self.refs.fixed.source;
@@ -1082,11 +1104,12 @@ impl CompileItemContext<'_, '_> {
             }
         });
 
+        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
+
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
-        let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body)?;
+        let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body, &debug_info_name, new_elab)?;
 
-        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
         Ok(ElaboratedEnumInfo {
             unique,
             debug_info_name,
@@ -1121,7 +1144,7 @@ fn collect_static_members_from_body(
                         span,
                         format!("trying to declare member with name `{name}` here"),
                     )
-                    .report(diags))
+                        .report(diags))
                 } else if let Some((prev_span, prev_kind)) = prev_span_kind(name) {
                     Err(err_member_duplicate(ty_kind, prev_span, prev_kind, span, "member").report(diags))
                 } else {
@@ -1162,7 +1185,7 @@ fn err_member_duplicate(
         curr_span,
         format!("{curr_kind} declared here"),
     )
-    .add_info(prev_span, format!("{prev_kind} previously declared here"))
+        .add_info(prev_span, format!("{prev_kind} previously declared here"))
 }
 
 pub fn debug_info_name_including_params(
@@ -1193,6 +1216,8 @@ fn try_enum_as_hardware(
     refs: CompileRefs,
     variants_eval: &IndexMap<String, ElaboratedEnumVariantInfo>,
     span_body: Span,
+    debug_info_name: &str,
+    new_elab: ElaboratedEnum,
 ) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
@@ -1202,8 +1227,8 @@ fn try_enum_as_hardware(
         return Ok(Err(NonHardwareEnum::NoVariants));
     }
 
-    // map fields to hardware
-    let mut content_types = vec![];
+    // try to map fields to hardware
+    let mut payload_types = vec![];
     for (i, (_, info)) in variants_eval.iter().enumerate() {
         let ty_hw = match &info.payload_ty {
             None => None,
@@ -1212,14 +1237,15 @@ fn try_enum_as_hardware(
                     let ty_ir = ty_hw.as_ir(refs);
                     Some((ty_hw, ty_ir))
                 }
-                Err(_) => return Ok(Err(NonHardwareEnum::NonHardwareField(i))),
+                Err(_) => return Ok(Err(NonHardwareEnum::FirstNonHardwareVariant(i))),
             },
         };
-        content_types.push(ty_hw);
+        payload_types.push(ty_hw);
     }
 
+    // at this point we know the enum can be represented in hardware
     // calculate total size
-    let max_content_size = content_types
+    let max_content_size = payload_types
         .iter()
         .filter_map(Option::as_ref)
         .map(|(_, ty)| ty.size_bits())
@@ -1233,9 +1259,18 @@ fn try_enum_as_hardware(
         start: BigInt::ZERO,
         end: BigInt::from(variants_eval.len()),
     };
+    let variants_ir = zip_eq(variants_eval.keys(), &payload_types)
+        .map(|(name, payload_ty)| (name.clone(), payload_ty.as_ref().map(|(_, ty_ir)| ty_ir.clone())))
+        .collect();
+    let ty_ir = IrEnumType {
+        ty: HardwareChecked::new_unchecked(new_elab),
+        debug_info_name: debug_info_name.to_owned(),
+        variants: variants_ir,
+    };
     let info = HardwareEnumInfo {
+        ty_ir,
         tag_range,
-        payload_types: content_types,
+        payload_types,
         max_payload_size: max_content_size,
     };
     Ok(Ok(info))

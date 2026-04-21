@@ -1,4 +1,4 @@
-use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
+use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
@@ -504,7 +504,7 @@ impl CompileItemContext<'_, '_> {
             debug_info_name: _,
             span_body,
             ref fields,
-            fields_hw: _,
+            hw: _,
             members_static: _,
             methods_self: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);

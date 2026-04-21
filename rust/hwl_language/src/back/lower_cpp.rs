@@ -583,6 +583,8 @@ impl CodegenBlockContext<'_> {
                     let _ = type_to_cpp(self.diags, span, &IrType::Int(range.clone()))?;
                     self.eval(indent, span, inner, stage_read)?
                 }
+                
+                _ => todo!(),
             },
         };
         Ok(result)
@@ -645,6 +647,7 @@ impl CodegenBlockContext<'_> {
                 )?;
                 swriteln!(self.f, "{indent}}}");
             }
+            _ => todo!(),
         }
 
         Ok(())
@@ -708,6 +711,7 @@ impl CodegenBlockContext<'_> {
                 )?;
                 swriteln!(self.f, "{indent}}}");
             }
+            _ => todo!(),
         }
 
         Ok(())
@@ -919,6 +923,7 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Strin
             let inner_str = type_to_cpp(diags, span, inner)?;
             format!("std::array<{inner_str}, {len}>")
         }
+        _ => todo!(),
     };
     Ok(result)
 }

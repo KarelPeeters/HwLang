@@ -7,6 +7,7 @@
 //!
 //! If a local variable is read without being written to, the resulting value is undefined.
 
+use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked};
 use crate::front::signal::Polarized;
 use crate::front::types::HardwareType;
 use crate::new_index_type;
@@ -14,10 +15,11 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use std::sync::Arc;
 use std::vec;
@@ -33,13 +35,71 @@ pub struct IrDatabase<M = IrModuleInfo> {
 
 pub type IrModules<M = IrModuleInfo> = Arena<IrModule, M>;
 
-/// Variant of [Type] that can only represent types that are valid in hardware.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {
     Bool,
     Int(ClosedNonEmptyRange<BigInt>),
     Tuple(Vec<IrType>),
     Array(Box<IrType>, BigUint),
+    Struct(IrStructType),
+    Enum(IrEnumType),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IrStructType {
+    pub ty: HardwareChecked<ElaboratedStruct>,
+    pub debug_info_name: String,
+    pub fields: IndexMap<String, IrType>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IrEnumType {
+    pub ty: HardwareChecked<ElaboratedEnum>,
+    pub debug_info_name: String,
+    // cannot be empty, that would cause the type to be non-representable
+    pub variants: IndexMap<String, Option<IrType>>,
+}
+
+// TODO move down
+impl IrStructType {
+    pub fn size_bits(&self) -> BigUint {
+        self.fields.values().map(|ty| ty.size_bits()).sum()
+    }
+
+    pub fn field_offset(&self, field: usize) -> BigUint {
+        // TODO cache?
+        self.fields[..field].iter().map(|(_, ty)| ty.size_bits()).sum()
+    }
+}
+
+impl IrEnumType {
+    pub fn size_bits(&self) -> BigUint {
+        // TODO cache?
+        self.tag_size_bits() + self.max_payload_size_bits()
+    }
+
+    pub fn tag_size_bits(&self) -> BigUint {
+        // TODO cache?
+        BigUint::from(IntRepresentation::for_range(self.tag_range().as_ref()).size_bits())
+    }
+
+    pub fn max_payload_size_bits(&self) -> BigUint {
+        // TODO cache?
+        self.variants
+            .values()
+            .filter_map(|payload| payload.as_ref())
+            .map(|ty| ty.size_bits())
+            .max()
+            .unwrap_or(BigUint::ZERO)
+    }
+
+    pub fn tag_range(&self) -> ClosedNonEmptyRange<BigInt> {
+        assert!(!self.variants.is_empty());
+        ClosedNonEmptyRange {
+            start: BigInt::ZERO,
+            end: BigInt::from(self.variants.len()),
+        }
+    }
 }
 
 new_index_type!(pub IrModule);
@@ -257,6 +317,8 @@ pub enum IrExpressionLarge {
     // TODO always store these in intermediate variable to avoid large repeated expressions
     TupleLiteral(Vec<IrExpression>),
     ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
+    StructLiteral(IrStructType, Vec<IrExpression>),
+    EnumLiteral(IrEnumType, usize, Option<IrExpression>),
 
     // slice
     TupleIndex {
@@ -271,6 +333,18 @@ pub enum IrExpressionLarge {
         base: IrExpression,
         start: IrExpression,
         len: BigUint,
+    },
+
+    StructField {
+        base: IrExpression,
+        field: usize,
+    },
+    EnumTag {
+        base: IrExpression,
+    },
+    EnumPayload {
+        base: IrExpression,
+        variant: usize,
     },
 
     // casting
@@ -351,14 +425,14 @@ impl IrIntCompareOp {
 }
 
 impl IrType {
-    /// Note: converting from [HardwareType] to [IrType] is potentially lossy,
-    /// so this function cannot always return the original type.
     pub fn as_type_hw(&self) -> HardwareType {
         match self {
             IrType::Bool => HardwareType::Bool,
             IrType::Int(range) => HardwareType::Int(ClosedNonEmptyMultiRange::from(range.clone())),
             IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
             IrType::Array(inner, len) => HardwareType::Array(Arc::new(inner.as_type_hw()), len.clone()),
+            IrType::Struct(info) => HardwareType::Struct(info.ty),
+            IrType::Enum(info) => HardwareType::Enum(info.ty),
         }
     }
 
@@ -372,6 +446,14 @@ impl IrType {
 
     pub fn unwrap_tuple(self) -> Vec<IrType> {
         unwrap_match!(self, IrType::Tuple(elements) => elements)
+    }
+
+    pub fn unwrap_struct(self) -> IrStructType {
+        unwrap_match!(self, IrType::Struct(info) => info)
+    }
+
+    pub fn unwrap_enum(self) -> IrEnumType {
+        unwrap_match!(self, IrType::Enum(info) => info)
     }
 }
 
@@ -493,18 +575,37 @@ impl IrExpression {
                     IrExpressionLarge::ArrayLiteral(ty_inner, len, _values) => {
                         IrType::Array(Box::new(ty_inner.clone()), len.clone())
                     }
+                    IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
+                    IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
 
                     &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let inner = unwrap_match!(base.ty(module, locals), IrType::Tuple(inner) => inner);
-                        inner[index].clone()
+                        let base_ty = base.ty(module, locals).unwrap_tuple();
+                        base_ty[index].clone()
                     }
                     // TODO store resulting type in expression instead?
                     IrExpressionLarge::ArrayIndex { base, .. } => {
-                        unwrap_match!(base.ty(module, locals), IrType::Array(inner, _) => *inner)
+                        let (inner_ty, _) = base.ty(module, locals).unwrap_array();
+                        inner_ty
                     }
                     IrExpressionLarge::ArraySlice { base, start: _, len } => {
-                        let inner = unwrap_match!(base.ty(module, locals), IrType::Array(inner, _) => inner);
-                        IrType::Array(inner, len.clone())
+                        let (inner_ty, _) = base.ty(module, locals).unwrap_array();
+                        IrType::Array(Box::new(inner_ty), len.clone())
+                    }
+
+                    &IrExpressionLarge::StructField { ref base, field } => {
+                        let base_ty = base.ty(module, locals).unwrap_struct();
+                        base_ty.fields[field].clone()
+                    }
+                    IrExpressionLarge::EnumTag { base } => {
+                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        IrType::Int(base_ty.tag_range())
+                    }
+                    &IrExpressionLarge::EnumPayload { ref base, variant } => {
+                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        base_ty.variants[variant]
+                            .as_ref()
+                            .expect("cannot get payload of non-payload variant")
+                            .clone()
                     }
 
                     IrExpressionLarge::ToBits(ty, _) => IrType::Array(Box::new(IrType::Bool), ty.size_bits()),
@@ -549,6 +650,12 @@ impl IrExpression {
                 IrExpressionLarge::ArrayLiteral(_ty, _len, x) => x.iter().for_each(|a| match a {
                     IrArrayLiteralElement::Single(v) | IrArrayLiteralElement::Spread(v) => f(v),
                 }),
+                IrExpressionLarge::StructLiteral(_ty, x) => x.iter().for_each(f),
+                IrExpressionLarge::EnumLiteral(_ty, _, x) => {
+                    if let Some(x) = x {
+                        f(x);
+                    }
+                }
                 IrExpressionLarge::TupleIndex { base, index: _ } => f(base),
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     f(base);
@@ -558,6 +665,15 @@ impl IrExpression {
                     f(base);
                     f(start);
                 }
+                IrExpressionLarge::StructField { base, field: _ } => {
+                    f(base);
+                }
+                IrExpressionLarge::EnumTag { base } => {
+                    f(base);
+                }
+                IrExpressionLarge::EnumPayload { base, variant: _ } => {
+                    f(base);
+                }
                 IrExpressionLarge::ToBits(_ty, x) | IrExpressionLarge::FromBits(_ty, x) => f(x),
                 IrExpressionLarge::ExpandIntRange(_ty, x) => f(x),
                 IrExpressionLarge::ConstrainIntRange(_ty, x) => f(x),
@@ -566,11 +682,11 @@ impl IrExpression {
     }
 
     /// This function does not mutate in-place,
-    ///   that's sketchy if a single expressions happens to be used in multiple places.
+    ///   that would be sketchy if a single expressions happens to be used in multiple places.
     pub fn map_recursive(
         &self,
         large: &mut IrLargeArena,
-        mut f: &mut impl FnMut(&IrExpression) -> Option<IrExpression>,
+        f: &mut impl FnMut(&IrExpression) -> Option<IrExpression>,
     ) -> Option<IrExpression> {
         macro_rules! build_unary {
             (|$inner:ident| $build:expr) => {{
@@ -599,6 +715,24 @@ impl IrExpression {
             }};
         }
 
+        fn build_nary(
+            mut f: &mut impl FnMut(&IrExpression) -> Option<IrExpression>,
+            elements: &[IrExpression],
+        ) -> Option<Vec<IrExpression>> {
+            let elements_new = elements.iter().map(&mut f).collect_vec();
+
+            if elements_new.iter().any(|e| e.is_some()) {
+                let elements_new = elements
+                    .iter()
+                    .zip(elements_new)
+                    .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
+                    .collect_vec();
+                Some(elements_new)
+            } else {
+                None
+            }
+        }
+
         // map operands
         let self_new = match self {
             IrExpression::Bool(_) | IrExpression::Int(_) | IrExpression::Signal(_) | IrExpression::Variable(_) => None,
@@ -623,18 +757,7 @@ impl IrExpression {
                     build_binary!(|left, right| large.push_expr(IrExpressionLarge::IntCompare(op, left, right)))
                 }
                 IrExpressionLarge::TupleLiteral(elements) => {
-                    let elements_new = elements.iter().map(&mut f).collect_vec();
-
-                    if elements_new.iter().any(|e| e.is_some()) {
-                        let new_elements = elements
-                            .iter()
-                            .zip(elements_new)
-                            .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
-                            .collect_vec();
-                        Some(large.push_expr(IrExpressionLarge::TupleLiteral(new_elements)))
-                    } else {
-                        None
-                    }
+                    build_nary(f, elements).map(|new| large.push_expr(IrExpressionLarge::TupleLiteral(new)))
                 }
                 IrExpressionLarge::ArrayLiteral(ty, len, elements) => {
                     let elements_new = elements
@@ -656,6 +779,16 @@ impl IrExpression {
                         None
                     }
                 }
+                IrExpressionLarge::StructLiteral(ty, fields) => {
+                    build_nary(f, fields).map(|new| IrExpressionLarge::StructLiteral(ty.clone(), new)).map(|e| large.push_expr(e))
+                }
+                &IrExpressionLarge::EnumLiteral(ref ty, variant, ref payload) => {
+                    if let Some(payload) = payload {
+                        build_unary!(|payload| large.push_expr(IrExpressionLarge::EnumLiteral(ty.clone(), variant, Some(payload))))
+                    } else {
+                        None
+                    }
+                }
                 &IrExpressionLarge::TupleIndex { ref base, index } => {
                     build_unary!(|base| large.push_expr(IrExpressionLarge::TupleIndex { base, index }))
                 }
@@ -668,6 +801,15 @@ impl IrExpression {
                         start,
                         len: len.clone()
                     }))
+                }
+                &IrExpressionLarge::StructField { ref base, field } => {
+                    build_unary!(|base| large.push_expr(IrExpressionLarge::StructField { base, field }))
+                }
+                IrExpressionLarge::EnumTag { base } => {
+                    build_unary!(|base| large.push_expr(IrExpressionLarge::EnumTag { base }))
+                }
+                &IrExpressionLarge::EnumPayload { ref base, variant } => {
+                    build_unary!(|base| large.push_expr(IrExpressionLarge::EnumPayload { base, variant }))
                 }
                 IrExpressionLarge::ToBits(ty, inner) => {
                     build_unary!(|inner| large.push_expr(IrExpressionLarge::ToBits(ty.clone(), inner)))

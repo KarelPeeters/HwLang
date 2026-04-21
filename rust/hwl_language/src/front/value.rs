@@ -152,9 +152,9 @@ impl ReferenceWrapper {
                 span,
                 "using reference here",
             )
-            .add_info(self.span_decl, format!("{kind} declared here"))
-            .add_info(self.span_ref, "reference taken here")
-            .report(ctx.refs.diags)
+                .add_info(self.span_decl, format!("{kind} declared here"))
+                .add_info(self.span_ref, "reference taken here")
+                .report(ctx.refs.diags)
         };
         match self.inner {
             ReferenceWrapperInner::Variable { flow_id, var: _, ty: _ } => {
@@ -493,12 +493,14 @@ impl ValueCommon for MixedCompoundValue {
             MixedCompoundValue::Struct(v) => match &ty {
                 HardwareType::Struct(ty_hw) if ty_hw.inner() == v.ty => {
                     let info = refs.shared.elaboration_arenas.struct_info(ty_hw.inner());
-                    let fields_hw = info.fields_hw.as_ref().expect("hardware struct");
+                    let info_hw = info.hw.as_ref().unwrap();
 
-                    let result = zip_eq(v.fields.iter(), fields_hw.iter())
+                    let fields_ir = zip_eq(v.fields.iter(), info_hw.fields.iter())
                         .map(|(e, e_ty)| e.as_ir_expression_unchecked(refs, large, span, e_ty))
                         .try_collect_vec()?;
-                    Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+
+                    let result = IrExpressionLarge::StructLiteral(info_hw.ty_ir.clone(), fields_ir);
+                    Ok(large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -512,18 +514,13 @@ impl ValueCommon for MixedCompoundValue {
                     let info = refs.shared.elaboration_arenas.enum_info(ty_hw.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
-                    // convert content to bits
-                    let payload_bits = payload
-                        .as_ref()
-                        .map(|payload| {
-                            let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
-                            let payload_expr = payload.as_ir_expression_unchecked(refs, large, span, payload_ty)?;
-                            Ok(large.push_expr(IrExpressionLarge::ToBits(payload_ty.as_ir(refs), payload_expr)))
-                        })
-                        .transpose()?;
+                    let payload_ir = payload.as_ref().map(|payload| {
+                        let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
+                        payload.as_ir_expression_unchecked(refs, large, span, payload_ty)
+                    }).transpose()?;
 
-                    // build the entire ir expression
-                    info_hw.build_ir_expression(large, variant, payload_bits)
+                    let result = IrExpressionLarge::EnumLiteral(info_hw.ty_ir.clone(), variant, payload_ir);
+                    Ok(large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -760,6 +757,7 @@ impl<C, H> Value<SimpleCompileValue, C, H> {
         }
     }
 
+    // TODO accept Into<BigInt>
     pub fn new_int(v: BigInt) -> Self {
         Value::Simple(SimpleCompileValue::Int(v))
     }

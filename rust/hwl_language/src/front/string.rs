@@ -403,14 +403,14 @@ fn print_hardware_sub(
         }
         HardwareType::Struct(ty) => {
             let ty_info = elab.struct_info(ty.inner());
-            let ty_fields_hw = ty_info.fields_hw.as_ref().unwrap();
+            let ty_fields_hw = &ty_info.hw.as_ref().unwrap().fields;
 
             builder.push_str(&ty_info.debug_info_name);
             builder.push_str(".new(");
             for (field_index, ((field_name, _), field_ty)) in enumerate(zip_eq(&ty_info.fields, ty_fields_hw)) {
-                let field_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                let field_expr = large.push_expr(IrExpressionLarge::StructField {
                     base: value.expr.clone(),
-                    index: field_index,
+                    field: field_index,
                 });
                 let field_value = HardwareValue {
                     ty: field_ty.clone(),
