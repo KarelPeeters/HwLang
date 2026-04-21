@@ -489,7 +489,7 @@ fn error_not_found(initial_scope_span: Span, key: ScopeKey<Spanned<&str>, Span>)
     // TODO add fuzzy-matched suggestions as info
     let (title, span) = match key {
         ScopeKey::Id(id) => (format!("undeclared identifier `{}`", id.inner), id.span),
-        ScopeKey::Slf(span) => ("self is not bound in this scope`".to_string(), span),
+        ScopeKey::Slf(span) => ("self is not bound in this scope".to_string(), span),
     };
 
     DiagnosticError::new(title, span, "trying to access here").add_info(
