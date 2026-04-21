@@ -18,10 +18,10 @@ use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
-use crate::util::{Indent, ResultExt, separator_non_trailing};
+use crate::util::{separator_non_trailing, Indent, ResultExt};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, enumerate};
+use itertools::{enumerate, Either};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -1446,13 +1446,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
 
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{start_bits}");
-                        if size_bits != BigUint::ONE {
-                            swrite!(g, " +: {size_bits}");
-                        }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+                        evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
                     }
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
@@ -1465,13 +1459,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
                         let index = self.lower_expression_int_expanded(span, &bit_range, index)?;
 
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{index}");
-                        if element_size_bits != BigUint::ONE {
-                            swrite!(g, " * {element_size_bits} +: {element_size_bits}");
-                        }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+                        evaluate_bit_slice(base, index, &element_size_bits, &element_size_bits)
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO constant fold if index is a constant?
@@ -1483,18 +1471,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let len_bits = len * &element_size_bits;
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
-                        let index = self.lower_expression_int_expanded(span, &bit_range, start)?;
+                        let start = self.lower_expression_int_expanded(span, &bit_range, start)?;
 
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{index}");
-                        if element_size_bits != BigUint::ONE {
-                            swrite!(g, " * {element_size_bits}")
-                        };
-                        if len_bits != BigUint::ONE {
-                            swrite!(g, " +: {len_bits}");
-                        }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+                        evaluate_bit_slice(base, start, &element_size_bits, &len_bits)
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
@@ -1870,6 +1849,24 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
         Ok(Temporary(&info.name))
     }
+}
+
+fn evaluate_bit_slice(
+    base: Evaluated,
+    start_index: impl Display,
+    step_size_bits: &BigUint,
+    len_bits: &BigUint,
+) -> Evaluated<'static> {
+    let mut g = String::new();
+    swrite!(g, "({base}[{start_index}");
+    if step_size_bits != &BigUint::ONE {
+        swrite!(g, " * {step_size_bits}")
+    };
+    if len_bits != &BigUint::ONE {
+        swrite!(g, " +: {len_bits}");
+    }
+    swrite!(g, "])");
+    Evaluated::String(g)
 }
 
 /// Create a range that can be used for bit indexing, slicing and related math for the given size.
