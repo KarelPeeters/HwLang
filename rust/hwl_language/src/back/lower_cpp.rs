@@ -573,10 +573,6 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
-                IrExpressionLarge::TupleIndex { base, index } => {
-                    let base_eval = self.eval(indent, span, base, stage_read)?;
-                    Evaluated::Inline(format!("std::get<{index}>({base_eval})"))
-                }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
                     let index_eval = self.eval(indent, span, index, stage_read)?;
@@ -596,6 +592,10 @@ impl CodegenBlockContext<'_> {
                     );
 
                     Evaluated::Temporary(tmp_result)
+                }
+                IrExpressionLarge::TupleIndex { base, index } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("std::get<{index}>({base_eval})"))
                 }
                 IrExpressionLarge::StructField { base, field } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
@@ -676,6 +676,22 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
+            IrType::Array(ty_inner, ty_len) => {
+                let ty_inner_size = ty_inner.size_bits();
+                let tmp_i = self.new_temporary();
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
+                );
+                self.impl_to_bits(
+                    indent.nest(),
+                    ty_inner,
+                    result,
+                    &format!("{result_offset} + {tmp_i} * {ty_inner_size}"),
+                    &format!("{value}[{tmp_i}]"),
+                )?;
+                swriteln!(self.f, "{indent}}}");
+            }
             IrType::Tuple(elements) => {
                 let mut offset = BigUint::ZERO;
                 for (field_i, field_ty) in enumerate(elements) {
@@ -701,22 +717,6 @@ impl CodegenBlockContext<'_> {
                     )?;
                     offset += field_ty.size_bits();
                 }
-            }
-            IrType::Array(ty_inner, ty_len) => {
-                let ty_inner_size = ty_inner.size_bits();
-                let tmp_i = self.new_temporary();
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
-                );
-                self.impl_to_bits(
-                    indent.nest(),
-                    ty_inner,
-                    result,
-                    &format!("{result_offset} + {tmp_i} * {ty_inner_size}"),
-                    &format!("{value}[{tmp_i}]"),
-                )?;
-                swriteln!(self.f, "{indent}}}");
             }
             IrType::Enum(info) => {
                 // tag
@@ -784,6 +784,22 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
+            IrType::Array(ty_inner, ty_len) => {
+                let ty_inner_size = ty_inner.size_bits();
+                let tmp_i = self.new_temporary();
+                swriteln!(
+                    self.f,
+                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
+                );
+                self.impl_from_bits(
+                    indent.nest(),
+                    ty_inner,
+                    &format!("{result}[{tmp_i}]"),
+                    value,
+                    &format!("{value_offset} + {tmp_i} * {ty_inner_size}"),
+                )?;
+                swriteln!(self.f, "{indent}}}");
+            }
             IrType::Tuple(tys_inner) => {
                 let mut offset = BigUint::ZERO;
                 for (element_i, element) in enumerate(tys_inner) {
@@ -809,22 +825,6 @@ impl CodegenBlockContext<'_> {
                     )?;
                     offset += field_ty.size_bits();
                 }
-            }
-            IrType::Array(ty_inner, ty_len) => {
-                let ty_inner_size = ty_inner.size_bits();
-                let tmp_i = self.new_temporary();
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
-                );
-                self.impl_from_bits(
-                    indent.nest(),
-                    ty_inner,
-                    &format!("{result}[{tmp_i}]"),
-                    value,
-                    &format!("{value_offset} + {tmp_i} * {ty_inner_size}"),
-                )?;
-                swriteln!(self.f, "{indent}}}");
             }
             IrType::Enum(info) => {
                 // tag
@@ -1055,16 +1055,16 @@ fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Strin
                 Err(diags.report_error_todo(span, format!("simulator wide integer type: {range}")))
             }
         }
-        IrType::Tuple(inner) => {
-            let inner_strs = inner.iter().map(|ty| type_to_cpp(diags, span, ty)).try_collect_vec()?;
-            let inner_str = inner_strs.join(", ");
-            Ok(format!("std::tuple<{inner_str}>"))
-        }
         IrType::Array(inner, len) => {
             // TODO we want to represent boolean arrays als bitfields, either through a template optimization trick
             //   or through a special case here (and in every other place that interacts with arrays)
             let inner_str = type_to_cpp(diags, span, inner)?;
             Ok(format!("std::array<{inner_str}, {len}>"))
+        }
+        IrType::Tuple(inner) => {
+            let inner_strs = inner.iter().map(|ty| type_to_cpp(diags, span, ty)).try_collect_vec()?;
+            let inner_str = inner_strs.join(", ");
+            Ok(format!("std::tuple<{inner_str}>"))
         }
         IrType::Struct(info) => type_struct_to_cpp(diags, span, info),
         IrType::Enum(info) => type_enum_to_cpp(diags, span, info),

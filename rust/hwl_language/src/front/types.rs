@@ -10,11 +10,11 @@ use crate::mid::ir::{
     IrType,
 };
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultExt};
-use itertools::{zip_eq, Either, Itertools};
+use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
-use crate::util::int::IntRepresentation;
 
 // TODO add an arena for types?
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -29,8 +29,8 @@ pub enum Type {
     Bool,
     String,
     Int(MultiRange<BigInt>),
-    Tuple(Option<Arc<Vec<Type>>>),
     Array(Arc<Type>, Option<BigUint>),
+    Tuple(Option<Arc<Vec<Type>>>),
     // TODO make user type covariant? or allow users to define variance?
     Struct(ElaboratedStruct),
     Enum(ElaboratedEnum),
@@ -53,8 +53,8 @@ pub enum HardwareType {
     Undefined,
     Bool,
     Int(ClosedNonEmptyMultiRange<BigInt>),
-    Tuple(Arc<Vec<HardwareType>>),
     Array(Arc<HardwareType>, BigUint),
+    Tuple(Arc<Vec<HardwareType>>),
     Struct(HardwareChecked<ElaboratedStruct>),
     Enum(HardwareChecked<ElaboratedEnum>),
 }
@@ -151,7 +151,7 @@ impl Type {
         matches!(self, Type::Tuple(Some(inner)) if inner.is_empty())
     }
 
-    pub fn union_all(types: impl IntoIterator<Item=Type>) -> Type {
+    pub fn union_all(types: impl IntoIterator<Item = Type>) -> Type {
         types.into_iter().fold(Type::Undefined, |acc, ty| acc.union(&ty))
     }
 
@@ -174,6 +174,14 @@ impl Type {
 
             (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
+            (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
+                let result_inner = a_inner.union(b_inner);
+                if a_len == b_len {
+                    Type::Array(Arc::new(result_inner), a_len.clone())
+                } else {
+                    Type::Array(Arc::new(result_inner), None)
+                }
+            }
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if let Some(a) = a
                     && let Some(b) = b
@@ -184,14 +192,6 @@ impl Type {
                     )))
                 } else {
                     Type::Tuple(None)
-                }
-            }
-            (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
-                let result_inner = a_inner.union(b_inner);
-                if a_len == b_len {
-                    Type::Array(Arc::new(result_inner), a_len.clone())
-                } else {
-                    Type::Array(Arc::new(result_inner), None)
                 }
             }
             (&Type::Struct(a_elab), &Type::Struct(b_elab)) => {
@@ -234,8 +234,8 @@ impl Type {
                 | Type::Interface
                 | Type::InterfaceView
                 | Type::Int(_)
-                | Type::Tuple(_)
                 | Type::Array(_, _)
+                | Type::Tuple(_)
                 | Type::Struct(_)
                 | Type::Enum(_)
                 | Type::Ref(_)
@@ -261,6 +261,12 @@ impl Type {
                 Ok(range) => Ok(HardwareType::Int(range)),
                 Err(_) => Err(NonHardwareType),
             },
+            Type::Array(inner, len) => {
+                let len = len.as_ref().ok_or(NonHardwareType)?;
+                inner
+                    .as_hardware_type(elab)
+                    .map(|inner| HardwareType::Array(Arc::new(inner), len.clone()))
+            }
             Type::Tuple(inner) => match inner {
                 Some(inner) => inner
                     .iter()
@@ -269,12 +275,6 @@ impl Type {
                     .map(|v| HardwareType::Tuple(Arc::new(v))),
                 None => Err(NonHardwareType),
             },
-            Type::Array(inner, len) => {
-                let len = len.as_ref().ok_or(NonHardwareType)?;
-                inner
-                    .as_hardware_type(elab)
-                    .map(|inner| HardwareType::Array(Arc::new(inner), len.clone()))
-            }
             &Type::Struct(ty_struct) => {
                 let info = elab.struct_info(ty_struct);
                 match info.hw {
@@ -309,10 +309,10 @@ impl HardwareType {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(MultiRange::from(range.clone())),
+            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), Some(len.clone())),
             HardwareType::Tuple(inner) => {
                 Type::Tuple(Some(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())))
             }
-            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), Some(len.clone())),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
             HardwareType::Enum(elab) => Type::Enum(elab.inner()),
         }
@@ -323,8 +323,8 @@ impl HardwareType {
             HardwareType::Undefined => IrType::Tuple(vec![]),
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.enclosing_range().cloned()),
-            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir(refs)), len.clone()),
+            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),
             &HardwareType::Struct(ty) => {
                 let info = refs.shared.elaboration_arenas.struct_info(ty.inner());
                 let fields_hw = &info.hw.as_ref().unwrap().fields;
@@ -366,8 +366,8 @@ impl HardwareType {
                 let repr = IntRepresentation::for_range(range.enclosing_range());
                 &ClosedNonEmptyMultiRange::from(repr.range()) == range
             }
-            HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
             HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(refs),
+            HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
             &HardwareType::Struct(elab) => {
                 let info = refs.shared.elaboration_arenas.struct_info(elab.inner());
                 let fields_hw = &info.hw.as_ref_ok().unwrap().fields;

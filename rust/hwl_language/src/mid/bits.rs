@@ -22,8 +22,8 @@ impl IrType {
         match self {
             IrType::Bool => BigUint::ONE,
             IrType::Int(range) => BigUint::from(IntRepresentation::for_range(range.as_ref()).size_bits()),
-            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
             IrType::Array(inner, len) => inner.size_bits() * len,
+            IrType::Tuple(inner) => inner.iter().map(IrType::size_bits).sum(),
             IrType::Struct(info) => info.size_bits(),
             IrType::Enum(info) => info.size_bits(),
         }
@@ -46,20 +46,20 @@ impl IrType {
                 repr.value_to_bits(v, result);
                 Ok(())
             }
-            (IrType::Tuple(ty_inners), CompileValue::Compound(CompileCompoundValue::Tuple(v_inners))) => {
-                if ty_inners.len() != v_inners.len() {
-                    return Err(ToBitsWrongType);
-                }
-                for (ty_inner, v_inner) in zip_eq(ty_inners.iter(), v_inners.iter()) {
-                    ty_inner.value_to_bits_impl(v_inner, result)?;
-                }
-                Ok(())
-            }
             (IrType::Array(ty_inner, ty_len), CompileValue::Simple(SimpleCompileValue::Array(v_inner))) => {
                 if ty_len != &BigUint::from(v_inner.len()) {
                     return Err(ToBitsWrongType);
                 }
                 for v_inner in v_inner.iter() {
+                    ty_inner.value_to_bits_impl(v_inner, result)?;
+                }
+                Ok(())
+            }
+            (IrType::Tuple(ty_inners), CompileValue::Compound(CompileCompoundValue::Tuple(v_inners))) => {
+                if ty_inners.len() != v_inners.len() {
+                    return Err(ToBitsWrongType);
+                }
+                for (ty_inner, v_inner) in zip_eq(ty_inners.iter(), v_inners.iter()) {
                     ty_inner.value_to_bits_impl(v_inner, result)?;
                 }
                 Ok(())
@@ -139,6 +139,11 @@ impl IrType {
                     Err(Either::Left(FromBitsInvalidValue))
                 }
             }
+            IrType::Array(inner, len) => {
+                let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;
+                let result = (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?;
+                Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(result))))
+            }
             IrType::Tuple(inners) => {
                 let result = inners
                     .iter()
@@ -146,11 +151,6 @@ impl IrType {
                     .try_collect_vec()?;
 
                 Ok(CompileValue::Compound(CompileCompoundValue::Tuple(result)))
-            }
-            IrType::Array(inner, len) => {
-                let len = usize::try_from(len.clone()).map_err(|_| Either::Right(FromBitsWrongLength))?;
-                let result = (0..len).map(|_| inner.value_from_bits_impl(bits)).try_collect()?;
-                Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(result))))
             }
             IrType::Struct(info) => {
                 let fields = info

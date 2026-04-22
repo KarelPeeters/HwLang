@@ -56,10 +56,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
 
             // collect and merge diagnostics, sorting to keep them deterministic
             // TODO some kind of topological sort "as if visited by single thread" might be nicer
-            let mut all_diags: Vec<_> = all_thread_diags
-                .into_iter()
-                .flat_map(|d| d.finish())
-                .collect();
+            let mut all_diags: Vec<_> = all_thread_diags.into_iter().flat_map(|d| d.finish()).collect();
             all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
             for d in all_diags {
                 self.diags.push(d);

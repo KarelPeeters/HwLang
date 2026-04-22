@@ -28,7 +28,7 @@ use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
-use itertools::{zip_eq, Itertools};
+use itertools::{Itertools, zip_eq};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -316,8 +316,8 @@ impl GenericEnumInfo {
                 variant.span,
                 "attempt to access variant here",
             )
-                .add_info(self.span_body, "enum variants declared here")
-                .report(diags)
+            .add_info(self.span_body, "enum variants declared here")
+            .report(diags)
         })
     }
 }
@@ -330,8 +330,8 @@ impl ElaboratedEnumInfo {
                 variant.span,
                 "attempt to access variant here",
             )
-                .add_info(self.span_body, "enum variants declared here")
-                .report(diags)
+            .add_info(self.span_body, "enum variants declared here")
+            .report(diags)
         })
     }
 }
@@ -578,12 +578,12 @@ impl CompileItemContext<'_, '_> {
                                     variant_span,
                                     format!("redeclared here {} payload", kind_str(payload.is_some())),
                                 )
-                                    .add_info(
-                                        span_first_decl,
-                                        format!("previously declared here {} payload", kind_str(has_payload)),
-                                    )
-                                    .add_footer_info("this would make type inference for enum variants too difficult")
-                                    .report(diags);
+                                .add_info(
+                                    span_first_decl,
+                                    format!("previously declared here {} payload", kind_str(has_payload)),
+                                )
+                                .add_footer_info("this would make type inference for enum variants too difficult")
+                                .report(diags);
                                 any_err = Err(diag);
                             }
                         }
@@ -866,7 +866,15 @@ impl CompileItemContext<'_, '_> {
                     item_params,
                     ElaboratedEnum,
                     |new_elab, item_params| {
-                        self.elaborate_enum_new(scope_params, flow, unique, &item_params.params, body.span, variants, new_elab)
+                        self.elaborate_enum_new(
+                            scope_params,
+                            flow,
+                            unique,
+                            &item_params.params,
+                            body.span,
+                            variants,
+                            new_elab,
+                        )
                     },
                 )?;
 
@@ -974,13 +982,15 @@ impl CompileItemContext<'_, '_> {
             .iter()
             .enumerate()
             .map(|(i, (_, (_, ty)))| {
-                ty.inner
-                    .as_hardware_type(elab)
-                    .map_err(|_| NonHardwareStruct { first_non_hardware_field: i })
+                ty.inner.as_hardware_type(elab).map_err(|_| NonHardwareStruct {
+                    first_non_hardware_field: i,
+                })
             })
             .try_collect_vec();
         let hw = fields_hw.map(|fields_hw| {
-            let fields_ir = zip_eq(fields_eval.keys(), &fields_hw).map(|(name, ty)| (name.clone(), ty.as_ir(self.refs))).collect();
+            let fields_ir = zip_eq(fields_eval.keys(), &fields_hw)
+                .map(|(name, ty)| (name.clone(), ty.as_ir(self.refs)))
+                .collect();
             HardwareStructInfo {
                 ty_ir: IrStructType {
                     ty: HardwareChecked::new_unchecked(new_elab),
@@ -1144,7 +1154,7 @@ fn collect_static_members_from_body(
                         span,
                         format!("trying to declare member with name `{name}` here"),
                     )
-                        .report(diags))
+                    .report(diags))
                 } else if let Some((prev_span, prev_kind)) = prev_span_kind(name) {
                     Err(err_member_duplicate(ty_kind, prev_span, prev_kind, span, "member").report(diags))
                 } else {
@@ -1185,7 +1195,7 @@ fn err_member_duplicate(
         curr_span,
         format!("{curr_kind} declared here"),
     )
-        .add_info(prev_span, format!("{prev_kind} previously declared here"))
+    .add_info(prev_span, format!("{prev_kind} previously declared here"))
 }
 
 pub fn debug_info_name_including_params(

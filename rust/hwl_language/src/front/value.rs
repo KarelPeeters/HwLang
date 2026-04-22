@@ -152,9 +152,9 @@ impl ReferenceWrapper {
                 span,
                 "using reference here",
             )
-                .add_info(self.span_decl, format!("{kind} declared here"))
-                .add_info(self.span_ref, "reference taken here")
-                .report(ctx.refs.diags)
+            .add_info(self.span_decl, format!("{kind} declared here"))
+            .add_info(self.span_ref, "reference taken here")
+            .report(ctx.refs.diags)
         };
         match self.inner {
             ReferenceWrapperInner::Variable { flow_id, var: _, ty: _ } => {
@@ -514,10 +514,13 @@ impl ValueCommon for MixedCompoundValue {
                     let info = refs.shared.elaboration_arenas.enum_info(ty_hw.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
-                    let payload_ir = payload.as_ref().map(|payload| {
-                        let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
-                        payload.as_ir_expression_unchecked(refs, large, span, payload_ty)
-                    }).transpose()?;
+                    let payload_ir = payload
+                        .as_ref()
+                        .map(|payload| {
+                            let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
+                            payload.as_ir_expression_unchecked(refs, large, span, payload_ty)
+                        })
+                        .transpose()?;
 
                     let result = IrExpressionLarge::EnumLiteral(info_hw.ty_ir.clone(), variant, payload_ir);
                     Ok(large.push_expr(result))
@@ -617,28 +620,6 @@ impl ValueCommon for HardwareValue {
                     Err(err_type())
                 }
             }
-            (HardwareType::Tuple(ty_curr), HardwareType::Tuple(ty)) => {
-                if ty_curr.len() != ty.len() {
-                    return Err(err_type());
-                }
-
-                let result = (0..ty.len())
-                    .map(|i| {
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
-                            base: self.expr.clone(),
-                            index: i,
-                        });
-                        let curr_elem_hw = HardwareValue {
-                            ty: ty_curr[i].clone(),
-                            domain: self.domain,
-                            expr: curr_elem_expr,
-                        };
-                        curr_elem_hw.as_ir_expression_unchecked(refs, large, span, &ty[i])
-                    })
-                    .try_collect_vec()?;
-
-                Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
-            }
             (HardwareType::Array(ty_inner_curr, len_curr), HardwareType::Array(ty_inner, len)) => {
                 if len_curr != len {
                     return Err(err_type());
@@ -678,6 +659,28 @@ impl ValueCommon for HardwareValue {
                     result,
                 )))
             }
+            (HardwareType::Tuple(ty_curr), HardwareType::Tuple(ty)) => {
+                if ty_curr.len() != ty.len() {
+                    return Err(err_type());
+                }
+
+                let result = (0..ty.len())
+                    .map(|i| {
+                        let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                            base: self.expr.clone(),
+                            index: i,
+                        });
+                        let curr_elem_hw = HardwareValue {
+                            ty: ty_curr[i].clone(),
+                            domain: self.domain,
+                            expr: curr_elem_expr,
+                        };
+                        curr_elem_hw.as_ir_expression_unchecked(refs, large, span, &ty[i])
+                    })
+                    .try_collect_vec()?;
+
+                Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+            }
             (HardwareType::Struct(_), HardwareType::Struct(_)) | (HardwareType::Enum(_), HardwareType::Enum(_)) => {
                 // there's no struct or enum subtyping yet, so this is always an error for now
                 Err(err_type())
@@ -686,8 +689,8 @@ impl ValueCommon for HardwareValue {
                 HardwareType::Undefined
                 | HardwareType::Bool
                 | HardwareType::Int(_)
-                | HardwareType::Tuple(_)
                 | HardwareType::Array(_, _)
+                | HardwareType::Tuple(_)
                 | HardwareType::Struct(_)
                 | HardwareType::Enum(_),
                 _,

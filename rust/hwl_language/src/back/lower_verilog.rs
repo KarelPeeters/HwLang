@@ -18,10 +18,10 @@ use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt, VecExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
-use crate::util::{separator_non_trailing, Indent, ResultExt};
+use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Either, Itertools};
+use itertools::{Either, Itertools, enumerate};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -1438,16 +1438,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                                 Evaluated::String(format!("{{{}}}", elements.into_iter().rev().join(", ")))
                             }
                         }
-                    },
-
-                    &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
-                        let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
-                        let size_bits = ty[index].size_bits();
-
-                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
-                        evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
                     }
+
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
@@ -1475,7 +1467,14 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
                         evaluate_bit_slice(base, start, &element_size_bits, &len_bits)
                     }
+                    &IrExpressionLarge::TupleIndex { ref base, index } => {
+                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
+                        let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
+                        let size_bits = ty[index].size_bits();
 
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
+                    }
                     &IrExpressionLarge::StructField { ref base, field } => {
                         let base_ty = base.ty(self.module, self.locals).unwrap_struct();
                         let offset = base_ty.field_offset(field);
@@ -2077,7 +2076,7 @@ impl VerilogType {
     pub fn new_from_ir(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Result<VerilogType, ZeroWidth>> {
         match ty {
             IrType::Bool => Ok(Ok(VerilogType::Bit)),
-            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) | IrType::Struct(_) | IrType::Enum(_) => {
+            IrType::Int(_) | IrType::Array(_, _) | IrType::Tuple(_) | IrType::Struct(_) | IrType::Enum(_) => {
                 Self::new_array(diags, span, ty.size_bits())
             }
         }

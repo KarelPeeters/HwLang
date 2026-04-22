@@ -35,13 +35,12 @@ pub struct IrDatabase<M = IrModuleInfo> {
 
 pub type IrModules<M = IrModuleInfo> = Arena<IrModule, M>;
 
-// TODO reorder
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {
     Bool,
     Int(ClosedNonEmptyRange<BigInt>),
-    Tuple(Vec<IrType>),
     Array(Box<IrType>, BigUint),
+    Tuple(Vec<IrType>),
     Struct(IrStructType),
     Enum(IrEnumType),
 }
@@ -320,12 +319,8 @@ pub enum IrExpressionLarge {
     ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
     StructLiteral(IrStructType, Vec<IrExpression>),
     EnumLiteral(IrEnumType, usize, Option<IrExpression>),
-
+    
     // slice
-    TupleIndex {
-        base: IrExpression,
-        index: usize,
-    },
     ArrayIndex {
         base: IrExpression,
         index: IrExpression,
@@ -335,7 +330,10 @@ pub enum IrExpressionLarge {
         start: IrExpression,
         len: BigUint,
     },
-
+    TupleIndex {
+        base: IrExpression,
+        index: usize,
+    },
     StructField {
         base: IrExpression,
         field: usize,
@@ -430,8 +428,8 @@ impl IrType {
         match self {
             IrType::Bool => HardwareType::Bool,
             IrType::Int(range) => HardwareType::Int(ClosedNonEmptyMultiRange::from(range.clone())),
-            IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
             IrType::Array(inner, len) => HardwareType::Array(Arc::new(inner.as_type_hw()), len.clone()),
+            IrType::Tuple(inner) => HardwareType::Tuple(Arc::new(inner.iter().map(IrType::as_type_hw).collect())),
             IrType::Struct(info) => HardwareType::Struct(info.ty),
             IrType::Enum(info) => HardwareType::Enum(info.ty),
         }
@@ -570,20 +568,15 @@ impl IrExpression {
                     IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
                     IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
-                    IrExpressionLarge::TupleLiteral(v) => {
-                        IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect())
-                    }
                     IrExpressionLarge::ArrayLiteral(ty_inner, len, _values) => {
                         IrType::Array(Box::new(ty_inner.clone()), len.clone())
+                    }
+                    IrExpressionLarge::TupleLiteral(v) => {
+                        IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect())
                     }
                     IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
                     IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
 
-                    &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let base_ty = base.ty(module, locals).unwrap_tuple();
-                        base_ty[index].clone()
-                    }
-                    // TODO store resulting type in expression instead?
                     IrExpressionLarge::ArrayIndex { base, .. } => {
                         let (inner_ty, _) = base.ty(module, locals).unwrap_array();
                         inner_ty
@@ -592,7 +585,11 @@ impl IrExpression {
                         let (inner_ty, _) = base.ty(module, locals).unwrap_array();
                         IrType::Array(Box::new(inner_ty), len.clone())
                     }
-
+                    &IrExpressionLarge::TupleIndex { ref base, index } => {
+                        let base_ty = base.ty(module, locals).unwrap_tuple();
+                        base_ty[index].clone()
+                    }
+                    // TODO store resulting type in expression instead?
                     &IrExpressionLarge::StructField { ref base, field } => {
                         let base_ty = base.ty(module, locals).unwrap_struct();
                         base_ty.fields[field].clone()
@@ -657,7 +654,6 @@ impl IrExpression {
                         f(x);
                     }
                 }
-                IrExpressionLarge::TupleIndex { base, index: _ } => f(base),
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     f(base);
                     f(index);
@@ -666,6 +662,7 @@ impl IrExpression {
                     f(base);
                     f(start);
                 }
+                IrExpressionLarge::TupleIndex { base, index: _ } => f(base),
                 IrExpressionLarge::StructField { base, field: _ } => {
                     f(base);
                 }
@@ -780,18 +777,19 @@ impl IrExpression {
                         None
                     }
                 }
-                IrExpressionLarge::StructLiteral(ty, fields) => {
-                    build_nary(f, fields).map(|new| IrExpressionLarge::StructLiteral(ty.clone(), new)).map(|e| large.push_expr(e))
-                }
+                IrExpressionLarge::StructLiteral(ty, fields) => build_nary(f, fields)
+                    .map(|new| IrExpressionLarge::StructLiteral(ty.clone(), new))
+                    .map(|e| large.push_expr(e)),
                 &IrExpressionLarge::EnumLiteral(ref ty, variant, ref payload) => {
                     if let Some(payload) = payload {
-                        build_unary!(|payload| large.push_expr(IrExpressionLarge::EnumLiteral(ty.clone(), variant, Some(payload))))
+                        build_unary!(|payload| large.push_expr(IrExpressionLarge::EnumLiteral(
+                            ty.clone(),
+                            variant,
+                            Some(payload)
+                        )))
                     } else {
                         None
                     }
-                }
-                &IrExpressionLarge::TupleIndex { ref base, index } => {
-                    build_unary!(|base| large.push_expr(IrExpressionLarge::TupleIndex { base, index }))
                 }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     build_binary!(|base, index| large.push_expr(IrExpressionLarge::ArrayIndex { base, index }))
@@ -802,6 +800,9 @@ impl IrExpression {
                         start,
                         len: len.clone()
                     }))
+                }
+                &IrExpressionLarge::TupleIndex { ref base, index } => {
+                    build_unary!(|base| large.push_expr(IrExpressionLarge::TupleIndex { base, index }))
                 }
                 &IrExpressionLarge::StructField { ref base, field } => {
                     build_unary!(|base| large.push_expr(IrExpressionLarge::StructField { base, field }))
