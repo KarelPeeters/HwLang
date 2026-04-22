@@ -1,14 +1,10 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::DiagResult;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo,
 };
 use crate::front::value::{CompileValue, HardwareValue};
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
-use crate::mid::ir::{
-    IrArrayLiteralElement, IrEnumType, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrStructType,
-    IrType,
-};
+use crate::mid::ir::{IrEnumType, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrStructType, IrType};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
 use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
@@ -62,48 +58,7 @@ pub enum HardwareType {
 #[derive(Debug, Copy, Clone)]
 pub struct TypeBool;
 
-// TODO get rid of most of this, this was moved to IR
 impl HardwareEnumInfo {
-    pub fn padding_for_variant(&self, variant: usize) -> usize {
-        let content_size = match &self.payload_types[variant] {
-            None => 0,
-            Some((_, ty_ir)) => usize::try_from(ty_ir.size_bits()).unwrap(),
-        };
-
-        assert!(content_size <= self.max_payload_size);
-        self.max_payload_size - content_size
-    }
-
-    pub fn build_ir_expression(
-        &self,
-        large: &mut IrLargeArena,
-        variant: usize,
-        content_bits: Option<IrExpression>,
-    ) -> DiagResult<IrExpression> {
-        assert_eq!(self.payload_types[variant].is_some(), content_bits.is_some());
-
-        // tag
-        let ir_tag =
-            IrExpressionLarge::ExpandIntRange(self.tag_range.clone(), IrExpression::Int(BigInt::from(variant)));
-
-        // content
-        let mut ir_elements = vec![];
-        if let Some(content_bits) = content_bits {
-            ir_elements.push(IrArrayLiteralElement::Spread(content_bits));
-        }
-
-        // padding
-        for _ in 0..self.padding_for_variant(variant) {
-            ir_elements.push(IrArrayLiteralElement::Single(IrExpression::Bool(false)));
-        }
-
-        // build final expression
-        let ir_content =
-            IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.max_payload_size), ir_elements);
-        let ir_expr = IrExpressionLarge::TupleLiteral(vec![large.push_expr(ir_tag), large.push_expr(ir_content)]);
-        Ok(large.push_expr(ir_expr))
-    }
-
     pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: IrExpression, variant: usize) -> IrExpression {
         let tag = large.push_expr(IrExpressionLarge::EnumTag { base: value });
 

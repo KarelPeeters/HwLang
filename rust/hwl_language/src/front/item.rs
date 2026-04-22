@@ -7,8 +7,7 @@ use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
-use crate::front::scope::{CaptureFailed, DeclaredValueSingle, ScopeKey, ScopedEntry};
-use crate::front::scope::{NamedValue, Scope};
+use crate::front::scope::{CaptureFailed, DeclaredValueSingle, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
 use crate::mid::ir::{IrEnumType, IrStructType, IrType};
@@ -22,7 +21,7 @@ use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, A
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
 use crate::util::ResultExt;
-use crate::util::big_int::{BigInt, BigUint};
+use crate::util::big_int::BigInt;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
@@ -304,8 +303,6 @@ pub struct HardwareEnumInfo {
     pub ty_ir: IrEnumType,
     pub tag_range: ClosedNonEmptyRange<BigInt>,
     pub payload_types: Vec<Option<(HardwareType, IrType)>>,
-    // TODO remove once this (or something similar enough) is cached in HardwareType
-    pub max_payload_size: usize,
 }
 
 impl GenericEnumInfo {
@@ -1118,7 +1115,7 @@ impl CompileItemContext<'_, '_> {
 
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
-        let hw = try_enum_as_hardware(self.refs, &variants_eval, span_body, &debug_info_name, new_elab)?;
+        let hw = try_enum_as_hardware(self.refs, &variants_eval, &debug_info_name, new_elab)?;
 
         Ok(ElaboratedEnumInfo {
             unique,
@@ -1225,11 +1222,9 @@ pub fn debug_info_name_including_params(
 fn try_enum_as_hardware(
     refs: CompileRefs,
     variants_eval: &IndexMap<String, ElaboratedEnumVariantInfo>,
-    span_body: Span,
     debug_info_name: &str,
     new_elab: ElaboratedEnum,
 ) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
-    let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
     if variants_eval.is_empty() {
@@ -1253,18 +1248,7 @@ fn try_enum_as_hardware(
         payload_types.push(ty_hw);
     }
 
-    // at this point we know the enum can be represented in hardware
-    // calculate total size
-    let max_content_size = payload_types
-        .iter()
-        .filter_map(Option::as_ref)
-        .map(|(_, ty)| ty.size_bits())
-        .max()
-        .unwrap_or(BigUint::ZERO);
-    let max_content_size = usize::try_from(max_content_size)
-        .map_err(|size| diags.report_error_simple("enum size too large", span_body, format!("got size {size}")))?;
-
-    // wrap
+    // wrap result
     let tag_range = ClosedNonEmptyRange {
         start: BigInt::ZERO,
         end: BigInt::from(variants_eval.len()),
@@ -1281,7 +1265,6 @@ fn try_enum_as_hardware(
         ty_ir,
         tag_range,
         payload_types,
-        max_payload_size: max_content_size,
     };
     Ok(Ok(info))
 }
