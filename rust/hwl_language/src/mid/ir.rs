@@ -35,6 +35,7 @@ pub struct IrDatabase<M = IrModuleInfo> {
 
 pub type IrModules<M = IrModuleInfo> = Arena<IrModule, M>;
 
+// TODO reorder
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum IrType {
     Bool,
