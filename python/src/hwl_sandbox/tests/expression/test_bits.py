@@ -51,6 +51,64 @@ def test_bool_from_bits_signed(tmp_dir: Path):
     c.eval_assert([[True, True]], -1)
 
 
+def test_struct_to_bits(tmp_dir: Path):
+    prefix = "struct Pair { a: bool, b: uint(0..4) }"
+    body = "return Pair.to_bits(Pair.new(a=a0, b=a1));"
+    c = compare_body(["bool", "uint(0..4)"], "[3]bool", body, tmp_dir, prefix)
+    c.eval_assert([False, 0], [False, False, False])
+    c.eval_assert([True, 2], [True, False, True])
+    c.eval_assert([False, 3], [False, True, True])
+
+
+def test_struct_from_bits(tmp_dir: Path):
+    prefix = "struct Pair { a: bool, b: uint(0..4) }"
+    body = """
+    val p = Pair.from_bits(a0);
+    return (p.a, p.b);
+    """
+    c = compare_body(["[3]bool"], "Tuple(bool, uint(0..4))", body, tmp_dir, prefix)
+    c.eval_assert([[False, False, False]], (False, 0))
+    c.eval_assert([[True, False, True]], (True, 2))
+    c.eval_assert([[False, True, True]], (False, 3))
+
+
+def test_enum_to_bits(tmp_dir: Path):
+    prefix = "enum E { Empty, Left(bool), Right(uint(0..4)) }"
+    body = """
+    val e: E;
+    if (a0 == 0) {
+        e = E.Empty;
+    } else if (a0 == 1) {
+        e = E.Left(a1);
+    } else {
+        e = E.Right(a2);
+    }
+    return E.to_bits(e);
+    """
+    c = compare_body(["int(0..3)", "bool", "uint(0..4)"], "[4]bool", body, tmp_dir, prefix)
+    c.eval_assert([0, False, 0], [False, False, False, False])
+    c.eval_assert([1, False, 0], [True, False, False, False])
+    c.eval_assert([1, True, 0], [True, False, True, False])
+    c.eval_assert([2, False, 2], [False, True, False, True])
+
+
+def test_enum_from_bits(tmp_dir: Path):
+    prefix = "enum E { Empty, Left(bool), Right(uint(0..4)) }"
+    body = """
+    val e = E.from_bits_unsafe(a0);
+    match (e) {
+        .Empty => { return (0, false, 0); }
+        .Left(val v) => { return (1, v, 0); }
+        .Right(val v) => { return (2, false, v); }
+    }
+    """
+    c = compare_body(["[4]bool"], "Tuple(uint(0..3), bool, uint(0..4))", body, tmp_dir, prefix)
+    c.eval_assert([[False, False, False, False]], (0, False, 0))
+    c.eval_assert([[True, False, False, False]], (1, False, 0))
+    c.eval_assert([[True, False, True, False]], (1, True, 0))
+    c.eval_assert([[False, True, False, True]], (2, False, 2))
+
+
 def test_from_bits_rejected():
     src = """
         fn f(x: [2]bool) -> int(0..3) {
