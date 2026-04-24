@@ -15,13 +15,13 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::try_inner;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
-use crate::util::data::{GrowVec, IndexMapExt};
+use crate::util::data::{GrowVec, IndexMapExt, VecExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, enumerate};
+use itertools::{Either, Itertools, enumerate};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -1389,71 +1389,57 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         Evaluated::String(format!("({left} {op_str} {right})"))
                     }
 
-                    IrExpressionLarge::TupleLiteral(elements) => {
-                        // verilog does not care much about types, this is just a concatenation
-                        //  (assuming all sub-expression have the right width, which they should)
-                        // the order is flipped, verilog concatenation is high->low index
-                        // TODO this is probably incorrect in general, we need to store the tuple in a variable first
-                        let mut g = String::new();
-                        let mut any_prev = false;
-                        swrite!(g, "{{");
-                        for elem in elements.iter().rev() {
-                            let elem = match self.lower_expression(span, elem)? {
-                                Ok(elem) => elem,
-                                Err(ZeroWidth) => continue,
-                            };
-
-                            if any_prev {
-                                swrite!(g, ", ");
-                            }
-                            swrite!(g, "{elem}");
-                            any_prev = true;
-                        }
-                        swrite!(g, "}}");
-                        Evaluated::String(g)
-                    }
+                    IrExpressionLarge::TupleLiteral(elements) => self.lower_concatenation(span, elements)?,
                     IrExpressionLarge::ArrayLiteral(_inner_ty, _len, elements) => {
-                        // verilog does not care much about types, this is just a concatenation
-                        //  (assuming all sub-expression have the right width, which they should)
-                        // the order is flipped, verilog concatenation is high->low index
-                        // TODO use repeat operator if array elements are repeated
-                        let mut g = String::new();
-                        let mut any_prev = false;
-                        swrite!(g, "{{");
-                        for elem in elements.iter().rev() {
-                            let elem = match elem {
-                                IrArrayLiteralElement::Spread(inner) => inner,
-                                IrArrayLiteralElement::Single(inner) => inner,
-                            };
-                            let elem = match self.lower_expression(span, elem)? {
-                                Ok(elem) => elem,
-                                Err(ZeroWidth) => continue,
-                            };
+                        // verilog just flattens everything to bits, so the spread operator happens automatically
+                        let elements = elements.iter().map(|e| match e {
+                            IrArrayLiteralElement::Spread(e) => e,
+                            IrArrayLiteralElement::Single(e) => e,
+                        });
+                        self.lower_concatenation(span, elements)?
+                    }
+                    IrExpressionLarge::StructLiteral(_ty, fields) => self.lower_concatenation(span, fields)?,
+                    &IrExpressionLarge::EnumLiteral(ref ty, variant, ref payload) => {
+                        let mut elements = vec![];
 
-                            if any_prev {
-                                swrite!(g, ", ");
+                        // tag
+                        let tag_range = ty.tag_range();
+                        match NonZeroWidthRange::new(tag_range) {
+                            Ok(tag_range) => {
+                                let tag_value = lower_int_constant(&tag_range, &BigInt::from(variant));
+                                elements.push(tag_value);
                             }
-                            swrite!(g, "{elem}");
-                            any_prev = true;
-                        }
-                        swrite!(g, "}}");
-                        Evaluated::String(g)
-                    }
-                    &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
-                        let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
-                        let size_bits = ty[index].size_bits();
+                            Err(ZeroWidth) => {}
+                        };
 
-                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
-
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{start_bits}");
-                        if size_bits != BigUint::ONE {
-                            swrite!(g, " +: {size_bits}");
+                        // payload
+                        if let Some(payload) = payload {
+                            match self.lower_expression(span, payload)? {
+                                Ok(payload) => {
+                                    elements.push(payload);
+                                }
+                                Err(ZeroWidth) => {}
+                            }
                         }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+
+                        // padding
+                        let payload_size = ty.variants[variant].as_ref().map_or(BigUint::ZERO, |v| v.size_bits());
+                        let delta = ty.max_payload_size_bits() - payload_size;
+                        if delta > BigInt::ZERO {
+                            // TODO this could be X? Or will we use the convention that padding needs to be zero?
+                            elements.push(Evaluated::String(format!("{}'b0", delta)));
+                        }
+
+                        // concatenation
+                        assert!(!elements.is_empty(), "already checked for zero width earlier");
+                        match elements.single() {
+                            Ok(element) => element,
+                            Err(elements) => {
+                                Evaluated::String(format!("{{{}}}", elements.into_iter().rev().join(", ")))
+                            }
+                        }
                     }
+
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
@@ -1464,37 +1450,57 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
                         let index = self.lower_expression_int_expanded(span, &bit_range, index)?;
-
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{index}");
-                        if element_size_bits != BigUint::ONE {
-                            swrite!(g, " * {element_size_bits} +: {element_size_bits}");
-                        }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+                        evaluate_bit_slice(base, index, &element_size_bits, &element_size_bits)
                     }
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
                         let base_ty = base.ty(self.module, self.locals);
                         let bit_range = bit_index_range(&base_ty.size_bits());
+
                         let (element_ty, _) = base_ty.unwrap_array();
                         let element_size_bits = element_ty.size_bits();
                         let len_bits = len * &element_size_bits;
 
-                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
-                        let index = self.lower_expression_int_expanded(span, &bit_range, start)?;
+                        let start = self.lower_expression_int_expanded(span, &bit_range, start)?;
 
-                        let mut g = String::new();
-                        swrite!(g, "({base}[{index}");
-                        if element_size_bits != BigUint::ONE {
-                            swrite!(g, " * {element_size_bits}")
-                        };
-                        if len_bits != BigUint::ONE {
-                            swrite!(g, " +: {len_bits}");
-                        }
-                        swrite!(g, "])");
-                        Evaluated::String(g)
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, start, &element_size_bits, &len_bits)
+                    }
+                    &IrExpressionLarge::TupleIndex { ref base, index } => {
+                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
+                        let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
+                        let size_bits = ty[index].size_bits();
+
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
+                    }
+                    &IrExpressionLarge::StructField { ref base, field } => {
+                        let base_ty = base.ty(self.module, self.locals).unwrap_struct();
+                        let offset = base_ty.field_offset(field);
+                        let size_bits = base_ty.fields[field].size_bits();
+
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, offset, &BigUint::ONE, &size_bits)
+                    }
+                    IrExpressionLarge::EnumTag { base } => {
+                        let base_ty = base.ty(self.module, self.locals).unwrap_enum();
+                        let size_bits = base_ty.tag_size_bits();
+
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, BigUint::ZERO, &BigUint::ONE, &size_bits)
+                    }
+                    &IrExpressionLarge::EnumPayload { ref base, variant } => {
+                        let base_ty = base.ty(self.module, self.locals).unwrap_enum();
+
+                        let offset = base_ty.tag_size_bits();
+                        let size_bits = base_ty.variants[variant]
+                            .as_ref()
+                            .expect("cannot get payload of non-payload variant")
+                            .size_bits();
+
+                        let base = try_inner!(self.lower_expression_as_named(span, base)?);
+                        evaluate_bit_slice(base, offset, &BigUint::ONE, &size_bits)
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
@@ -1529,6 +1535,35 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             }
         };
         Ok(Ok(eval))
+    }
+
+    /// Verilog does not care much about types, so many different expressions (array/struct/tuple/enum literals) all
+    /// just turn into simple concatenations.
+    /// The strict typing of the sub-expressions should ensure they all have the right width.
+    ///
+    /// We flip the concatenation order so that lower fields/indices end up at lower bit indices.
+    fn lower_concatenation<'e, I: DoubleEndedIterator<Item = &'e IrExpression>>(
+        &mut self,
+        span: Span,
+        elements: impl IntoIterator<IntoIter = I>,
+    ) -> DiagResult<Evaluated<'static>> {
+        let mut g = String::new();
+        let mut any_prev = false;
+        swrite!(g, "{{");
+        for elem in elements.into_iter().rev() {
+            let elem = match self.lower_expression(span, elem)? {
+                Ok(elem) => elem,
+                Err(ZeroWidth) => continue,
+            };
+
+            if any_prev {
+                swrite!(g, ", ");
+            }
+            swrite!(g, "{elem}");
+            any_prev = true;
+        }
+        swrite!(g, "}}");
+        Ok(Evaluated::String(g))
     }
 
     fn lower_arithmetic_expression(
@@ -1872,6 +1907,24 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     }
 }
 
+fn evaluate_bit_slice(
+    base: Evaluated,
+    start_index: impl Display,
+    step_size_bits: &BigUint,
+    len_bits: &BigUint,
+) -> Evaluated<'static> {
+    let mut g = String::new();
+    swrite!(g, "({base}[{start_index}");
+    if step_size_bits != &BigUint::ONE {
+        swrite!(g, " * {step_size_bits}")
+    };
+    if len_bits != &BigUint::ONE {
+        swrite!(g, " +: {len_bits}");
+    }
+    swrite!(g, "])");
+    Evaluated::String(g)
+}
+
 /// Create a range that can be used for bit indexing, slicing and related math for the given size.
 fn bit_index_range(size_bits: &BigUint) -> NonZeroWidthRange {
     let bit_index_range = ClosedNonEmptyRange {
@@ -2023,7 +2076,9 @@ impl VerilogType {
     pub fn new_from_ir(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<Result<VerilogType, ZeroWidth>> {
         match ty {
             IrType::Bool => Ok(Ok(VerilogType::Bit)),
-            IrType::Int(_) | IrType::Tuple(_) | IrType::Array(_, _) => Self::new_array(diags, span, ty.size_bits()),
+            IrType::Int(_) | IrType::Array(_, _) | IrType::Tuple(_) | IrType::Struct(_) | IrType::Enum(_) => {
+                Self::new_array(diags, span, ty.size_bits())
+            }
         }
     }
 

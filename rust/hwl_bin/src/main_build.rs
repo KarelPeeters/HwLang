@@ -17,6 +17,7 @@ use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
+use hwl_util::io::IoErrorExt;
 use itertools::Itertools;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         eprintln!("Collected sources:");
         for file in source.files() {
             let file_info = &source[file];
-            eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path,);
+            eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path);
         }
         eprintln!("Collected hierarchy:");
         fn print_node(prefix: &str, node: &HierarchyNode) {
@@ -135,6 +136,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     let thread_pool = thread_count.map(ThreadPool::new);
 
     // find top modules
+    // TODO print warning if no top modules selected?
     let start_compile = Instant::now();
     let top_values = top
         .iter()
@@ -146,6 +148,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
 
     // run compilation loop
     refs.run_compile_loop(thread_pool.as_ref());
+
     // filter top modules
     //   we allowed other top values earlier, they could be useful as compilation roots too
     let top_modules = top_values
@@ -212,10 +215,26 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         }
     }
 
+    // write outputs
+    let mut any_error = false;
+    let start_output = Instant::now();
+    for (path, output) in outputs {
+        println!("writing output len {} to {}", output.len(), path.to_string_lossy());
+        match std::fs::write(&path, output).map_err(|e| e.with_path(path)) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("output error: {:?}", e);
+                any_error = true;
+            }
+        }
+    }
+    let time_output = start_output.elapsed();
+
     let time_all = start_all.elapsed();
 
     // print diagnostics
-    let any_error = print_diagnostics(&source, diags);
+    // TODO warnings should maybe not cause nonzero exit codes? add -Werr-like flag
+    any_error |= print_diagnostics(&source, diags);
 
     // print profiling info
     // TODO expand to include separate profiling info for each elaborated item
@@ -242,6 +261,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         eprintln!("lower ir:         {}", fmt_duration(time_lower_ir));
         eprintln!("lower verilog:    {}", fmt_duration(time_lower_verilog));
         eprintln!("lower c++:        {}", fmt_duration(time_lower_cpp));
+        eprintln!("write outputs:    {time_output:?}");
         eprintln!("-----------------------------------------------");
         eprintln!("total:            {time_all:?}");
         eprintln!();

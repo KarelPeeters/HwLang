@@ -90,6 +90,7 @@ ptr_arg = "allow"
 single_match = "allow"
 single_range_in_vec_init = "allow"
 collapsible_if = "allow"
+collapsible_match = "allow"
 wrong_self_convention = "allow"
 
 # These should be investigated and fixed and some point.

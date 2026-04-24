@@ -1015,7 +1015,7 @@ impl<'a> CompileItemContext<'a, '_> {
             match index_str.inner {
                 "size_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
-                    let width = ty_hw.as_ir(refs).size_bits();
+                    let width = ty_hw.size_bits(refs);
                     return Ok(Value::new_int(width.into()));
                 }
                 // TODO all of these should return functions with a single params,
@@ -1207,11 +1207,11 @@ impl<'a> CompileItemContext<'a, '_> {
                     match base_eval.ty {
                         HardwareType::Struct(elab) => {
                             let elab_info = self.refs.shared.elaboration_arenas.struct_info(elab.inner());
-                            let field_types = elab_info.fields_hw.as_ref().unwrap();
+                            let field_types = &elab_info.hw.as_ref().unwrap().fields;
 
-                            let expr = IrExpressionLarge::TupleIndex {
+                            let expr = IrExpressionLarge::StructField {
                                 base: base_eval.expr,
-                                index: field_index,
+                                field: field_index,
                             };
                             Value::Hardware(HardwareValue {
                                 ty: field_types[field_index].clone(),

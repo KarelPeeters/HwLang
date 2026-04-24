@@ -493,12 +493,14 @@ impl ValueCommon for MixedCompoundValue {
             MixedCompoundValue::Struct(v) => match &ty {
                 HardwareType::Struct(ty_hw) if ty_hw.inner() == v.ty => {
                     let info = refs.shared.elaboration_arenas.struct_info(ty_hw.inner());
-                    let fields_hw = info.fields_hw.as_ref().expect("hardware struct");
+                    let info_hw = info.hw.as_ref().unwrap();
 
-                    let result = zip_eq(v.fields.iter(), fields_hw.iter())
+                    let fields_ir = zip_eq(v.fields.iter(), info_hw.fields.iter())
                         .map(|(e, e_ty)| e.as_ir_expression_unchecked(refs, large, span, e_ty))
                         .try_collect_vec()?;
-                    Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+
+                    let result = IrExpressionLarge::StructLiteral(info_hw.ty_ir.clone(), fields_ir);
+                    Ok(large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -512,18 +514,16 @@ impl ValueCommon for MixedCompoundValue {
                     let info = refs.shared.elaboration_arenas.enum_info(ty_hw.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
-                    // convert content to bits
-                    let payload_bits = payload
+                    let payload_ir = payload
                         .as_ref()
                         .map(|payload| {
                             let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
-                            let payload_expr = payload.as_ir_expression_unchecked(refs, large, span, payload_ty)?;
-                            Ok(large.push_expr(IrExpressionLarge::ToBits(payload_ty.as_ir(refs), payload_expr)))
+                            payload.as_ir_expression_unchecked(refs, large, span, payload_ty)
                         })
                         .transpose()?;
 
-                    // build the entire ir expression
-                    info_hw.build_ir_expression(large, variant, payload_bits)
+                    let result = IrExpressionLarge::EnumLiteral(info_hw.ty_ir.clone(), variant, payload_ir);
+                    Ok(large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -620,28 +620,6 @@ impl ValueCommon for HardwareValue {
                     Err(err_type())
                 }
             }
-            (HardwareType::Tuple(ty_curr), HardwareType::Tuple(ty)) => {
-                if ty_curr.len() != ty.len() {
-                    return Err(err_type());
-                }
-
-                let result = (0..ty.len())
-                    .map(|i| {
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
-                            base: self.expr.clone(),
-                            index: i,
-                        });
-                        let curr_elem_hw = HardwareValue {
-                            ty: ty_curr[i].clone(),
-                            domain: self.domain,
-                            expr: curr_elem_expr,
-                        };
-                        curr_elem_hw.as_ir_expression_unchecked(refs, large, span, &ty[i])
-                    })
-                    .try_collect_vec()?;
-
-                Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
-            }
             (HardwareType::Array(ty_inner_curr, len_curr), HardwareType::Array(ty_inner, len)) => {
                 if len_curr != len {
                     return Err(err_type());
@@ -681,6 +659,28 @@ impl ValueCommon for HardwareValue {
                     result,
                 )))
             }
+            (HardwareType::Tuple(ty_curr), HardwareType::Tuple(ty)) => {
+                if ty_curr.len() != ty.len() {
+                    return Err(err_type());
+                }
+
+                let result = (0..ty.len())
+                    .map(|i| {
+                        let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                            base: self.expr.clone(),
+                            index: i,
+                        });
+                        let curr_elem_hw = HardwareValue {
+                            ty: ty_curr[i].clone(),
+                            domain: self.domain,
+                            expr: curr_elem_expr,
+                        };
+                        curr_elem_hw.as_ir_expression_unchecked(refs, large, span, &ty[i])
+                    })
+                    .try_collect_vec()?;
+
+                Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+            }
             (HardwareType::Struct(_), HardwareType::Struct(_)) | (HardwareType::Enum(_), HardwareType::Enum(_)) => {
                 // there's no struct or enum subtyping yet, so this is always an error for now
                 Err(err_type())
@@ -689,8 +689,8 @@ impl ValueCommon for HardwareValue {
                 HardwareType::Undefined
                 | HardwareType::Bool
                 | HardwareType::Int(_)
-                | HardwareType::Tuple(_)
                 | HardwareType::Array(_, _)
+                | HardwareType::Tuple(_)
                 | HardwareType::Struct(_)
                 | HardwareType::Enum(_),
                 _,
@@ -760,6 +760,7 @@ impl<C, H> Value<SimpleCompileValue, C, H> {
         }
     }
 
+    // TODO accept Into<BigInt>
     pub fn new_int(v: BigInt) -> Self {
         Value::Simple(SimpleCompileValue::Int(v))
     }

@@ -1,14 +1,15 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::DiagResult;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedStruct, ElaborationArenas, HardwareChecked, HardwareEnumInfo,
 };
-use crate::front::value::HardwareValue;
-use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrType};
+use crate::front::value::{CompileValue, HardwareValue};
+use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
+use crate::mid::ir::{IrEnumType, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrStructType, IrType};
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::int::IntRepresentation;
 use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultExt};
-use itertools::{Itertools, zip_eq};
+use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 
 // TODO add an arena for types?
@@ -24,8 +25,8 @@ pub enum Type {
     Bool,
     String,
     Int(MultiRange<BigInt>),
-    Tuple(Option<Arc<Vec<Type>>>),
     Array(Arc<Type>, Option<BigUint>),
+    Tuple(Option<Arc<Vec<Type>>>),
     // TODO make user type covariant? or allow users to define variance?
     Struct(ElaboratedStruct),
     Enum(ElaboratedEnum),
@@ -42,13 +43,14 @@ pub enum Type {
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
+// TODO get rid of this
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HardwareType {
     Undefined,
     Bool,
     Int(ClosedNonEmptyMultiRange<BigInt>),
-    Tuple(Arc<Vec<HardwareType>>),
     Array(Arc<HardwareType>, BigUint),
+    Tuple(Arc<Vec<HardwareType>>),
     Struct(HardwareChecked<ElaboratedStruct>),
     Enum(HardwareChecked<ElaboratedEnum>),
 }
@@ -57,48 +59,8 @@ pub enum HardwareType {
 pub struct TypeBool;
 
 impl HardwareEnumInfo {
-    pub fn padding_for_variant(&self, variant: usize) -> usize {
-        let content_size = match &self.payload_types[variant] {
-            None => 0,
-            Some((_, ty_ir)) => usize::try_from(ty_ir.size_bits()).unwrap(),
-        };
-
-        assert!(content_size <= self.max_payload_size);
-        self.max_payload_size - content_size
-    }
-
-    pub fn build_ir_expression(
-        &self,
-        large: &mut IrLargeArena,
-        variant: usize,
-        content_bits: Option<IrExpression>,
-    ) -> DiagResult<IrExpression> {
-        assert_eq!(self.payload_types[variant].is_some(), content_bits.is_some());
-
-        // tag
-        let ir_tag =
-            IrExpressionLarge::ExpandIntRange(self.tag_range.clone(), IrExpression::Int(BigInt::from(variant)));
-
-        // content
-        let mut ir_elements = vec![];
-        if let Some(content_bits) = content_bits {
-            ir_elements.push(IrArrayLiteralElement::Spread(content_bits));
-        }
-
-        // padding
-        for _ in 0..self.padding_for_variant(variant) {
-            ir_elements.push(IrArrayLiteralElement::Single(IrExpression::Bool(false)));
-        }
-
-        // build final expression
-        let ir_content =
-            IrExpressionLarge::ArrayLiteral(IrType::Bool, BigUint::from(self.max_payload_size), ir_elements);
-        let ir_expr = IrExpressionLarge::TupleLiteral(vec![large.push_expr(ir_tag), large.push_expr(ir_content)]);
-        Ok(large.push_expr(ir_expr))
-    }
-
     pub fn check_tag_matches(&self, large: &mut IrLargeArena, value: IrExpression, variant: usize) -> IrExpression {
-        let tag = large.push_expr(IrExpressionLarge::TupleIndex { base: value, index: 0 });
+        let tag = large.push_expr(IrExpressionLarge::EnumTag { base: value });
 
         large.push_expr(IrExpressionLarge::IntCompare(
             IrIntCompareOp::Eq,
@@ -113,18 +75,12 @@ impl HardwareEnumInfo {
         value: &HardwareValue,
         variant: usize,
     ) -> Option<HardwareValue> {
-        let (payload_ty, payload_ty_ir) = self.payload_types[variant].as_ref()?;
+        let (payload_ty, _) = self.payload_types[variant].as_ref()?;
 
-        let payload_bits_all = large.push_expr(IrExpressionLarge::TupleIndex {
+        let payload = large.push_expr(IrExpressionLarge::EnumPayload {
             base: value.expr.clone(),
-            index: 1,
+            variant,
         });
-        let payload_bits = large.push_expr(IrExpressionLarge::ArraySlice {
-            base: payload_bits_all,
-            start: IrExpression::Int(BigInt::ZERO),
-            len: payload_ty_ir.size_bits(),
-        });
-        let payload = large.push_expr(IrExpressionLarge::FromBits(payload_ty_ir.clone(), payload_bits));
 
         Some(HardwareValue {
             ty: payload_ty.clone(),
@@ -173,6 +129,14 @@ impl Type {
 
             (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
+            (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
+                let result_inner = a_inner.union(b_inner);
+                if a_len == b_len {
+                    Type::Array(Arc::new(result_inner), a_len.clone())
+                } else {
+                    Type::Array(Arc::new(result_inner), None)
+                }
+            }
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if let Some(a) = a
                     && let Some(b) = b
@@ -183,14 +147,6 @@ impl Type {
                     )))
                 } else {
                     Type::Tuple(None)
-                }
-            }
-            (Type::Array(a_inner, a_len), Type::Array(b_inner, b_len)) => {
-                let result_inner = a_inner.union(b_inner);
-                if a_len == b_len {
-                    Type::Array(Arc::new(result_inner), a_len.clone())
-                } else {
-                    Type::Array(Arc::new(result_inner), None)
                 }
             }
             (&Type::Struct(a_elab), &Type::Struct(b_elab)) => {
@@ -233,8 +189,8 @@ impl Type {
                 | Type::Interface
                 | Type::InterfaceView
                 | Type::Int(_)
-                | Type::Tuple(_)
                 | Type::Array(_, _)
+                | Type::Tuple(_)
                 | Type::Struct(_)
                 | Type::Enum(_)
                 | Type::Ref(_)
@@ -260,6 +216,12 @@ impl Type {
                 Ok(range) => Ok(HardwareType::Int(range)),
                 Err(_) => Err(NonHardwareType),
             },
+            Type::Array(inner, len) => {
+                let len = len.as_ref().ok_or(NonHardwareType)?;
+                inner
+                    .as_hardware_type(elab)
+                    .map(|inner| HardwareType::Array(Arc::new(inner), len.clone()))
+            }
             Type::Tuple(inner) => match inner {
                 Some(inner) => inner
                     .iter()
@@ -268,15 +230,9 @@ impl Type {
                     .map(|v| HardwareType::Tuple(Arc::new(v))),
                 None => Err(NonHardwareType),
             },
-            Type::Array(inner, len) => {
-                let len = len.as_ref().ok_or(NonHardwareType)?;
-                inner
-                    .as_hardware_type(elab)
-                    .map(|inner| HardwareType::Array(Arc::new(inner), len.clone()))
-            }
             &Type::Struct(ty_struct) => {
                 let info = elab.struct_info(ty_struct);
-                match info.fields_hw {
+                match info.hw {
                     Ok(_) => Ok(HardwareType::Struct(HardwareChecked::new_unchecked(ty_struct))),
                     Err(_) => Err(NonHardwareType),
                 }
@@ -308,10 +264,10 @@ impl HardwareType {
             HardwareType::Undefined => Type::Undefined,
             HardwareType::Bool => Type::Bool,
             HardwareType::Int(range) => Type::Int(MultiRange::from(range.clone())),
+            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), Some(len.clone())),
             HardwareType::Tuple(inner) => {
                 Type::Tuple(Some(Arc::new(inner.iter().map(HardwareType::as_type).collect_vec())))
             }
-            HardwareType::Array(inner, len) => Type::Array(Arc::new(inner.as_type()), Some(len.clone())),
             HardwareType::Struct(elab) => Type::Struct(elab.inner()),
             HardwareType::Enum(elab) => Type::Enum(elab.inner()),
         }
@@ -322,22 +278,95 @@ impl HardwareType {
             HardwareType::Undefined => IrType::Tuple(vec![]),
             HardwareType::Bool => IrType::Bool,
             HardwareType::Int(range) => IrType::Int(range.enclosing_range().cloned()),
-            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),
             HardwareType::Array(inner, len) => IrType::Array(Box::new(inner.as_ir(refs)), len.clone()),
+            HardwareType::Tuple(inner) => IrType::Tuple(inner.iter().map(|ty| ty.as_ir(refs)).collect_vec()),
+            &HardwareType::Struct(ty) => {
+                let info = refs.shared.elaboration_arenas.struct_info(ty.inner());
+                let fields_hw = &info.hw.as_ref().unwrap().fields;
+
+                let fields_ir = zip_eq(info.fields.keys(), fields_hw)
+                    .map(|(field_name, field_ty)| (field_name.clone(), field_ty.as_ir(refs)))
+                    .collect();
+                let info_ty = IrStructType {
+                    ty,
+                    debug_info_name: info.debug_info_name.clone(),
+                    fields: fields_ir,
+                };
+                IrType::Struct(info_ty)
+            }
+            &HardwareType::Enum(ty) => {
+                let info = refs.shared.elaboration_arenas.enum_info(ty.inner());
+                let info_hw = info.hw.as_ref().unwrap();
+
+                let variants_ir = zip_eq(info.variants.keys(), &info_hw.payload_types)
+                    .map(|(variant_name, payload_ty)| {
+                        (variant_name.clone(), payload_ty.as_ref().map(|(_, t)| t.clone()))
+                    })
+                    .collect();
+                let info_ir = IrEnumType {
+                    ty,
+                    debug_info_name: info.debug_info_name.clone(),
+                    variants: variants_ir,
+                };
+                IrType::Enum(info_ir)
+            }
+        }
+    }
+
+    pub fn every_bit_pattern_is_valid(&self, refs: CompileRefs) -> bool {
+        match self {
+            HardwareType::Undefined => true,
+            HardwareType::Bool => true,
+            HardwareType::Int(range) => {
+                let repr = IntRepresentation::for_range(range.enclosing_range());
+                &ClosedNonEmptyMultiRange::from(repr.range()) == range
+            }
+            HardwareType::Array(inner, _len) => inner.every_bit_pattern_is_valid(refs),
+            HardwareType::Tuple(inner) => inner.iter().all(|ty| ty.every_bit_pattern_is_valid(refs)),
             &HardwareType::Struct(elab) => {
                 let info = refs.shared.elaboration_arenas.struct_info(elab.inner());
-                let fields_hw = info.fields_hw.as_ref_ok().unwrap();
-                IrType::Tuple(fields_hw.iter().map(|ty| ty.as_ir(refs)).collect_vec())
+                let fields_hw = &info.hw.as_ref_ok().unwrap().fields;
+                fields_hw.iter().all(|ty| ty.every_bit_pattern_is_valid(refs))
             }
-            HardwareType::Enum(elab) => {
+            &HardwareType::Enum(elab) => {
                 let info = refs.shared.elaboration_arenas.enum_info(elab.inner());
                 let info_hw = info.hw.as_ref().unwrap();
 
-                let tag_ty = IrType::Int(info_hw.tag_range.clone());
-                let data_ty = IrType::Array(Box::new(IrType::Bool), BigUint::from(info_hw.max_payload_size));
-                IrType::Tuple(vec![tag_ty, data_ty])
+                // The tag needs to be fully valid.
+                let tag_repr = IntRepresentation::for_range(info_hw.tag_range.as_ref());
+                if tag_repr.range() != info_hw.tag_range {
+                    return false;
+                }
+
+                // TODO rethink this, this makes enum comparisons trickier,
+                //   it would be nicer to enforce zero bits for padding.
+                // We don't need all variants to be the same size:
+                //   the bits they don't cover will never be used, since the tag should be checked first.
+                // Each variant being valid individually is enough.
+                info_hw
+                    .payload_types
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .all(|(ty, _)| ty.every_bit_pattern_is_valid(refs))
             }
         }
+    }
+
+    // TODO cache converted IR type for these?
+    pub fn size_bits(&self, refs: CompileRefs) -> BigUint {
+        self.as_ir(refs).size_bits()
+    }
+
+    pub fn value_to_bits(&self, refs: CompileRefs, value: &CompileValue) -> Result<Vec<bool>, ToBitsWrongType> {
+        self.as_ir(refs).value_to_bits(value)
+    }
+
+    pub fn value_from_bits(
+        &self,
+        refs: CompileRefs,
+        bits: &[bool],
+    ) -> Result<CompileValue, Either<FromBitsInvalidValue, FromBitsWrongLength>> {
+        self.as_ir(refs).value_from_bits(bits)
     }
 }
 

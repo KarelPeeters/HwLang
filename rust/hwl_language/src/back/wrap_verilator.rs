@@ -1,4 +1,4 @@
-use crate::front::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
+use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::item::ElaborationArenas;

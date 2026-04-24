@@ -302,28 +302,6 @@ fn print_hardware_sub(
             let sub = IrStringSubstitution::Integer(value.expr.clone(), IrIntegerRadix::Decimal);
             builder.push_sub(sub);
         }
-        HardwareType::Tuple(element_types) => {
-            builder.push_str("(");
-            for (index, ty) in enumerate(element_types.as_ref()) {
-                let element_expr = large.push_expr(IrExpressionLarge::TupleIndex {
-                    base: value.expr.clone(),
-                    index,
-                });
-                let element_value = HardwareValue {
-                    ty: ty.clone(),
-                    domain: value.domain,
-                    expr: element_expr,
-                };
-                block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &element_value));
-                if index < element_types.len() - 1 {
-                    builder.push_str(", ");
-                }
-            }
-            if element_types.len() == 1 {
-                builder.push_str(",");
-            }
-            builder.push_str(")");
-        }
         HardwareType::Array(ty_inner, len) => {
             builder.push_str("[");
 
@@ -401,16 +379,38 @@ fn print_hardware_sub(
             }
             builder.push_str("]");
         }
+        HardwareType::Tuple(element_types) => {
+            builder.push_str("(");
+            for (index, ty) in enumerate(element_types.as_ref()) {
+                let element_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                    base: value.expr.clone(),
+                    index,
+                });
+                let element_value = HardwareValue {
+                    ty: ty.clone(),
+                    domain: value.domain,
+                    expr: element_expr,
+                };
+                block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &element_value));
+                if index < element_types.len() - 1 {
+                    builder.push_str(", ");
+                }
+            }
+            if element_types.len() == 1 {
+                builder.push_str(",");
+            }
+            builder.push_str(")");
+        }
         HardwareType::Struct(ty) => {
             let ty_info = elab.struct_info(ty.inner());
-            let ty_fields_hw = ty_info.fields_hw.as_ref().unwrap();
+            let ty_fields_hw = &ty_info.hw.as_ref().unwrap().fields;
 
             builder.push_str(&ty_info.debug_info_name);
             builder.push_str(".new(");
             for (field_index, ((field_name, _), field_ty)) in enumerate(zip_eq(&ty_info.fields, ty_fields_hw)) {
-                let field_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                let field_expr = large.push_expr(IrExpressionLarge::StructField {
                     base: value.expr.clone(),
-                    index: field_index,
+                    field: field_index,
                 });
                 let field_value = HardwareValue {
                     ty: field_ty.clone(),
@@ -548,6 +548,13 @@ impl Type {
                     format!("int({range})")
                 }
             }
+            Type::Array(inner, len) => {
+                let inner_str = inner.value_string(elab);
+                match len {
+                    None => format!("[_]{inner_str}"),
+                    Some(len) => format!("[{len}]{inner_str}"),
+                }
+            }
             Type::Tuple(inner) => {
                 let mut f = String::new();
                 swrite!(f, "Tuple");
@@ -560,13 +567,6 @@ impl Type {
                     swrite!(f, ")");
                 }
                 f
-            }
-            Type::Array(inner, len) => {
-                let inner_str = inner.value_string(elab);
-                match len {
-                    None => format!("[_]{inner_str}"),
-                    Some(len) => format!("[{len}]{inner_str}"),
-                }
             }
             // TODO include import path for debug names?
             Type::Struct(ty) => {

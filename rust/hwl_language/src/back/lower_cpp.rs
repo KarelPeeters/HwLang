@@ -3,10 +3,11 @@ use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp,
-    IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort,
-    IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece, IrStringSubstitution,
-    IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
+    IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance,
+    IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
+    IrStringSubstitution, IrStructType, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
+    IrWireInfo,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -32,9 +33,13 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_modules: &[IrM
     swriteln!(f, "#include <cstdint>");
     swriteln!(f, "#include <stdlib.h>");
     swriteln!(f, "#include <array>");
+    swriteln!(f, "#include <tuple>");
+    swriteln!(f, "#include <variant>");
     swriteln!(f, "#include <utility>");
     swriteln!(f, "#include <algorithm>");
+    swriteln!(f, "#include <cstdio>");
     swriteln!(f, "#include <iostream>");
+    swriteln!(f, "#include <stdexcept>");
     swriteln!(f);
 
     for (i, module) in enumerate(ir_modules_topological_sort(modules, top_modules.iter().copied())) {
@@ -497,6 +502,49 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
+                IrExpressionLarge::StructLiteral(result_ty, fields) => {
+                    let fields_eval = fields
+                        .iter()
+                        .map(|e| self.eval(indent, span, e, stage_read))
+                        .try_collect_vec()?;
+
+                    let result_ty_str = type_struct_to_cpp(self.diags, span, result_ty)?;
+                    let tmp_result = self.new_temporary();
+
+                    swrite!(self.f, "{indent}{result_ty_str} {tmp_result} = {{");
+                    for (i, field_eval) in enumerate(fields_eval) {
+                        swrite!(self.f, "{}{}", field_eval, separator_non_trailing(",", i, fields.len()));
+                    }
+                    swriteln!(self.f, "}};");
+
+                    Evaluated::Temporary(tmp_result)
+                }
+                IrExpressionLarge::EnumLiteral(result_ty, variant, payload) => {
+                    let payload_eval = payload
+                        .as_ref()
+                        .map(|payload| self.eval(indent, span, payload, stage_read))
+                        .transpose()?;
+
+                    let result_ty_str = type_enum_to_cpp(self.diags, span, result_ty)?;
+                    let tmp_result = self.new_temporary();
+
+                    match payload_eval {
+                        Some(payload_eval) => {
+                            swriteln!(
+                                self.f,
+                                "{indent}{result_ty_str} {tmp_result}{{std::in_place_index<{variant}>, {payload_eval}}};"
+                            );
+                        }
+                        None => {
+                            swriteln!(
+                                self.f,
+                                "{indent}{result_ty_str} {tmp_result}{{std::in_place_index<{variant}>}};"
+                            );
+                        }
+                    }
+
+                    Evaluated::Temporary(tmp_result)
+                }
                 IrExpressionLarge::ArrayLiteral(inner_ty, len, elements) => {
                     let inner_ty_str = type_to_cpp(self.diags, span, inner_ty)?;
                     let tmp_result = self.new_temporary();
@@ -525,10 +573,6 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
-                IrExpressionLarge::TupleIndex { base, index } => {
-                    let base_eval = self.eval(indent, span, base, stage_read)?;
-                    Evaluated::Inline(format!("({base_eval}.get({index}))"))
-                }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
                     let index_eval = self.eval(indent, span, index, stage_read)?;
@@ -548,6 +592,22 @@ impl CodegenBlockContext<'_> {
                     );
 
                     Evaluated::Temporary(tmp_result)
+                }
+                IrExpressionLarge::TupleIndex { base, index } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("std::get<{index}>({base_eval})"))
+                }
+                IrExpressionLarge::StructField { base, field } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("std::get<{field}>({base_eval})"))
+                }
+                IrExpressionLarge::EnumTag { base } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("static_cast<int64_t>({base_eval}.index())"))
+                }
+                IrExpressionLarge::EnumPayload { base, variant } => {
+                    let base_eval = self.eval(indent, span, base, stage_read)?;
+                    Evaluated::Inline(format!("std::get<{variant}>({base_eval})"))
                 }
 
                 IrExpressionLarge::ToBits(ty, value) => {
@@ -616,19 +676,6 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
-            IrType::Tuple(elements) => {
-                let mut offset = BigUint::ZERO;
-                for (element_i, element) in enumerate(elements) {
-                    self.impl_to_bits(
-                        indent,
-                        element,
-                        result,
-                        &format!("{result_offset} + {offset}"),
-                        &format!("std::get<{element_i}>({value})"),
-                    )?;
-                    offset += element.size_bits();
-                }
-            }
             IrType::Array(ty_inner, ty_len) => {
                 let ty_inner_size = ty_inner.size_bits();
                 let tmp_i = self.new_temporary();
@@ -645,11 +692,69 @@ impl CodegenBlockContext<'_> {
                 )?;
                 swriteln!(self.f, "{indent}}}");
             }
+            IrType::Tuple(elements) => {
+                let mut offset = BigUint::ZERO;
+                for (field_i, field_ty) in enumerate(elements) {
+                    self.impl_to_bits(
+                        indent,
+                        field_ty,
+                        result,
+                        &format!("{result_offset} + {offset}"),
+                        &format!("std::get<{field_i}>({value})"),
+                    )?;
+                    offset += field_ty.size_bits();
+                }
+            }
+            IrType::Struct(info) => {
+                let mut offset = BigUint::ZERO;
+                for (field_i, field_ty) in enumerate(info.fields.values()) {
+                    self.impl_to_bits(
+                        indent,
+                        field_ty,
+                        result,
+                        &format!("{result_offset} + {offset}"),
+                        &format!("std::get<{field_i}>({value})"),
+                    )?;
+                    offset += field_ty.size_bits();
+                }
+            }
+            IrType::Enum(info) => {
+                // tag
+                self.impl_to_bits(
+                    indent,
+                    &IrType::Int(info.tag_range()),
+                    result,
+                    result_offset,
+                    &format!("static_cast<int64_t>({value}.index())"),
+                )?;
+
+                // payload
+                let payload_offset = info.tag_size_bits();
+                let payload_offset_str = format!("{result_offset} + {payload_offset}");
+
+                swriteln!(self.f, "{indent}switch ({value}.index()) {{");
+                for (variant_i, payload_ty) in enumerate(info.variants.values()) {
+                    if let Some(payload_ty) = payload_ty {
+                        swriteln!(self.f, "{indent}{I}case {variant_i}: {{");
+                        self.impl_to_bits(
+                            indent.nest().nest(),
+                            payload_ty,
+                            result,
+                            &payload_offset_str,
+                            &format!("std::get<{variant_i}>({value})"),
+                        )?;
+                        swriteln!(self.f, "{indent}{I}{I}break;");
+                        swriteln!(self.f, "{indent}{I}}}");
+                    }
+                }
+                swriteln!(self.f, "{indent}}}");
+
+                // padding already defaults to zero, so no need to clear those extra bits
+            }
         }
 
         Ok(())
     }
-
     fn impl_from_bits(
         &mut self,
         indent: Indent,
@@ -679,19 +784,6 @@ impl CodegenBlockContext<'_> {
                 );
                 swriteln!(self.f, "{indent}}}");
             }
-            IrType::Tuple(tys_inner) => {
-                let mut offset = BigUint::ZERO;
-                for (element_i, element) in enumerate(tys_inner) {
-                    self.impl_from_bits(
-                        indent,
-                        element,
-                        &format!("std::get<{element_i}>({result})"),
-                        value,
-                        &format!("{value_offset} + {offset}"),
-                    )?;
-                    offset += element.size_bits();
-                }
-            }
             IrType::Array(ty_inner, ty_len) => {
                 let ty_inner_size = ty_inner.size_bits();
                 let tmp_i = self.new_temporary();
@@ -706,6 +798,61 @@ impl CodegenBlockContext<'_> {
                     value,
                     &format!("{value_offset} + {tmp_i} * {ty_inner_size}"),
                 )?;
+                swriteln!(self.f, "{indent}}}");
+            }
+            IrType::Tuple(tys_inner) => {
+                let mut offset = BigUint::ZERO;
+                for (element_i, element) in enumerate(tys_inner) {
+                    self.impl_from_bits(
+                        indent,
+                        element,
+                        &format!("std::get<{element_i}>({result})"),
+                        value,
+                        &format!("{value_offset} + {offset}"),
+                    )?;
+                    offset += element.size_bits();
+                }
+            }
+            IrType::Struct(info) => {
+                let mut offset = BigUint::ZERO;
+                for (field_i, field_ty) in enumerate(info.fields.values()) {
+                    self.impl_from_bits(
+                        indent,
+                        field_ty,
+                        &format!("std::get<{field_i}>({result})"),
+                        value,
+                        &format!("{value_offset} + {offset}"),
+                    )?;
+                    offset += field_ty.size_bits();
+                }
+            }
+            IrType::Enum(info) => {
+                // tag
+                let tag_ty = IrType::Int(info.tag_range());
+                let tag_tmp = self.new_temporary();
+                swriteln!(self.f, "{indent}int64_t {tag_tmp};");
+                self.impl_from_bits(indent, &tag_ty, &tag_tmp.to_string(), value, value_offset)?;
+
+                // payload
+                let payload_offset = info.tag_size_bits();
+                let payload_offset_str = format!("{value_offset} + {payload_offset}");
+
+                swriteln!(self.f, "{indent}switch ({tag_tmp}) {{");
+                for (variant_i, payload_ty) in enumerate(info.variants.values()) {
+                    swriteln!(self.f, "{indent}{I}case {variant_i}: {{");
+                    swriteln!(self.f, "{indent}{I}{I}({result}).emplace<{variant_i}>();");
+                    if let Some(payload_ty) = payload_ty {
+                        self.impl_from_bits(
+                            indent.nest().nest(),
+                            payload_ty,
+                            &format!("std::get<{variant_i}>({result})"),
+                            value,
+                            &payload_offset_str,
+                        )?;
+                    }
+                    swriteln!(self.f, "{indent}{I}{I}break;");
+                    swriteln!(self.f, "{indent}{I}}}");
+                }
                 swriteln!(self.f, "{indent}}}");
             }
         }
@@ -803,7 +950,7 @@ impl CodegenBlockContext<'_> {
                 }
                 IrStatement::AssertFailed => {
                     // TODO do we want to use exceptions for assertions, or some other mechanism?
-                    swriteln!(self.f, "raise std::runtime_error(\"assertion failed\");");
+                    swriteln!(self.f, "{indent}throw std::runtime_error(\"assertion failed\");");
                 }
             }
         }
@@ -896,31 +1043,55 @@ impl CodegenBlockContext<'_> {
 }
 
 fn type_to_cpp(diags: &Diagnostics, span: Span, ty: &IrType) -> DiagResult<String> {
-    let result = match ty {
-        IrType::Bool => "bool".to_owned(),
+    match ty {
+        IrType::Bool => Ok("bool".to_owned()),
         IrType::Int(range) => {
             let ClosedNonEmptyRange { start, end } = range;
 
             if &BigInt::from(-i64::MAX) <= start && end <= &BigInt::from(i64::MAX) {
                 // TODO use smaller types when appropriate?
-                "int64_t".to_string()
+                Ok("int64_t".to_string())
             } else {
-                return Err(diags.report_error_todo(span, format!("simulator wide integer type: {range}")));
+                Err(diags.report_error_todo(span, format!("simulator wide integer type: {range}")))
             }
-        }
-        IrType::Tuple(inner) => {
-            let inner_strs = inner.iter().map(|ty| type_to_cpp(diags, span, ty)).try_collect_vec()?;
-            let inner_str = inner_strs.join(", ");
-            format!("std::tuple<{inner_str}>")
         }
         IrType::Array(inner, len) => {
             // TODO we want to represent boolean arrays als bitfields, either through a template optimization trick
             //   or through a special case here (and in every other place that interacts with arrays)
             let inner_str = type_to_cpp(diags, span, inner)?;
-            format!("std::array<{inner_str}, {len}>")
+            Ok(format!("std::array<{inner_str}, {len}>"))
         }
-    };
-    Ok(result)
+        IrType::Tuple(inner) => {
+            let inner_strs = inner.iter().map(|ty| type_to_cpp(diags, span, ty)).try_collect_vec()?;
+            let inner_str = inner_strs.join(", ");
+            Ok(format!("std::tuple<{inner_str}>"))
+        }
+        IrType::Struct(info) => type_struct_to_cpp(diags, span, info),
+        IrType::Enum(info) => type_enum_to_cpp(diags, span, info),
+    }
+}
+
+fn type_struct_to_cpp(diags: &Diagnostics, span: Span, ty: &IrStructType) -> DiagResult<String> {
+    let field_strs = ty
+        .fields
+        .values()
+        .map(|ty| type_to_cpp(diags, span, ty))
+        .try_collect_vec()?;
+    let field_str = field_strs.join(", ");
+    Ok(format!("std::tuple<{field_str}>"))
+}
+
+fn type_enum_to_cpp(diags: &Diagnostics, span: Span, ty: &IrEnumType) -> DiagResult<String> {
+    let variant_strs = ty
+        .variants
+        .values()
+        .map(|payload| match payload {
+            Some(payload) => type_to_cpp(diags, span, payload),
+            None => Ok("std::monostate".to_owned()),
+        })
+        .try_collect_vec()?;
+    let variant_str = variant_strs.join(", ");
+    Ok(format!("std::variant<{variant_str}>"))
 }
 
 fn port_str(port: IrPort, port_info: &IrPortInfo) -> String {
