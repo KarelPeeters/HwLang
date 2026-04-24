@@ -1,10 +1,16 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
+use hwl_language::back::lower_cpp::lower_to_cpp;
+use hwl_language::back::lower_cpp_wrap::{LoweredCppWrap, lower_cpp_wrap};
 use hwl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
 use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
+use hwl_language::back::wrap_cpp::{
+    CppSimError, CppSimInstance as RustCppSimInstance, CppSimLib, SimulationFinished as CppSimulationFinished,
+};
 use hwl_language::back::wrap_verilator::{
-    SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
+    SimulationFinished as VerilatorSimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib,
+    VerilatorError,
 };
 use hwl_language::front::compile::{
     CompileFixed, CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems,
@@ -20,6 +26,7 @@ use hwl_language::front::value::{
     CompileValue as RustCompileValue, NotCompile, SimpleCompileValue, Value as RustValue,
 };
 use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
+use hwl_language::sim::recorder::WaveStore;
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
     io_error_message,
@@ -145,10 +152,22 @@ struct ModuleVerilated {
     lib: VerilatedLib,
 }
 
+#[pyclass]
+struct ModuleCpp {
+    compile: Py<Compile>,
+    lib: CppSimLib,
+}
+
 #[pyclass(unsendable)]
 struct VerilatedInstance {
     module: Py<ModuleVerilated>,
     instance: RustVerilatedInstance,
+}
+
+#[pyclass(unsendable)]
+struct CppInstance {
+    module: Py<ModuleCpp>,
+    instance: RustCppSimInstance,
 }
 
 #[pyclass(unsendable)]
@@ -157,9 +176,27 @@ struct VerilatedPorts {
 }
 
 #[pyclass(unsendable)]
+struct CppPorts {
+    instance: Py<CppInstance>,
+}
+
+#[pyclass(unsendable)]
 struct VerilatedPort {
     instance: Py<VerilatedInstance>,
     port: IrPort,
+}
+
+#[pyclass(unsendable)]
+struct CppPort {
+    instance: Py<CppInstance>,
+    port: IrPort,
+}
+
+#[pyclass(unsendable)]
+struct WaveRecorder {
+    instance: Py<CppInstance>,
+    store: WaveStore,
+    next_time: u64,
 }
 
 #[pyclass(subclass, extends=PyException)]
@@ -226,9 +263,14 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Module>()?;
     m.add_class::<ModuleVerilog>()?;
     m.add_class::<ModuleVerilated>()?;
+    m.add_class::<ModuleCpp>()?;
     m.add_class::<VerilatedInstance>()?;
+    m.add_class::<CppInstance>()?;
     m.add_class::<VerilatedPorts>()?;
+    m.add_class::<CppPorts>()?;
     m.add_class::<VerilatedPort>()?;
+    m.add_class::<CppPort>()?;
+    m.add_class::<WaveRecorder>()?;
     m.add("HwlException", py.get_type::<HwlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
@@ -914,6 +956,60 @@ impl Module {
             lib,
         })
     }
+
+    fn as_cpp(&self, py: Python, build_dir: PathBuf) -> PyResult<ModuleCpp> {
+        let build_dir = build_dir.as_path();
+        if !build_dir.exists() {
+            return Err(PyIOError::new_err(format!(
+                "build_dir `{}` does not exist",
+                build_dir.display()
+            )));
+        }
+        if !build_dir.is_dir() {
+            return Err(PyIOError::new_err(format!(
+                "build_dir `{}` is not a directory",
+                build_dir.display()
+            )));
+        }
+
+        let (ir_database, ir_module, source_cpp) = self.lower_cpp_impl(py)?;
+        let lowered_wrap = lower_cpp_wrap(&ir_database.modules, ir_module, &source_cpp);
+        let LoweredCppWrap {
+            source: source_wrapper,
+            check_hash,
+        } = lowered_wrap;
+
+        let name_lowered = "lowered.cpp";
+        let name_wrapper = "wrapper.cpp";
+        let name_so = "sim_cpp.so";
+        let path_so = build_dir.join(name_so);
+        std::fs::write(build_dir.join(name_lowered), &source_cpp)?;
+        std::fs::write(build_dir.join(name_wrapper), &source_wrapper)?;
+
+        py.allow_threads::<PyResult<()>, _>(|| {
+            run_command(
+                Command::new("g++")
+                    .arg("-O0")
+                    .arg("-fPIC")
+                    .arg("-shared")
+                    .arg("-std=c++17")
+                    .arg(name_wrapper)
+                    .arg("-o")
+                    .arg(name_so),
+                build_dir,
+                "g++",
+            )
+        })?;
+
+        let lib = unsafe {
+            CppSimLib::new(&ir_database.modules, ir_module, check_hash, &path_so)
+                .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e}")))?
+        };
+        Ok(ModuleCpp {
+            compile: self.compile.clone_ref(py),
+            lib,
+        })
+    }
 }
 
 // TODO include stderr in the error message
@@ -936,27 +1032,23 @@ fn run_command(command: &mut Command, dir: &Path, name: &str) -> PyResult<()> {
 }
 
 impl Module {
-    fn lower_verilog_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, LoweredVerilog)> {
-        // borrow self
+    fn lower_ir_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule)> {
         let compile = self.compile.borrow(py);
         let parsed_ref = compile.parsed.borrow(py);
         let source_ref = parsed_ref.source.borrow(py);
         let source = &source_ref.source;
         let dummy_span = source_ref.dummy_span;
 
-        // get the module
         let module = match self.module {
             ElaboratedModule::Internal(module) => module,
             ElaboratedModule::External(_) => {
                 return Err(GenerateVerilogException::new_err(
-                    "cannot generate verilog for external module",
+                    "cannot generate simulator code for external module",
                 ));
             }
         };
         let ir_module = compile.shared.elaboration_arenas.module_internal_info(module).module_ir;
 
-        // create temporary ir database
-        // TODO rework the IrDatabase API, this is a mess
         let diags = Diagnostics::new();
         let ir_database = compile.shared.finish_ir_database_ref(&diags, dummy_span);
         let ir_database = map_diag_error(py, &diags, source, ir_database)?;
@@ -966,10 +1058,34 @@ impl Module {
             map_diag_error(py, &diags, source, validate_result)?;
         }
 
+        Ok((ir_database, ir_module))
+    }
+
+    fn lower_verilog_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, LoweredVerilog)> {
+        let (ir_database, ir_module) = self.lower_ir_impl(py)?;
+        let compile = self.compile.borrow(py);
+        let parsed_ref = compile.parsed.borrow(py);
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+
         // actual lowering
+        let diags = Diagnostics::new();
         let lowered = lower_to_verilog(&diags, &ir_database, &[ir_module]);
         let lowered = map_diag_error(py, &diags, source, lowered)?;
 
+        Ok((ir_database, ir_module, lowered))
+    }
+
+    fn lower_cpp_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, String)> {
+        let (ir_database, ir_module) = self.lower_ir_impl(py)?;
+        let compile = self.compile.borrow(py);
+        let parsed_ref = compile.parsed.borrow(py);
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+
+        let diags = Diagnostics::new();
+        let lowered = lower_to_cpp(&diags, &ir_database.modules, &[ir_module]);
+        let lowered = map_diag_error(py, &diags, source, lowered)?;
         Ok((ir_database, ir_module, lowered))
     }
 }
@@ -1002,13 +1118,49 @@ impl VerilatedInstance {
         let finished = instance.step(increment_time).map_err(map_verilator_error)?;
 
         match finished {
-            SimulationFinished::No => Ok(()),
-            SimulationFinished::Yes => Err(SimulationFinishedException::new_err("simulation has finished")),
+            VerilatorSimulationFinished::No => Ok(()),
+            VerilatorSimulationFinished::Yes => Err(SimulationFinishedException::new_err("simulation has finished")),
         }
     }
 
     fn save_trace(&mut self) {
         self.instance.save_trace();
+    }
+}
+
+#[pymethods]
+impl ModuleCpp {
+    fn instance(slf: Py<Self>, py: Python) -> PyResult<CppInstance> {
+        let instance = slf.borrow(py).lib.instance().map_err(map_cpp_sim_error)?;
+        Ok(CppInstance {
+            module: slf.clone_ref(py),
+            instance,
+        })
+    }
+}
+
+#[pymethods]
+impl CppInstance {
+    #[getter]
+    fn ports(slf: Py<Self>) -> CppPorts {
+        CppPorts { instance: slf }
+    }
+
+    fn step(&mut self, increment_time: u64) -> PyResult<()> {
+        let finished = self.instance.step(increment_time).map_err(map_cpp_sim_error)?;
+        match finished {
+            CppSimulationFinished::No => Ok(()),
+            CppSimulationFinished::Yes => Err(SimulationFinishedException::new_err("simulation has finished")),
+        }
+    }
+
+    fn start_recording(slf: Py<Self>, py: Python) -> PyResult<WaveRecorder> {
+        let store = WaveStore::for_instance(&slf.borrow(py).instance).map_err(map_cpp_sim_error)?;
+        Ok(WaveRecorder {
+            instance: slf.clone_ref(py),
+            store,
+            next_time: 0,
+        })
     }
 }
 
@@ -1048,6 +1200,54 @@ impl VerilatedPorts {
             .cloned()
             .collect_vec();
         ports.into_pyobject(py)?.try_iter()
+    }
+}
+
+#[pymethods]
+impl CppPorts {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<CppPort> {
+        let port = self.get_port(attr, py)?;
+        Ok(CppPort {
+            instance: self.instance.clone_ref(py),
+            port,
+        })
+    }
+
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<CppPort> {
+        self.__getattr__(key, py)
+    }
+
+    fn __setattr__(&mut self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+        let _ = self.get_port(attr, py)?;
+        let _ = value;
+
+        let msg = format!("cannot set port value directly, use `ports.{attr}.value = value` instead)");
+        Err(PyValueError::new_err(msg))
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        let ports = self
+            .instance
+            .borrow(py)
+            .module
+            .borrow(py)
+            .lib
+            .ports_named()
+            .keys()
+            .cloned()
+            .collect_vec();
+        ports.into_pyobject(py)?.try_iter()
+    }
+}
+
+impl CppPorts {
+    fn get_port(&self, name: &str, py: Python) -> PyResult<IrPort> {
+        let instance = &self.instance.borrow(py).instance;
+        instance
+            .ports_named()
+            .get(name)
+            .copied()
+            .ok_or_else(|| PyKeyError::new_err(format!("port {name} not found")))
     }
 }
 
@@ -1139,6 +1339,109 @@ impl VerilatedPort {
     }
 }
 
+#[pymethods]
+impl CppPort {
+    #[getter]
+    fn get_value(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let instance = self.instance.borrow(py);
+        let compile = &instance.module.borrow(py).compile;
+
+        let value = instance.instance.get_port(self.port).map_err(map_cpp_sim_error)?;
+        compile_value_to_py(py, compile, &value)
+    }
+
+    #[setter]
+    fn set_value(&mut self, value: &Bound<PyAny>) -> PyResult<()> {
+        let py = value.py();
+        let value = compile_value_from_py(value)?;
+
+        let mut instance = self.instance.borrow_mut(py);
+        let instance = instance.deref_mut();
+        let module = instance.module.borrow(py);
+        let compile = module.compile.borrow(py);
+        let parsed = compile.parsed.borrow(py);
+        let source = parsed.source.borrow(py);
+
+        let elab = &compile.shared.elaboration_arenas;
+        let dummy_span = source.dummy_span;
+
+        let diags = Diagnostics::new();
+        let result = instance
+            .instance
+            .set_port(&diags, elab, self.port, Spanned::new(dummy_span, &value));
+
+        result.map_err(|e| match e {
+            Either::Left(e) => map_cpp_sim_error(e),
+            Either::Right(e) => convert_diag_error(py, &diags, &source.source, e),
+        })?;
+
+        Ok(())
+    }
+
+    #[getter]
+    fn r#type(&self, py: Python) -> Type {
+        let ty = self.map_port_info(py, |info| info.ty.clone());
+        Type {
+            compile: self.instance.borrow(py).module.borrow(py).compile.clone_ref(py),
+            ty: ty.as_type_hw().as_type(),
+        }
+    }
+
+    #[getter]
+    fn name(&self, py: Python) -> String {
+        self.map_port_info(py, |info| info.name.clone())
+    }
+
+    #[getter]
+    fn direction(&self, py: Python) -> &'static str {
+        self.map_port_info(py, |info| info.direction.diagnostic_string())
+    }
+
+    fn __bool__(&self) -> PyResult<bool> {
+        Err(PyValueError::new_err(
+            "port cannot be used as a boolean, to read a boolean port use `port.value` instead",
+        ))
+    }
+}
+
+impl CppPort {
+    pub fn map_port_info<T>(&self, py: Python, f: impl FnOnce(&IrPortInfo) -> T) -> T {
+        let instance = self.instance.borrow(py);
+        let module = instance.module.borrow(py);
+        f(&module.lib.ports()[self.port])
+    }
+}
+
+#[pymethods]
+impl WaveRecorder {
+    #[pyo3(signature=(time=None))]
+    fn sample(&mut self, time: Option<u64>, py: Python) -> PyResult<()> {
+        let time = time.unwrap_or(self.next_time);
+        self.next_time = time.saturating_add(1);
+        let instance = self.instance.borrow(py);
+        self.store.sample(&instance.instance, time).map_err(map_cpp_sim_error)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string_pretty(&self.store)
+            .map_err(|e| VerilationException::new_err(format!("failed to serialize waveform store: {e}")))
+    }
+
+    fn save_json(&self, path: PathBuf) -> PyResult<()> {
+        let json = self.to_json()?;
+        std::fs::write(&path, json).map_err(|e| {
+            PyIOError::new_err(format!(
+                "failed to write waveform store `{}`: {e}",
+                path.display()
+            ))
+        })
+    }
+}
+
 fn map_verilator_error(e: VerilatorError) -> PyErr {
+    VerilationException::new_err(e.to_string())
+}
+
+fn map_cpp_sim_error(e: CppSimError) -> PyErr {
     VerilationException::new_err(e.to_string())
 }

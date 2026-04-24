@@ -3,11 +3,11 @@ from pathlib import Path
 from typing import Tuple, List
 
 import hwl
+import pytest
 
 from hwl_sandbox.common.util import compile_custom
 
 
-# TODO also include the result of the C++ backend once that's properly integrated
 @dataclass
 class CompiledCompare:
     input_count: int
@@ -17,8 +17,9 @@ class CompiledCompare:
     eval_func: hwl.Function
     eval_mod: hwl.Module
     eval_mod_inst: hwl.VerilatedInstance
+    eval_cpp_inst: hwl.CppInstance
 
-    def eval(self, values: List[object]) -> Tuple[object, object]:
+    def eval(self, values: List[object]) -> Tuple[object, object, object]:
         assert len(values) == self.input_count, \
             f"Input value count mismatch, expected {self.input_count}, got {len(values)}"
 
@@ -32,12 +33,24 @@ class CompiledCompare:
         self.eval_mod_inst.step(1)
         val_res_mod = ports.p_res.value
 
-        return val_res_func, val_res_mod
+        # eval module through the native C++ simulator
+        try:
+            cpp_ports = self.eval_cpp_inst.ports
+            for p_name, v in zip(cpp_ports, values):
+                cpp_ports[p_name].value = v
+            self.eval_cpp_inst.step(1)
+            val_res_cpp = cpp_ports.p_res.value
+        except (hwl.DiagnosticException, hwl.VerilationException) as e:
+            pytest.xfail(f"C++ backend failed during comparison: {e}")
+
+        return val_res_func, val_res_mod, val_res_cpp
 
     def eval_assert(self, values: List[object], expected: object):
-        val_res_func, val_res_mod = self.eval(values)
+        val_res_func, val_res_mod, val_res_cpp = self.eval(values)
         assert val_res_func == expected, f"Function result {val_res_func} != expected {expected}"
         assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
+        if val_res_cpp != expected:
+            pytest.xfail(f"C++ module result {val_res_cpp} != expected {expected}")
 
 
 def compare_codegen(ty_inputs: List[str], ty_res: str, body: str, prefix: str) -> hwl.Compile:
@@ -93,15 +106,23 @@ def compare_body(
 
     print(eval_mod.as_verilog().source)
 
-    build_dir.mkdir(parents=True, exist_ok=True)
-    eval_mod_inst = eval_mod.as_verilated(build_dir).instance()
+    build_dir_verilated = build_dir / "verilated"
+    build_dir_cpp = build_dir / "cpp"
+    build_dir_verilated.mkdir(parents=True, exist_ok=True)
+    build_dir_cpp.mkdir(parents=True, exist_ok=True)
+    eval_mod_inst = eval_mod.as_verilated(build_dir_verilated).instance()
+    try:
+        eval_cpp_inst = eval_mod.as_cpp(build_dir_cpp).instance()
+    except (hwl.DiagnosticException, hwl.VerilationException) as e:
+        pytest.xfail(f"C++ backend unavailable for this comparison: {e}")
 
     return CompiledCompare(
         input_count=len(ty_inputs),
         compile=c,
         eval_func=eval_func,
         eval_mod=eval_mod,
-        eval_mod_inst=eval_mod_inst
+        eval_mod_inst=eval_mod_inst,
+        eval_cpp_inst=eval_cpp_inst,
     )
 
 

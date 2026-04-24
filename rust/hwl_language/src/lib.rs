@@ -5,6 +5,7 @@ pub mod util;
 pub mod back;
 pub mod front;
 pub mod mid;
+pub mod sim;
 pub mod syntax;
 
 #[cfg(test)]

@@ -259,7 +259,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(f_structs, "{I}{struct_child_signals} child_{child_index};");
 
                 // create port struct constructor, used in step function
-                let func_child_ports: String = format!("module_{module_index}_child_{child_module_index}_ports");
+                let func_child_ports: String = format!("module_{module_index}_child_{child_index}_ports");
                 swriteln!(
                     f_step_ports,
                     "{struct_child_ports} {func_child_ports}({struct_signals} &signals, {struct_ports_ptr} ports) {{"

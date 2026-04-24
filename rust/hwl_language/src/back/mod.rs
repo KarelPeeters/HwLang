@@ -5,3 +5,6 @@ pub mod lower_verilator;
 pub mod wrap_verilator;
 
 pub mod lower_cpp;
+pub mod lower_cpp_wrap;
+#[cfg(feature = "wrap_cpp")]
+pub mod wrap_cpp;
