@@ -67,7 +67,7 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                     .iter()
                     .map(|item| compile_value_to_py(py, state, item))
                     .try_collect()?;
-                PyTuple::new(py, items.into_iter())?.into_py_any(py)
+                PyTuple::new(py, items)?.into_py_any(py)
             }
             CompileCompoundValue::Struct(_) => fallback(),
             CompileCompoundValue::Enum(_) => fallback(),
