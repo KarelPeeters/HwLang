@@ -319,7 +319,7 @@ pub enum IrExpressionLarge {
     ArrayLiteral(IrType, BigUint, Vec<IrArrayLiteralElement>),
     StructLiteral(IrStructType, Vec<IrExpression>),
     EnumLiteral(IrEnumType, usize, Option<IrExpression>),
-    
+
     // slice
     ArrayIndex {
         base: IrExpression,

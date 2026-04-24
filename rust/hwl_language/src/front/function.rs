@@ -1,4 +1,3 @@
-use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
@@ -16,6 +15,7 @@ use crate::front::value::{
     BoundMethod, CompileValue, EnumValue, HardwareValue, MaybeCompile, MethodInfo, MixedCompoundValue, NotCompile,
     SimpleCompileValue, StructValue, Value, ValueCommon,
 };
+use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
     Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, Identifier, MaybeIdentifier, Parameter,
