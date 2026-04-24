@@ -1,13 +1,18 @@
 use eframe::egui::{
-    self, Align2, CentralPanel, Color32, Context, FontId, Rect, ScrollArea, Sense, SidePanel, Stroke, TopBottomPanel,
-    Ui, pos2, vec2,
+    self, Align, Align2, CentralPanel, Color32, Context, FontId, Layout, Rect, ScrollArea, Sense, SidePanel, Stroke,
+    TopBottomPanel, Ui, ViewportBuilder, pos2, vec2,
 };
 use hwl_language::sim::recorder::{WaveSignal, WaveSignalType, WaveStore};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default()
+            .with_title("HWL Wave GUI")
+            .with_inner_size([1280.0, 900.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "HWL Wave GUI",
         options,
@@ -47,21 +52,33 @@ impl Default for WaveGuiApp {
 impl eframe::App for WaveGuiApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar(ui));
-        SidePanel::left("hierarchy").resizable(true).show(ctx, |ui| {
-            ui.heading("Hierarchy");
-            if let Some(store) = &self.store {
-                draw_hierarchy(ui, store, &mut self.rows, &[]);
-            } else {
-                ui.label("Load a WaveStore JSON file to browse signals.");
-            }
-        });
+        SidePanel::left("hierarchy")
+            .resizable(true)
+            .default_width(260.0)
+            .width_range(180.0..=420.0)
+            .show(ctx, |ui| {
+                ui.heading("Hierarchy");
+                if let Some(store) = self.store.clone() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear").clicked() {
+                            self.rows.clear();
+                        }
+                    });
+                    ui.separator();
+                    ScrollArea::vertical().show(ui, |ui| {
+                        draw_hierarchy(ui, &store, &mut self.rows, &[]);
+                    });
+                } else {
+                    ui.label("Load a WaveStore JSON file to browse signals.");
+                }
+            });
         CentralPanel::default().show(ctx, |ui| self.wave_panel(ui));
     }
 }
 
 impl WaveGuiApp {
     fn toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Store:");
             ui.text_edit_singleline(&mut self.path);
             if ui.button("Load").clicked() {
@@ -88,7 +105,7 @@ impl WaveGuiApp {
             }
         });
         if !self.status.is_empty() {
-            ui.label(&self.status);
+            ui.colored_label(Color32::LIGHT_BLUE, &self.status);
         }
     }
 
@@ -103,59 +120,50 @@ impl WaveGuiApp {
         let max_time = store.max_time().max(self.cursor_time).max(1);
         let wave_width = max_time as f32 * self.pixels_per_time + 120.0;
 
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(280.0);
-                self.row_controls(ui, &store);
-            });
-            ui.separator();
-            ScrollArea::horizontal().show(ui, |ui| {
-                ui.set_min_width(wave_width);
-                draw_time_axis(ui, max_time, self.pixels_per_time, wave_width);
-                let mut remove = None;
-                let mut move_up = None;
-                let mut move_down = None;
-                for (row_index, signal_id) in self.rows.iter().copied().enumerate() {
-                    if let Some(signal) = store.signals.get(signal_id) {
-                        draw_signal_rows(
-                            ui,
-                            &store,
-                            signal,
-                            self.cursor_time,
-                            self.pixels_per_time,
-                            &mut RowAction {
-                                row_index,
-                                rows_len: self.rows.len(),
-                                remove: &mut remove,
-                                move_up: &mut move_up,
-                                move_down: &mut move_down,
-                            },
-                        );
-                    }
-                }
-                if let Some(row) = remove {
-                    self.rows.remove(row);
-                }
-                if let Some(row) = move_up {
-                    self.rows.swap(row, row - 1);
-                }
-                if let Some(row) = move_down {
-                    self.rows.swap(row, row + 1);
-                }
-            });
-        });
-    }
-
-    fn row_controls(&mut self, ui: &mut Ui, store: &WaveStore) {
-        ui.heading("Rows");
         if self.rows.is_empty() {
             ui.label("Add signals from the hierarchy.");
+            return;
         }
-        for signal_id in &self.rows {
-            if let Some(signal) = store.signals.get(*signal_id) {
-                ui.label(format!("{}.{}", signal.path.join("."), signal.name));
+
+        ScrollArea::both().show(ui, |ui| {
+            ui.set_min_width(ROW_LABEL_WIDTH + wave_width);
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_LABEL_WIDTH);
+                draw_time_axis(ui, max_time, self.pixels_per_time, wave_width);
+            });
+            ui.separator();
+            let mut remove = None;
+            let mut move_up = None;
+            let mut move_down = None;
+            for (row_index, signal_id) in self.rows.iter().copied().enumerate() {
+                if let Some(signal) = store.signals.get(signal_id) {
+                    draw_signal_rows(
+                        ui,
+                        &store,
+                        signal,
+                        self.cursor_time,
+                        self.pixels_per_time,
+                        wave_width,
+                        &mut RowAction {
+                            row_index,
+                            rows_len: self.rows.len(),
+                            remove: &mut remove,
+                            move_up: &mut move_up,
+                            move_down: &mut move_down,
+                        },
+                    );
+                }
             }
-        }
+            if let Some(row) = remove {
+                self.rows.remove(row);
+            }
+            if let Some(row) = move_up {
+                self.rows.swap(row, row - 1);
+            }
+            if let Some(row) = move_down {
+                self.rows.swap(row, row + 1);
+            }
+        });
     }
 
     fn load_store(&mut self) {
@@ -203,6 +211,8 @@ struct RowAction<'a> {
     move_up: &'a mut Option<usize>,
     move_down: &'a mut Option<usize>,
 }
+
+const ROW_LABEL_WIDTH: f32 = 360.0;
 
 fn draw_hierarchy(ui: &mut Ui, store: &WaveStore, rows: &mut Vec<usize>, prefix: &[String]) {
     let mut child_paths = BTreeSet::new();
@@ -266,29 +276,40 @@ fn draw_signal_rows(
     signal: &WaveSignal,
     cursor_time: u64,
     pixels_per_time: f32,
+    wave_width: f32,
     action: &mut RowAction<'_>,
 ) {
-    match &signal.ty {
-        WaveSignalType::Array { .. } | WaveSignalType::Tuple(_) | WaveSignalType::Struct { .. } => {
-            egui::CollapsingHeader::new(signal.name.clone())
-                .default_open(false)
-                .show(ui, |ui| {
-                    draw_signal_leaf(ui, store, signal, 0, signal.bit_len, cursor_time, pixels_per_time, action);
-                    for (name, ty, offset, len) in composite_children(&signal.ty) {
-                        draw_child_leaf(
-                            ui,
-                            store,
-                            signal,
-                            &name,
-                            offset,
-                            len.max(ty.bit_len()),
-                            cursor_time,
-                            pixels_per_time,
-                        );
-                    }
-                });
+    draw_signal_leaf(
+        ui,
+        store,
+        signal,
+        &format!("{}.{}", signal.path.join("."), signal.name),
+        0,
+        signal.bit_len,
+        cursor_time,
+        pixels_per_time,
+        wave_width,
+        Some(action),
+    );
+
+    if matches!(
+        &signal.ty,
+        WaveSignalType::Array { .. } | WaveSignalType::Tuple(_) | WaveSignalType::Struct { .. }
+    ) {
+        for (name, ty, offset, len) in composite_children(&signal.ty) {
+            draw_signal_leaf(
+                ui,
+                store,
+                signal,
+                &format!("  {name}"),
+                offset,
+                len.max(ty.bit_len()),
+                cursor_time,
+                pixels_per_time,
+                wave_width,
+                None,
+            );
         }
-        _ => draw_signal_leaf(ui, store, signal, 0, signal.bit_len, cursor_time, pixels_per_time, action),
     }
 }
 
@@ -296,49 +317,48 @@ fn draw_signal_leaf(
     ui: &mut Ui,
     store: &WaveStore,
     signal: &WaveSignal,
+    label: &str,
     bit_offset: usize,
     bit_len: usize,
     cursor_time: u64,
     pixels_per_time: f32,
-    action: &mut RowAction<'_>,
-) {
-    ui.horizontal(|ui| {
-        if ui.small_button("x").clicked() {
-            *action.remove = Some(action.row_index);
-        }
-        if action.row_index > 0 && ui.small_button("up").clicked() {
-            *action.move_up = Some(action.row_index);
-        }
-        if action.row_index + 1 < action.rows_len && ui.small_button("down").clicked() {
-            *action.move_down = Some(action.row_index);
-        }
-        let value = store
-            .signal_value_at(signal.id, cursor_time)
-            .map(|bits| format_value(bits, bit_offset, bit_len))
-            .unwrap_or_else(|| "x".to_owned());
-        ui.label(format!("{} = {value}", signal.name));
-    });
-    draw_waveform(ui, &store.changes[signal.id], bit_offset, bit_len, pixels_per_time);
-}
-
-fn draw_child_leaf(
-    ui: &mut Ui,
-    store: &WaveStore,
-    signal: &WaveSignal,
-    name: &str,
-    bit_offset: usize,
-    bit_len: usize,
-    cursor_time: u64,
-    pixels_per_time: f32,
+    wave_width: f32,
+    mut action: Option<&mut RowAction<'_>>,
 ) {
     ui.horizontal(|ui| {
         let value = store
             .signal_value_at(signal.id, cursor_time)
             .map(|bits| format_value(bits, bit_offset, bit_len))
             .unwrap_or_else(|| "x".to_owned());
-        ui.label(format!("  {name} = {value}"));
+        ui.allocate_ui_with_layout(
+            vec2(ROW_LABEL_WIDTH, 28.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                if let Some(action) = action.as_deref_mut() {
+                    if ui.small_button("x").clicked() {
+                        *action.remove = Some(action.row_index);
+                    }
+                    if action.row_index > 0 && ui.small_button("up").clicked() {
+                        *action.move_up = Some(action.row_index);
+                    }
+                    if action.row_index + 1 < action.rows_len && ui.small_button("down").clicked() {
+                        *action.move_down = Some(action.row_index);
+                    }
+                } else {
+                    ui.add_space(74.0);
+                }
+                ui.monospace(format!("{label} = {value}"));
+            },
+        );
+        draw_waveform(
+            ui,
+            &store.changes[signal.id],
+            bit_offset,
+            bit_len,
+            pixels_per_time,
+            wave_width,
+        );
     });
-    draw_waveform(ui, &store.changes[signal.id], bit_offset, bit_len, pixels_per_time);
 }
 
 fn draw_waveform(
@@ -347,11 +367,10 @@ fn draw_waveform(
     bit_offset: usize,
     bit_len: usize,
     pixels_per_time: f32,
+    wave_width: f32,
 ) {
-    let max_time = changes.last().map_or(1, |change| change.time.max(1));
-    let width = max_time as f32 * pixels_per_time + 120.0;
     let height = 28.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(wave_width, height), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::DARK_GRAY));
 
@@ -365,7 +384,10 @@ fn draw_waveform(
         for change in changes.iter().skip(1) {
             let x = rect.left() + change.time as f32 * pixels_per_time;
             let y = bit_y(rect, get_bit(&change.bits, bit_offset));
-            painter.line_segment([pos2(prev_x, prev_y), pos2(x, prev_y)], Stroke::new(1.5, Color32::LIGHT_GREEN));
+            painter.line_segment(
+                [pos2(prev_x, prev_y), pos2(x, prev_y)],
+                Stroke::new(1.5, Color32::LIGHT_GREEN),
+            );
             painter.line_segment([pos2(x, prev_y), pos2(x, y)], Stroke::new(1.5, Color32::LIGHT_GREEN));
             prev_x = x;
             prev_y = y;
@@ -392,7 +414,7 @@ fn draw_waveform(
                 &painter,
                 rect,
                 last.time,
-                max_time + 1,
+                changes.last().map_or(1, |change| change.time.max(1)) + 1,
                 &format_value(&last.bits, bit_offset, bit_len),
                 pixels_per_time,
             );
@@ -401,11 +423,7 @@ fn draw_waveform(
 }
 
 fn bit_y(rect: Rect, value: bool) -> f32 {
-    if value {
-        rect.top() + 6.0
-    } else {
-        rect.bottom() - 6.0
-    }
+    if value { rect.top() + 6.0 } else { rect.bottom() - 6.0 }
 }
 
 fn draw_bus_segment(
@@ -422,15 +440,27 @@ fn draw_bus_segment(
     let y1 = rect.bottom() - 5.0;
     painter.line_segment([pos2(x0, y0), pos2(x1, y0)], Stroke::new(1.0, Color32::LIGHT_BLUE));
     painter.line_segment([pos2(x0, y1), pos2(x1, y1)], Stroke::new(1.0, Color32::LIGHT_BLUE));
-    painter.line_segment([pos2(x0, y0), pos2(x0 + 4.0, y1)], Stroke::new(1.0, Color32::LIGHT_BLUE));
-    painter.line_segment([pos2(x0, y1), pos2(x0 + 4.0, y0)], Stroke::new(1.0, Color32::LIGHT_BLUE));
-    painter.text(
-        pos2(x0 + 6.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        FontId::monospace(11.0),
-        Color32::WHITE,
+    painter.line_segment(
+        [pos2(x0, y0), pos2(x0 + 4.0, y1)],
+        Stroke::new(1.0, Color32::LIGHT_BLUE),
     );
+    painter.line_segment(
+        [pos2(x0, y1), pos2(x0 + 4.0, y0)],
+        Stroke::new(1.0, Color32::LIGHT_BLUE),
+    );
+
+    let segment_width = x1 - x0;
+    let estimated_text_width = label.len() as f32 * 7.0;
+    if segment_width > estimated_text_width + 12.0 {
+        let clip_rect = Rect::from_min_max(pos2(x0 + 4.0, rect.top()), pos2(x1 - 4.0, rect.bottom()));
+        painter.with_clip_rect(clip_rect).text(
+            pos2((x0 + x1) / 2.0, rect.center().y),
+            Align2::CENTER_CENTER,
+            label,
+            FontId::monospace(11.0),
+            Color32::WHITE,
+        );
+    }
 }
 
 fn composite_children(ty: &WaveSignalType) -> Vec<(String, &WaveSignalType, usize, usize)> {

@@ -1429,12 +1429,8 @@ impl WaveRecorder {
 
     fn save_json(&self, path: PathBuf) -> PyResult<()> {
         let json = self.to_json()?;
-        std::fs::write(&path, json).map_err(|e| {
-            PyIOError::new_err(format!(
-                "failed to write waveform store `{}`: {e}",
-                path.display()
-            ))
-        })
+        std::fs::write(&path, json)
+            .map_err(|e| PyIOError::new_err(format!("failed to write waveform store `{}`: {e}", path.display())))
     }
 }
 

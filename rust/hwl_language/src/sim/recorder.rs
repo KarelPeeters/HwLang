@@ -30,11 +30,23 @@ pub struct WaveChange {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WaveSignalType {
     Bool,
-    Int { signed: bool, width: usize },
-    Array { len: usize, element: Box<WaveSignalType> },
+    Int {
+        signed: bool,
+        width: usize,
+    },
+    Array {
+        len: usize,
+        element: Box<WaveSignalType>,
+    },
     Tuple(Vec<WaveSignalType>),
-    Struct { name: String, fields: Vec<(String, WaveSignalType)> },
-    Enum { name: String, variants: Vec<(String, Option<WaveSignalType>)> },
+    Struct {
+        name: String,
+        fields: Vec<(String, WaveSignalType)>,
+    },
+    Enum {
+        name: String,
+        variants: Vec<(String, Option<WaveSignalType>)>,
+    },
 }
 
 impl WaveStore {

@@ -3,13 +3,14 @@ use crate::mid::ir::{
     IrPortInfo, IrSignal, IrType, IrWire, IrWireInfo,
 };
 use crate::syntax::ast::PortDirection;
+use crate::util::Indent;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::BigUint;
 use crate::util::int::IntRepresentation;
-use crate::util::Indent;
 use fnv::FnvHasher;
 use hwl_util::swriteln;
 use itertools::enumerate;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug)]
@@ -94,7 +95,10 @@ fn emit_helpers(f: &mut String) {
     swriteln!(f, "}}");
     swriteln!(f);
     swriteln!(f, "bool check_len(std::size_t expected_bits, std::size_t data_len) {{");
-    swriteln!(f, "{I}std::size_t expected_bytes = expected_bits == 0 ? 0 : ((expected_bits + 7) / 8);");
+    swriteln!(
+        f,
+        "{I}std::size_t expected_bytes = expected_bits == 0 ? 0 : ((expected_bits + 7) / 8);"
+    );
     swriteln!(f, "{I}return data_len >= expected_bytes;");
     swriteln!(f, "}}");
     swriteln!(f, "}}");
@@ -126,15 +130,18 @@ fn emit_api(modules: &IrModules, top_module: IrModule, check_hash: u64, f: &mut 
     swriteln!(f);
 
     swriteln!(f, "extern \"C\" void destroy_instance(void *instance_raw) {{");
-    swriteln!(
-        f,
-        "{I}delete static_cast<HwlangCppSimInstance *>(instance_raw);"
-    );
+    swriteln!(f, "{I}delete static_cast<HwlangCppSimInstance *>(instance_raw);");
     swriteln!(f, "}}");
     swriteln!(f);
 
-    swriteln!(f, "extern \"C\" uint8_t step(void *instance_raw, uint64_t increment_time) {{");
-    swriteln!(f, "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);");
+    swriteln!(
+        f,
+        "extern \"C\" uint8_t step(void *instance_raw, uint64_t increment_time) {{"
+    );
+    swriteln!(
+        f,
+        "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);"
+    );
     swriteln!(f, "{I}try {{");
     swriteln!(f, "{I}{I}for (std::size_t i = 0; i < 32; i++) {{");
     swriteln!(f, "{I}{I}{I}module_{module_index}_all(");
@@ -165,7 +172,10 @@ fn emit_get_port(modules: &IrModules, top_module: IrModule, f: &mut String) {
         f,
         "extern \"C\" uint8_t get_port(void *instance_raw, std::size_t port_index, std::size_t data_len, uint8_t *data) {{"
     );
-    swriteln!(f, "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);");
+    swriteln!(
+        f,
+        "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);"
+    );
     swriteln!(f, "{I}switch (port_index) {{");
     for (port_index, (port, port_info)) in enumerate(&top_info.ports) {
         let expr = format!("instance->next_ports.{}", port_expr(port, port_info));
@@ -183,7 +193,10 @@ fn emit_set_port(modules: &IrModules, top_module: IrModule, f: &mut String) {
         f,
         "extern \"C\" uint8_t set_port(void *instance_raw, std::size_t port_index, std::size_t data_len, const uint8_t *data) {{"
     );
-    swriteln!(f, "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);");
+    swriteln!(
+        f,
+        "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);"
+    );
     swriteln!(f, "{I}switch (port_index) {{");
     for (port_index, (port, port_info)) in enumerate(&top_info.ports) {
         swriteln!(f, "{I}{I}case {port_index}: {{");
@@ -215,19 +228,16 @@ fn emit_get_signal(modules: &IrModules, top_module: IrModule, f: &mut String) {
         .map(|(port, port_info)| format!("instance->next_ports.{}", port_expr(port, port_info)))
         .collect::<Vec<_>>();
     let mut cases = Vec::new();
-    collect_signal_cases_recursive(
-        modules,
-        top_module,
-        "instance->next_signals",
-        &root_ports,
-        &mut cases,
-    );
+    collect_signal_cases_recursive(modules, top_module, "instance->next_signals", &root_ports, &mut cases);
 
     swriteln!(
         f,
         "extern \"C\" uint8_t get_signal(void *instance_raw, std::size_t signal_index, std::size_t data_len, uint8_t *data) {{"
     );
-    swriteln!(f, "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);");
+    swriteln!(
+        f,
+        "{I}auto *instance = static_cast<HwlangCppSimInstance *>(instance_raw);"
+    );
     swriteln!(f, "{I}switch (signal_index) {{");
     for (signal_index, (expr, ty)) in enumerate(cases) {
         emit_get_case(f, signal_index, &expr, &ty);
@@ -259,7 +269,10 @@ fn emit_pack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, off
         IrType::Int(range) => {
             let width = IntRepresentation::for_range(range.as_ref()).size_bits();
             let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(f, "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{");
+            swriteln!(
+                f,
+                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{"
+            );
             swriteln!(
                 f,
                 "{indent}{I}hwlang_cpp_wrap::write_bit(data, {offset} + {tmp_i}, (({value}) >> {tmp_i}) & 1);"
@@ -269,7 +282,10 @@ fn emit_pack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, off
         IrType::Array(inner, len) => {
             let inner_bits = inner.size_bits();
             let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(f, "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{");
+            swriteln!(
+                f,
+                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{"
+            );
             emit_pack_value(
                 f,
                 indent.nest(),
@@ -345,7 +361,10 @@ fn emit_unpack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, o
             let tmp = format!("v_{}", offset_identifier(offset));
             let tmp_i = format!("i_{}", offset_identifier(offset));
             swriteln!(f, "{indent}uint64_t {tmp} = 0;");
-            swriteln!(f, "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{");
+            swriteln!(
+                f,
+                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{"
+            );
             swriteln!(
                 f,
                 "{indent}{I}if (hwlang_cpp_wrap::read_bit(data, {offset} + {tmp_i})) {tmp} |= (uint64_t{{1}} << {tmp_i});"
@@ -367,7 +386,10 @@ fn emit_unpack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, o
         IrType::Array(inner, len) => {
             let inner_bits = inner.size_bits();
             let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(f, "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{");
+            swriteln!(
+                f,
+                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{"
+            );
             emit_unpack_value(
                 f,
                 indent.nest(),
@@ -441,6 +463,7 @@ fn collect_signals_recursive(
     signals: &mut Vec<CppSignalInfo>,
 ) {
     let module_info = &modules[module];
+    let hidden_wires = hidden_parent_bridge_wires(modules, module_info);
 
     for (port_index, (_port, port_info)) in enumerate(&module_info.ports) {
         signals.push(CppSignalInfo {
@@ -453,6 +476,9 @@ fn collect_signals_recursive(
     }
 
     for (wire, wire_info) in &module_info.wires {
+        if hidden_wires.contains(&wire.inner().index()) {
+            continue;
+        }
         signals.push(CppSignalInfo {
             id: signals.len(),
             path: path.to_owned(),
@@ -471,7 +497,8 @@ fn collect_signals_recursive(
             let mut child_path = path.to_owned();
             child_path.push(child_path_name);
             let child_signal_prefix = format!("{signal_prefix}.child_{child_index}");
-            let child_port_exprs = child_port_exprs(modules, module_info, signal_prefix, port_exprs, child_index, instance);
+            let child_port_exprs =
+                child_port_exprs(modules, module_info, signal_prefix, port_exprs, child_index, instance);
             collect_signals_recursive(
                 modules,
                 instance.module,
@@ -492,12 +519,16 @@ fn collect_signal_cases_recursive(
     cases: &mut Vec<(String, IrType)>,
 ) {
     let module_info = &modules[module];
+    let hidden_wires = hidden_parent_bridge_wires(modules, module_info);
 
     for (port_index, (_port, port_info)) in enumerate(&module_info.ports) {
         cases.push((port_exprs[port_index].clone(), port_info.ty.clone()));
     }
 
     for (wire, wire_info) in &module_info.wires {
+        if hidden_wires.contains(&wire.inner().index()) {
+            continue;
+        }
         cases.push((
             format!("{signal_prefix}.{}", wire_expr(wire, wire_info)),
             wire_info.ty.clone(),
@@ -507,16 +538,34 @@ fn collect_signal_cases_recursive(
     for (child_index, child) in enumerate(&module_info.children) {
         if let IrModuleChild::ModuleInternalInstance(instance) = &child.inner {
             let child_signal_prefix = format!("{signal_prefix}.child_{child_index}");
-            let child_port_exprs = child_port_exprs(modules, module_info, signal_prefix, port_exprs, child_index, instance);
-            collect_signal_cases_recursive(
-                modules,
-                instance.module,
-                &child_signal_prefix,
-                &child_port_exprs,
-                cases,
-            );
+            let child_port_exprs =
+                child_port_exprs(modules, module_info, signal_prefix, port_exprs, child_index, instance);
+            collect_signal_cases_recursive(modules, instance.module, &child_signal_prefix, &child_port_exprs, cases);
         }
     }
+}
+
+fn hidden_parent_bridge_wires(modules: &IrModules, module_info: &IrModuleInfo) -> HashSet<usize> {
+    let mut result = HashSet::new();
+    for child in &module_info.children {
+        let IrModuleChild::ModuleInternalInstance(instance) = &child.inner else {
+            continue;
+        };
+        let child_module_info = &modules[instance.module];
+        for (connection_index, connection) in instance.port_connections.iter().enumerate() {
+            let IrPortConnection::Input(IrSignal::Wire(wire)) = connection.inner else {
+                continue;
+            };
+            let Some((_, child_port_info)) = child_module_info.ports.get_by_index(connection_index) else {
+                continue;
+            };
+            let parent_wire_info = &module_info.wires[wire];
+            if parent_wire_info.debug_info_id.inner.as_deref() == Some(child_port_info.name.as_str()) {
+                result.insert(wire.inner().index());
+            }
+        }
+    }
+    result
 }
 
 fn child_port_exprs(

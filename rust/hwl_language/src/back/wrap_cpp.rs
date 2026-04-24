@@ -204,7 +204,10 @@ impl CppSimInstance {
 
         if size_bits != 0 {
             unsafe {
-                let result = self.lib.lib.set_port(self.instance, port.inner().index(), size_bytes, buffer.as_ptr());
+                let result = self
+                    .lib
+                    .lib
+                    .set_port(self.instance, port.inner().index(), size_bytes, buffer.as_ptr());
                 check_result(result, "set_port").map_err(Either::Left)?;
             }
         }
@@ -238,7 +241,10 @@ impl CppSimInstance {
         let mut buffer = vec![0u8; size_bytes];
         if size_bits != 0 {
             unsafe {
-                let result = self.lib.lib.get_port(self.instance, port_index, size_bytes, buffer.as_mut_ptr());
+                let result = self
+                    .lib
+                    .lib
+                    .get_port(self.instance, port_index, size_bytes, buffer.as_mut_ptr());
                 check_result(result, "get_port")?;
             }
         }
