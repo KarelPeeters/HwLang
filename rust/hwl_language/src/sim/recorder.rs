@@ -107,10 +107,10 @@ impl WaveStore {
     pub fn max_time(&self) -> u64 {
         self.end_time.max(
             self.changes
-            .iter()
-            .filter_map(|signal_changes| signal_changes.last().map(|change| change.time))
-            .max()
-            .unwrap_or(0),
+                .iter()
+                .filter_map(|signal_changes| signal_changes.last().map(|change| change.time))
+                .max()
+                .unwrap_or(0),
         )
     }
 }

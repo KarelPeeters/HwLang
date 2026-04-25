@@ -1,6 +1,6 @@
 use eframe::egui::{
     self, Align2, CentralPanel, Color32, Context, FontId, Key, Rect, ScrollArea, Sense, Shape, SidePanel, Stroke,
-    TopBottomPanel, Ui, ViewportBuilder, pos2, vec2,
+    TopBottomPanel, Ui, ViewportBuilder, pos2, scroll_area::ScrollBarVisibility, vec2,
 };
 use hwl_language::sim::recorder::{WaveSignal, WaveSignalKind, WaveSignalType, WaveStore};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +31,7 @@ struct WaveGuiApp {
     path: String,
     status: String,
     pixels_per_time: f32,
+    time_view_start: f32,
     row_label_width: f32,
     cursor_time: u64,
     run_to_time: u64,
@@ -54,7 +55,8 @@ struct WaveGuiApp {
 
 #[derive(Debug, Clone)]
 struct RowDrag {
-    rows: Vec<WaveRow>,
+    row_ids: BTreeSet<u64>,
+    first_id: u64,
     insert_index: usize,
     depth: usize,
 }
@@ -67,7 +69,10 @@ struct WaveRow {
 
 #[derive(Debug, Clone)]
 enum WaveRowKind {
-    Signal { signal_id: usize, parent: Option<u64> },
+    Signal {
+        signal_id: usize,
+        parent: Option<u64>,
+    },
     Group {
         name: String,
         collapsed: bool,
@@ -116,6 +121,7 @@ impl Default for WaveGuiApp {
             path: String::new(),
             status: String::new(),
             pixels_per_time: 10.0,
+            time_view_start: 0.0,
             row_label_width: DEFAULT_ROW_LABEL_WIDTH,
             cursor_time: 0,
             run_to_time: 0,
@@ -208,8 +214,8 @@ impl WaveGuiApp {
         ui.horizontal(|ui| {
             ui.label("Store:");
             let path_response = ui.add_sized([360.0, 20.0], egui::TextEdit::singleline(&mut self.path));
-            let load_requested =
-                ui.button("Load").clicked() || path_response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            let load_requested = ui.button("Load").clicked()
+                || path_response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             if load_requested {
                 self.load_store();
                 ui.memory_mut(|memory| memory.surrender_focus(path_response.id));
@@ -260,7 +266,12 @@ impl WaveGuiApp {
         let max_time = store.max_time().max(1);
         let label_width = self.row_label_width;
         let visible_wave_width = (ui.available_width() - label_width).max(200.0);
-        let wave_width = (max_time as f32 * self.pixels_per_time + 120.0).max(visible_wave_width);
+        self.time_view_start = clamp_time_view_start(
+            self.time_view_start,
+            visible_wave_width / self.pixels_per_time,
+            max_time,
+        );
+        self.cursor_time = self.cursor_time.min(max_time);
         let visible_rows = visible_wave_rows(&self.rows);
 
         let text_editing = ui.ctx().wants_keyboard_input();
@@ -273,10 +284,12 @@ impl WaveGuiApp {
             && ui.input(|input| input.key_pressed(Key::G) && (input.modifiers.ctrl || input.modifiers.command))
         {
             self.create_group_from_selection();
+            debug_assert!(group_blocks_are_contiguous(&self.rows));
         }
         if ui.input(|input| input.key_pressed(Key::Delete)) {
             if !self.selected_rows.is_empty() {
                 delete_selected_rows(&mut self.rows, &self.selected_rows);
+                debug_assert!(group_blocks_are_contiguous(&self.rows));
                 self.expanded_rows
                     .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
                 self.selected_rows.clear();
@@ -288,20 +301,20 @@ impl WaveGuiApp {
             self.cursor_dragging = false;
             if let Some(row_drag) = self.row_drag.take() {
                 let visible_rows = visible_wave_rows(&self.rows);
-                let row_rects = visible_rows
-                    .iter()
-                    .map(|_| Rect::NOTHING)
-                    .collect::<Vec<_>>();
-                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
-                let insert_index = actual_insert_index_for_targets(&drop_targets, row_drag.insert_index, self.rows.len());
-                let first_id = row_drag.rows.first().map(|row| row.id);
-                self.rows.splice(insert_index..insert_index, row_drag.rows);
-                self.selected_row = first_id;
+                let row_rects = visible_rows.iter().map(|_| Rect::NOTHING).collect::<Vec<_>>();
+                let drop_targets =
+                    drop_targets_for_depth_excluding(&visible_rows, &row_rects, row_drag.depth, &row_drag.row_ids);
+                let raw_insert_index =
+                    actual_insert_index_for_targets(&drop_targets, row_drag.insert_index, self.rows.len());
+                let (mut rows, insert_index) =
+                    drain_drag_rows_for_move(&mut self.rows, &row_drag.row_ids, raw_insert_index);
+                reparent_drag_roots_to_top_level(&mut rows, &row_drag.row_ids);
+                self.rows.splice(insert_index..insert_index, rows);
+                debug_assert!(group_blocks_are_contiguous(&self.rows));
+                self.selected_row = Some(row_drag.first_id);
                 self.selected_rows.clear();
-                if let Some(first_id) = first_id {
-                    self.selected_rows.insert(first_id);
-                }
-                self.last_selected_row = first_id;
+                self.selected_rows.insert(row_drag.first_id);
+                self.last_selected_row = Some(row_drag.first_id);
             }
         } else if !ui.input(|input| input.pointer.primary_down()) && self.row_drag.is_none() {
             self.dragging_signals.clear();
@@ -311,74 +324,59 @@ impl WaveGuiApp {
             return;
         }
 
-        ScrollArea::both().show(ui, |ui| {
-            ui.set_min_width(label_width + wave_width);
-            let axis_rect = draw_time_axis(ui, self.pixels_per_time, label_width, wave_width);
-            ui.separator();
-            let pointer_pos = ui.input(|input| input.pointer.interact_pos());
-            let mut start_row_drag: Option<(usize, usize)> = None;
-            let mut row_rects = Vec::new();
-            let mut wave_bottom = axis_rect.bottom();
-            let visible_rows = visible_wave_rows(&self.rows);
-            for (visible_index, visible_row) in visible_rows.iter().enumerate() {
-                let row_selected =
-                    self.selected_rows.contains(&visible_row.row_id) || self.selected_row == Some(visible_row.row_id);
-                match visible_row.kind {
-                    VisibleWaveRowKind::Group => {
-                        let result = draw_group_row(
-                            ui,
-                            &mut self.rows[visible_row.row_index],
-                            &mut self.last_group_name_click,
-                            visible_index,
-                            row_selected,
-                            visible_row.depth,
-                            label_width,
-                            wave_width,
-                        );
-                        if result.clicked {
-                            update_wave_row_selection(
+        ScrollArea::vertical()
+            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+            .drag_to_scroll(false)
+            .show(ui, |ui| {
+                ui.set_min_width(label_width + visible_wave_width);
+                draw_time_view_range(
+                    ui,
+                    label_width,
+                    visible_wave_width,
+                    &mut self.time_view_start,
+                    self.pixels_per_time,
+                    max_time,
+                );
+                self.time_view_start = clamp_time_view_start(
+                    self.time_view_start,
+                    visible_wave_width / self.pixels_per_time,
+                    max_time,
+                );
+                let axis_rect = draw_time_axis(
+                    ui,
+                    self.pixels_per_time,
+                    self.time_view_start,
+                    max_time,
+                    label_width,
+                    visible_wave_width,
+                );
+                ui.separator();
+                let pointer_pos = ui.input(|input| input.pointer.interact_pos());
+                let mut start_row_drag: Option<(usize, usize)> = None;
+                let mut row_rects = Vec::new();
+                let mut wave_bottom = axis_rect.bottom();
+                let visible_rows = visible_wave_rows(&self.rows);
+                for (visible_index, visible_row) in visible_rows.iter().enumerate() {
+                    let row_selected = self.selected_rows.contains(&visible_row.row_id)
+                        || self.selected_row == Some(visible_row.row_id);
+                    match visible_row.kind {
+                        VisibleWaveRowKind::Group => {
+                            let dragging = self
+                                .row_drag
+                                .as_ref()
+                                .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
+                            let result = draw_group_row(
                                 ui,
-                                visible_index,
-                                &visible_rows,
-                                &mut self.selected_rows,
-                                &mut self.selected_row,
-                                &mut self.last_selected_row,
-                            );
-                        }
-                        if result.label_drag_started {
-                            update_wave_row_selection(
-                                ui,
-                                visible_index,
-                                &visible_rows,
-                                &mut self.selected_rows,
-                                &mut self.selected_row,
-                                &mut self.last_selected_row,
-                            );
-                            start_row_drag = Some((visible_row.row_index, visible_row.depth));
-                        }
-                        row_rects.push(result.rect);
-                        wave_bottom = wave_bottom.max(result.rect.bottom());
-                    }
-                    VisibleWaveRowKind::Signal { signal_id } => {
-                        if let Some(signal) = store.signals.get(signal_id) {
-                            let result = draw_signal_rows(
-                                ui,
-                                &store,
-                                signal,
-                                visible_row.row_id,
+                                &mut self.rows[visible_row.row_index],
+                                &mut self.last_group_name_click,
                                 visible_index,
                                 row_selected,
-                                self.row_drag.as_ref().is_some_and(|drag| {
-                                    drag.rows.iter().any(|row| row.id == visible_row.row_id)
-                                }),
-                                &self.expanded_rows,
-                                self.cursor_time,
-                                self.pixels_per_time,
                                 visible_row.depth,
                                 label_width,
-                                wave_width,
+                                visible_wave_width,
+                                dragging,
                             );
-                            if result.primary.clicked {
+                            if result.clicked {
                                 update_wave_row_selection(
                                     ui,
                                     visible_index,
@@ -388,123 +386,207 @@ impl WaveGuiApp {
                                     &mut self.last_selected_row,
                                 );
                             }
-                            if let Some(time) = result.cursor_time {
-                                self.cursor_time = time;
-                            }
-                            if result.cursor_drag_started {
-                                self.cursor_dragging = true;
-                            }
-                            for key in result.expand_toggles {
-                                if !self.expanded_rows.remove(&key) {
-                                    self.expanded_rows.insert(key);
-                                }
-                            }
-                            if result.primary.label_drag_started {
-                                update_wave_row_selection(
-                                    ui,
-                                    visible_index,
-                                    &visible_rows,
+                            if (result.label_drag_started || group_pointer_drag_started(ui, result.rect))
+                                && self.row_drag.is_none()
+                            {
+                                preserve_or_select_dragged_row(
+                                    visible_row.row_id,
                                     &mut self.selected_rows,
                                     &mut self.selected_row,
                                     &mut self.last_selected_row,
                                 );
                                 start_row_drag = Some((visible_row.row_index, visible_row.depth));
                             }
-                        row_rects.push(result.all_rect);
-                        wave_bottom = wave_bottom.max(result.all_rect.bottom());
+                            row_rects.push(result.rect);
+                            wave_bottom = wave_bottom.max(result.rect.bottom());
+                        }
+                        VisibleWaveRowKind::Signal { signal_id } => {
+                            if let Some(signal) = store.signals.get(signal_id) {
+                                let dragging = self
+                                    .row_drag
+                                    .as_ref()
+                                    .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
+                                let result = draw_signal_rows(
+                                    ui,
+                                    &store,
+                                    signal,
+                                    visible_row.row_id,
+                                    visible_index,
+                                    row_selected,
+                                    dragging,
+                                    &self.expanded_rows,
+                                    self.cursor_time,
+                                    self.pixels_per_time,
+                                    self.time_view_start,
+                                    max_time,
+                                    visible_row.depth,
+                                    label_width,
+                                    visible_wave_width,
+                                );
+                                if result.primary.clicked {
+                                    update_wave_row_selection(
+                                        ui,
+                                        visible_index,
+                                        &visible_rows,
+                                        &mut self.selected_rows,
+                                        &mut self.selected_row,
+                                        &mut self.last_selected_row,
+                                    );
+                                }
+                                if let Some(time) = result.cursor_time {
+                                    self.cursor_time = time;
+                                }
+                                if result.cursor_drag_started {
+                                    self.cursor_dragging = true;
+                                }
+                                for key in result.expand_toggles {
+                                    if !self.expanded_rows.remove(&key) {
+                                        self.expanded_rows.insert(key);
+                                    }
+                                }
+                                if result.primary.label_drag_started && self.row_drag.is_none() {
+                                    preserve_or_select_dragged_row(
+                                        visible_row.row_id,
+                                        &mut self.selected_rows,
+                                        &mut self.selected_row,
+                                        &mut self.last_selected_row,
+                                    );
+                                    start_row_drag = Some((visible_row.row_index, visible_row.depth));
+                                }
+                                row_rects.push(result.all_rect);
+                                wave_bottom = wave_bottom.max(result.all_rect.bottom());
+                            }
                         }
                     }
                 }
-            }
 
-            if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
-                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
-                row_drag.insert_index = insertion_index_for_targets(pointer_pos, &drop_targets);
-            }
-            let left_drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
-            let left_drag_insert_index = if !self.dragging_signals.is_empty() {
-                Some(pointer_pos.map_or(left_drop_targets.len(), |pos| {
-                    insertion_index_for_targets(pos, &left_drop_targets)
-                }))
-            } else {
-                None
-            };
-            if let Some((start_index, drag_depth)) = start_row_drag {
-                if start_index < self.rows.len() {
-                    let rows = take_drag_rows(&mut self.rows, start_index);
-                    let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, drag_depth);
-                    let insert_index = pointer_pos.map_or(start_index, |pos| insertion_index_for_targets(pos, &drop_targets));
-                    self.row_drag = Some(RowDrag {
-                        rows,
+                if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
+                    let drop_targets =
+                        drop_targets_for_depth_excluding(&visible_rows, &row_rects, row_drag.depth, &row_drag.row_ids);
+                    row_drag.insert_index = insertion_index_for_targets(pointer_pos, &drop_targets);
+                }
+                let left_drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
+                let left_drag_insert_index = if !self.dragging_signals.is_empty() {
+                    Some(pointer_pos.map_or(left_drop_targets.len(), |pos| {
+                        insertion_index_for_targets(pos, &left_drop_targets)
+                    }))
+                } else {
+                    None
+                };
+                if let Some((start_index, _drag_depth)) = start_row_drag {
+                    if start_index < self.rows.len() {
+                        let row_ids = drag_row_ids(&self.rows, start_index, &self.selected_rows);
+                        let first_id = self.rows[start_index].id;
+                        // Moving rows always extracts them to a top-level block. This keeps group
+                        // subtrees contiguous and makes it impossible to split a group by dropping
+                        // a moved row between its header and children.
+                        let drag_depth = 0;
+                        let drop_targets =
+                            drop_targets_for_depth_excluding(&visible_rows, &row_rects, drag_depth, &row_ids);
+                        let insert_index =
+                            pointer_pos.map_or(start_index, |pos| insertion_index_for_targets(pos, &drop_targets));
+                        self.row_drag = Some(RowDrag {
+                            row_ids,
+                            first_id,
+                            insert_index,
+                            depth: drag_depth,
+                        });
+                    }
+                }
+
+                if let Some(row_drag) = &self.row_drag {
+                    draw_drag_name_boxes(ui, &visible_rows, &row_rects, &row_drag.row_ids, label_width);
+                }
+
+                let fallback_insert_y = axis_rect.bottom() + 7.0;
+                if let Some(row_drag) = &self.row_drag {
+                    let preview_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
+                    let preview_insert_index = pointer_pos
+                        .map(|pos| insertion_index_for_targets(pos, &preview_targets))
+                        .unwrap_or(row_drag.insert_index);
+                    draw_insert_line_for_targets(
+                        ui,
+                        preview_insert_index,
+                        &preview_targets,
+                        label_width + visible_wave_width,
+                        fallback_insert_y,
+                    );
+                } else if let Some(insert_index) = left_drag_insert_index {
+                    draw_insert_line_for_targets(
+                        ui,
                         insert_index,
-                        depth: drag_depth,
-                    });
-                    self.selected_row = None;
-                    self.selected_rows.clear();
-                    self.last_selected_row = None;
+                        &left_drop_targets,
+                        label_width + visible_wave_width,
+                        fallback_insert_y,
+                    );
                 }
-            }
-
-            let fallback_insert_y = axis_rect.bottom() + 7.0;
-            if let Some(row_drag) = &self.row_drag {
-                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
-                draw_insert_line_for_targets(
-                    ui,
-                    row_drag.insert_index,
-                    &drop_targets,
-                    label_width + wave_width,
-                    fallback_insert_y,
+                if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
+                    if ui.rect_contains_pointer(ui.max_rect()) {
+                        let visible_rows = visible_wave_rows(&self.rows);
+                        let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
+                        let visible_insert_index = left_drag_insert_index.unwrap_or(drop_targets.len());
+                        let insert_index =
+                            actual_insert_index_for_targets(&drop_targets, visible_insert_index, self.rows.len());
+                        let new_rows = self
+                            .dragging_signals
+                            .clone()
+                            .into_iter()
+                            .map(|signal_id| self.make_signal_row(signal_id, None))
+                            .collect::<Vec<_>>();
+                        let first_added = new_rows.first().map(|row| row.id);
+                        self.rows.splice(insert_index..insert_index, new_rows);
+                        if let Some(first_added) = first_added {
+                            self.selected_rows.clear();
+                            self.selected_rows.insert(first_added);
+                            self.selected_row = Some(first_added);
+                            self.last_selected_row = Some(first_added);
+                        }
+                    }
+                    self.dragging_signals.clear();
+                }
+                let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
+                let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
+                let splitter_rect = Rect::from_min_max(
+                    pos2(axis_rect.left() - 4.0, axis_rect.top()),
+                    pos2(axis_rect.left() + 4.0, cursor_bottom),
                 );
-            } else if let Some(insert_index) = left_drag_insert_index {
-                draw_insert_line_for_targets(ui, insert_index, &left_drop_targets, label_width + wave_width, fallback_insert_y);
-            }
-            if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
-                if ui.rect_contains_pointer(ui.max_rect()) {
-                    let visible_rows = visible_wave_rows(&self.rows);
-                    let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
-                    let visible_insert_index = left_drag_insert_index.unwrap_or(drop_targets.len());
-                    let insert_index = actual_insert_index_for_targets(&drop_targets, visible_insert_index, self.rows.len());
-                    let new_rows = self
-                        .dragging_signals
-                        .clone()
-                        .into_iter()
-                        .map(|signal_id| self.make_signal_row(signal_id, None))
-                        .collect::<Vec<_>>();
-                    let first_added = new_rows.first().map(|row| row.id);
-                    self.rows.splice(insert_index..insert_index, new_rows);
-                    if let Some(first_added) = first_added {
-                        self.selected_rows.clear();
-                        self.selected_rows.insert(first_added);
-                        self.selected_row = Some(first_added);
-                        self.last_selected_row = Some(first_added);
+                let splitter_response = ui.interact(
+                    splitter_rect,
+                    ui.make_persistent_id("wave-label-splitter"),
+                    Sense::drag(),
+                );
+                if splitter_response.dragged() {
+                    let delta_x = ui.input(|input| input.pointer.delta().x);
+                    self.row_label_width = (self.row_label_width + delta_x).max(MIN_ROW_LABEL_WIDTH);
+                }
+                ui.painter().line_segment(
+                    [
+                        pos2(axis_rect.left(), axis_rect.top()),
+                        pos2(axis_rect.left(), cursor_bottom),
+                    ],
+                    Stroke::new(1.0, Color32::DARK_GRAY),
+                );
+                if self.cursor_dragging {
+                    if let Some(pointer_pos) = pointer_pos {
+                        if ui.input(|input| input.pointer.primary_down()) {
+                            self.cursor_time = time_from_pointer(
+                                axis_rect,
+                                pointer_pos,
+                                self.pixels_per_time,
+                                self.time_view_start,
+                                max_time,
+                            );
+                        }
                     }
                 }
-                self.dragging_signals.clear();
-            }
-            let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
-            let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
-            let splitter_rect = Rect::from_min_max(
-                pos2(axis_rect.left() - 4.0, axis_rect.top()),
-                pos2(axis_rect.left() + 4.0, cursor_bottom),
-            );
-            let splitter_response = ui.interact(splitter_rect, ui.make_persistent_id("wave-label-splitter"), Sense::drag());
-            if splitter_response.dragged() {
-                let delta_x = ui.input(|input| input.pointer.delta().x);
-                self.row_label_width = (self.row_label_width + delta_x).max(MIN_ROW_LABEL_WIDTH);
-            }
-            ui.painter().line_segment(
-                [pos2(axis_rect.left(), axis_rect.top()), pos2(axis_rect.left(), cursor_bottom)],
-                Stroke::new(1.0, Color32::DARK_GRAY),
-            );
-            if self.cursor_dragging {
-                if let Some(pointer_pos) = pointer_pos {
-                    if ui.input(|input| input.pointer.primary_down()) {
-                        self.cursor_time = time_from_pointer(axis_rect, pointer_pos, self.pixels_per_time);
-                    }
-                }
-            }
-            draw_cursor(ui.painter(), cursor_span, self.cursor_time, self.pixels_per_time);
-        });
+                draw_cursor(
+                    ui.painter(),
+                    cursor_span,
+                    self.cursor_time,
+                    self.pixels_per_time,
+                    self.time_view_start,
+                );
+            });
     }
 
     fn load_store(&mut self) {
@@ -515,6 +597,7 @@ impl WaveGuiApp {
         {
             Ok(store) => {
                 self.cursor_time = store.max_time();
+                self.time_view_start = 0.0;
                 self.rows.clear();
                 self.next_row_id = 1;
                 self.selected_row = None;
@@ -591,7 +674,8 @@ impl WaveGuiApp {
         if self.selected_signals.is_empty() {
             let selected_modules = self.selected_modules.iter().cloned().collect::<Vec<_>>();
             for module_path in selected_modules {
-                let module_signals = filtered_signal_ids_for_module(store, &module_path, self.show_ports, self.show_signals);
+                let module_signals =
+                    filtered_signal_ids_for_module(store, &module_path, self.show_ports, self.show_signals);
                 if !module_signals.is_empty() {
                     let name = module_path.join(".");
                     self.add_grouped_signals(name, module_signals);
@@ -695,13 +779,13 @@ impl WaveGuiApp {
         }
         self.rows = kept_rows;
         let insert_index = insert_index.min(self.rows.len());
-        self.rows.splice(insert_index..insert_index, std::iter::once(group).chain(grouped_rows));
+        self.rows
+            .splice(insert_index..insert_index, std::iter::once(group).chain(grouped_rows));
         self.selected_rows.clear();
         self.selected_rows.insert(group_id);
         self.selected_row = Some(group_id);
         self.last_selected_row = Some(group_id);
     }
-
 }
 
 #[derive(Clone)]
@@ -712,11 +796,13 @@ struct RowResult {
     cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
     rect: Rect,
+    label_rect: Rect,
 }
 
 struct SignalRowsResult {
     primary: RowResult,
     all_rect: Rect,
+    all_label_rect: Rect,
     cursor_time: Option<u64>,
     cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
@@ -876,7 +962,10 @@ fn draw_module_header(
     let height = 20.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let indent = depth as f32 * 14.0;
-    let icon_rect = Rect::from_min_size(pos2(rect.left() + 4.0 + indent, rect.center().y - 6.0), vec2(12.0, 12.0));
+    let icon_rect = Rect::from_min_size(
+        pos2(rect.left() + 4.0 + indent, rect.center().y - 6.0),
+        vec2(12.0, 12.0),
+    );
     let label_left = if has_children {
         icon_rect.right() + 4.0
     } else {
@@ -1065,16 +1154,37 @@ fn included_row_ids(
 }
 
 fn drop_targets_for_depth(visible_rows: &[VisibleWaveRow], row_rects: &[Rect], max_depth: usize) -> Vec<DropTarget> {
-    visible_rows
-        .iter()
-        .zip(row_rects.iter().copied())
-        .filter_map(|(row, rect)| {
-            (row.depth <= max_depth).then_some(DropTarget {
-                row_index: row.row_index,
-                rect,
-            })
-        })
-        .collect()
+    drop_targets_for_depth_excluding(visible_rows, row_rects, max_depth, &BTreeSet::new())
+}
+
+fn drop_targets_for_depth_excluding(
+    visible_rows: &[VisibleWaveRow],
+    row_rects: &[Rect],
+    max_depth: usize,
+    excluded_ids: &BTreeSet<u64>,
+) -> Vec<DropTarget> {
+    let mut targets = Vec::new();
+    for (index, row) in visible_rows.iter().enumerate() {
+        if row.depth > max_depth || excluded_ids.contains(&row.row_id) {
+            continue;
+        }
+        let mut rect = row_rects[index];
+        let mut next_index = index + 1;
+        while let Some(next_row) = visible_rows.get(next_index) {
+            if next_row.depth <= row.depth {
+                break;
+            }
+            if !excluded_ids.contains(&next_row.row_id) {
+                rect = rect.union(row_rects[next_index]);
+            }
+            next_index += 1;
+        }
+        targets.push(DropTarget {
+            row_index: row.row_index,
+            rect,
+        });
+    }
+    targets
 }
 
 fn actual_insert_index_for_targets(targets: &[DropTarget], insert_index: usize, fallback: usize) -> usize {
@@ -1084,45 +1194,97 @@ fn actual_insert_index_for_targets(targets: &[DropTarget], insert_index: usize, 
         .unwrap_or(fallback)
 }
 
-fn take_drag_rows(rows: &mut Vec<WaveRow>, start_index: usize) -> Vec<WaveRow> {
+fn drag_row_ids(rows: &[WaveRow], start_index: usize, selected_rows: &BTreeSet<u64>) -> BTreeSet<u64> {
     if start_index >= rows.len() {
-        return Vec::new();
+        return BTreeSet::new();
+    }
+    if selected_rows.contains(&rows[start_index].id) && selected_rows.len() > 1 {
+        let row_parents = row_parent_map(rows);
+        return included_row_ids(rows, selected_rows, &row_parents);
     }
     match rows[start_index].kind {
         WaveRowKind::Group { .. } => {
             let group_id = rows[start_index].id;
             let row_parents = row_parent_map(rows);
-            let included_ids = rows
-                .iter()
-                .filter_map(|row| (row.id == group_id || is_descendant_of(row.id, group_id, &row_parents)).then_some(row.id))
-                .collect::<BTreeSet<_>>();
-            drain_included_rows(rows, &included_ids)
+            rows.iter()
+                .filter_map(|row| {
+                    (row.id == group_id || is_descendant_of(row.id, group_id, &row_parents)).then_some(row.id)
+                })
+                .collect()
         }
-        WaveRowKind::Signal { .. } => {
-            let mut row = rows.remove(start_index);
-            row.set_parent_id(None);
-            vec![row]
+        WaveRowKind::Signal { .. } => BTreeSet::from([rows[start_index].id]),
+    }
+}
+
+fn drain_drag_rows_for_move(
+    rows: &mut Vec<WaveRow>,
+    included_ids: &BTreeSet<u64>,
+    raw_insert_index: usize,
+) -> (Vec<WaveRow>, usize) {
+    let mut moved_rows = Vec::new();
+    let mut kept_rows = Vec::new();
+    let mut insert_index = 0;
+    for (index, row) in rows.drain(..).enumerate() {
+        let included = included_ids.contains(&row.id);
+        if index < raw_insert_index && !included {
+            insert_index += 1;
+        }
+        if included {
+            moved_rows.push(row);
+        } else {
+            kept_rows.push(row);
         }
     }
+    *rows = kept_rows;
+    (moved_rows, insert_index.min(rows.len()))
+}
+
+fn reparent_drag_roots_to_top_level(rows: &mut [WaveRow], row_ids: &BTreeSet<u64>) {
+    for row in rows {
+        if row.parent_id().is_none_or(|parent| !row_ids.contains(&parent)) {
+            row.set_parent_id(None);
+        }
+    }
+}
+
+fn group_blocks_are_contiguous(rows: &[WaveRow]) -> bool {
+    let row_parents = row_parent_map(rows);
+    if rows
+        .iter()
+        .any(|row| row.parent_id().is_some_and(|parent| !row_parents.contains_key(&parent)))
+    {
+        return false;
+    }
+
+    for (group_index, group) in rows.iter().enumerate() {
+        if !matches!(group.kind, WaveRowKind::Group { .. }) {
+            continue;
+        }
+        if rows[..group_index]
+            .iter()
+            .any(|row| is_descendant_of(row.id, group.id, &row_parents))
+        {
+            return false;
+        }
+
+        let mut left_group_block = false;
+        for row in &rows[group_index + 1..] {
+            let descendant = is_descendant_of(row.id, group.id, &row_parents);
+            if descendant && left_group_block {
+                return false;
+            }
+            if !descendant {
+                left_group_block = true;
+            }
+        }
+    }
+    true
 }
 
 fn delete_selected_rows(rows: &mut Vec<WaveRow>, selected_rows: &BTreeSet<u64>) {
     let row_parents = row_parent_map(rows);
     let included_ids = included_row_ids(rows, selected_rows, &row_parents);
     rows.retain(|row| !included_ids.contains(&row.id));
-}
-
-fn drain_included_rows(rows: &mut Vec<WaveRow>, included_ids: &BTreeSet<u64>) -> Vec<WaveRow> {
-    let mut drained = Vec::new();
-    let mut index = 0;
-    while index < rows.len() {
-        if included_ids.contains(&rows[index].id) {
-            drained.push(rows.remove(index));
-        } else {
-            index += 1;
-        }
-    }
-    drained
 }
 
 fn update_wave_row_selection(
@@ -1164,6 +1326,20 @@ fn update_wave_row_selection(
         *last_selected_row = Some(row_id);
     }
     *selected_row = Some(row_id);
+}
+
+fn preserve_or_select_dragged_row(
+    row_id: u64,
+    selected_rows: &mut BTreeSet<u64>,
+    selected_row: &mut Option<u64>,
+    last_selected_row: &mut Option<u64>,
+) {
+    if !selected_rows.contains(&row_id) {
+        selected_rows.clear();
+        selected_rows.insert(row_id);
+    }
+    *selected_row = Some(row_id);
+    *last_selected_row = Some(row_id);
 }
 
 fn update_signal_selection(
@@ -1237,26 +1413,116 @@ fn update_module_selection(
     *last_selected_module = Some(path);
 }
 
-fn time_from_pointer(axis_rect: Rect, pointer_pos: egui::Pos2, pixels_per_time: f32) -> u64 {
-    ((pointer_pos.x - axis_rect.left()) / pixels_per_time).round().max(0.0) as u64
+fn clamp_time_view_start(time_view_start: f32, visible_duration: f32, max_time: u64) -> f32 {
+    let max_time = max_time as f32;
+    if visible_duration >= max_time {
+        0.0
+    } else {
+        time_view_start.clamp(0.0, max_time - visible_duration)
+    }
 }
 
-fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, label_width: f32, width: f32) -> Rect {
+fn wave_content_width(time_view_start: f32, pixels_per_time: f32, visible_width: f32, max_time: u64) -> f32 {
+    ((max_time as f32 - time_view_start).max(0.0) * pixels_per_time)
+        .min(visible_width)
+        .max(1.0)
+}
+
+fn time_from_pointer(
+    axis_rect: Rect,
+    pointer_pos: egui::Pos2,
+    pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
+) -> u64 {
+    (time_view_start + (pointer_pos.x - axis_rect.left()) / pixels_per_time)
+        .round()
+        .clamp(0.0, max_time as f32) as u64
+}
+
+fn draw_time_view_range(
+    ui: &mut Ui,
+    label_width: f32,
+    wave_width: f32,
+    time_view_start: &mut f32,
+    pixels_per_time: f32,
+    max_time: u64,
+) {
+    let height = 34.0;
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, height), Sense::hover());
+    let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, height));
+    let track_rect = Rect::from_min_size(
+        pos2(row_rect.left() + label_width, row_rect.center().y - 3.0),
+        vec2(wave_width, 6.0),
+    );
+    let response = ui.interact(
+        track_rect,
+        ui.make_persistent_id("time-view-range"),
+        Sense::click_and_drag(),
+    );
+    let visible_duration = wave_width / pixels_per_time;
+    if (response.clicked() || response.dragged()) && max_time > 0 {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let center_time = ((pos.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0) * max_time as f32;
+            *time_view_start = clamp_time_view_start(center_time - visible_duration / 2.0, visible_duration, max_time);
+        }
+    }
+
+    let painter = ui.painter_at(row_rect);
+    let max_time_f = max_time as f32;
+    let visible_end = (*time_view_start + visible_duration).min(max_time_f);
+    painter.text(
+        pos2(label_rect.left(), label_rect.center().y),
+        Align2::LEFT_CENTER,
+        format!("Visible {:.0}..{:.0} / {max_time}", *time_view_start, visible_end),
+        FontId::proportional(12.0),
+        Color32::GRAY,
+    );
+    painter.rect_filled(track_rect, 3.0, Color32::from_gray(28));
+    painter.rect_stroke(track_rect, 3.0, Stroke::new(1.0, Color32::from_gray(62)));
+
+    let handle_left = track_rect.left() + (*time_view_start / max_time_f) * track_rect.width();
+    let handle_right = track_rect.left() + (visible_end / max_time_f) * track_rect.width();
+    let handle_rect = Rect::from_min_max(
+        pos2(handle_left, track_rect.center().y - 7.0),
+        pos2(
+            handle_right.max(handle_left + 8.0).min(track_rect.right()),
+            track_rect.center().y + 7.0,
+        ),
+    );
+    painter.rect_filled(handle_rect, 3.0, Color32::from_rgba_premultiplied(110, 130, 170, 120));
+    painter.rect_stroke(handle_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(130, 150, 190)));
+}
+
+fn draw_time_axis(
+    ui: &mut Ui,
+    pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
+    label_width: f32,
+    width: f32,
+) -> Rect {
     let height = 24.0;
     let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + width, height), Sense::hover());
-    let rect = Rect::from_min_size(pos2(row_rect.left() + label_width, row_rect.top()), vec2(width, height));
+    let content_width = wave_content_width(time_view_start, pixels_per_time, width, max_time);
+    let rect = Rect::from_min_size(
+        pos2(row_rect.left() + label_width, row_rect.top()),
+        vec2(content_width, height),
+    );
     let painter = ui.painter_at(rect);
     painter.line_segment(
         [pos2(rect.left(), rect.bottom()), pos2(rect.right(), rect.bottom())],
         Stroke::new(1.0, Color32::GRAY),
     );
-    draw_time_grid(&painter, rect, pixels_per_time);
+    draw_time_grid(&painter, rect, pixels_per_time, time_view_start, max_time);
 
-    let max_time = visible_time_span(rect, pixels_per_time);
     let tick_step = major_tick_step(pixels_per_time);
-    let mut t = 0;
+    let mut t = first_tick_at_or_after(time_view_start, tick_step);
     while t <= max_time {
-        let x = rect.left() + t as f32 * pixels_per_time;
+        let x = rect.left() + (t as f32 - time_view_start) * pixels_per_time;
+        if x > rect.right() {
+            break;
+        }
         painter.line_segment(
             [pos2(x, rect.bottom()), pos2(x, rect.bottom() - 6.0)],
             Stroke::new(1.0, Color32::GRAY),
@@ -1282,21 +1548,32 @@ fn draw_group_row(
     depth: usize,
     label_width: f32,
     wave_width: f32,
+    dragging: bool,
 ) -> RowResult {
-    let (row_rect, row_response) =
-        ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::click_and_drag());
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
+    let row_response = ui.interact(
+        row_rect,
+        ui.make_persistent_id(("group-row", row.id)),
+        Sense::click_and_drag(),
+    );
     let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
     let indent = depth as f32 * 18.0;
-    let icon_hit_rect = Rect::from_min_size(pos2(label_rect.left() + indent, label_rect.top()), vec2(28.0, ROW_HEIGHT));
+    let icon_hit_rect = Rect::from_min_size(
+        pos2(label_rect.left() + indent, label_rect.top()),
+        vec2(28.0, ROW_HEIGHT),
+    );
     let icon_rect = Rect::from_center_size(icon_hit_rect.center(), vec2(12.0, 12.0));
-    let name_rect = Rect::from_min_max(pos2(icon_hit_rect.right(), label_rect.top() + 3.0), label_rect.right_bottom());
+    let name_rect = Rect::from_min_max(
+        pos2(icon_hit_rect.right(), label_rect.top() + 3.0),
+        label_rect.right_bottom(),
+    );
     let painter = ui.painter_at(row_rect);
     let click_pos = if row_response.clicked() {
         row_response.interact_pointer_pos()
     } else {
         None
     };
-    let bg = if selected {
+    let bg = if selected && !dragging {
         Color32::from_rgb(45, 60, 90)
     } else if row_response.hovered() {
         Color32::from_rgb(45, 42, 55)
@@ -1325,8 +1602,8 @@ fn draw_group_row(
         let name_id = ui.make_persistent_id(("group-name", row.id));
         if name_clicked {
             let now = ui.input(|input| input.time);
-            let repeated_click = last_group_name_click
-                .is_some_and(|(last_id, last_time)| last_id == row.id && now - last_time <= 0.45);
+            let repeated_click =
+                last_group_name_click.is_some_and(|(last_id, last_time)| last_id == row.id && now - last_time <= 0.45);
             if row_response.double_clicked() || repeated_click {
                 *editing = true;
                 *last_group_name_click = None;
@@ -1347,6 +1624,9 @@ fn draw_group_row(
             if !was_focused && !response.has_focus() {
                 response.request_focus();
             }
+            if !was_focused {
+                select_all_text_edit(ui, response.id, name.chars().count());
+            }
             if response.lost_focus()
                 || ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape))
             {
@@ -1362,7 +1642,6 @@ fn draw_group_row(
             );
         }
     }
-
     RowResult {
         clicked: row_response.clicked(),
         label_drag_started: row_response.drag_started() || row_response.dragged(),
@@ -1370,6 +1649,7 @@ fn draw_group_row(
         cursor_drag_started: false,
         expand_toggles: Vec::new(),
         rect: row_rect,
+        label_rect,
     }
 }
 
@@ -1383,6 +1663,69 @@ fn draw_group_guides(painter: &egui::Painter, label_rect: Rect, depth: usize) {
     }
 }
 
+fn draw_drag_name_boxes(
+    ui: &Ui,
+    visible_rows: &[VisibleWaveRow],
+    row_rects: &[Rect],
+    dragged_ids: &BTreeSet<u64>,
+    label_width: f32,
+) {
+    let mut merged: Vec<Rect> = Vec::new();
+    let mut current: Option<Rect> = None;
+    for (visible_row, row_rect) in visible_rows.iter().zip(row_rects.iter().copied()) {
+        if !dragged_ids.contains(&visible_row.row_id) {
+            if let Some(rect) = current.take() {
+                merged.push(rect);
+            }
+            continue;
+        }
+        let rect = Rect::from_min_max(row_rect.min, pos2(row_rect.left() + label_width, row_rect.bottom()));
+        current = Some(current.map_or(rect, |last| last.union(rect)));
+    }
+    if let Some(rect) = current {
+        merged.push(rect);
+    }
+    if merged.is_empty() {
+        return;
+    }
+
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        ui.make_persistent_id("drag-name-boxes"),
+    ));
+    for rect in merged {
+        let rect = rect.shrink2(vec2(4.0, 2.0));
+        painter.rect_stroke(rect, 3.0, Stroke::new(2.0, Color32::from_rgb(255, 70, 70)));
+    }
+}
+
+fn select_all_text_edit(ui: &Ui, id: egui::Id, char_count: usize) {
+    let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(0),
+        egui::text::CCursor::new(char_count),
+    )));
+    state.store(ui.ctx(), id);
+}
+
+fn group_pointer_drag_started(ui: &Ui, rect: Rect) -> bool {
+    ui.input(|input| {
+        if !input.pointer.primary_down() {
+            return false;
+        }
+        let Some(origin) = input.pointer.press_origin() else {
+            return false;
+        };
+        if !rect.contains(origin) {
+            return false;
+        }
+        input
+            .pointer
+            .interact_pos()
+            .is_some_and(|pos| pos.distance(origin) > 3.0)
+    })
+}
+
 fn draw_signal_rows(
     ui: &mut Ui,
     store: &WaveStore,
@@ -1394,6 +1737,8 @@ fn draw_signal_rows(
     expanded_rows: &BTreeSet<WaveRowKey>,
     cursor_time: u64,
     pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
     group_depth: usize,
     label_width: f32,
     wave_width: f32,
@@ -1420,6 +1765,8 @@ fn draw_signal_rows(
         expanded_rows,
         cursor_time,
         pixels_per_time,
+        time_view_start,
+        max_time,
         label_width,
         wave_width,
     );
@@ -1441,6 +1788,8 @@ fn draw_signal_tree(
     expanded_rows: &BTreeSet<WaveRowKey>,
     cursor_time: u64,
     pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
     label_width: f32,
     wave_width: f32,
 ) -> SignalRowsResult {
@@ -1453,7 +1802,7 @@ fn draw_signal_tree(
         ty,
         row_index,
         selected && can_reorder,
-        dragging && can_reorder,
+        dragging,
         is_composite(ty),
         expanded,
         key,
@@ -1461,12 +1810,15 @@ fn draw_signal_tree(
         depth,
         cursor_time,
         pixels_per_time,
+        time_view_start,
+        max_time,
         label_width,
         wave_width,
     );
     let mut result = SignalRowsResult {
         primary: leaf.clone(),
         all_rect: leaf.rect,
+        all_label_rect: leaf.label_rect,
         cursor_time: leaf.cursor_time,
         cursor_drag_started: leaf.cursor_drag_started,
         expand_toggles: leaf.expand_toggles,
@@ -1490,16 +1842,19 @@ fn draw_signal_tree(
                 child_key,
                 row_index,
                 false,
-                false,
+                dragging,
                 false,
                 depth + 1,
                 expanded_rows,
                 cursor_time,
                 pixels_per_time,
+                time_view_start,
+                max_time,
                 label_width,
                 wave_width,
             );
             result.all_rect = result.all_rect.union(child.all_rect);
+            result.all_label_rect = result.all_label_rect.union(child.all_label_rect);
             if result.cursor_time.is_none() {
                 result.cursor_time = child.cursor_time;
             }
@@ -1527,22 +1882,31 @@ fn draw_signal_leaf(
     depth: usize,
     cursor_time: u64,
     pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
     label_width: f32,
     wave_width: f32,
 ) -> RowResult {
     let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
     let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
+    let content_wave_width = wave_content_width(time_view_start, pixels_per_time, wave_width, max_time);
     let wave_rect = Rect::from_min_size(
         pos2(row_rect.left() + label_width, row_rect.top()),
-        vec2(wave_width, ROW_HEIGHT),
+        vec2(content_wave_width, ROW_HEIGHT),
     );
-    let label_response = ui.interact(label_rect, ui.make_persistent_id(("row-label", key)), Sense::click_and_drag());
-    let wave_response = ui.interact(wave_rect, ui.make_persistent_id(("row-wave", key)), Sense::click_and_drag());
+    let label_response = ui.interact(
+        label_rect,
+        ui.make_persistent_id(("row-label", key)),
+        Sense::click_and_drag(),
+    );
+    let wave_response = ui.interact(
+        wave_rect,
+        ui.make_persistent_id(("row-wave", key)),
+        Sense::click_and_drag(),
+    );
     let painter = ui.painter_at(row_rect);
 
-    let bg = if dragging {
-        Color32::from_rgb(60, 50, 20)
-    } else if selected {
+    let bg = if selected && !dragging {
         Color32::from_rgb(35, 55, 85)
     } else if expandable && expanded {
         Color32::from_rgb(28, 42, 48)
@@ -1561,7 +1925,10 @@ fn draw_signal_leaf(
         .map(|bits| format_value_for_type(bits, key.bit_offset, ty))
         .unwrap_or_else(|| "x".to_owned());
     let icon_rect = Rect::from_min_size(
-        pos2(label_rect.left() + 4.0 + depth as f32 * 18.0, label_rect.center().y - 6.0),
+        pos2(
+            label_rect.left() + 4.0 + depth as f32 * 18.0,
+            label_rect.center().y - 6.0,
+        ),
         vec2(12.0, 12.0),
     );
     let icon_response = if expandable {
@@ -1586,11 +1953,13 @@ fn draw_signal_leaf(
         key.bit_offset,
         ty,
         pixels_per_time,
+        time_view_start,
+        max_time,
     );
     let cursor_time = wave_response
         .interact_pointer_pos()
         .filter(|pos| (wave_response.clicked() || wave_response.dragged()) && wave_rect.contains(*pos))
-        .map(|pos| ((pos.x - wave_rect.left()) / pixels_per_time).round().max(0.0) as u64);
+        .map(|pos| time_from_pointer(wave_rect, pos, pixels_per_time, time_view_start, max_time));
     let cursor_drag_started = wave_response.drag_started()
         || ui.input(|input| input.modifiers.shift) && wave_response.is_pointer_button_down_on();
     let expand_toggles = icon_response
@@ -1605,6 +1974,7 @@ fn draw_signal_leaf(
         cursor_drag_started,
         expand_toggles,
         rect: row_rect,
+        label_rect,
     }
 }
 
@@ -1615,54 +1985,75 @@ fn draw_waveform(
     bit_offset: usize,
     ty: &WaveSignalType,
     pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
 ) {
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::DARK_GRAY));
-    draw_time_grid(painter, rect, pixels_per_time);
+    draw_time_grid(painter, rect, pixels_per_time, time_view_start, max_time);
 
     if changes.is_empty() {
         return;
     }
 
+    let visible_start = time_view_start;
+    let visible_end = (time_view_start + rect.width() / pixels_per_time).min(max_time as f32);
+    if visible_end <= visible_start {
+        return;
+    }
+
     if ty.bit_len() == 1 {
-        let mut prev_x = rect.left();
-        let mut prev_y = bit_y(rect, get_bit(&changes[0].bits, bit_offset));
-        for change in changes.iter().skip(1) {
-            let x = rect.left() + change.time as f32 * pixels_per_time;
-            let y = bit_y(rect, get_bit(&change.bits, bit_offset));
-            painter.line_segment(
-                [pos2(prev_x, prev_y), pos2(x, prev_y)],
-                Stroke::new(1.5, Color32::LIGHT_GREEN),
-            );
-            painter.line_segment([pos2(x, prev_y), pos2(x, y)], Stroke::new(1.5, Color32::LIGHT_GREEN));
-            prev_x = x;
-            prev_y = y;
+        for (index, change) in changes.iter().enumerate() {
+            let start_time = change.time as f32;
+            let end_time = changes
+                .get(index + 1)
+                .map(|next| next.time as f32)
+                .unwrap_or(max_time as f32);
+            let segment_start = start_time.max(visible_start);
+            let segment_end = end_time.min(visible_end);
+            if segment_end > segment_start {
+                let y = bit_y(rect, get_bit(&change.bits, bit_offset));
+                painter.line_segment(
+                    [
+                        pos2(time_to_x(rect, segment_start, time_view_start, pixels_per_time), y),
+                        pos2(time_to_x(rect, segment_end, time_view_start, pixels_per_time), y),
+                    ],
+                    Stroke::new(1.5, Color32::LIGHT_GREEN),
+                );
+            }
+            if let Some(next) = changes.get(index + 1) {
+                let transition_time = next.time as f32;
+                if transition_time >= visible_start && transition_time <= visible_end {
+                    let x = time_to_x(rect, transition_time, time_view_start, pixels_per_time);
+                    painter.line_segment(
+                        [
+                            pos2(x, bit_y(rect, get_bit(&change.bits, bit_offset))),
+                            pos2(x, bit_y(rect, get_bit(&next.bits, bit_offset))),
+                        ],
+                        Stroke::new(1.5, Color32::LIGHT_GREEN),
+                    );
+                }
+            }
         }
-        painter.line_segment(
-            [pos2(prev_x, prev_y), pos2(rect.right(), prev_y)],
-            Stroke::new(1.5, Color32::LIGHT_GREEN),
-        );
     } else {
-        for window in changes.windows(2) {
-            let start = &window[0];
-            let end = &window[1];
+        for (index, change) in changes.iter().enumerate() {
+            let start_time = change.time as f32;
+            let end_time = changes
+                .get(index + 1)
+                .map(|next| next.time as f32)
+                .unwrap_or(max_time as f32);
+            let segment_start = start_time.max(visible_start);
+            let segment_end = end_time.min(visible_end);
+            if segment_end <= segment_start {
+                continue;
+            }
             draw_bus_segment(
                 &painter,
                 rect,
-                start.time,
-                end.time,
-                &format_value_for_type(&start.bits, bit_offset, ty),
+                segment_start,
+                segment_end,
+                &format_value_for_type(&change.bits, bit_offset, ty),
                 pixels_per_time,
-            );
-        }
-        if let Some(last) = changes.last() {
-            let visible_end_time = (rect.width() / pixels_per_time).ceil().max(last.time as f32 + 1.0) as u64;
-            draw_bus_segment(
-                &painter,
-                rect,
-                last.time,
-                visible_end_time,
-                &format_value_for_type(&last.bits, bit_offset, ty),
-                pixels_per_time,
+                time_view_start,
             );
         }
     }
@@ -1670,6 +2061,10 @@ fn draw_waveform(
 
 fn major_tick_step(pixels_per_time: f32) -> u64 {
     (80.0 / pixels_per_time).ceil().max(1.0) as u64
+}
+
+fn first_tick_at_or_after(time: f32, tick_step: u64) -> u64 {
+    ((time / tick_step as f32).ceil() as u64).saturating_mul(tick_step)
 }
 
 fn enum_tag_width(variant_count: usize) -> usize {
@@ -1680,12 +2075,14 @@ fn enum_tag_width(variant_count: usize) -> usize {
     }
 }
 
-fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32) {
+fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32, time_view_start: f32, max_time: u64) {
     let tick_step = major_tick_step(pixels_per_time);
-    let max_time = visible_time_span(rect, pixels_per_time);
-    let mut t = 0;
+    let mut t = first_tick_at_or_after(time_view_start, tick_step);
     while t <= max_time {
-        let x = rect.left() + t as f32 * pixels_per_time;
+        let x = time_to_x(rect, t as f32, time_view_start, pixels_per_time);
+        if x > rect.right() {
+            break;
+        }
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
             Stroke::new(1.0, Color32::from_gray(42)),
@@ -1694,12 +2091,12 @@ fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32) {
     }
 }
 
-fn visible_time_span(rect: Rect, pixels_per_time: f32) -> u64 {
-    ((rect.width() / pixels_per_time).ceil() as u64).max(1)
+fn time_to_x(rect: Rect, time: f32, time_view_start: f32, pixels_per_time: f32) -> f32 {
+    rect.left() + (time - time_view_start) * pixels_per_time
 }
 
-fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per_time: f32) {
-    let x = rect.left() + cursor_time as f32 * pixels_per_time;
+fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per_time: f32, time_view_start: f32) {
+    let x = time_to_x(rect, cursor_time as f32, time_view_start, pixels_per_time);
     if x >= rect.left() && x <= rect.right() {
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
@@ -1725,11 +2122,16 @@ fn draw_insert_line_for_targets(ui: &Ui, insert_index: usize, targets: &[DropTar
         .first()
         .map(|target| target.rect.left())
         .unwrap_or_else(|| ui.min_rect().left());
-    ui.painter().line_segment(
-        [pos2(left, anchor), pos2(left + width, anchor)],
+    let right = left + width;
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        ui.make_persistent_id("insert-preview"),
+    ));
+    painter.line_segment(
+        [pos2(left, anchor), pos2(right, anchor)],
         Stroke::new(3.0, Color32::from_rgb(255, 70, 70)),
     );
-    ui.painter().add(Shape::convex_polygon(
+    painter.add(Shape::convex_polygon(
         vec![
             pos2(left, anchor - 5.0),
             pos2(left, anchor + 5.0),
@@ -1774,13 +2176,14 @@ fn bit_y(rect: Rect, value: bool) -> f32 {
 fn draw_bus_segment(
     painter: &egui::Painter,
     rect: Rect,
-    start_time: u64,
-    end_time: u64,
+    start_time: f32,
+    end_time: f32,
     label: &str,
     pixels_per_time: f32,
+    time_view_start: f32,
 ) {
-    let x0 = rect.left() + start_time as f32 * pixels_per_time;
-    let x1 = rect.left() + end_time as f32 * pixels_per_time;
+    let x0 = time_to_x(rect, start_time, time_view_start, pixels_per_time);
+    let x1 = time_to_x(rect, end_time, time_view_start, pixels_per_time);
     let y0 = rect.top() + 5.0;
     let y1 = rect.bottom() - 5.0;
     painter.line_segment([pos2(x0, y0), pos2(x1, y0)], Stroke::new(1.0, Color32::LIGHT_BLUE));
@@ -1835,7 +2238,15 @@ fn composite_children(ty: &WaveSignalType) -> Vec<(String, WaveSignalType, usize
         }
         WaveSignalType::Enum { variants, .. } => {
             let tag_width = enum_tag_width(variants.len());
-            result.push((".tag".to_owned(), WaveSignalType::Int { signed: false, width: tag_width }, 0, tag_width));
+            result.push((
+                ".tag".to_owned(),
+                WaveSignalType::Int {
+                    signed: false,
+                    width: tag_width,
+                },
+                0,
+                tag_width,
+            ));
             let payload_offset = tag_width;
             for (name, payload) in variants {
                 if let Some(payload) = payload {
