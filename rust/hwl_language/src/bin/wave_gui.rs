@@ -34,10 +34,13 @@ struct WaveGuiApp {
     run_to_time: u64,
     step_count: u64,
     selected_row: Option<usize>,
+    selected_rows: BTreeSet<usize>,
+    last_selected_row: Option<usize>,
     selected_signals: BTreeSet<usize>,
     last_selected_signal: Option<usize>,
     last_hierarchy_click: Option<(usize, f64)>,
     row_drag: Option<RowDrag>,
+    cursor_dragging: bool,
     dragging_signals: Vec<usize>,
     expanded_rows: BTreeSet<WaveRowKey>,
 }
@@ -67,10 +70,13 @@ impl Default for WaveGuiApp {
             run_to_time: 0,
             step_count: 1,
             selected_row: None,
+            selected_rows: BTreeSet::new(),
+            last_selected_row: None,
             selected_signals: BTreeSet::new(),
             last_selected_signal: None,
             last_hierarchy_click: None,
             row_drag: None,
+            cursor_dragging: false,
             dragging_signals: Vec::new(),
             expanded_rows: BTreeSet::new(),
         }
@@ -91,10 +97,13 @@ impl eframe::App for WaveGuiApp {
                         if ui.button("Clear").clicked() {
                             self.rows.clear();
                             self.selected_row = None;
+                            self.selected_rows.clear();
+                            self.last_selected_row = None;
                             self.selected_signals.clear();
                             self.last_selected_signal = None;
                             self.last_hierarchy_click = None;
                             self.row_drag = None;
+                            self.cursor_dragging = false;
                             self.dragging_signals.clear();
                             self.expanded_rows.clear();
                         }
@@ -135,9 +144,6 @@ impl WaveGuiApp {
                 ui.button("Load").clicked() || path_response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             if load_requested {
                 self.load_store();
-            }
-            if ui.button("Save").clicked() {
-                self.save_store();
             }
             ui.separator();
             ui.label("Zoom:");
@@ -190,23 +196,34 @@ impl WaveGuiApp {
         let wave_width = (max_time as f32 * self.pixels_per_time + 120.0).max(visible_wave_width);
 
         if ui.input(|input| input.key_pressed(Key::Delete)) {
-            if let Some(row_index) = self.selected_row.take() {
+            if !self.selected_rows.is_empty() {
+                let mut row_indices = self.selected_rows.iter().copied().collect::<Vec<_>>();
+                row_indices.sort_unstable_by(|a, b| b.cmp(a));
+                for row_index in row_indices {
+                    if row_index < self.rows.len() {
+                        let removed = self.rows.remove(row_index);
+                        self.expanded_rows.retain(|key| key.signal_id != removed);
+                    }
+                }
+                self.selected_rows.clear();
+                self.selected_row = None;
+                self.last_selected_row = None;
+            } else if let Some(row_index) = self.selected_row.take() {
                 if row_index < self.rows.len() {
                     let removed = self.rows.remove(row_index);
                     self.expanded_rows.retain(|key| key.signal_id != removed);
-                    if row_index < self.rows.len() {
-                        self.selected_row = Some(row_index);
-                    } else if !self.rows.is_empty() {
-                        self.selected_row = Some(self.rows.len() - 1);
-                    }
                 }
             }
         }
         if ui.input(|input| input.pointer.any_released()) {
+            self.cursor_dragging = false;
             if let Some(row_drag) = self.row_drag.take() {
                 let insert_index = row_drag.insert_index.min(self.rows.len());
                 self.rows.insert(insert_index, row_drag.signal_id);
                 self.selected_row = Some(insert_index);
+                self.selected_rows.clear();
+                self.selected_rows.insert(insert_index);
+                self.last_selected_row = Some(insert_index);
             } else if !self.dragging_signals.is_empty() {
                 if ui.rect_contains_pointer(ui.max_rect()) {
                     let start = self.rows.len();
@@ -227,7 +244,7 @@ impl WaveGuiApp {
         }
 
         ui.horizontal_wrapped(|ui| {
-            ui.weak("Drag labels vertically to reorder. Drag waveforms horizontally to move the cursor. Ctrl+scroll zooms horizontally. Select a row and press Delete to remove.");
+            ui.weak("Shift/Ctrl-click wave rows to select. Drag labels to reorder. Drag waveforms horizontally to move the cursor. Shift-drag also works. Ctrl+scroll zooms.");
         });
 
         ScrollArea::both().show(ui, |ui| {
@@ -240,12 +257,14 @@ impl WaveGuiApp {
             let mut wave_bottom = axis_rect.bottom();
             for (row_index, signal_id) in self.rows.iter().copied().enumerate() {
                 if let Some(signal) = store.signals.get(signal_id) {
+                    let row_selected =
+                        self.selected_rows.contains(&row_index) || self.selected_row == Some(row_index);
                     let result = draw_signal_rows(
                         ui,
                         &store,
                         signal,
                         row_index,
-                        self.selected_row == Some(row_index),
+                        row_selected,
                         self.row_drag.as_ref().is_some_and(|drag| drag.signal_id == signal_id),
                         &self.expanded_rows,
                         self.cursor_time,
@@ -253,10 +272,20 @@ impl WaveGuiApp {
                         wave_width,
                     );
                     if result.primary.clicked {
-                        self.selected_row = Some(row_index);
+                        update_row_selection(
+                            ui,
+                            row_index,
+                            self.rows.len(),
+                            &mut self.selected_rows,
+                            &mut self.selected_row,
+                            &mut self.last_selected_row,
+                        );
                     }
                     if let Some(time) = result.cursor_time {
                         self.cursor_time = time;
+                    }
+                    if result.cursor_drag_started {
+                        self.cursor_dragging = true;
                     }
                     for key in result.expand_toggles {
                         if !self.expanded_rows.remove(&key) {
@@ -264,7 +293,14 @@ impl WaveGuiApp {
                         }
                     }
                     if result.primary.label_drag_started {
-                        self.selected_row = Some(row_index);
+                        update_row_selection(
+                            ui,
+                            row_index,
+                            self.rows.len(),
+                            &mut self.selected_rows,
+                            &mut self.selected_row,
+                            &mut self.last_selected_row,
+                        );
                         start_row_drag = Some(row_index);
                     }
                     row_rects.push(result.primary.rect);
@@ -281,6 +317,8 @@ impl WaveGuiApp {
                     let insert_index = pointer_pos.map_or(start_index, |pos| insertion_index(pos, &row_rects));
                     self.row_drag = Some(RowDrag { signal_id, insert_index });
                     self.selected_row = None;
+                    self.selected_rows.clear();
+                    self.last_selected_row = None;
                 }
             }
 
@@ -289,6 +327,13 @@ impl WaveGuiApp {
             }
             let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
             let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
+            if self.cursor_dragging {
+                if let Some(pointer_pos) = pointer_pos {
+                    if ui.input(|input| input.pointer.primary_down()) {
+                        self.cursor_time = time_from_pointer(axis_rect, pointer_pos, self.pixels_per_time);
+                    }
+                }
+            }
             draw_cursor(ui.painter(), cursor_span, self.cursor_time, self.pixels_per_time);
         });
     }
@@ -303,10 +348,13 @@ impl WaveGuiApp {
                 self.cursor_time = store.max_time();
                 self.rows.clear();
                 self.selected_row = None;
+                self.selected_rows.clear();
+                self.last_selected_row = None;
                 self.selected_signals.clear();
                 self.last_selected_signal = None;
                 self.last_hierarchy_click = None;
                 self.row_drag = None;
+                self.cursor_dragging = false;
                 self.dragging_signals.clear();
                 self.expanded_rows.clear();
                 self.store = Some(store);
@@ -318,24 +366,6 @@ impl WaveGuiApp {
         }
     }
 
-    fn save_store(&mut self) {
-        let Some(store) = &self.store else {
-            self.status = "No store to save".to_owned();
-            return;
-        };
-        let path = PathBuf::from(self.path.trim());
-        match serde_json::to_string_pretty(store)
-            .map_err(|e| e.to_string())
-            .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()))
-        {
-            Ok(()) => {
-                self.status = format!("Saved {}", path.display());
-            }
-            Err(err) => {
-                self.status = format!("Save failed: {err}");
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -343,6 +373,7 @@ struct RowResult {
     clicked: bool,
     label_drag_started: bool,
     cursor_time: Option<u64>,
+    cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
     rect: Rect,
 }
@@ -351,6 +382,7 @@ struct SignalRowsResult {
     primary: RowResult,
     all_rect: Rect,
     cursor_time: Option<u64>,
+    cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
 }
 
@@ -380,7 +412,7 @@ fn draw_hierarchy(
         let mut next_prefix = prefix.to_owned();
         next_prefix.push(child.clone());
         let subtree_signals = signal_ids_under_path(store, &next_prefix);
-        let response = egui::CollapsingHeader::new(format!("{child} ({})", subtree_signals.len()))
+        let response = egui::CollapsingHeader::new(group_title(&child, &subtree_signals, selected_signals))
             .default_open(prefix.is_empty())
             .show(ui, |ui| {
                 draw_hierarchy(
@@ -446,7 +478,7 @@ fn draw_signal_group(
         return;
     }
 
-    let response = egui::CollapsingHeader::new(format!("{title} ({})", signal_ids.len()))
+    let response = egui::CollapsingHeader::new(group_title(title, signal_ids, selected_signals))
         .default_open(title == "[ports]")
         .show(ui, |ui| {
             for signal_id in signal_ids {
@@ -629,6 +661,55 @@ fn update_group_selection(
     *last_selected_signal = signal_ids.last().copied();
 }
 
+fn group_title(title: &str, signal_ids: &[usize], selected_signals: &BTreeSet<usize>) -> String {
+    let selected_count = signal_ids
+        .iter()
+        .filter(|signal_id| selected_signals.contains(signal_id))
+        .count();
+    let marker = match selected_count {
+        0 => "",
+        n if n == signal_ids.len() => " [selected]",
+        _ => " [partial]",
+    };
+    format!("{title} ({}){marker}", signal_ids.len())
+}
+
+fn update_row_selection(
+    ui: &Ui,
+    row_index: usize,
+    row_count: usize,
+    selected_rows: &mut BTreeSet<usize>,
+    selected_row: &mut Option<usize>,
+    last_selected_row: &mut Option<usize>,
+) {
+    let modifiers = ui.input(|input| input.modifiers);
+    if modifiers.shift {
+        let anchor = last_selected_row.unwrap_or(row_index);
+        let (start, end) = if anchor <= row_index {
+            (anchor, row_index)
+        } else {
+            (row_index, anchor)
+        };
+        for index in start..=end.min(row_count.saturating_sub(1)) {
+            selected_rows.insert(index);
+        }
+    } else if modifiers.ctrl || modifiers.command {
+        if !selected_rows.remove(&row_index) {
+            selected_rows.insert(row_index);
+        }
+        *last_selected_row = Some(row_index);
+    } else {
+        selected_rows.clear();
+        selected_rows.insert(row_index);
+        *last_selected_row = Some(row_index);
+    }
+    *selected_row = Some(row_index);
+}
+
+fn time_from_pointer(axis_rect: Rect, pointer_pos: egui::Pos2, pixels_per_time: f32) -> u64 {
+    ((pointer_pos.x - axis_rect.left()) / pixels_per_time).round().max(0.0) as u64
+}
+
 fn draw_time_axis(ui: &mut Ui, max_time: u64, pixels_per_time: f32, width: f32) -> Rect {
     let height = 24.0;
     let (row_rect, _) = ui.allocate_exact_size(vec2(ROW_LABEL_WIDTH + width, height), Sense::hover());
@@ -720,6 +801,7 @@ fn draw_signal_tree(
         store,
         signal,
         label,
+        ty,
         row_index,
         selected && can_reorder,
         dragging && can_reorder,
@@ -736,6 +818,7 @@ fn draw_signal_tree(
         primary: leaf.clone(),
         all_rect: leaf.rect,
         cursor_time: leaf.cursor_time,
+        cursor_drag_started: leaf.cursor_drag_started,
         expand_toggles: leaf.expand_toggles,
     };
 
@@ -767,6 +850,7 @@ fn draw_signal_tree(
             if result.cursor_time.is_none() {
                 result.cursor_time = child.cursor_time;
             }
+            result.cursor_drag_started |= child.cursor_drag_started;
             result.expand_toggles.extend(child.expand_toggles);
         }
     }
@@ -779,6 +863,7 @@ fn draw_signal_leaf(
     store: &WaveStore,
     signal: &WaveSignal,
     label: &str,
+    ty: &WaveSignalType,
     row_index: usize,
     selected: bool,
     dragging: bool,
@@ -816,7 +901,7 @@ fn draw_signal_leaf(
 
     let value = store
         .signal_value_at(signal.id, cursor_time)
-        .map(|bits| format_value(bits, key.bit_offset, key.bit_len))
+        .map(|bits| format_value_for_type(bits, key.bit_offset, ty))
         .unwrap_or_else(|| "x".to_owned());
     let icon_rect = Rect::from_min_size(
         pos2(label_rect.left() + 4.0 + depth as f32 * 14.0, label_rect.center().y - 6.0),
@@ -842,13 +927,15 @@ fn draw_signal_leaf(
         wave_rect,
         &store.changes[signal.id],
         key.bit_offset,
-        key.bit_len,
+        ty,
         pixels_per_time,
     );
     let cursor_time = wave_response
         .interact_pointer_pos()
         .filter(|pos| (wave_response.clicked() || wave_response.dragged()) && wave_rect.contains(*pos))
         .map(|pos| ((pos.x - wave_rect.left()) / pixels_per_time).round().max(0.0) as u64);
+    let cursor_drag_started = wave_response.drag_started()
+        || ui.input(|input| input.modifiers.shift) && wave_response.is_pointer_button_down_on();
     let expand_toggles = icon_response
         .filter(|response| response.clicked())
         .map(|_| vec![key])
@@ -858,6 +945,7 @@ fn draw_signal_leaf(
         clicked: label_response.clicked() || wave_response.clicked(),
         label_drag_started: can_reorder && label_response.drag_started(),
         cursor_time,
+        cursor_drag_started,
         expand_toggles,
         rect: row_rect,
     }
@@ -868,7 +956,7 @@ fn draw_waveform(
     rect: Rect,
     changes: &[hwl_language::sim::recorder::WaveChange],
     bit_offset: usize,
-    bit_len: usize,
+    ty: &WaveSignalType,
     pixels_per_time: f32,
 ) {
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::DARK_GRAY));
@@ -878,7 +966,7 @@ fn draw_waveform(
         return;
     }
 
-    if bit_len == 1 {
+    if ty.bit_len() == 1 {
         let mut prev_x = rect.left();
         let mut prev_y = bit_y(rect, get_bit(&changes[0].bits, bit_offset));
         for change in changes.iter().skip(1) {
@@ -905,7 +993,7 @@ fn draw_waveform(
                 rect,
                 start.time,
                 end.time,
-                &format_value(&start.bits, bit_offset, bit_len),
+                &format_value_for_type(&start.bits, bit_offset, ty),
                 pixels_per_time,
             );
         }
@@ -916,7 +1004,7 @@ fn draw_waveform(
                 rect,
                 last.time,
                 visible_end_time,
-                &format_value(&last.bits, bit_offset, bit_len),
+                &format_value_for_type(&last.bits, bit_offset, ty),
                 pixels_per_time,
             );
         }
@@ -1093,25 +1181,92 @@ fn composite_children(ty: &WaveSignalType) -> Vec<(String, WaveSignalType, usize
     result
 }
 
-fn format_value(bits: &[u8], bit_offset: usize, bit_len: usize) -> String {
-    if bit_len == 0 {
-        return "0b".to_owned();
+fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) -> String {
+    match ty {
+        WaveSignalType::Bool => {
+            if get_bit(bits, bit_offset) {
+                "true".to_owned()
+            } else {
+                "false".to_owned()
+            }
+        }
+        &WaveSignalType::Int { signed, width } => format_int_value(bits, bit_offset, width, signed),
+        WaveSignalType::Array { len, element } => {
+            let stride = element.bit_len();
+            let elements = (0..*len)
+                .map(|index| format_value_for_type(bits, bit_offset + index * stride, element))
+                .collect::<Vec<_>>();
+            format!("[{}]", elements.join(", "))
+        }
+        WaveSignalType::Tuple(elements) => {
+            let mut offset = bit_offset;
+            let values = elements
+                .iter()
+                .map(|element| {
+                    let value = format_value_for_type(bits, offset, element);
+                    offset += element.bit_len();
+                    value
+                })
+                .collect::<Vec<_>>();
+            if values.len() == 1 {
+                format!("({},)", values[0])
+            } else {
+                format!("({})", values.join(", "))
+            }
+        }
+        WaveSignalType::Struct { name, fields } => {
+            let mut offset = bit_offset;
+            let values = fields
+                .iter()
+                .map(|(field_name, field_ty)| {
+                    let value = format_value_for_type(bits, offset, field_ty);
+                    offset += field_ty.bit_len();
+                    format!("{field_name}={value}")
+                })
+                .collect::<Vec<_>>();
+            format!("{name}.new({})", values.join(", "))
+        }
+        WaveSignalType::Enum { name, variants } => {
+            let tag_width = enum_tag_width(variants.len());
+            let tag = get_unsigned(bits, bit_offset, tag_width) as usize;
+            let Some((variant_name, payload_ty)) = variants.get(tag) else {
+                return format!("{name}.<invalid {tag}>");
+            };
+            match payload_ty {
+                Some(payload_ty) => {
+                    let payload = format_value_for_type(bits, bit_offset + tag_width, payload_ty);
+                    format!("{name}.{variant_name}({payload})")
+                }
+                None => format!("{name}.{variant_name}"),
+            }
+        }
     }
-    if bit_len == 1 {
-        return if get_bit(bits, bit_offset) { "1" } else { "0" }.to_owned();
+}
+
+fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool) -> String {
+    if width == 0 {
+        return "0".to_owned();
     }
+    if width > 128 {
+        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
+    }
+    let value = get_unsigned(bits, bit_offset, width);
+    if signed && width < 128 && get_bit(bits, bit_offset + width - 1) {
+        let signed_value = value as i128 - (1i128 << width);
+        signed_value.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn get_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
     let mut value = 0u128;
-    let shown_bits = bit_len.min(128);
-    for i in 0..shown_bits {
+    for i in 0..bit_len.min(128) {
         if get_bit(bits, bit_offset + i) {
             value |= 1u128 << i;
         }
     }
-    if bit_len <= 128 {
-        format!("0x{value:x}")
-    } else {
-        format!("0x{value:x}...")
-    }
+    value
 }
 
 fn get_bit(bits: &[u8], bit: usize) -> bool {
