@@ -6,6 +6,7 @@
         "top"
       ],
       "name": "clk",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -15,6 +16,7 @@
         "top"
       ],
       "name": "rst",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -24,6 +26,7 @@
         "top"
       ],
       "name": "mode",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -43,6 +46,7 @@
         "top"
       ],
       "name": "x",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -57,6 +61,7 @@
         "top"
       ],
       "name": "y",
+      "kind": "Wire",
       "ty": {
         "Struct": {
           "name": "Packet",
@@ -99,6 +104,7 @@
         "top"
       ],
       "name": "summary",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -157,6 +163,7 @@
         "top"
       ],
       "name": "enable_left",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -166,6 +173,7 @@
         "top"
       ],
       "name": "enable_right",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -175,6 +183,7 @@
         "top"
       ],
       "name": "tag_left",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -189,6 +198,7 @@
         "top"
       ],
       "name": "tag_right",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -203,6 +213,7 @@
         "top"
       ],
       "name": "left_packet",
+      "kind": "Wire",
       "ty": {
         "Struct": {
           "name": "Packet",
@@ -245,6 +256,7 @@
         "top"
       ],
       "name": "right_packet",
+      "kind": "Wire",
       "ty": {
         "Struct": {
           "name": "Packet",
@@ -287,6 +299,7 @@
         "top"
       ],
       "name": "left_parity",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -296,6 +309,7 @@
         "top"
       ],
       "name": "right_parity",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -305,6 +319,7 @@
         "top"
       ],
       "name": "left_debug",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -324,6 +339,7 @@
         "top"
       ],
       "name": "right_debug",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -343,6 +359,7 @@
         "top"
       ],
       "name": "right_sample",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -357,6 +374,7 @@
         "top"
       ],
       "name": "clk",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -366,6 +384,7 @@
         "top"
       ],
       "name": "rst",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -375,6 +394,7 @@
         "top"
       ],
       "name": "enable",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -384,6 +404,7 @@
         "top"
       ],
       "name": "tag_in",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -398,6 +419,7 @@
         "top"
       ],
       "name": "sample",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -412,6 +434,7 @@
         "top"
       ],
       "name": "clk",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -421,6 +444,7 @@
         "top"
       ],
       "name": "rst",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -430,6 +454,7 @@
         "top"
       ],
       "name": "enable",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -439,6 +464,7 @@
         "top"
       ],
       "name": "tag_in",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -453,6 +479,7 @@
         "top"
       ],
       "name": "sample",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -468,6 +495,7 @@
         "left"
       ],
       "name": "clk",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -478,6 +506,7 @@
         "left"
       ],
       "name": "rst",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -488,6 +517,7 @@
         "left"
       ],
       "name": "enable",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -498,6 +528,7 @@
         "left"
       ],
       "name": "tag_in",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -513,6 +544,7 @@
         "left"
       ],
       "name": "sample",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -528,6 +560,7 @@
         "left"
       ],
       "name": "packet",
+      "kind": "Wire",
       "ty": {
         "Struct": {
           "name": "Packet",
@@ -571,6 +604,7 @@
         "left"
       ],
       "name": "parity",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -581,6 +615,7 @@
         "left"
       ],
       "name": "debug",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -601,6 +636,7 @@
         "left"
       ],
       "name": "mixed",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -616,6 +652,7 @@
         "left"
       ],
       "name": "flag",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -626,6 +663,7 @@
         "right"
       ],
       "name": "clk",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -636,6 +674,7 @@
         "right"
       ],
       "name": "rst",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -646,6 +685,7 @@
         "right"
       ],
       "name": "enable",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -656,6 +696,7 @@
         "right"
       ],
       "name": "tag_in",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -671,6 +712,7 @@
         "right"
       ],
       "name": "sample",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -686,6 +728,7 @@
         "right"
       ],
       "name": "packet",
+      "kind": "Wire",
       "ty": {
         "Struct": {
           "name": "Packet",
@@ -729,6 +772,7 @@
         "right"
       ],
       "name": "parity",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     },
@@ -739,6 +783,7 @@
         "right"
       ],
       "name": "debug",
+      "kind": "Wire",
       "ty": {
         "Tuple": [
           {
@@ -759,6 +804,7 @@
         "right"
       ],
       "name": "mixed",
+      "kind": "Wire",
       "ty": {
         "Int": {
           "signed": false,
@@ -774,6 +820,7 @@
         "right"
       ],
       "name": "flag",
+      "kind": "Wire",
       "ty": "Bool",
       "bit_len": 1
     }

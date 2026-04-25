@@ -7,10 +7,24 @@ from hwl_sandbox.common.util import compile_custom
 
 def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
     src = """
+    enum Phase {
+        Idle,
+        Left,
+        Right,
+        Mixed,
+    }
+
+    struct Meta {
+        phase: Phase,
+        flags: Tuple(bool, bool),
+        lanes: [2]Tuple(uint(4), Phase),
+    }
+
     struct Packet {
         tag: uint(4),
         payload: [2]uint(8),
         valid: bool,
+        meta: Meta,
     }
 
     module leaf ports(
@@ -31,11 +45,29 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
         }
 
         clocked(clk, async rst) {
-            reg wire packet = Packet.new(tag=0, payload=[0, 0], valid=false);
+            reg wire packet = Packet.new(
+                tag=0,
+                payload=[0, 0],
+                valid=false,
+                meta=Meta.new(
+                    phase=Phase.Idle,
+                    flags=(false, false),
+                    lanes=[(0, Phase.Idle), (0, Phase.Idle)],
+                ),
+            );
             reg wire parity = false;
             reg wire debug = (0, false);
 
-            packet = Packet.new(tag=tag_in, payload=[sample, mixed], valid=enable);
+            packet = Packet.new(
+                tag=tag_in,
+                payload=[sample, mixed],
+                valid=enable,
+                meta=Meta.new(
+                    phase=Phase.Mixed,
+                    flags=(flag, enable),
+                    lanes=[(tag_in, Phase.Left), (15 - tag_in, Phase.Right)],
+                ),
+            );
             parity = flag;
             debug = (mixed, flag);
         }
@@ -91,8 +123,30 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
         );
 
         clocked(clk, async rst) {
-            reg wire y = Packet.new(tag=0, payload=[0, 0], valid=false);
-            reg wire summary = (Packet.new(tag=0, payload=[0, 0], valid=false), [0, 0], false);
+            reg wire y = Packet.new(
+                tag=0,
+                payload=[0, 0],
+                valid=false,
+                meta=Meta.new(
+                    phase=Phase.Idle,
+                    flags=(false, false),
+                    lanes=[(0, Phase.Idle), (0, Phase.Idle)],
+                ),
+            );
+            reg wire summary = (
+                Packet.new(
+                    tag=0,
+                    payload=[0, 0],
+                    valid=false,
+                    meta=Meta.new(
+                        phase=Phase.Idle,
+                        flags=(false, false),
+                        lanes=[(0, Phase.Idle), (0, Phase.Idle)],
+                    ),
+                ),
+                [0, 0],
+                false,
+            );
 
             if (mode.1) {
                 y = left_packet;
@@ -156,6 +210,14 @@ def test_wave_gui_example_json_export(tmp_dir: Path):
     assert ("top.left", "packet") in signal_names
     assert ("top.right", "debug") in signal_names
     assert ("top", "summary") in signal_names
+    signal_kinds = {(".".join(signal["path"]), signal["name"]): signal["kind"] for signal in store["signals"]}
+    assert signal_kinds[("top", "clk")] == "Port"
+    assert signal_kinds[("top", "enable_left")] == "Wire"
+    packet_ty = next(signal["ty"] for signal in store["signals"] if signal["path"] == ["top"] and signal["name"] == "y")
+    meta_ty = next(field_ty for field_name, field_ty in packet_ty["Struct"]["fields"] if field_name == "meta")
+    assert meta_ty["Struct"]["name"] == "Meta"
+    phase_ty = next(field_ty for field_name, field_ty in meta_ty["Struct"]["fields"] if field_name == "phase")
+    assert phase_ty["Enum"]["name"] == "Phase"
     assert any(len(changes) > 1 for changes in store["changes"])
 
     print(f"wave_gui example JSON written to {path}")

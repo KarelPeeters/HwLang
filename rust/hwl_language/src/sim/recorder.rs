@@ -1,4 +1,4 @@
-use crate::back::lower_cpp_wrap::CppSignalInfo;
+use crate::back::lower_cpp_wrap::{CppSignalInfo, CppSignalKind};
 use crate::back::wrap_cpp::{CppSimError, CppSimInstance, port_size_bytes};
 use crate::mid::ir::{IrEnumType, IrType};
 use crate::util::big_int::BigUint;
@@ -17,8 +17,17 @@ pub struct WaveSignal {
     pub id: usize,
     pub path: Vec<String>,
     pub name: String,
+    #[serde(default)]
+    pub kind: WaveSignalKind,
     pub ty: WaveSignalType,
     pub bit_len: usize,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub enum WaveSignalKind {
+    Port,
+    #[default]
+    Wire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,9 +113,19 @@ impl WaveSignal {
             id: signal.id,
             path: signal.path.clone(),
             name: signal.name.clone(),
+            kind: WaveSignalKind::from_cpp_signal_kind(signal.kind),
             ty: WaveSignalType::from_ir_type(&signal.ty)?,
             bit_len,
         })
+    }
+}
+
+impl WaveSignalKind {
+    fn from_cpp_signal_kind(kind: CppSignalKind) -> Self {
+        match kind {
+            CppSignalKind::Port => WaveSignalKind::Port,
+            CppSignalKind::Wire => WaveSignalKind::Wire,
+        }
     }
 }
 

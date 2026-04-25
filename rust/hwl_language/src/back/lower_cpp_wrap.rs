@@ -25,6 +25,13 @@ pub struct CppSignalInfo {
     pub path: Vec<String>,
     pub name: String,
     pub ty: IrType,
+    pub kind: CppSignalKind,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum CppSignalKind {
+    Port,
+    Wire,
 }
 
 pub fn lower_cpp_wrap(modules: &IrModules, top_module: IrModule, lowered_cpp_source: &str) -> LoweredCppWrap {
@@ -471,6 +478,7 @@ fn collect_signals_recursive(
             path: path.to_owned(),
             name: port_info.name.clone(),
             ty: port_info.ty.clone(),
+            kind: CppSignalKind::Port,
         });
         debug_assert!(port_exprs.get(port_index).is_some());
     }
@@ -488,6 +496,7 @@ fn collect_signals_recursive(
                 .clone()
                 .unwrap_or_else(|| format!("wire_{}", wire.inner().index())),
             ty: wire_info.ty.clone(),
+            kind: CppSignalKind::Wire,
         });
     }
 
