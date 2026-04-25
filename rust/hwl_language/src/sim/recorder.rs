@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct WaveStore {
     pub signals: Vec<WaveSignal>,
     pub changes: Vec<Vec<WaveChange>>,
+    #[serde(default)]
+    pub end_time: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +67,11 @@ impl WaveStore {
             .map(WaveSignal::from_cpp_signal)
             .collect::<Result<Vec<_>, _>>()?;
         let changes = vec![Vec::new(); signals.len()];
-        Ok(Self { signals, changes })
+        Ok(Self {
+            signals,
+            changes,
+            end_time: 0,
+        })
     }
 
     pub fn for_instance(instance: &CppSimInstance) -> Result<Self, CppSimError> {
@@ -73,6 +79,7 @@ impl WaveStore {
     }
 
     pub fn sample(&mut self, instance: &CppSimInstance, time: u64) -> Result<(), CppSimError> {
+        self.end_time = self.end_time.max(time);
         for signal in &self.signals {
             let bits = instance.get_signal_bits(signal.id)?;
             let packed = pack_bits(&bits);
@@ -98,11 +105,13 @@ impl WaveStore {
     }
 
     pub fn max_time(&self) -> u64 {
-        self.changes
+        self.end_time.max(
+            self.changes
             .iter()
             .filter_map(|signal_changes| signal_changes.last().map(|change| change.time))
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0),
+        )
     }
 }
 

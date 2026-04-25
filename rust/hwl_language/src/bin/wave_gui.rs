@@ -36,13 +36,18 @@ struct WaveGuiApp {
     selected_row: Option<usize>,
     selected_rows: BTreeSet<usize>,
     last_selected_row: Option<usize>,
+    selected_modules: BTreeSet<Vec<String>>,
+    last_selected_module: Option<Vec<String>>,
     selected_signals: BTreeSet<usize>,
     last_selected_signal: Option<usize>,
     last_hierarchy_click: Option<(usize, f64)>,
     row_drag: Option<RowDrag>,
     cursor_dragging: bool,
     dragging_signals: Vec<usize>,
+    collapsed_hierarchy: BTreeSet<String>,
     expanded_rows: BTreeSet<WaveRowKey>,
+    show_ports: bool,
+    show_signals: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -72,13 +77,18 @@ impl Default for WaveGuiApp {
             selected_row: None,
             selected_rows: BTreeSet::new(),
             last_selected_row: None,
+            selected_modules: BTreeSet::new(),
+            last_selected_module: None,
             selected_signals: BTreeSet::new(),
             last_selected_signal: None,
             last_hierarchy_click: None,
             row_drag: None,
             cursor_dragging: false,
             dragging_signals: Vec::new(),
+            collapsed_hierarchy: BTreeSet::new(),
             expanded_rows: BTreeSet::new(),
+            show_ports: true,
+            show_signals: true,
         }
     }
 }
@@ -99,34 +109,42 @@ impl eframe::App for WaveGuiApp {
                             self.selected_row = None;
                             self.selected_rows.clear();
                             self.last_selected_row = None;
+                            self.selected_modules.clear();
+                            self.last_selected_module = None;
                             self.selected_signals.clear();
                             self.last_selected_signal = None;
                             self.last_hierarchy_click = None;
                             self.row_drag = None;
                             self.cursor_dragging = false;
                             self.dragging_signals.clear();
+                            self.collapsed_hierarchy.clear();
                             self.expanded_rows.clear();
                         }
                     });
                     ui.separator();
-                    ui.label("Click, Shift-click, or drag signals. Double-click modules/groups to add them.");
-                    if ui.input(|input| input.key_pressed(Key::Enter)) {
-                        if !self.selected_signals.is_empty() {
-                            add_rows(&mut self.rows, self.selected_signals.iter().copied());
-                        }
-                    }
+                    ui.label("Click modules. Ctrl/Shift-click selects multiple modules.");
                     ScrollArea::vertical().show(ui, |ui| {
                         draw_hierarchy(
                             ui,
                             &store,
-                            &mut self.rows,
-                            &mut self.selected_signals,
-                            &mut self.last_selected_signal,
-                            &mut self.last_hierarchy_click,
-                            &mut self.dragging_signals,
+                            &mut self.selected_modules,
+                            &mut self.last_selected_module,
+                            &mut self.collapsed_hierarchy,
                             &[],
                         );
                     });
+                } else {
+                    ui.label("Load a WaveStore JSON file to browse signals.");
+                }
+            });
+        SidePanel::left("signals")
+            .resizable(true)
+            .default_width(320.0)
+            .width_range(220.0..=520.0)
+            .show(ctx, |ui| {
+                ui.heading("Signals");
+                if let Some(store) = self.store.clone() {
+                    self.signal_panel(ui, &store);
                 } else {
                     ui.label("Load a WaveStore JSON file to browse signals.");
                 }
@@ -191,10 +209,15 @@ impl WaveGuiApp {
             }
         }
 
-        let max_time = store.max_time().max(self.cursor_time).max(1);
+        let max_time = store.max_time().max(1);
         let visible_wave_width = (ui.available_width() - ROW_LABEL_WIDTH).max(200.0);
         let wave_width = (max_time as f32 * self.pixels_per_time + 120.0).max(visible_wave_width);
 
+        if ui.input(|input| input.key_pressed(Key::A) && input.modifiers.ctrl) {
+            self.selected_rows = (0..self.rows.len()).collect();
+            self.selected_row = if self.rows.is_empty() { None } else { Some(0) };
+            self.last_selected_row = self.selected_row;
+        }
         if ui.input(|input| input.key_pressed(Key::Delete)) {
             if !self.selected_rows.is_empty() {
                 let mut row_indices = self.selected_rows.iter().copied().collect::<Vec<_>>();
@@ -224,22 +247,13 @@ impl WaveGuiApp {
                 self.selected_rows.clear();
                 self.selected_rows.insert(insert_index);
                 self.last_selected_row = Some(insert_index);
-            } else if !self.dragging_signals.is_empty() {
-                if ui.rect_contains_pointer(ui.max_rect()) {
-                    let start = self.rows.len();
-                    add_rows(&mut self.rows, self.dragging_signals.iter().copied());
-                    if self.rows.len() > start {
-                        self.selected_row = Some(start);
-                    }
-                }
-                self.dragging_signals.clear();
             }
         } else if !ui.input(|input| input.pointer.primary_down()) && self.row_drag.is_none() {
             self.dragging_signals.clear();
         }
 
-        if self.rows.is_empty() && self.row_drag.is_none() {
-            ui.label("Double-click a hierarchy signal or drag it here to add it.");
+        if self.rows.is_empty() && self.row_drag.is_none() && self.dragging_signals.is_empty() {
+            ui.label("Double-click a signal in the Signals panel or drag it here to add it.");
             return;
         }
 
@@ -249,7 +263,7 @@ impl WaveGuiApp {
 
         ScrollArea::both().show(ui, |ui| {
             ui.set_min_width(ROW_LABEL_WIDTH + wave_width);
-            let axis_rect = draw_time_axis(ui, max_time, self.pixels_per_time, wave_width);
+            let axis_rect = draw_time_axis(ui, self.pixels_per_time, wave_width);
             ui.separator();
             let pointer_pos = ui.input(|input| input.pointer.interact_pos());
             let mut start_row_drag: Option<usize> = None;
@@ -311,6 +325,11 @@ impl WaveGuiApp {
             if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
                 row_drag.insert_index = insertion_index(pointer_pos, &row_rects);
             }
+            let left_drag_insert_index = if !self.dragging_signals.is_empty() {
+                Some(pointer_pos.map_or(self.rows.len(), |pos| insertion_index(pos, &row_rects)))
+            } else {
+                None
+            };
             if let Some(start_index) = start_row_drag {
                 if start_index < self.rows.len() {
                     let signal_id = self.rows.remove(start_index);
@@ -322,8 +341,30 @@ impl WaveGuiApp {
                 }
             }
 
+            let fallback_insert_y = axis_rect.bottom() + 7.0;
             if let Some(row_drag) = &self.row_drag {
-                draw_insert_line(ui, row_drag.insert_index, &row_rects, ROW_LABEL_WIDTH + wave_width);
+                draw_insert_line(
+                    ui,
+                    row_drag.insert_index,
+                    &row_rects,
+                    ROW_LABEL_WIDTH + wave_width,
+                    fallback_insert_y,
+                );
+            } else if let Some(insert_index) = left_drag_insert_index {
+                draw_insert_line(ui, insert_index, &row_rects, ROW_LABEL_WIDTH + wave_width, fallback_insert_y);
+            }
+            if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
+                if ui.rect_contains_pointer(ui.max_rect()) {
+                    let insert_index = left_drag_insert_index.unwrap_or(self.rows.len());
+                    let first_added = insert_rows_at(&mut self.rows, insert_index, self.dragging_signals.iter().copied());
+                    if let Some(first_added) = first_added {
+                        self.selected_rows.clear();
+                        self.selected_rows.insert(first_added);
+                        self.selected_row = Some(first_added);
+                        self.last_selected_row = Some(first_added);
+                    }
+                }
+                self.dragging_signals.clear();
             }
             let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
             let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
@@ -350,12 +391,20 @@ impl WaveGuiApp {
                 self.selected_row = None;
                 self.selected_rows.clear();
                 self.last_selected_row = None;
+                self.selected_modules.clear();
+                if let Some(root_path) = store.signals.first().map(|signal| signal.path.clone()) {
+                    self.selected_modules.insert(root_path.clone());
+                    self.last_selected_module = Some(root_path);
+                } else {
+                    self.last_selected_module = None;
+                }
                 self.selected_signals.clear();
                 self.last_selected_signal = None;
                 self.last_hierarchy_click = None;
                 self.row_drag = None;
                 self.cursor_dragging = false;
                 self.dragging_signals.clear();
+                self.collapsed_hierarchy.clear();
                 self.expanded_rows.clear();
                 self.store = Some(store);
                 self.status = format!("Loaded {}", path.display());
@@ -364,6 +413,53 @@ impl WaveGuiApp {
                 self.status = format!("Load failed: {err}");
             }
         }
+    }
+
+    fn signal_panel(&mut self, ui: &mut Ui, store: &WaveStore) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.show_ports, "ports");
+            ui.checkbox(&mut self.show_signals, "signals");
+        });
+        ui.separator();
+
+        if self.selected_modules.is_empty() {
+            ui.label("Select one or more modules in the hierarchy.");
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.strong("Kind");
+            ui.add_space(30.0);
+            ui.strong("Signal");
+        });
+        ui.separator();
+
+        let signal_ids = filtered_signal_ids(store, &self.selected_modules, self.show_ports, self.show_signals);
+        let visible_signals = signal_ids.iter().copied().collect::<BTreeSet<_>>();
+        self.selected_signals.retain(|signal_id| visible_signals.contains(signal_id));
+        if ui.input(|input| input.key_pressed(Key::Enter)) && !self.selected_signals.is_empty() {
+            add_rows(&mut self.rows, self.selected_signals.iter().copied());
+        }
+        if signal_ids.is_empty() {
+            ui.label("No signals match the selected modules and filters.");
+            return;
+        }
+
+        ScrollArea::vertical().show(ui, |ui| {
+            for signal_id in signal_ids {
+                draw_signal_panel_row(
+                    ui,
+                    store,
+                    &visible_signals,
+                    signal_id,
+                    &mut self.rows,
+                    &mut self.selected_signals,
+                    &mut self.last_selected_signal,
+                    &mut self.last_hierarchy_click,
+                    &mut self.dragging_signals,
+                );
+            }
+        });
     }
 
 }
@@ -386,17 +482,20 @@ struct SignalRowsResult {
     expand_toggles: Vec<WaveRowKey>,
 }
 
+struct TreeHeaderResult {
+    clicked: bool,
+    expanded: bool,
+}
+
 const ROW_LABEL_WIDTH: f32 = 360.0;
 const ROW_HEIGHT: f32 = 28.0;
 
 fn draw_hierarchy(
     ui: &mut Ui,
     store: &WaveStore,
-    rows: &mut Vec<usize>,
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
-    last_hierarchy_click: &mut Option<(usize, f64)>,
-    dragging_signals: &mut Vec<usize>,
+    selected_modules: &mut BTreeSet<Vec<String>>,
+    last_selected_module: &mut Option<Vec<String>>,
+    collapsed_hierarchy: &mut BTreeSet<String>,
     prefix: &[String],
 ) {
     let mut child_paths = BTreeSet::new();
@@ -411,164 +510,136 @@ fn draw_hierarchy(
     for child in child_paths {
         let mut next_prefix = prefix.to_owned();
         next_prefix.push(child.clone());
-        let subtree_signals = signal_ids_under_path(store, &next_prefix);
-        let response = egui::CollapsingHeader::new(group_title(&child, &subtree_signals, selected_signals))
-            .default_open(prefix.is_empty())
-            .show(ui, |ui| {
+        let key = hierarchy_key("module", &next_prefix);
+        let header = draw_module_header(ui, &child, &key, &next_prefix, selected_modules, collapsed_hierarchy, 0);
+        if header.clicked {
+            update_module_selection(ui, store, &next_prefix, selected_modules, last_selected_module);
+        }
+        if header.expanded {
+            ui.indent(key, |ui| {
                 draw_hierarchy(
                     ui,
                     store,
-                    rows,
-                    selected_signals,
-                    last_selected_signal,
-                    last_hierarchy_click,
-                    dragging_signals,
+                    selected_modules,
+                    last_selected_module,
+                    collapsed_hierarchy,
                     &next_prefix,
                 )
             });
-        if response.header_response.clicked() {
-            update_group_selection(ui, &subtree_signals, selected_signals, last_selected_signal);
-        }
-        if response.header_response.double_clicked() {
-            add_rows(rows, subtree_signals.iter().copied());
-        }
-        if response.header_response.drag_started() || response.header_response.is_pointer_button_down_on() {
-            *dragging_signals = subtree_signals;
         }
     }
-
-    let ports = signal_ids_in_path(store, prefix, WaveSignalKind::Port);
-    let wires = signal_ids_in_path(store, prefix, WaveSignalKind::Wire);
-    draw_signal_group(
-        ui,
-        store,
-        "[ports]",
-        &ports,
-        rows,
-        selected_signals,
-        last_selected_signal,
-        last_hierarchy_click,
-        dragging_signals,
-    );
-    draw_signal_group(
-        ui,
-        store,
-        "[wires]",
-        &wires,
-        rows,
-        selected_signals,
-        last_selected_signal,
-        last_hierarchy_click,
-        dragging_signals,
-    );
 }
 
-fn draw_signal_group(
+fn draw_signal_panel_row(
     ui: &mut Ui,
     store: &WaveStore,
-    title: &str,
-    signal_ids: &[usize],
+    visible_signals: &BTreeSet<usize>,
+    signal_id: usize,
     rows: &mut Vec<usize>,
     selected_signals: &mut BTreeSet<usize>,
     last_selected_signal: &mut Option<usize>,
     last_hierarchy_click: &mut Option<(usize, f64)>,
     dragging_signals: &mut Vec<usize>,
 ) {
-    if signal_ids.is_empty() {
-        return;
+    let signal = &store.signals[signal_id];
+    let already_added = rows.contains(&signal.id);
+    let selected = selected_signals.contains(&signal.id);
+    let row_height = 22.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click_and_drag());
+    if selected {
+        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 55, 85));
+    } else if already_added {
+        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(55, 85, 35));
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 35, 35));
     }
-
-    let response = egui::CollapsingHeader::new(group_title(title, signal_ids, selected_signals))
-        .default_open(title == "[ports]")
-        .show(ui, |ui| {
-            for signal_id in signal_ids {
-                let signal = &store.signals[*signal_id];
-                draw_hierarchy_signal(
-                    ui,
-                    store,
-                    signal,
-                    rows,
-                    selected_signals,
-                    last_selected_signal,
-                    last_hierarchy_click,
-                    dragging_signals,
-                );
-            }
-        });
-    if response.header_response.clicked() {
-        update_group_selection(ui, signal_ids, selected_signals, last_selected_signal);
-    }
-    if response.header_response.double_clicked() {
-        add_rows(rows, signal_ids.iter().copied());
-    }
-    if response.header_response.drag_started() || response.header_response.is_pointer_button_down_on() {
-        *dragging_signals = signal_ids.to_vec();
-    }
-}
-
-fn draw_hierarchy_signal(
-    ui: &mut Ui,
-    store: &WaveStore,
-    signal: &WaveSignal,
-    rows: &mut Vec<usize>,
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
-    last_hierarchy_click: &mut Option<(usize, f64)>,
-    dragging_signals: &mut Vec<usize>,
-) {
-        let already_added = rows.contains(&signal.id);
-        let selected = selected_signals.contains(&signal.id);
-        let row_height = 20.0;
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click_and_drag());
-        if selected {
-            ui.painter()
-                .rect_filled(rect, 2.0, Color32::from_rgb(35, 55, 85));
-        } else if already_added {
-            ui.painter()
-                .rect_filled(rect, 2.0, Color32::from_rgb(55, 85, 35));
-        } else if response.hovered() {
-            ui.painter()
-                .rect_filled(rect, 2.0, Color32::from_rgb(35, 35, 35));
-        }
-        ui.painter().text(
-            pos2(rect.left() + 4.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            &signal.name,
-            FontId::proportional(13.0),
-            Color32::LIGHT_GRAY,
-        );
-        if response.clicked() {
-            update_signal_selection(ui, store, signal.id, selected_signals, last_selected_signal);
-            let now = ui.input(|input| input.time);
-            let repeated_click = last_hierarchy_click
-                .is_some_and(|(last_id, last_time)| last_id == signal.id && now - last_time <= 0.45);
-            if response.double_clicked() || repeated_click {
-                if selected_signals.len() > 1 && selected_signals.contains(&signal.id) {
-                    add_rows(rows, selected_signals.iter().copied());
-                } else {
-                    toggle_row(rows, signal.id);
-                }
-                *last_hierarchy_click = None;
+    let kind = match signal.kind {
+        WaveSignalKind::Port => "port",
+        WaveSignalKind::Wire => "signal",
+    };
+    ui.painter().text(
+        pos2(rect.left() + 4.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        kind,
+        FontId::monospace(12.0),
+        Color32::GRAY,
+    );
+    ui.painter().text(
+        pos2(rect.left() + 64.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        format!("{}.{}", signal.path.join("."), signal.name),
+        FontId::proportional(13.0),
+        Color32::LIGHT_GRAY,
+    );
+    if response.clicked() {
+        update_signal_selection(ui, visible_signals, signal.id, selected_signals, last_selected_signal);
+        let now = ui.input(|input| input.time);
+        let repeated_click = last_hierarchy_click
+            .is_some_and(|(last_id, last_time)| last_id == signal.id && now - last_time <= 0.45);
+        if response.double_clicked() || repeated_click {
+            if selected_signals.len() > 1 && selected_signals.contains(&signal.id) {
+                add_rows(rows, selected_signals.iter().copied());
             } else {
-                *last_hierarchy_click = Some((signal.id, now));
+                add_rows(rows, [signal.id]);
             }
+            *last_hierarchy_click = None;
+        } else {
+            *last_hierarchy_click = Some((signal.id, now));
         }
-        if response.drag_started() || response.is_pointer_button_down_on() {
-            if !selected_signals.contains(&signal.id) {
-                selected_signals.clear();
-                selected_signals.insert(signal.id);
-                *last_selected_signal = Some(signal.id);
-            }
-            *dragging_signals = selected_signals.iter().copied().collect();
+    }
+    if response.is_pointer_button_down_on() || response.drag_started() || response.dragged() {
+        if !selected_signals.contains(&signal.id) {
+            selected_signals.clear();
+            selected_signals.insert(signal.id);
+            *last_selected_signal = Some(signal.id);
         }
+        *dragging_signals = selected_signals.iter().copied().collect();
+    }
 }
 
-fn toggle_row(rows: &mut Vec<usize>, signal_id: usize) {
-    if rows.contains(&signal_id) {
-        rows.retain(|&row| row != signal_id);
+fn draw_module_header(
+    ui: &mut Ui,
+    title: &str,
+    key: &str,
+    path: &[String],
+    selected_modules: &BTreeSet<Vec<String>>,
+    collapsed_hierarchy: &mut BTreeSet<String>,
+    depth: usize,
+) -> TreeHeaderResult {
+    let height = 20.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let indent = depth as f32 * 14.0;
+    let icon_rect = Rect::from_min_size(pos2(rect.left() + 4.0 + indent, rect.center().y - 6.0), vec2(12.0, 12.0));
+    let label_rect = Rect::from_min_max(pos2(icon_rect.right() + 4.0, rect.top()), rect.right_bottom());
+    let icon_response = ui.interact(icon_rect, ui.make_persistent_id(("module-icon", key)), Sense::click());
+    let label_response = ui.interact(label_rect, ui.make_persistent_id(("module-label", key)), Sense::click());
+
+    if icon_response.clicked() {
+        if !collapsed_hierarchy.remove(key) {
+            collapsed_hierarchy.insert(key.to_owned());
+        }
+    }
+    let expanded = !collapsed_hierarchy.contains(key);
+    let bg = if selected_modules.contains(path) {
+        Color32::from_rgb(35, 55, 85)
+    } else if label_response.hovered() || icon_response.hovered() {
+        Color32::from_rgb(35, 35, 35)
     } else {
-        rows.push(signal_id);
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 2.0, bg);
+    draw_disclosure_icon(ui.painter(), icon_rect, expanded);
+    ui.painter().text(
+        pos2(label_rect.left(), label_rect.center().y),
+        Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(13.0),
+        Color32::LIGHT_GRAY,
+    );
+
+    TreeHeaderResult {
+        clicked: label_response.clicked(),
+        expanded,
     }
 }
 
@@ -580,27 +651,58 @@ fn add_rows(rows: &mut Vec<usize>, signal_ids: impl IntoIterator<Item = usize>) 
     }
 }
 
-fn signal_ids_under_path(store: &WaveStore, path: &[String]) -> Vec<usize> {
+fn insert_rows_at(rows: &mut Vec<usize>, index: usize, signal_ids: impl IntoIterator<Item = usize>) -> Option<usize> {
+    let mut insert_index = index.min(rows.len());
+    let mut first_added = None;
+    for signal_id in signal_ids {
+        if !rows.contains(&signal_id) {
+            rows.insert(insert_index, signal_id);
+            first_added.get_or_insert(insert_index);
+            insert_index += 1;
+        }
+    }
+    first_added
+}
+
+fn hierarchy_key(kind: &str, path: &[String]) -> String {
+    if path.is_empty() {
+        kind.to_owned()
+    } else {
+        format!("{kind}:{}", path.join("."))
+    }
+}
+
+fn filtered_signal_ids(
+    store: &WaveStore,
+    selected_modules: &BTreeSet<Vec<String>>,
+    show_ports: bool,
+    show_signals: bool,
+) -> Vec<usize> {
     store
         .signals
         .iter()
-        .filter(|signal| signal.path.starts_with(path))
+        .filter(|signal| selected_modules.contains(&signal.path))
+        .filter(|signal| match signal.kind {
+            WaveSignalKind::Port => show_ports,
+            WaveSignalKind::Wire => show_signals,
+        })
         .map(|signal| signal.id)
         .collect()
 }
 
-fn signal_ids_in_path(store: &WaveStore, path: &[String], kind: WaveSignalKind) -> Vec<usize> {
+fn module_paths(store: &WaveStore) -> Vec<Vec<String>> {
     store
         .signals
         .iter()
-        .filter(|signal| signal.path == path && signal.kind == kind)
-        .map(|signal| signal.id)
+        .map(|signal| signal.path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
 fn update_signal_selection(
     ui: &Ui,
-    store: &WaveStore,
+    visible_signals: &BTreeSet<usize>,
     signal_id: usize,
     selected_signals: &mut BTreeSet<usize>,
     last_selected_signal: &mut Option<usize>,
@@ -608,15 +710,16 @@ fn update_signal_selection(
     let modifiers = ui.input(|input| input.modifiers);
     if modifiers.shift {
         if let Some(anchor) = *last_selected_signal {
-            let (start, end) = if anchor <= signal_id {
-                (anchor, signal_id)
-            } else {
-                (signal_id, anchor)
-            };
-            for signal in &store.signals {
-                if (start..=end).contains(&signal.id) {
-                    selected_signals.insert(signal.id);
+            let visible = visible_signals.iter().copied().collect::<Vec<_>>();
+            let start = visible.iter().position(|candidate| *candidate == anchor);
+            let end = visible.iter().position(|candidate| *candidate == signal_id);
+            if let (Some(start), Some(end)) = (start, end) {
+                let (start, end) = if start <= end { (start, end) } else { (end, start) };
+                for visible_signal in &visible[start..=end] {
+                    selected_signals.insert(*visible_signal);
                 }
+            } else {
+                selected_signals.insert(signal_id);
             }
         } else {
             selected_signals.insert(signal_id);
@@ -633,45 +736,40 @@ fn update_signal_selection(
     }
 }
 
-fn update_group_selection(
+fn update_module_selection(
     ui: &Ui,
-    signal_ids: &[usize],
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
+    store: &WaveStore,
+    path: &[String],
+    selected_modules: &mut BTreeSet<Vec<String>>,
+    last_selected_module: &mut Option<Vec<String>>,
 ) {
-    if signal_ids.is_empty() {
-        return;
-    }
     let modifiers = ui.input(|input| input.modifiers);
-    if !(modifiers.shift || modifiers.ctrl || modifiers.command) {
-        selected_signals.clear();
-    }
-    if modifiers.ctrl || modifiers.command {
-        let all_selected = signal_ids.iter().all(|signal_id| selected_signals.contains(signal_id));
-        if all_selected {
-            for signal_id in signal_ids {
-                selected_signals.remove(signal_id);
+    let path = path.to_owned();
+    if modifiers.shift {
+        if let Some(anchor) = last_selected_module.clone() {
+            let paths = module_paths(store);
+            let start = paths.iter().position(|candidate| candidate == &anchor);
+            let end = paths.iter().position(|candidate| candidate == &path);
+            if let (Some(start), Some(end)) = (start, end) {
+                let (start, end) = if start <= end { (start, end) } else { (end, start) };
+                for module_path in &paths[start..=end] {
+                    selected_modules.insert(module_path.clone());
+                }
+            } else {
+                selected_modules.insert(path.clone());
             }
         } else {
-            selected_signals.extend(signal_ids.iter().copied());
+            selected_modules.insert(path.clone());
+        }
+    } else if modifiers.ctrl || modifiers.command {
+        if !selected_modules.remove(&path) {
+            selected_modules.insert(path.clone());
         }
     } else {
-        selected_signals.extend(signal_ids.iter().copied());
+        selected_modules.clear();
+        selected_modules.insert(path.clone());
     }
-    *last_selected_signal = signal_ids.last().copied();
-}
-
-fn group_title(title: &str, signal_ids: &[usize], selected_signals: &BTreeSet<usize>) -> String {
-    let selected_count = signal_ids
-        .iter()
-        .filter(|signal_id| selected_signals.contains(signal_id))
-        .count();
-    let marker = match selected_count {
-        0 => "",
-        n if n == signal_ids.len() => " [selected]",
-        _ => " [partial]",
-    };
-    format!("{title} ({}){marker}", signal_ids.len())
+    *last_selected_module = Some(path);
 }
 
 fn update_row_selection(
@@ -710,7 +808,7 @@ fn time_from_pointer(axis_rect: Rect, pointer_pos: egui::Pos2, pixels_per_time: 
     ((pointer_pos.x - axis_rect.left()) / pixels_per_time).round().max(0.0) as u64
 }
 
-fn draw_time_axis(ui: &mut Ui, max_time: u64, pixels_per_time: f32, width: f32) -> Rect {
+fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, width: f32) -> Rect {
     let height = 24.0;
     let (row_rect, _) = ui.allocate_exact_size(vec2(ROW_LABEL_WIDTH + width, height), Sense::hover());
     let rect = Rect::from_min_size(pos2(row_rect.left() + ROW_LABEL_WIDTH, row_rect.top()), vec2(width, height));
@@ -721,6 +819,7 @@ fn draw_time_axis(ui: &mut Ui, max_time: u64, pixels_per_time: f32, width: f32) 
     );
     draw_time_grid(&painter, rect, pixels_per_time);
 
+    let max_time = visible_time_span(rect, pixels_per_time);
     let tick_step = major_tick_step(pixels_per_time);
     let mut t = 0;
     while t <= max_time {
@@ -1025,7 +1124,7 @@ fn enum_tag_width(variant_count: usize) -> usize {
 
 fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32) {
     let tick_step = major_tick_step(pixels_per_time);
-    let max_time = ((rect.width() / pixels_per_time).ceil() as u64).max(1);
+    let max_time = visible_time_span(rect, pixels_per_time);
     let mut t = 0;
     while t <= max_time {
         let x = rect.left() + t as f32 * pixels_per_time;
@@ -1035,6 +1134,10 @@ fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32) {
         );
         t = t.saturating_add(tick_step);
     }
+}
+
+fn visible_time_span(rect: Rect, pixels_per_time: f32) -> u64 {
+    ((rect.width() / pixels_per_time).ceil() as u64).max(1)
 }
 
 fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per_time: f32) {
@@ -1054,22 +1157,29 @@ fn insertion_index(pointer_pos: egui::Pos2, row_rects: &[Rect]) -> usize {
         .unwrap_or(row_rects.len())
 }
 
-fn draw_insert_line(ui: &Ui, insert_index: usize, row_rects: &[Rect], width: f32) {
-    let Some(anchor) = row_rects
+fn draw_insert_line(ui: &Ui, insert_index: usize, row_rects: &[Rect], width: f32, fallback_y: f32) {
+    let anchor = row_rects
         .get(insert_index)
         .map(|rect| rect.top())
         .or_else(|| row_rects.last().map(|rect| rect.bottom()))
-    else {
-        return;
-    };
+        .unwrap_or(fallback_y);
     let left = row_rects
         .first()
         .map(|rect| rect.left())
         .unwrap_or_else(|| ui.min_rect().left());
     ui.painter().line_segment(
         [pos2(left, anchor), pos2(left + width, anchor)],
-        Stroke::new(2.0, Color32::RED),
+        Stroke::new(3.0, Color32::from_rgb(255, 70, 70)),
     );
+    ui.painter().add(Shape::convex_polygon(
+        vec![
+            pos2(left, anchor - 5.0),
+            pos2(left, anchor + 5.0),
+            pos2(left + 8.0, anchor),
+        ],
+        Color32::from_rgb(255, 70, 70),
+        Stroke::NONE,
+    ));
 }
 
 fn draw_disclosure_icon(painter: &egui::Painter, rect: Rect, expanded: bool) {
