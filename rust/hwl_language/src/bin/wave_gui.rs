@@ -1283,26 +1283,29 @@ fn draw_group_row(
     label_width: f32,
     wave_width: f32,
 ) -> RowResult {
-    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
+    let (row_rect, row_response) =
+        ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::click_and_drag());
     let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
     let indent = depth as f32 * 18.0;
     let icon_hit_rect = Rect::from_min_size(pos2(label_rect.left() + indent, label_rect.top()), vec2(28.0, ROW_HEIGHT));
     let icon_rect = Rect::from_center_size(icon_hit_rect.center(), vec2(12.0, 12.0));
-    let drag_rect = Rect::from_min_max(label_rect.min, pos2(icon_hit_rect.right(), label_rect.bottom()));
-    let drag_response = ui.interact(drag_rect, ui.make_persistent_id(("group-drag", row.id)), Sense::click_and_drag());
-    let wave_rect = Rect::from_min_max(pos2(label_rect.right(), row_rect.top()), row_rect.right_bottom());
-    let wave_response = ui.interact(wave_rect, ui.make_persistent_id(("group-wave", row.id)), Sense::click());
+    let name_rect = Rect::from_min_max(pos2(icon_hit_rect.right(), label_rect.top() + 3.0), label_rect.right_bottom());
     let painter = ui.painter_at(row_rect);
-    let bg = if selected {
-        Color32::from_rgb(35, 55, 85)
-    } else if drag_response.hovered() || wave_response.hovered() {
-        Color32::from_rgb(35, 35, 35)
-    } else if row_index % 2 == 0 {
-        Color32::from_rgb(20, 20, 20)
+    let click_pos = if row_response.clicked() {
+        row_response.interact_pointer_pos()
     } else {
-        Color32::from_rgb(26, 26, 26)
+        None
     };
-    painter.rect_filled(row_rect, 0.0, bg);
+    let bg = if selected {
+        Color32::from_rgb(45, 60, 90)
+    } else if row_response.hovered() {
+        Color32::from_rgb(45, 42, 55)
+    } else if row_index % 2 == 0 {
+        Color32::from_rgb(30, 27, 36)
+    } else {
+        Color32::from_rgb(35, 31, 42)
+    };
+    painter.rect_filled(label_rect, 0.0, bg);
     draw_group_guides(ui.painter(), label_rect, depth);
 
     if let WaveRowKind::Group {
@@ -1312,28 +1315,25 @@ fn draw_group_row(
         ..
     } = &mut row.kind
     {
-        let icon_response = ui.interact(icon_hit_rect, ui.make_persistent_id(("group-expand", row.id)), Sense::click());
-        if icon_response.clicked() {
+        let icon_clicked = click_pos.is_some_and(|pos| icon_hit_rect.contains(pos));
+        let name_clicked = click_pos.is_some_and(|pos| name_rect.contains(pos));
+        if icon_clicked {
             *collapsed = !*collapsed;
         }
         draw_disclosure_icon(ui.painter(), icon_rect, !*collapsed);
-        let edit_rect = Rect::from_min_max(pos2(icon_hit_rect.right(), label_rect.top() + 3.0), label_rect.right_bottom());
+        let edit_rect = name_rect;
         let name_id = ui.make_persistent_id(("group-name", row.id));
-        let name_response = ui.interact(edit_rect, name_id.with("hit"), Sense::click());
-        if name_response.clicked() {
+        if name_clicked {
             let now = ui.input(|input| input.time);
             let repeated_click = last_group_name_click
                 .is_some_and(|(last_id, last_time)| last_id == row.id && now - last_time <= 0.45);
-            if name_response.double_clicked() || repeated_click {
+            if row_response.double_clicked() || repeated_click {
                 *editing = true;
                 *last_group_name_click = None;
                 ui.memory_mut(|memory| memory.request_focus(name_id));
             } else {
                 *last_group_name_click = Some((row.id, now));
             }
-        } else if name_response.double_clicked() {
-            *editing = true;
-            ui.memory_mut(|memory| memory.request_focus(name_id));
         }
         if *editing {
             let was_focused = ui.memory(|memory| memory.has_focus(name_id));
@@ -1364,8 +1364,8 @@ fn draw_group_row(
     }
 
     RowResult {
-        clicked: drag_response.clicked() || wave_response.clicked(),
-        label_drag_started: drag_response.drag_started(),
+        clicked: row_response.clicked(),
+        label_drag_started: row_response.drag_started() || row_response.dragged(),
         cursor_time: None,
         cursor_drag_started: false,
         expand_toggles: Vec::new(),
@@ -1377,7 +1377,7 @@ fn draw_group_guides(painter: &egui::Painter, label_rect: Rect, depth: usize) {
     for level in 0..depth {
         let x = label_rect.left() + 12.0 + level as f32 * 18.0;
         painter.line_segment(
-            [pos2(x, label_rect.top()), pos2(x, label_rect.bottom())],
+            [pos2(x, label_rect.top() - 1.0), pos2(x, label_rect.bottom() + 1.0)],
             Stroke::new(2.0, Color32::from_gray(120)),
         );
     }
@@ -1544,6 +1544,8 @@ fn draw_signal_leaf(
         Color32::from_rgb(60, 50, 20)
     } else if selected {
         Color32::from_rgb(35, 55, 85)
+    } else if expandable && expanded {
+        Color32::from_rgb(28, 42, 48)
     } else if label_response.hovered() || wave_response.hovered() {
         Color32::from_rgb(35, 35, 35)
     } else if row_index % 2 == 0 {
