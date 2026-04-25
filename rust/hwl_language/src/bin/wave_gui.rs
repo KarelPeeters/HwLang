@@ -26,16 +26,18 @@ fn main() -> eframe::Result {
 
 struct WaveGuiApp {
     store: Option<WaveStore>,
-    rows: Vec<usize>,
+    rows: Vec<WaveRow>,
+    next_row_id: u64,
     path: String,
     status: String,
     pixels_per_time: f32,
+    row_label_width: f32,
     cursor_time: u64,
     run_to_time: u64,
     step_count: u64,
-    selected_row: Option<usize>,
-    selected_rows: BTreeSet<usize>,
-    last_selected_row: Option<usize>,
+    selected_row: Option<u64>,
+    selected_rows: BTreeSet<u64>,
+    last_selected_row: Option<u64>,
     selected_modules: BTreeSet<Vec<String>>,
     last_selected_module: Option<Vec<String>>,
     selected_signals: BTreeSet<usize>,
@@ -51,12 +53,41 @@ struct WaveGuiApp {
 
 #[derive(Debug, Clone)]
 struct RowDrag {
-    signal_id: usize,
+    rows: Vec<WaveRow>,
     insert_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct WaveRow {
+    id: u64,
+    kind: WaveRowKind,
+}
+
+#[derive(Debug, Clone)]
+enum WaveRowKind {
+    Signal { signal_id: usize, group: Option<u64> },
+    Group { name: String, collapsed: bool },
+}
+
+impl WaveRow {
+    fn signal_id(&self) -> Option<usize> {
+        match self.kind {
+            WaveRowKind::Signal { signal_id, .. } => Some(signal_id),
+            WaveRowKind::Group { .. } => None,
+        }
+    }
+
+    fn group_id(&self) -> Option<u64> {
+        match self.kind {
+            WaveRowKind::Signal { group, .. } => group,
+            WaveRowKind::Group { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct WaveRowKey {
+    row_id: u64,
     signal_id: usize,
     bit_offset: usize,
     bit_len: usize,
@@ -68,9 +99,11 @@ impl Default for WaveGuiApp {
         Self {
             store: None,
             rows: Vec::new(),
+            next_row_id: 1,
             path: String::new(),
             status: String::new(),
             pixels_per_time: 10.0,
+            row_label_width: DEFAULT_ROW_LABEL_WIDTH,
             cursor_time: 0,
             run_to_time: 0,
             step_count: 1,
@@ -95,7 +128,9 @@ impl Default for WaveGuiApp {
 impl eframe::App for WaveGuiApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar(ui));
-        if ctx.input(|input| input.key_pressed(Key::W) && (input.modifiers.ctrl || input.modifiers.command)) {
+        if !ctx.wants_keyboard_input()
+            && ctx.input(|input| input.key_pressed(Key::W) && (input.modifiers.ctrl || input.modifiers.command))
+        {
             if let Some(store) = self.store.clone() {
                 self.add_selected_or_visible_signals(&store);
             }
@@ -103,13 +138,13 @@ impl eframe::App for WaveGuiApp {
         SidePanel::left("hierarchy")
             .resizable(true)
             .default_width(260.0)
-            .width_range(180.0..=420.0)
             .show(ctx, |ui| {
                 ui.heading("Hierarchy");
                 if let Some(store) = self.store.clone() {
                     ui.horizontal(|ui| {
                         if ui.button("Clear").clicked() {
                             self.rows.clear();
+                            self.next_row_id = 1;
                             self.selected_row = None;
                             self.selected_rows.clear();
                             self.last_selected_row = None;
@@ -124,8 +159,6 @@ impl eframe::App for WaveGuiApp {
                             self.expanded_rows.clear();
                         }
                     });
-                    ui.separator();
-                    ui.label("Click modules. Ctrl/Shift-click selects multiple modules.");
                     ScrollArea::vertical().show(ui, |ui| {
                         draw_hierarchy(
                             ui,
@@ -139,19 +172,16 @@ impl eframe::App for WaveGuiApp {
                         );
                     });
                 } else {
-                    ui.label("Load a WaveStore JSON file to browse signals.");
                 }
             });
         SidePanel::left("signals")
             .resizable(true)
             .default_width(320.0)
-            .width_range(220.0..=520.0)
             .show(ctx, |ui| {
                 ui.heading("Signals");
                 if let Some(store) = self.store.clone() {
                     self.signal_panel(ui, &store);
                 } else {
-                    ui.label("Load a WaveStore JSON file to browse signals.");
                 }
             });
         CentralPanel::default().show(ctx, |ui| self.wave_panel(ui));
@@ -167,6 +197,7 @@ impl WaveGuiApp {
                 ui.button("Load").clicked() || path_response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             if load_requested {
                 self.load_store();
+                ui.memory_mut(|memory| memory.surrender_focus(path_response.id));
             }
             ui.separator();
             ui.label("Zoom:");
@@ -192,9 +223,6 @@ impl WaveGuiApp {
 
     fn wave_panel(&mut self, ui: &mut Ui) {
         let Some(store) = self.store.clone() else {
-            ui.centered_and_justified(|ui| {
-                ui.label("No waveform store loaded.");
-            });
             return;
         };
 
@@ -215,115 +243,154 @@ impl WaveGuiApp {
         }
 
         let max_time = store.max_time().max(1);
-        let visible_wave_width = (ui.available_width() - ROW_LABEL_WIDTH).max(200.0);
+        let label_width = self.row_label_width;
+        let visible_wave_width = (ui.available_width() - label_width).max(200.0);
         let wave_width = (max_time as f32 * self.pixels_per_time + 120.0).max(visible_wave_width);
+        let visible_rows = visible_wave_rows(&self.rows);
 
-        if ui.input(|input| input.key_pressed(Key::A) && input.modifiers.ctrl) {
-            self.selected_rows = (0..self.rows.len()).collect();
-            self.selected_row = if self.rows.is_empty() { None } else { Some(0) };
+        let text_editing = ui.ctx().wants_keyboard_input();
+        if !text_editing && ui.input(|input| input.key_pressed(Key::A) && input.modifiers.ctrl) {
+            self.selected_rows = visible_rows.iter().map(|row| row.row_id).collect();
+            self.selected_row = visible_rows.first().map(|row| row.row_id);
             self.last_selected_row = self.selected_row;
+        }
+        if !text_editing
+            && ui.input(|input| input.key_pressed(Key::G) && (input.modifiers.ctrl || input.modifiers.command))
+        {
+            self.create_group_from_selection();
         }
         if ui.input(|input| input.key_pressed(Key::Delete)) {
             if !self.selected_rows.is_empty() {
-                let mut row_indices = self.selected_rows.iter().copied().collect::<Vec<_>>();
-                row_indices.sort_unstable_by(|a, b| b.cmp(a));
-                for row_index in row_indices {
-                    if row_index < self.rows.len() {
-                        let removed = self.rows.remove(row_index);
-                        self.expanded_rows.retain(|key| key.signal_id != removed);
-                    }
-                }
+                delete_selected_rows(&mut self.rows, &self.selected_rows);
+                self.expanded_rows
+                    .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
                 self.selected_rows.clear();
                 self.selected_row = None;
                 self.last_selected_row = None;
-            } else if let Some(row_index) = self.selected_row.take() {
-                if row_index < self.rows.len() {
-                    let removed = self.rows.remove(row_index);
-                    self.expanded_rows.retain(|key| key.signal_id != removed);
-                }
             }
         }
         if ui.input(|input| input.pointer.any_released()) {
             self.cursor_dragging = false;
             if let Some(row_drag) = self.row_drag.take() {
-                let insert_index = row_drag.insert_index.min(self.rows.len());
-                self.rows.insert(insert_index, row_drag.signal_id);
-                self.selected_row = Some(insert_index);
+                let visible_rows = visible_wave_rows(&self.rows);
+                let insert_index = actual_insert_index(&visible_rows, row_drag.insert_index, self.rows.len());
+                let first_id = row_drag.rows.first().map(|row| row.id);
+                self.rows.splice(insert_index..insert_index, row_drag.rows);
+                self.selected_row = first_id;
                 self.selected_rows.clear();
-                self.selected_rows.insert(insert_index);
-                self.last_selected_row = Some(insert_index);
+                if let Some(first_id) = first_id {
+                    self.selected_rows.insert(first_id);
+                }
+                self.last_selected_row = first_id;
             }
         } else if !ui.input(|input| input.pointer.primary_down()) && self.row_drag.is_none() {
             self.dragging_signals.clear();
         }
 
         if self.rows.is_empty() && self.row_drag.is_none() && self.dragging_signals.is_empty() {
-            ui.label("Select signals or modules and press Ctrl+W, or drag signals here.");
             return;
         }
 
-        ui.horizontal_wrapped(|ui| {
-            ui.weak("Shift/Ctrl-click wave rows to select. Drag labels to reorder. Drag waveforms horizontally to move the cursor. Shift-drag also works. Ctrl+scroll zooms.");
-        });
-
         ScrollArea::both().show(ui, |ui| {
-            ui.set_min_width(ROW_LABEL_WIDTH + wave_width);
-            let axis_rect = draw_time_axis(ui, self.pixels_per_time, wave_width);
+            ui.set_min_width(label_width + wave_width);
+            let axis_rect = draw_time_axis(ui, self.pixels_per_time, label_width, wave_width);
             ui.separator();
             let pointer_pos = ui.input(|input| input.pointer.interact_pos());
             let mut start_row_drag: Option<usize> = None;
             let mut row_rects = Vec::new();
             let mut wave_bottom = axis_rect.bottom();
-            for (row_index, signal_id) in self.rows.iter().copied().enumerate() {
-                if let Some(signal) = store.signals.get(signal_id) {
-                    let row_selected =
-                        self.selected_rows.contains(&row_index) || self.selected_row == Some(row_index);
-                    let result = draw_signal_rows(
-                        ui,
-                        &store,
-                        signal,
-                        row_index,
-                        row_selected,
-                        self.row_drag.as_ref().is_some_and(|drag| drag.signal_id == signal_id),
-                        &self.expanded_rows,
-                        self.cursor_time,
-                        self.pixels_per_time,
-                        wave_width,
-                    );
-                    if result.primary.clicked {
-                        update_row_selection(
+            let visible_rows = visible_wave_rows(&self.rows);
+            for (visible_index, visible_row) in visible_rows.iter().enumerate() {
+                let row_selected =
+                    self.selected_rows.contains(&visible_row.row_id) || self.selected_row == Some(visible_row.row_id);
+                match visible_row.kind {
+                    VisibleWaveRowKind::Group => {
+                        let result = draw_group_row(
                             ui,
-                            row_index,
-                            self.rows.len(),
-                            &mut self.selected_rows,
-                            &mut self.selected_row,
-                            &mut self.last_selected_row,
+                            &mut self.rows[visible_row.row_index],
+                            visible_index,
+                            row_selected,
+                            label_width,
+                            wave_width,
                         );
+                        if result.clicked {
+                            update_wave_row_selection(
+                                ui,
+                                visible_index,
+                                &visible_rows,
+                                &mut self.selected_rows,
+                                &mut self.selected_row,
+                                &mut self.last_selected_row,
+                            );
+                        }
+                        if result.label_drag_started {
+                            update_wave_row_selection(
+                                ui,
+                                visible_index,
+                                &visible_rows,
+                                &mut self.selected_rows,
+                                &mut self.selected_row,
+                                &mut self.last_selected_row,
+                            );
+                            start_row_drag = Some(visible_row.row_index);
+                        }
+                        row_rects.push(result.rect);
+                        wave_bottom = wave_bottom.max(result.rect.bottom());
                     }
-                    if let Some(time) = result.cursor_time {
-                        self.cursor_time = time;
-                    }
-                    if result.cursor_drag_started {
-                        self.cursor_dragging = true;
-                    }
-                    for key in result.expand_toggles {
-                        if !self.expanded_rows.remove(&key) {
-                            self.expanded_rows.insert(key);
+                    VisibleWaveRowKind::Signal { signal_id } => {
+                        if let Some(signal) = store.signals.get(signal_id) {
+                            let result = draw_signal_rows(
+                                ui,
+                                &store,
+                                signal,
+                                visible_row.row_id,
+                                visible_index,
+                                row_selected,
+                                self.row_drag.as_ref().is_some_and(|drag| {
+                                    drag.rows.iter().any(|row| row.id == visible_row.row_id)
+                                }),
+                                &self.expanded_rows,
+                                self.cursor_time,
+                                self.pixels_per_time,
+                                label_width,
+                                wave_width,
+                            );
+                            if result.primary.clicked {
+                                update_wave_row_selection(
+                                    ui,
+                                    visible_index,
+                                    &visible_rows,
+                                    &mut self.selected_rows,
+                                    &mut self.selected_row,
+                                    &mut self.last_selected_row,
+                                );
+                            }
+                            if let Some(time) = result.cursor_time {
+                                self.cursor_time = time;
+                            }
+                            if result.cursor_drag_started {
+                                self.cursor_dragging = true;
+                            }
+                            for key in result.expand_toggles {
+                                if !self.expanded_rows.remove(&key) {
+                                    self.expanded_rows.insert(key);
+                                }
+                            }
+                            if result.primary.label_drag_started {
+                                update_wave_row_selection(
+                                    ui,
+                                    visible_index,
+                                    &visible_rows,
+                                    &mut self.selected_rows,
+                                    &mut self.selected_row,
+                                    &mut self.last_selected_row,
+                                );
+                                start_row_drag = Some(visible_row.row_index);
+                            }
+                            row_rects.push(result.primary.rect);
+                            wave_bottom = wave_bottom.max(result.all_rect.bottom());
                         }
                     }
-                    if result.primary.label_drag_started {
-                        update_row_selection(
-                            ui,
-                            row_index,
-                            self.rows.len(),
-                            &mut self.selected_rows,
-                            &mut self.selected_row,
-                            &mut self.last_selected_row,
-                        );
-                        start_row_drag = Some(row_index);
-                    }
-                    row_rects.push(result.primary.rect);
-                    wave_bottom = wave_bottom.max(result.all_rect.bottom());
                 }
             }
 
@@ -337,9 +404,9 @@ impl WaveGuiApp {
             };
             if let Some(start_index) = start_row_drag {
                 if start_index < self.rows.len() {
-                    let signal_id = self.rows.remove(start_index);
+                    let rows = take_drag_rows(&mut self.rows, start_index);
                     let insert_index = pointer_pos.map_or(start_index, |pos| insertion_index(pos, &row_rects));
-                    self.row_drag = Some(RowDrag { signal_id, insert_index });
+                    self.row_drag = Some(RowDrag { rows, insert_index });
                     self.selected_row = None;
                     self.selected_rows.clear();
                     self.last_selected_row = None;
@@ -352,16 +419,25 @@ impl WaveGuiApp {
                     ui,
                     row_drag.insert_index,
                     &row_rects,
-                    ROW_LABEL_WIDTH + wave_width,
+                    label_width + wave_width,
                     fallback_insert_y,
                 );
             } else if let Some(insert_index) = left_drag_insert_index {
-                draw_insert_line(ui, insert_index, &row_rects, ROW_LABEL_WIDTH + wave_width, fallback_insert_y);
+                draw_insert_line(ui, insert_index, &row_rects, label_width + wave_width, fallback_insert_y);
             }
             if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
                 if ui.rect_contains_pointer(ui.max_rect()) {
-                    let insert_index = left_drag_insert_index.unwrap_or(self.rows.len());
-                    let first_added = insert_rows_at(&mut self.rows, insert_index, self.dragging_signals.iter().copied());
+                    let visible_rows = visible_wave_rows(&self.rows);
+                    let visible_insert_index = left_drag_insert_index.unwrap_or(visible_rows.len());
+                    let insert_index = actual_insert_index(&visible_rows, visible_insert_index, self.rows.len());
+                    let new_rows = self
+                        .dragging_signals
+                        .clone()
+                        .into_iter()
+                        .map(|signal_id| self.make_signal_row(signal_id, None))
+                        .collect::<Vec<_>>();
+                    let first_added = new_rows.first().map(|row| row.id);
+                    self.rows.splice(insert_index..insert_index, new_rows);
                     if let Some(first_added) = first_added {
                         self.selected_rows.clear();
                         self.selected_rows.insert(first_added);
@@ -373,6 +449,19 @@ impl WaveGuiApp {
             }
             let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
             let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
+            let splitter_rect = Rect::from_min_max(
+                pos2(axis_rect.left() - 4.0, axis_rect.top()),
+                pos2(axis_rect.left() + 4.0, cursor_bottom),
+            );
+            let splitter_response = ui.interact(splitter_rect, ui.make_persistent_id("wave-label-splitter"), Sense::drag());
+            if splitter_response.dragged() {
+                let delta_x = ui.input(|input| input.pointer.delta().x);
+                self.row_label_width = (self.row_label_width + delta_x).max(MIN_ROW_LABEL_WIDTH);
+            }
+            ui.painter().line_segment(
+                [pos2(axis_rect.left(), axis_rect.top()), pos2(axis_rect.left(), cursor_bottom)],
+                Stroke::new(1.0, Color32::DARK_GRAY),
+            );
             if self.cursor_dragging {
                 if let Some(pointer_pos) = pointer_pos {
                     if ui.input(|input| input.pointer.primary_down()) {
@@ -393,6 +482,7 @@ impl WaveGuiApp {
             Ok(store) => {
                 self.cursor_time = store.max_time();
                 self.rows.clear();
+                self.next_row_id = 1;
                 self.selected_row = None;
                 self.selected_rows.clear();
                 self.last_selected_row = None;
@@ -424,11 +514,9 @@ impl WaveGuiApp {
             ui.checkbox(&mut self.show_ports, "ports");
             ui.checkbox(&mut self.show_signals, "signals");
         });
-        ui.weak("Ctrl+W adds selected signals, or all visible signals if none are selected.");
         ui.separator();
 
         if self.selected_modules.is_empty() {
-            ui.label("Select one or more modules in the hierarchy.");
             return;
         }
 
@@ -442,7 +530,6 @@ impl WaveGuiApp {
         let signal_ids = filtered_signal_ids(store, &self.selected_modules, self.show_ports, self.show_signals);
         self.selected_signals.retain(|signal_id| signal_ids.contains(signal_id));
         if signal_ids.is_empty() {
-            ui.label("No signals match the selected modules and filters.");
             return;
         }
 
@@ -453,7 +540,7 @@ impl WaveGuiApp {
                     store,
                     &signal_ids,
                     signal_id,
-                    &mut self.rows,
+                    &self.rows,
                     &mut self.selected_signals,
                     &mut self.last_selected_signal,
                     &mut self.dragging_signals,
@@ -467,10 +554,115 @@ impl WaveGuiApp {
         self.selected_signals
             .retain(|signal_id| visible_signals.contains(signal_id));
         if self.selected_signals.is_empty() {
-            add_rows(&mut self.rows, visible_signals);
+            let selected_modules = self.selected_modules.iter().cloned().collect::<Vec<_>>();
+            for module_path in selected_modules {
+                let module_signals = filtered_signal_ids_for_module(store, &module_path, self.show_ports, self.show_signals);
+                if !module_signals.is_empty() {
+                    let name = module_path.join(".");
+                    self.add_grouped_signals(name, module_signals);
+                }
+            }
         } else {
-            add_rows(&mut self.rows, self.selected_signals.iter().copied());
+            let signal_ids = self.selected_signals.iter().copied().collect::<Vec<_>>();
+            self.add_signal_rows(signal_ids);
         }
+    }
+
+    fn next_row_id(&mut self) -> u64 {
+        let id = self.next_row_id;
+        self.next_row_id += 1;
+        id
+    }
+
+    fn make_signal_row(&mut self, signal_id: usize, group: Option<u64>) -> WaveRow {
+        WaveRow {
+            id: self.next_row_id(),
+            kind: WaveRowKind::Signal { signal_id, group },
+        }
+    }
+
+    fn make_group_row(&mut self, name: String) -> WaveRow {
+        WaveRow {
+            id: self.next_row_id(),
+            kind: WaveRowKind::Group {
+                name,
+                collapsed: false,
+            },
+        }
+    }
+
+    fn add_signal_rows(&mut self, signal_ids: impl IntoIterator<Item = usize>) {
+        let rows = signal_ids
+            .into_iter()
+            .map(|signal_id| self.make_signal_row(signal_id, None))
+            .collect::<Vec<_>>();
+        self.rows.extend(rows);
+    }
+
+    fn add_grouped_signals(&mut self, name: String, signal_ids: impl IntoIterator<Item = usize>) {
+        let group = self.make_group_row(name);
+        let group_id = group.id;
+        self.rows.push(group);
+        let rows = signal_ids
+            .into_iter()
+            .map(|signal_id| self.make_signal_row(signal_id, Some(group_id)))
+            .collect::<Vec<_>>();
+        self.rows.extend(rows);
+    }
+
+    fn create_group_from_selection(&mut self) {
+        if self.selected_rows.is_empty() {
+            let group = self.make_group_row("group".to_owned());
+            self.selected_rows.clear();
+            self.selected_rows.insert(group.id);
+            self.selected_row = Some(group.id);
+            self.last_selected_row = Some(group.id);
+            self.rows.push(group);
+            return;
+        }
+
+        let selected = self.selected_rows.clone();
+        let mut selected_indices = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| match row.kind {
+                WaveRowKind::Signal { .. } if selected.contains(&row.id) => Some(index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if selected_indices.is_empty() {
+            return;
+        }
+        selected_indices.sort_unstable();
+        let original_insert_index = selected_indices[0];
+        let group = self.make_group_row("group".to_owned());
+        let group_id = group.id;
+
+        let selected_set = selected_indices.into_iter().collect::<BTreeSet<_>>();
+        let mut grouped_rows = Vec::new();
+        let mut kept_rows = Vec::new();
+        let mut insert_index = 0;
+        for (index, mut row) in self.rows.drain(..).enumerate() {
+            if selected_set.contains(&index) {
+                if let WaveRowKind::Signal { group, .. } = &mut row.kind {
+                    *group = Some(group_id);
+                }
+                grouped_rows.push(row);
+            } else {
+                if index < original_insert_index {
+                    insert_index += 1;
+                }
+                kept_rows.push(row);
+            }
+        }
+        self.rows = kept_rows;
+        let insert_index = insert_index.min(self.rows.len());
+        self.rows.splice(insert_index..insert_index, std::iter::once(group).chain(grouped_rows));
+        self.selected_rows.clear();
+        self.selected_rows.insert(group_id);
+        self.selected_row = Some(group_id);
+        self.last_selected_row = Some(group_id);
     }
 
 }
@@ -498,7 +690,21 @@ struct TreeHeaderResult {
     expanded: bool,
 }
 
-const ROW_LABEL_WIDTH: f32 = 360.0;
+#[derive(Clone)]
+struct VisibleWaveRow {
+    row_index: usize,
+    row_id: u64,
+    kind: VisibleWaveRowKind,
+}
+
+#[derive(Clone)]
+enum VisibleWaveRowKind {
+    Signal { signal_id: usize },
+    Group,
+}
+
+const DEFAULT_ROW_LABEL_WIDTH: f32 = 360.0;
+const MIN_ROW_LABEL_WIDTH: f32 = 160.0;
 const ROW_HEIGHT: f32 = 28.0;
 
 fn draw_hierarchy(
@@ -565,13 +771,13 @@ fn draw_signal_panel_row(
     store: &WaveStore,
     visible_signals: &[usize],
     signal_id: usize,
-    rows: &mut Vec<usize>,
+    rows: &[WaveRow],
     selected_signals: &mut BTreeSet<usize>,
     last_selected_signal: &mut Option<usize>,
     dragging_signals: &mut Vec<usize>,
 ) {
     let signal = &store.signals[signal_id];
-    let already_added = rows.contains(&signal.id);
+    let already_added = rows.iter().any(|row| row.signal_id() == Some(signal.id));
     let selected = selected_signals.contains(&signal.id);
     let row_height = 22.0;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click_and_drag());
@@ -671,27 +877,6 @@ fn draw_module_header(
     }
 }
 
-fn add_rows(rows: &mut Vec<usize>, signal_ids: impl IntoIterator<Item = usize>) {
-    for signal_id in signal_ids {
-        if !rows.contains(&signal_id) {
-            rows.push(signal_id);
-        }
-    }
-}
-
-fn insert_rows_at(rows: &mut Vec<usize>, index: usize, signal_ids: impl IntoIterator<Item = usize>) -> Option<usize> {
-    let mut insert_index = index.min(rows.len());
-    let mut first_added = None;
-    for signal_id in signal_ids {
-        if !rows.contains(&signal_id) {
-            rows.insert(insert_index, signal_id);
-            first_added.get_or_insert(insert_index);
-            insert_index += 1;
-        }
-    }
-    first_added
-}
-
 fn hierarchy_key(kind: &str, path: &[String]) -> String {
     if path.is_empty() {
         kind.to_owned()
@@ -718,6 +903,24 @@ fn filtered_signal_ids(
         .collect()
 }
 
+fn filtered_signal_ids_for_module(
+    store: &WaveStore,
+    module_path: &[String],
+    show_ports: bool,
+    show_signals: bool,
+) -> Vec<usize> {
+    store
+        .signals
+        .iter()
+        .filter(|signal| signal.path == module_path)
+        .filter(|signal| match signal.kind {
+            WaveSignalKind::Port => show_ports,
+            WaveSignalKind::Wire => show_signals,
+        })
+        .map(|signal| signal.id)
+        .collect()
+}
+
 fn module_paths(store: &WaveStore) -> Vec<Vec<String>> {
     store
         .signals
@@ -726,6 +929,122 @@ fn module_paths(store: &WaveStore) -> Vec<Vec<String>> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn visible_wave_rows(rows: &[WaveRow]) -> Vec<VisibleWaveRow> {
+    let collapsed_groups = rows
+        .iter()
+        .filter_map(|row| match &row.kind {
+            WaveRowKind::Group { collapsed: true, .. } => Some(row.id),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+
+    rows.iter()
+        .enumerate()
+        .filter_map(|(row_index, row)| match row.kind {
+            WaveRowKind::Group { .. } => Some(VisibleWaveRow {
+                row_index,
+                row_id: row.id,
+                kind: VisibleWaveRowKind::Group,
+            }),
+            WaveRowKind::Signal { signal_id, group } => {
+                if group.is_some_and(|group_id| collapsed_groups.contains(&group_id)) {
+                    None
+                } else {
+                    Some(VisibleWaveRow {
+                        row_index,
+                        row_id: row.id,
+                        kind: VisibleWaveRowKind::Signal { signal_id },
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+fn actual_insert_index(visible_rows: &[VisibleWaveRow], visible_insert_index: usize, fallback: usize) -> usize {
+    visible_rows
+        .get(visible_insert_index)
+        .map(|row| row.row_index)
+        .unwrap_or(fallback)
+}
+
+fn take_drag_rows(rows: &mut Vec<WaveRow>, start_index: usize) -> Vec<WaveRow> {
+    if start_index >= rows.len() {
+        return Vec::new();
+    }
+    match rows[start_index].kind {
+        WaveRowKind::Group { .. } => {
+            let group_id = rows[start_index].id;
+            let mut end = start_index + 1;
+            while end < rows.len() && rows[end].group_id() == Some(group_id) {
+                end += 1;
+            }
+            rows.drain(start_index..end).collect()
+        }
+        WaveRowKind::Signal { .. } => {
+            let mut row = rows.remove(start_index);
+            if let WaveRowKind::Signal { group, .. } = &mut row.kind {
+                *group = None;
+            }
+            vec![row]
+        }
+    }
+}
+
+fn delete_selected_rows(rows: &mut Vec<WaveRow>, selected_rows: &BTreeSet<u64>) {
+    let selected_groups = rows
+        .iter()
+        .filter_map(|row| match row.kind {
+            WaveRowKind::Group { .. } if selected_rows.contains(&row.id) => Some(row.id),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    rows.retain(|row| {
+        !selected_rows.contains(&row.id) && !row.group_id().is_some_and(|group_id| selected_groups.contains(&group_id))
+    });
+}
+
+fn update_wave_row_selection(
+    ui: &Ui,
+    visible_index: usize,
+    visible_rows: &[VisibleWaveRow],
+    selected_rows: &mut BTreeSet<u64>,
+    selected_row: &mut Option<u64>,
+    last_selected_row: &mut Option<u64>,
+) {
+    let row_id = visible_rows[visible_index].row_id;
+    let modifiers = ui.input(|input| input.modifiers);
+    if modifiers.shift {
+        if let Some(anchor) = *last_selected_row {
+            let start = visible_rows.iter().position(|row| row.row_id == anchor);
+            if let Some(start) = start {
+                let (start, end) = if start <= visible_index {
+                    (start, visible_index)
+                } else {
+                    (visible_index, start)
+                };
+                for row in &visible_rows[start..=end] {
+                    selected_rows.insert(row.row_id);
+                }
+            } else {
+                selected_rows.insert(row_id);
+            }
+        } else {
+            selected_rows.insert(row_id);
+        }
+    } else if modifiers.ctrl || modifiers.command {
+        if !selected_rows.remove(&row_id) {
+            selected_rows.insert(row_id);
+        }
+        *last_selected_row = Some(row_id);
+    } else {
+        selected_rows.clear();
+        selected_rows.insert(row_id);
+        *last_selected_row = Some(row_id);
+    }
+    *selected_row = Some(row_id);
 }
 
 fn update_signal_selection(
@@ -799,46 +1118,14 @@ fn update_module_selection(
     *last_selected_module = Some(path);
 }
 
-fn update_row_selection(
-    ui: &Ui,
-    row_index: usize,
-    row_count: usize,
-    selected_rows: &mut BTreeSet<usize>,
-    selected_row: &mut Option<usize>,
-    last_selected_row: &mut Option<usize>,
-) {
-    let modifiers = ui.input(|input| input.modifiers);
-    if modifiers.shift {
-        let anchor = last_selected_row.unwrap_or(row_index);
-        let (start, end) = if anchor <= row_index {
-            (anchor, row_index)
-        } else {
-            (row_index, anchor)
-        };
-        for index in start..=end.min(row_count.saturating_sub(1)) {
-            selected_rows.insert(index);
-        }
-    } else if modifiers.ctrl || modifiers.command {
-        if !selected_rows.remove(&row_index) {
-            selected_rows.insert(row_index);
-        }
-        *last_selected_row = Some(row_index);
-    } else {
-        selected_rows.clear();
-        selected_rows.insert(row_index);
-        *last_selected_row = Some(row_index);
-    }
-    *selected_row = Some(row_index);
-}
-
 fn time_from_pointer(axis_rect: Rect, pointer_pos: egui::Pos2, pixels_per_time: f32) -> u64 {
     ((pointer_pos.x - axis_rect.left()) / pixels_per_time).round().max(0.0) as u64
 }
 
-fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, width: f32) -> Rect {
+fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, label_width: f32, width: f32) -> Rect {
     let height = 24.0;
-    let (row_rect, _) = ui.allocate_exact_size(vec2(ROW_LABEL_WIDTH + width, height), Sense::hover());
-    let rect = Rect::from_min_size(pos2(row_rect.left() + ROW_LABEL_WIDTH, row_rect.top()), vec2(width, height));
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + width, height), Sense::hover());
+    let rect = Rect::from_min_size(pos2(row_rect.left() + label_width, row_rect.top()), vec2(width, height));
     let painter = ui.painter_at(rect);
     painter.line_segment(
         [pos2(rect.left(), rect.bottom()), pos2(rect.right(), rect.bottom())],
@@ -867,19 +1154,75 @@ fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, width: f32) -> Rect {
     rect
 }
 
+fn draw_group_row(
+    ui: &mut Ui,
+    row: &mut WaveRow,
+    row_index: usize,
+    selected: bool,
+    label_width: f32,
+    wave_width: f32,
+) -> RowResult {
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
+    let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
+    let icon_hit_rect = Rect::from_min_size(pos2(label_rect.left(), label_rect.top()), vec2(28.0, ROW_HEIGHT));
+    let icon_rect = Rect::from_center_size(icon_hit_rect.center(), vec2(12.0, 12.0));
+    let drag_rect = Rect::from_min_max(label_rect.min, pos2(icon_hit_rect.right(), label_rect.bottom()));
+    let drag_response = ui.interact(drag_rect, ui.make_persistent_id(("group-drag", row.id)), Sense::click_and_drag());
+    let wave_rect = Rect::from_min_max(pos2(label_rect.right(), row_rect.top()), row_rect.right_bottom());
+    let wave_response = ui.interact(wave_rect, ui.make_persistent_id(("group-wave", row.id)), Sense::click());
+    let painter = ui.painter_at(row_rect);
+    let bg = if selected {
+        Color32::from_rgb(35, 55, 85)
+    } else if drag_response.hovered() || wave_response.hovered() {
+        Color32::from_rgb(35, 35, 35)
+    } else if row_index % 2 == 0 {
+        Color32::from_rgb(20, 20, 20)
+    } else {
+        Color32::from_rgb(26, 26, 26)
+    };
+    painter.rect_filled(row_rect, 0.0, bg);
+
+    if let WaveRowKind::Group { name, collapsed } = &mut row.kind {
+        let icon_response = ui.interact(icon_hit_rect, ui.make_persistent_id(("group-expand", row.id)), Sense::click());
+        if icon_response.clicked() {
+            *collapsed = !*collapsed;
+        }
+        draw_disclosure_icon(ui.painter(), icon_rect, !*collapsed);
+        let edit_rect = Rect::from_min_max(pos2(icon_hit_rect.right(), label_rect.top() + 3.0), label_rect.right_bottom());
+        ui.put(
+            edit_rect,
+            egui::TextEdit::singleline(name)
+                .font(FontId::proportional(13.0))
+                .frame(false),
+        );
+    }
+
+    RowResult {
+        clicked: drag_response.clicked() || wave_response.clicked(),
+        label_drag_started: drag_response.drag_started(),
+        cursor_time: None,
+        cursor_drag_started: false,
+        expand_toggles: Vec::new(),
+        rect: row_rect,
+    }
+}
+
 fn draw_signal_rows(
     ui: &mut Ui,
     store: &WaveStore,
     signal: &WaveSignal,
+    row_id: u64,
     row_index: usize,
     selected: bool,
     dragging: bool,
     expanded_rows: &BTreeSet<WaveRowKey>,
     cursor_time: u64,
     pixels_per_time: f32,
+    label_width: f32,
     wave_width: f32,
 ) -> SignalRowsResult {
     let key = WaveRowKey {
+        row_id,
         signal_id: signal.id,
         bit_offset: 0,
         bit_len: signal.bit_len,
@@ -900,6 +1243,7 @@ fn draw_signal_rows(
         expanded_rows,
         cursor_time,
         pixels_per_time,
+        label_width,
         wave_width,
     );
     result
@@ -920,6 +1264,7 @@ fn draw_signal_tree(
     expanded_rows: &BTreeSet<WaveRowKey>,
     cursor_time: u64,
     pixels_per_time: f32,
+    label_width: f32,
     wave_width: f32,
 ) -> SignalRowsResult {
     let expanded = is_composite(ty) && expanded_rows.contains(&key);
@@ -939,6 +1284,7 @@ fn draw_signal_tree(
         depth,
         cursor_time,
         pixels_per_time,
+        label_width,
         wave_width,
     );
     let mut result = SignalRowsResult {
@@ -953,6 +1299,7 @@ fn draw_signal_tree(
         for (child_index, (name, child_ty, offset, len)) in composite_children(ty).into_iter().enumerate() {
             let child_key = WaveRowKey {
                 signal_id: signal.id,
+                row_id: key.row_id,
                 bit_offset: key.bit_offset + offset,
                 bit_len: len.max(child_ty.bit_len()),
                 part: key.part.wrapping_mul(131).wrapping_add(child_index as u64 + 1),
@@ -972,6 +1319,7 @@ fn draw_signal_tree(
                 expanded_rows,
                 cursor_time,
                 pixels_per_time,
+                label_width,
                 wave_width,
             );
             result.all_rect = result.all_rect.union(child.all_rect);
@@ -1002,12 +1350,13 @@ fn draw_signal_leaf(
     depth: usize,
     cursor_time: u64,
     pixels_per_time: f32,
+    label_width: f32,
     wave_width: f32,
 ) -> RowResult {
-    let (row_rect, _) = ui.allocate_exact_size(vec2(ROW_LABEL_WIDTH + wave_width, ROW_HEIGHT), Sense::hover());
-    let label_rect = Rect::from_min_size(row_rect.min, vec2(ROW_LABEL_WIDTH, ROW_HEIGHT));
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
+    let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
     let wave_rect = Rect::from_min_size(
-        pos2(row_rect.left() + ROW_LABEL_WIDTH, row_rect.top()),
+        pos2(row_rect.left() + label_width, row_rect.top()),
         vec2(wave_width, ROW_HEIGHT),
     );
     let label_response = ui.interact(label_rect, ui.make_persistent_id(("row-label", key)), Sense::click_and_drag());
@@ -1047,7 +1396,7 @@ fn draw_signal_leaf(
         pos2(icon_rect.right() + 4.0, label_rect.center().y),
         Align2::LEFT_CENTER,
         format!("{label} = {value}"),
-        FontId::monospace(12.0),
+        FontId::proportional(13.0),
         Color32::WHITE,
     );
     draw_waveform(

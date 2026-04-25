@@ -14,8 +14,15 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
         Mixed,
     }
 
+    enum Event {
+        Idle,
+        Count(uint(4)),
+        Tagged(Tuple(uint(4), bool)),
+    }
+
     struct Meta {
         phase: Phase,
+        event: Event,
         flags: Tuple(bool, bool),
         lanes: [2]Tuple(uint(4), Phase),
     }
@@ -51,6 +58,7 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
                 valid=false,
                 meta=Meta.new(
                     phase=Phase.Idle,
+                    event=Event.Idle,
                     flags=(false, false),
                     lanes=[(0, Phase.Idle), (0, Phase.Idle)],
                 ),
@@ -64,6 +72,7 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
                 valid=enable,
                 meta=Meta.new(
                     phase=Phase.Mixed,
+                    event=Event.Tagged((tag_in, flag)),
                     flags=(flag, enable),
                     lanes=[(tag_in, Phase.Left), (15 - tag_in, Phase.Right)],
                 ),
@@ -129,6 +138,7 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
                 valid=false,
                 meta=Meta.new(
                     phase=Phase.Idle,
+                    event=Event.Idle,
                     flags=(false, false),
                     lanes=[(0, Phase.Idle), (0, Phase.Idle)],
                 ),
@@ -140,6 +150,7 @@ def build_wave_gui_example_json(build_dir: Path, output_path: Path) -> Path:
                     valid=false,
                     meta=Meta.new(
                         phase=Phase.Idle,
+                        event=Event.Idle,
                         flags=(false, false),
                         lanes=[(0, Phase.Idle), (0, Phase.Idle)],
                     ),
@@ -218,6 +229,10 @@ def test_wave_gui_example_json_export(tmp_dir: Path):
     assert meta_ty["Struct"]["name"] == "Meta"
     phase_ty = next(field_ty for field_name, field_ty in meta_ty["Struct"]["fields"] if field_name == "phase")
     assert phase_ty["Enum"]["name"] == "Phase"
+    event_ty = next(field_ty for field_name, field_ty in meta_ty["Struct"]["fields"] if field_name == "event")
+    assert event_ty["Enum"]["name"] == "Event"
+    event_variants = event_ty["Enum"]["variants"]
+    assert any(variant_name == "Tagged" and payload is not None for variant_name, payload in event_variants)
     assert any(len(changes) > 1 for changes in store["changes"])
 
     print(f"wave_gui example JSON written to {path}")
