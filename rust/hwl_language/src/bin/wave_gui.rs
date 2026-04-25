@@ -3,7 +3,7 @@ use eframe::egui::{
     TopBottomPanel, Ui, ViewportBuilder, pos2, vec2,
 };
 use hwl_language::sim::recorder::{WaveSignal, WaveSignalKind, WaveSignalType, WaveStore};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::path::PathBuf;
 
@@ -42,6 +42,7 @@ struct WaveGuiApp {
     last_selected_module: Option<Vec<String>>,
     selected_signals: BTreeSet<usize>,
     last_selected_signal: Option<usize>,
+    last_group_name_click: Option<(u64, f64)>,
     row_drag: Option<RowDrag>,
     cursor_dragging: bool,
     dragging_signals: Vec<usize>,
@@ -55,6 +56,7 @@ struct WaveGuiApp {
 struct RowDrag {
     rows: Vec<WaveRow>,
     insert_index: usize,
+    depth: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -65,8 +67,13 @@ struct WaveRow {
 
 #[derive(Debug, Clone)]
 enum WaveRowKind {
-    Signal { signal_id: usize, group: Option<u64> },
-    Group { name: String, collapsed: bool },
+    Signal { signal_id: usize, parent: Option<u64> },
+    Group {
+        name: String,
+        collapsed: bool,
+        parent: Option<u64>,
+        editing: bool,
+    },
 }
 
 impl WaveRow {
@@ -77,10 +84,16 @@ impl WaveRow {
         }
     }
 
-    fn group_id(&self) -> Option<u64> {
+    fn parent_id(&self) -> Option<u64> {
         match self.kind {
-            WaveRowKind::Signal { group, .. } => group,
-            WaveRowKind::Group { .. } => None,
+            WaveRowKind::Signal { parent, .. } => parent,
+            WaveRowKind::Group { parent, .. } => parent,
+        }
+    }
+
+    fn set_parent_id(&mut self, new_parent: Option<u64>) {
+        match &mut self.kind {
+            WaveRowKind::Signal { parent, .. } | WaveRowKind::Group { parent, .. } => *parent = new_parent,
         }
     }
 }
@@ -114,6 +127,7 @@ impl Default for WaveGuiApp {
             last_selected_module: None,
             selected_signals: BTreeSet::new(),
             last_selected_signal: None,
+            last_group_name_click: None,
             row_drag: None,
             cursor_dragging: false,
             dragging_signals: Vec::new(),
@@ -152,6 +166,7 @@ impl eframe::App for WaveGuiApp {
                             self.last_selected_module = None;
                             self.selected_signals.clear();
                             self.last_selected_signal = None;
+                            self.last_group_name_click = None;
                             self.row_drag = None;
                             self.cursor_dragging = false;
                             self.dragging_signals.clear();
@@ -273,7 +288,12 @@ impl WaveGuiApp {
             self.cursor_dragging = false;
             if let Some(row_drag) = self.row_drag.take() {
                 let visible_rows = visible_wave_rows(&self.rows);
-                let insert_index = actual_insert_index(&visible_rows, row_drag.insert_index, self.rows.len());
+                let row_rects = visible_rows
+                    .iter()
+                    .map(|_| Rect::NOTHING)
+                    .collect::<Vec<_>>();
+                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
+                let insert_index = actual_insert_index_for_targets(&drop_targets, row_drag.insert_index, self.rows.len());
                 let first_id = row_drag.rows.first().map(|row| row.id);
                 self.rows.splice(insert_index..insert_index, row_drag.rows);
                 self.selected_row = first_id;
@@ -296,7 +316,7 @@ impl WaveGuiApp {
             let axis_rect = draw_time_axis(ui, self.pixels_per_time, label_width, wave_width);
             ui.separator();
             let pointer_pos = ui.input(|input| input.pointer.interact_pos());
-            let mut start_row_drag: Option<usize> = None;
+            let mut start_row_drag: Option<(usize, usize)> = None;
             let mut row_rects = Vec::new();
             let mut wave_bottom = axis_rect.bottom();
             let visible_rows = visible_wave_rows(&self.rows);
@@ -308,8 +328,10 @@ impl WaveGuiApp {
                         let result = draw_group_row(
                             ui,
                             &mut self.rows[visible_row.row_index],
+                            &mut self.last_group_name_click,
                             visible_index,
                             row_selected,
+                            visible_row.depth,
                             label_width,
                             wave_width,
                         );
@@ -332,7 +354,7 @@ impl WaveGuiApp {
                                 &mut self.selected_row,
                                 &mut self.last_selected_row,
                             );
-                            start_row_drag = Some(visible_row.row_index);
+                            start_row_drag = Some((visible_row.row_index, visible_row.depth));
                         }
                         row_rects.push(result.rect);
                         wave_bottom = wave_bottom.max(result.rect.bottom());
@@ -352,6 +374,7 @@ impl WaveGuiApp {
                                 &self.expanded_rows,
                                 self.cursor_time,
                                 self.pixels_per_time,
+                                visible_row.depth,
                                 label_width,
                                 wave_width,
                             );
@@ -385,28 +408,37 @@ impl WaveGuiApp {
                                     &mut self.selected_row,
                                     &mut self.last_selected_row,
                                 );
-                                start_row_drag = Some(visible_row.row_index);
+                                start_row_drag = Some((visible_row.row_index, visible_row.depth));
                             }
-                            row_rects.push(result.primary.rect);
-                            wave_bottom = wave_bottom.max(result.all_rect.bottom());
+                        row_rects.push(result.all_rect);
+                        wave_bottom = wave_bottom.max(result.all_rect.bottom());
                         }
                     }
                 }
             }
 
             if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
-                row_drag.insert_index = insertion_index(pointer_pos, &row_rects);
+                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
+                row_drag.insert_index = insertion_index_for_targets(pointer_pos, &drop_targets);
             }
+            let left_drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
             let left_drag_insert_index = if !self.dragging_signals.is_empty() {
-                Some(pointer_pos.map_or(self.rows.len(), |pos| insertion_index(pos, &row_rects)))
+                Some(pointer_pos.map_or(left_drop_targets.len(), |pos| {
+                    insertion_index_for_targets(pos, &left_drop_targets)
+                }))
             } else {
                 None
             };
-            if let Some(start_index) = start_row_drag {
+            if let Some((start_index, drag_depth)) = start_row_drag {
                 if start_index < self.rows.len() {
                     let rows = take_drag_rows(&mut self.rows, start_index);
-                    let insert_index = pointer_pos.map_or(start_index, |pos| insertion_index(pos, &row_rects));
-                    self.row_drag = Some(RowDrag { rows, insert_index });
+                    let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, drag_depth);
+                    let insert_index = pointer_pos.map_or(start_index, |pos| insertion_index_for_targets(pos, &drop_targets));
+                    self.row_drag = Some(RowDrag {
+                        rows,
+                        insert_index,
+                        depth: drag_depth,
+                    });
                     self.selected_row = None;
                     self.selected_rows.clear();
                     self.last_selected_row = None;
@@ -415,21 +447,23 @@ impl WaveGuiApp {
 
             let fallback_insert_y = axis_rect.bottom() + 7.0;
             if let Some(row_drag) = &self.row_drag {
-                draw_insert_line(
+                let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
+                draw_insert_line_for_targets(
                     ui,
                     row_drag.insert_index,
-                    &row_rects,
+                    &drop_targets,
                     label_width + wave_width,
                     fallback_insert_y,
                 );
             } else if let Some(insert_index) = left_drag_insert_index {
-                draw_insert_line(ui, insert_index, &row_rects, label_width + wave_width, fallback_insert_y);
+                draw_insert_line_for_targets(ui, insert_index, &left_drop_targets, label_width + wave_width, fallback_insert_y);
             }
             if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
                 if ui.rect_contains_pointer(ui.max_rect()) {
                     let visible_rows = visible_wave_rows(&self.rows);
-                    let visible_insert_index = left_drag_insert_index.unwrap_or(visible_rows.len());
-                    let insert_index = actual_insert_index(&visible_rows, visible_insert_index, self.rows.len());
+                    let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
+                    let visible_insert_index = left_drag_insert_index.unwrap_or(drop_targets.len());
+                    let insert_index = actual_insert_index_for_targets(&drop_targets, visible_insert_index, self.rows.len());
                     let new_rows = self
                         .dragging_signals
                         .clone()
@@ -495,6 +529,7 @@ impl WaveGuiApp {
                 }
                 self.selected_signals.clear();
                 self.last_selected_signal = None;
+                self.last_group_name_click = None;
                 self.row_drag = None;
                 self.cursor_dragging = false;
                 self.dragging_signals.clear();
@@ -574,19 +609,21 @@ impl WaveGuiApp {
         id
     }
 
-    fn make_signal_row(&mut self, signal_id: usize, group: Option<u64>) -> WaveRow {
+    fn make_signal_row(&mut self, signal_id: usize, parent: Option<u64>) -> WaveRow {
         WaveRow {
             id: self.next_row_id(),
-            kind: WaveRowKind::Signal { signal_id, group },
+            kind: WaveRowKind::Signal { signal_id, parent },
         }
     }
 
-    fn make_group_row(&mut self, name: String) -> WaveRow {
+    fn make_group_row(&mut self, name: String, parent: Option<u64>) -> WaveRow {
         WaveRow {
             id: self.next_row_id(),
             kind: WaveRowKind::Group {
                 name,
                 collapsed: false,
+                parent,
+                editing: false,
             },
         }
     }
@@ -600,7 +637,7 @@ impl WaveGuiApp {
     }
 
     fn add_grouped_signals(&mut self, name: String, signal_ids: impl IntoIterator<Item = usize>) {
-        let group = self.make_group_row(name);
+        let group = self.make_group_row(name, None);
         let group_id = group.id;
         self.rows.push(group);
         let rows = signal_ids
@@ -612,7 +649,7 @@ impl WaveGuiApp {
 
     fn create_group_from_selection(&mut self) {
         if self.selected_rows.is_empty() {
-            let group = self.make_group_row("group".to_owned());
+            let group = self.make_group_row("group".to_owned(), None);
             self.selected_rows.clear();
             self.selected_rows.insert(group.id);
             self.selected_row = Some(group.id);
@@ -622,21 +659,21 @@ impl WaveGuiApp {
         }
 
         let selected = self.selected_rows.clone();
+        let row_parents = row_parent_map(&self.rows);
+        let included_ids = included_row_ids(&self.rows, &selected, &row_parents);
         let mut selected_indices = self
             .rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| match row.kind {
-                WaveRowKind::Signal { .. } if selected.contains(&row.id) => Some(index),
-                _ => None,
-            })
+            .filter_map(|(index, row)| included_ids.contains(&row.id).then_some(index))
             .collect::<Vec<_>>();
         if selected_indices.is_empty() {
             return;
         }
         selected_indices.sort_unstable();
         let original_insert_index = selected_indices[0];
-        let group = self.make_group_row("group".to_owned());
+        let new_parent = self.rows[original_insert_index].parent_id();
+        let group = self.make_group_row("group".to_owned(), new_parent);
         let group_id = group.id;
 
         let selected_set = selected_indices.into_iter().collect::<BTreeSet<_>>();
@@ -645,8 +682,8 @@ impl WaveGuiApp {
         let mut insert_index = 0;
         for (index, mut row) in self.rows.drain(..).enumerate() {
             if selected_set.contains(&index) {
-                if let WaveRowKind::Signal { group, .. } = &mut row.kind {
-                    *group = Some(group_id);
+                if !row.parent_id().is_some_and(|parent| included_ids.contains(&parent)) {
+                    row.set_parent_id(Some(group_id));
                 }
                 grouped_rows.push(row);
             } else {
@@ -694,7 +731,14 @@ struct TreeHeaderResult {
 struct VisibleWaveRow {
     row_index: usize,
     row_id: u64,
+    depth: usize,
     kind: VisibleWaveRowKind,
+}
+
+#[derive(Clone, Copy)]
+struct DropTarget {
+    row_index: usize,
+    rect: Rect,
 }
 
 #[derive(Clone)]
@@ -932,6 +976,7 @@ fn module_paths(store: &WaveStore) -> Vec<Vec<String>> {
 }
 
 fn visible_wave_rows(rows: &[WaveRow]) -> Vec<VisibleWaveRow> {
+    let row_parents = row_parent_map(rows);
     let collapsed_groups = rows
         .iter()
         .filter_map(|row| match &row.kind {
@@ -942,31 +987,100 @@ fn visible_wave_rows(rows: &[WaveRow]) -> Vec<VisibleWaveRow> {
 
     rows.iter()
         .enumerate()
-        .filter_map(|(row_index, row)| match row.kind {
-            WaveRowKind::Group { .. } => Some(VisibleWaveRow {
-                row_index,
-                row_id: row.id,
-                kind: VisibleWaveRowKind::Group,
-            }),
-            WaveRowKind::Signal { signal_id, group } => {
-                if group.is_some_and(|group_id| collapsed_groups.contains(&group_id)) {
-                    None
-                } else {
-                    Some(VisibleWaveRow {
-                        row_index,
-                        row_id: row.id,
-                        kind: VisibleWaveRowKind::Signal { signal_id },
-                    })
-                }
+        .filter_map(|(row_index, row)| {
+            if has_collapsed_ancestor(row.parent_id(), &row_parents, &collapsed_groups) {
+                return None;
+            }
+            let depth = group_depth(row.parent_id(), &row_parents);
+            match row.kind {
+                WaveRowKind::Group { .. } => Some(VisibleWaveRow {
+                    row_index,
+                    row_id: row.id,
+                    depth,
+                    kind: VisibleWaveRowKind::Group,
+                }),
+                WaveRowKind::Signal { signal_id, .. } => Some(VisibleWaveRow {
+                    row_index,
+                    row_id: row.id,
+                    depth,
+                    kind: VisibleWaveRowKind::Signal { signal_id },
+                }),
             }
         })
         .collect()
 }
 
-fn actual_insert_index(visible_rows: &[VisibleWaveRow], visible_insert_index: usize, fallback: usize) -> usize {
+fn row_parent_map(rows: &[WaveRow]) -> BTreeMap<u64, Option<u64>> {
+    rows.iter().map(|row| (row.id, row.parent_id())).collect()
+}
+
+fn has_collapsed_ancestor(
+    mut parent: Option<u64>,
+    row_parents: &BTreeMap<u64, Option<u64>>,
+    collapsed_groups: &BTreeSet<u64>,
+) -> bool {
+    while let Some(parent_id) = parent {
+        if collapsed_groups.contains(&parent_id) {
+            return true;
+        }
+        parent = row_parents.get(&parent_id).copied().flatten();
+    }
+    false
+}
+
+fn group_depth(mut parent: Option<u64>, row_parents: &BTreeMap<u64, Option<u64>>) -> usize {
+    let mut depth = 0;
+    while let Some(parent_id) = parent {
+        depth += 1;
+        parent = row_parents.get(&parent_id).copied().flatten();
+    }
+    depth
+}
+
+fn is_descendant_of(row_id: u64, ancestor_id: u64, row_parents: &BTreeMap<u64, Option<u64>>) -> bool {
+    let mut parent = row_parents.get(&row_id).copied().flatten();
+    while let Some(parent_id) = parent {
+        if parent_id == ancestor_id {
+            return true;
+        }
+        parent = row_parents.get(&parent_id).copied().flatten();
+    }
+    false
+}
+
+fn included_row_ids(
+    rows: &[WaveRow],
+    selected_rows: &BTreeSet<u64>,
+    row_parents: &BTreeMap<u64, Option<u64>>,
+) -> BTreeSet<u64> {
+    rows.iter()
+        .filter_map(|row| {
+            (selected_rows.contains(&row.id)
+                || selected_rows
+                    .iter()
+                    .any(|selected_id| is_descendant_of(row.id, *selected_id, row_parents)))
+            .then_some(row.id)
+        })
+        .collect()
+}
+
+fn drop_targets_for_depth(visible_rows: &[VisibleWaveRow], row_rects: &[Rect], max_depth: usize) -> Vec<DropTarget> {
     visible_rows
-        .get(visible_insert_index)
-        .map(|row| row.row_index)
+        .iter()
+        .zip(row_rects.iter().copied())
+        .filter_map(|(row, rect)| {
+            (row.depth <= max_depth).then_some(DropTarget {
+                row_index: row.row_index,
+                rect,
+            })
+        })
+        .collect()
+}
+
+fn actual_insert_index_for_targets(targets: &[DropTarget], insert_index: usize, fallback: usize) -> usize {
+    targets
+        .get(insert_index)
+        .map(|target| target.row_index)
         .unwrap_or(fallback)
 }
 
@@ -977,33 +1091,38 @@ fn take_drag_rows(rows: &mut Vec<WaveRow>, start_index: usize) -> Vec<WaveRow> {
     match rows[start_index].kind {
         WaveRowKind::Group { .. } => {
             let group_id = rows[start_index].id;
-            let mut end = start_index + 1;
-            while end < rows.len() && rows[end].group_id() == Some(group_id) {
-                end += 1;
-            }
-            rows.drain(start_index..end).collect()
+            let row_parents = row_parent_map(rows);
+            let included_ids = rows
+                .iter()
+                .filter_map(|row| (row.id == group_id || is_descendant_of(row.id, group_id, &row_parents)).then_some(row.id))
+                .collect::<BTreeSet<_>>();
+            drain_included_rows(rows, &included_ids)
         }
         WaveRowKind::Signal { .. } => {
             let mut row = rows.remove(start_index);
-            if let WaveRowKind::Signal { group, .. } = &mut row.kind {
-                *group = None;
-            }
+            row.set_parent_id(None);
             vec![row]
         }
     }
 }
 
 fn delete_selected_rows(rows: &mut Vec<WaveRow>, selected_rows: &BTreeSet<u64>) {
-    let selected_groups = rows
-        .iter()
-        .filter_map(|row| match row.kind {
-            WaveRowKind::Group { .. } if selected_rows.contains(&row.id) => Some(row.id),
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>();
-    rows.retain(|row| {
-        !selected_rows.contains(&row.id) && !row.group_id().is_some_and(|group_id| selected_groups.contains(&group_id))
-    });
+    let row_parents = row_parent_map(rows);
+    let included_ids = included_row_ids(rows, selected_rows, &row_parents);
+    rows.retain(|row| !included_ids.contains(&row.id));
+}
+
+fn drain_included_rows(rows: &mut Vec<WaveRow>, included_ids: &BTreeSet<u64>) -> Vec<WaveRow> {
+    let mut drained = Vec::new();
+    let mut index = 0;
+    while index < rows.len() {
+        if included_ids.contains(&rows[index].id) {
+            drained.push(rows.remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    drained
 }
 
 fn update_wave_row_selection(
@@ -1157,14 +1276,17 @@ fn draw_time_axis(ui: &mut Ui, pixels_per_time: f32, label_width: f32, width: f3
 fn draw_group_row(
     ui: &mut Ui,
     row: &mut WaveRow,
+    last_group_name_click: &mut Option<(u64, f64)>,
     row_index: usize,
     selected: bool,
+    depth: usize,
     label_width: f32,
     wave_width: f32,
 ) -> RowResult {
     let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
     let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
-    let icon_hit_rect = Rect::from_min_size(pos2(label_rect.left(), label_rect.top()), vec2(28.0, ROW_HEIGHT));
+    let indent = depth as f32 * 18.0;
+    let icon_hit_rect = Rect::from_min_size(pos2(label_rect.left() + indent, label_rect.top()), vec2(28.0, ROW_HEIGHT));
     let icon_rect = Rect::from_center_size(icon_hit_rect.center(), vec2(12.0, 12.0));
     let drag_rect = Rect::from_min_max(label_rect.min, pos2(icon_hit_rect.right(), label_rect.bottom()));
     let drag_response = ui.interact(drag_rect, ui.make_persistent_id(("group-drag", row.id)), Sense::click_and_drag());
@@ -1181,20 +1303,64 @@ fn draw_group_row(
         Color32::from_rgb(26, 26, 26)
     };
     painter.rect_filled(row_rect, 0.0, bg);
+    draw_group_guides(ui.painter(), label_rect, depth);
 
-    if let WaveRowKind::Group { name, collapsed } = &mut row.kind {
+    if let WaveRowKind::Group {
+        name,
+        collapsed,
+        editing,
+        ..
+    } = &mut row.kind
+    {
         let icon_response = ui.interact(icon_hit_rect, ui.make_persistent_id(("group-expand", row.id)), Sense::click());
         if icon_response.clicked() {
             *collapsed = !*collapsed;
         }
         draw_disclosure_icon(ui.painter(), icon_rect, !*collapsed);
         let edit_rect = Rect::from_min_max(pos2(icon_hit_rect.right(), label_rect.top() + 3.0), label_rect.right_bottom());
-        ui.put(
-            edit_rect,
-            egui::TextEdit::singleline(name)
-                .font(FontId::proportional(13.0))
-                .frame(false),
-        );
+        let name_id = ui.make_persistent_id(("group-name", row.id));
+        let name_response = ui.interact(edit_rect, name_id.with("hit"), Sense::click());
+        if name_response.clicked() {
+            let now = ui.input(|input| input.time);
+            let repeated_click = last_group_name_click
+                .is_some_and(|(last_id, last_time)| last_id == row.id && now - last_time <= 0.45);
+            if name_response.double_clicked() || repeated_click {
+                *editing = true;
+                *last_group_name_click = None;
+                ui.memory_mut(|memory| memory.request_focus(name_id));
+            } else {
+                *last_group_name_click = Some((row.id, now));
+            }
+        } else if name_response.double_clicked() {
+            *editing = true;
+            ui.memory_mut(|memory| memory.request_focus(name_id));
+        }
+        if *editing {
+            let was_focused = ui.memory(|memory| memory.has_focus(name_id));
+            let response = ui.put(
+                edit_rect,
+                egui::TextEdit::singleline(name)
+                    .font(FontId::proportional(13.0))
+                    .id(name_id)
+                    .frame(true),
+            );
+            if !was_focused && !response.has_focus() {
+                response.request_focus();
+            }
+            if response.lost_focus()
+                || ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape))
+            {
+                *editing = false;
+            }
+        } else {
+            ui.painter().text(
+                pos2(edit_rect.left(), edit_rect.center().y),
+                Align2::LEFT_CENTER,
+                name,
+                FontId::proportional(13.0),
+                Color32::LIGHT_GRAY,
+            );
+        }
     }
 
     RowResult {
@@ -1204,6 +1370,16 @@ fn draw_group_row(
         cursor_drag_started: false,
         expand_toggles: Vec::new(),
         rect: row_rect,
+    }
+}
+
+fn draw_group_guides(painter: &egui::Painter, label_rect: Rect, depth: usize) {
+    for level in 0..depth {
+        let x = label_rect.left() + 12.0 + level as f32 * 18.0;
+        painter.line_segment(
+            [pos2(x, label_rect.top()), pos2(x, label_rect.bottom())],
+            Stroke::new(2.0, Color32::from_gray(120)),
+        );
     }
 }
 
@@ -1218,6 +1394,7 @@ fn draw_signal_rows(
     expanded_rows: &BTreeSet<WaveRowKey>,
     cursor_time: u64,
     pixels_per_time: f32,
+    group_depth: usize,
     label_width: f32,
     wave_width: f32,
 ) -> SignalRowsResult {
@@ -1239,7 +1416,7 @@ fn draw_signal_rows(
         selected,
         dragging,
         true,
-        0,
+        group_depth,
         expanded_rows,
         cursor_time,
         pixels_per_time,
@@ -1375,13 +1552,14 @@ fn draw_signal_leaf(
         Color32::from_rgb(26, 26, 26)
     };
     painter.rect_filled(row_rect, 0.0, bg);
+    draw_group_guides(ui.painter(), label_rect, depth);
 
     let value = store
         .signal_value_at(signal.id, cursor_time)
         .map(|bits| format_value_for_type(bits, key.bit_offset, ty))
         .unwrap_or_else(|| "x".to_owned());
     let icon_rect = Rect::from_min_size(
-        pos2(label_rect.left() + 4.0 + depth as f32 * 14.0, label_rect.center().y - 6.0),
+        pos2(label_rect.left() + 4.0 + depth as f32 * 18.0, label_rect.center().y - 6.0),
         vec2(12.0, 12.0),
     );
     let icon_response = if expandable {
@@ -1528,22 +1706,22 @@ fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per
     }
 }
 
-fn insertion_index(pointer_pos: egui::Pos2, row_rects: &[Rect]) -> usize {
-    row_rects
+fn insertion_index_for_targets(pointer_pos: egui::Pos2, targets: &[DropTarget]) -> usize {
+    targets
         .iter()
-        .position(|rect| pointer_pos.y < rect.center().y)
-        .unwrap_or(row_rects.len())
+        .position(|target| pointer_pos.y < target.rect.center().y)
+        .unwrap_or(targets.len())
 }
 
-fn draw_insert_line(ui: &Ui, insert_index: usize, row_rects: &[Rect], width: f32, fallback_y: f32) {
-    let anchor = row_rects
+fn draw_insert_line_for_targets(ui: &Ui, insert_index: usize, targets: &[DropTarget], width: f32, fallback_y: f32) {
+    let anchor = targets
         .get(insert_index)
-        .map(|rect| rect.top())
-        .or_else(|| row_rects.last().map(|rect| rect.bottom()))
+        .map(|target| target.rect.top())
+        .or_else(|| targets.last().map(|target| target.rect.bottom()))
         .unwrap_or(fallback_y);
-    let left = row_rects
+    let left = targets
         .first()
-        .map(|rect| rect.left())
+        .map(|target| target.rect.left())
         .unwrap_or_else(|| ui.min_rect().left());
     ui.painter().line_segment(
         [pos2(left, anchor), pos2(left + width, anchor)],
