@@ -1362,7 +1362,7 @@ fn draw_signal_panel_row(
     if selected {
         ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 55, 85));
     } else if already_added {
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(55, 85, 35));
+        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(28, 42, 30));
     } else if response.hovered() {
         ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 35, 35));
     }
