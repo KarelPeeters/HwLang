@@ -263,6 +263,10 @@ impl eframe::App for WaveGuiApp {
                             &mut self.collapsed_hierarchy,
                             &[],
                         );
+                        if empty_panel_area_clicked(ui) {
+                            self.selected_modules.clear();
+                            self.last_selected_module = None;
+                        }
                     });
                 } else {
                 }
@@ -301,17 +305,7 @@ impl WaveGuiApp {
             ui.separator();
             ui.label("Time:");
             ui.add(egui::DragValue::new(&mut self.cursor_time).speed(1));
-            if let Some(secondary_cursor_time) = self.secondary_cursor_time {
-                ui.colored_label(
-                    Color32::from_rgb(250, 235, 130),
-                    format!(
-                        "Cursor2: {secondary_cursor_time}  Δt: {}",
-                        self.cursor_time.abs_diff(secondary_cursor_time)
-                    ),
-                );
-            } else {
-                ui.label("Alt-click/C over waves: Cursor2");
-            }
+            ui.label("Alt-click/C over waves: Cursor2");
             ui.label("Step N:");
             ui.add(egui::DragValue::new(&mut self.step_count).speed(1));
             if ui.button("Step").clicked() {
@@ -429,6 +423,12 @@ impl WaveGuiApp {
                     label_width,
                     visible_wave_width,
                 );
+                if let Some(secondary_cursor_time) = self.secondary_cursor_time {
+                    if draw_cursor_stats_header(ui, axis_rect, self.cursor_time, secondary_cursor_time) {
+                        self.secondary_cursor_time = None;
+                        self.alt_cursor_pending = None;
+                    }
+                }
                 ui.separator();
                 let pointer_pos = ui.input(|input| input.pointer.interact_pos());
                 let wave_gesture_active = ui.input(|input| {
@@ -917,6 +917,10 @@ impl WaveGuiApp {
         ui.separator();
 
         if self.selected_modules.is_empty() {
+            if empty_panel_area_clicked(ui) {
+                self.selected_signals.clear();
+                self.last_selected_signal = None;
+            }
             return;
         }
 
@@ -930,6 +934,10 @@ impl WaveGuiApp {
         let signal_ids = filtered_signal_ids(store, &self.selected_modules, self.show_ports, self.show_signals);
         self.selected_signals.retain(|signal_id| signal_ids.contains(signal_id));
         if signal_ids.is_empty() {
+            if empty_panel_area_clicked(ui) {
+                self.selected_signals.clear();
+                self.last_selected_signal = None;
+            }
             return;
         }
 
@@ -945,6 +953,10 @@ impl WaveGuiApp {
                     &mut self.last_selected_signal,
                     &mut self.dragging_signals,
                 );
+            }
+            if empty_panel_area_clicked(ui) {
+                self.selected_signals.clear();
+                self.last_selected_signal = None;
             }
         });
     }
@@ -1269,6 +1281,7 @@ const MIN_ROW_LABEL_WIDTH: f32 = 160.0;
 const MIN_PIXELS_PER_TIME: f32 = 1.0;
 const MAX_PIXELS_PER_TIME: f32 = 800.0;
 const CURSOR_STATS_COLUMN_WIDTH: f32 = 92.0;
+const CURSOR_COLOR: Color32 = Color32::from_rgb(240, 180, 80);
 const ROW_HEIGHT: f32 = 28.0;
 const TERMINAL_DROP_SLOT_SPACING: f32 = ROW_HEIGHT * 0.75;
 
@@ -1986,6 +1999,16 @@ fn update_subsection_selection(ui: &Ui, key: WaveRowKey, selected_subsections: &
     }
 }
 
+fn empty_panel_area_clicked(ui: &mut Ui) -> bool {
+    let rect = ui.available_rect_before_wrap();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return false;
+    }
+    ui.allocate_rect(rect, Sense::click())
+        .on_hover_cursor(egui::CursorIcon::Default)
+        .clicked()
+}
+
 fn update_signal_selection(
     ui: &Ui,
     visible_signals: &[usize],
@@ -2194,6 +2217,69 @@ fn draw_time_axis(
         t = t.saturating_add(tick_step);
     }
     rect
+}
+
+fn draw_cursor_stats_header(ui: &mut Ui, axis_rect: Rect, cursor_time: u64, secondary_cursor_time: u64) -> bool {
+    let rect = Rect::from_min_max(
+        pos2(axis_rect.left() - CURSOR_STATS_COLUMN_WIDTH, axis_rect.top()),
+        pos2(axis_rect.left(), axis_rect.bottom()),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(24, 24, 28));
+    painter.line_segment(
+        [rect.left_top(), rect.left_bottom()],
+        Stroke::new(1.0, Color32::from_gray(58)),
+    );
+    painter.line_segment(
+        [rect.right_top(), rect.right_bottom()],
+        Stroke::new(1.0, Color32::from_gray(58)),
+    );
+
+    let delete_rect = Rect::from_min_size(rect.min + vec2(2.0, 3.0), vec2(18.0, rect.height() - 6.0));
+    let delete_response = ui.interact(
+        delete_rect,
+        ui.make_persistent_id("delete-secondary-cursor"),
+        Sense::click(),
+    );
+    painter.rect_stroke(
+        delete_rect.shrink(1.0),
+        2.0,
+        Stroke::new(
+            1.0,
+            if delete_response.hovered() {
+                CURSOR_COLOR
+            } else {
+                Color32::from_gray(90)
+            },
+        ),
+    );
+    painter.text(
+        delete_rect.center(),
+        Align2::CENTER_CENTER,
+        "×",
+        FontId::proportional(13.0),
+        CURSOR_COLOR,
+    );
+
+    let delta = cursor_delta(cursor_time, secondary_cursor_time);
+    painter
+        .with_clip_rect(Rect::from_min_max(
+            pos2(delete_rect.right() + 3.0, rect.top()),
+            rect.right_bottom(),
+        ))
+        .text(
+            pos2(delete_rect.right() + 4.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            format!("t2:{secondary_cursor_time} Δ:{delta:+}"),
+            FontId::monospace(10.5),
+            CURSOR_COLOR,
+        );
+
+    delete_response.clicked()
+}
+
+fn cursor_delta(cursor_time: u64, secondary_cursor_time: u64) -> i128 {
+    secondary_cursor_time as i128 - cursor_time as i128
 }
 
 fn draw_group_row(
@@ -2736,7 +2822,7 @@ fn draw_signal_leaf(
             Align2::CENTER_CENTER,
             stats_text,
             FontId::monospace(12.0),
-            Color32::from_rgb(250, 235, 130),
+            CURSOR_COLOR,
         );
     }
     draw_waveform(
@@ -3047,7 +3133,7 @@ fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per
     if x >= rect.left() && x <= rect.right() {
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.5, Color32::from_rgb(240, 180, 80)),
+            Stroke::new(1.5, CURSOR_COLOR),
         );
     }
 }
@@ -3066,10 +3152,7 @@ fn draw_dotted_cursor(
     let mut y = rect.top();
     while y < rect.bottom() {
         let y_end = (y + 7.0).min(rect.bottom());
-        painter.line_segment(
-            [pos2(x, y), pos2(x, y_end)],
-            Stroke::new(2.5, Color32::from_rgb(255, 225, 80)),
-        );
+        painter.line_segment([pos2(x, y), pos2(x, y_end)], Stroke::new(2.5, CURSOR_COLOR));
         y += 12.0;
     }
 }
@@ -3678,5 +3761,11 @@ mod tests {
         assert_eq!(pixels_per_time, 112.5);
         assert_eq!(time_view_start, 10.0);
         assert!(zoom_to_selection(900.0, 20, 10, 10).is_none());
+    }
+
+    #[test]
+    fn cursor_delta_is_signed_second_minus_primary() {
+        assert_eq!(cursor_delta(10, 15), 5);
+        assert_eq!(cursor_delta(15, 10), -5);
     }
 }
