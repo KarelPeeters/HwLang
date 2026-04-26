@@ -57,8 +57,14 @@ struct WaveGuiApp {
 struct RowDrag {
     row_ids: BTreeSet<u64>,
     first_id: u64,
-    insert_index: usize,
-    depth: usize,
+    target_index: usize,
+    placement: Option<DropPlacement>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct DropPlacement {
+    row_index: usize,
+    parent: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -297,25 +303,9 @@ impl WaveGuiApp {
                 self.last_selected_row = None;
             }
         }
-        if ui.input(|input| input.pointer.any_released()) {
+        let pointer_released = ui.input(|input| input.pointer.any_released());
+        if pointer_released {
             self.cursor_dragging = false;
-            if let Some(row_drag) = self.row_drag.take() {
-                let visible_rows = visible_wave_rows(&self.rows);
-                let row_rects = visible_rows.iter().map(|_| Rect::NOTHING).collect::<Vec<_>>();
-                let drop_targets =
-                    drop_targets_for_depth_excluding(&visible_rows, &row_rects, row_drag.depth, &row_drag.row_ids);
-                let raw_insert_index =
-                    actual_insert_index_for_targets(&drop_targets, row_drag.insert_index, self.rows.len());
-                let (mut rows, insert_index) =
-                    drain_drag_rows_for_move(&mut self.rows, &row_drag.row_ids, raw_insert_index);
-                reparent_drag_roots_to_top_level(&mut rows, &row_drag.row_ids);
-                self.rows.splice(insert_index..insert_index, rows);
-                debug_assert!(group_blocks_are_contiguous(&self.rows));
-                self.selected_row = Some(row_drag.first_id);
-                self.selected_rows.clear();
-                self.selected_rows.insert(row_drag.first_id);
-                self.last_selected_row = Some(row_drag.first_id);
-            }
         } else if !ui.input(|input| input.pointer.primary_down()) && self.row_drag.is_none() {
             self.dragging_signals.clear();
         }
@@ -461,14 +451,14 @@ impl WaveGuiApp {
                 }
 
                 if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
-                    let drop_targets =
-                        drop_targets_for_depth_excluding(&visible_rows, &row_rects, row_drag.depth, &row_drag.row_ids);
-                    row_drag.insert_index = insertion_index_for_targets(pointer_pos, &drop_targets);
+                    let drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_drag.row_ids);
+                    row_drag.target_index = best_drop_target_index(pointer_pos, &drop_targets, label_width);
+                    row_drag.placement = drop_targets.get(row_drag.target_index).map(drop_placement);
                 }
-                let left_drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
-                let left_drag_insert_index = if !self.dragging_signals.is_empty() {
+                let left_drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &BTreeSet::new());
+                let left_drag_target_index = if !self.dragging_signals.is_empty() {
                     Some(pointer_pos.map_or(left_drop_targets.len(), |pos| {
-                        insertion_index_for_targets(pos, &left_drop_targets)
+                        best_drop_target_index(pos, &left_drop_targets, label_width)
                     }))
                 } else {
                     None
@@ -477,19 +467,16 @@ impl WaveGuiApp {
                     if start_index < self.rows.len() {
                         let row_ids = drag_row_ids(&self.rows, start_index, &self.selected_rows);
                         let first_id = self.rows[start_index].id;
-                        // Moving rows always extracts them to a top-level block. This keeps group
-                        // subtrees contiguous and makes it impossible to split a group by dropping
-                        // a moved row between its header and children.
-                        let drag_depth = 0;
-                        let drop_targets =
-                            drop_targets_for_depth_excluding(&visible_rows, &row_rects, drag_depth, &row_ids);
-                        let insert_index =
-                            pointer_pos.map_or(start_index, |pos| insertion_index_for_targets(pos, &drop_targets));
+                        let drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_ids);
+                        let target_index = pointer_pos.map_or(drop_targets.len(), |pos| {
+                            best_drop_target_index(pos, &drop_targets, label_width)
+                        });
+                        let placement = drop_targets.get(target_index).map(drop_placement);
                         self.row_drag = Some(RowDrag {
                             row_ids,
                             first_id,
-                            insert_index,
-                            depth: drag_depth,
+                            target_index,
+                            placement,
                         });
                     }
                 }
@@ -500,38 +487,55 @@ impl WaveGuiApp {
 
                 let fallback_insert_y = axis_rect.bottom() + 7.0;
                 if let Some(row_drag) = &self.row_drag {
-                    let preview_targets = drop_targets_for_depth(&visible_rows, &row_rects, row_drag.depth);
-                    let preview_insert_index = pointer_pos
-                        .map(|pos| insertion_index_for_targets(pos, &preview_targets))
-                        .unwrap_or(row_drag.insert_index);
+                    let preview_targets =
+                        drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_drag.row_ids);
                     draw_insert_line_for_targets(
                         ui,
-                        preview_insert_index,
+                        row_drag.target_index,
                         &preview_targets,
                         label_width + visible_wave_width,
                         fallback_insert_y,
                     );
-                } else if let Some(insert_index) = left_drag_insert_index {
+                } else if let Some(target_index) = left_drag_target_index {
                     draw_insert_line_for_targets(
                         ui,
-                        insert_index,
+                        target_index,
                         &left_drop_targets,
                         label_width + visible_wave_width,
                         fallback_insert_y,
                     );
                 }
-                if ui.input(|input| input.pointer.any_released()) && !self.dragging_signals.is_empty() {
+                if pointer_released && self.row_drag.is_some() {
+                    if let Some(row_drag) = self.row_drag.take() {
+                        let raw_insert_index = row_drag
+                            .placement
+                            .map(|placement| placement.row_index)
+                            .unwrap_or(self.rows.len());
+                        let new_parent = row_drag.placement.and_then(|placement| placement.parent);
+                        let (mut rows, insert_index) =
+                            drain_drag_rows_for_move(&mut self.rows, &row_drag.row_ids, raw_insert_index);
+                        reparent_drag_roots(&mut rows, &row_drag.row_ids, new_parent);
+                        self.rows.splice(insert_index..insert_index, rows);
+                        debug_assert!(group_blocks_are_contiguous(&self.rows));
+                        self.selected_row = Some(row_drag.first_id);
+                        self.selected_rows.clear();
+                        self.selected_rows.insert(row_drag.first_id);
+                        self.last_selected_row = Some(row_drag.first_id);
+                    }
+                } else if pointer_released && !self.dragging_signals.is_empty() {
                     if ui.rect_contains_pointer(ui.max_rect()) {
                         let visible_rows = visible_wave_rows(&self.rows);
-                        let drop_targets = drop_targets_for_depth(&visible_rows, &row_rects, 0);
-                        let visible_insert_index = left_drag_insert_index.unwrap_or(drop_targets.len());
-                        let insert_index =
-                            actual_insert_index_for_targets(&drop_targets, visible_insert_index, self.rows.len());
+                        let drop_targets =
+                            drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &BTreeSet::new());
+                        let target =
+                            left_drag_target_index.and_then(|target_index| drop_targets.get(target_index).copied());
+                        let insert_index = target.map(|target| target.row_index).unwrap_or(self.rows.len());
+                        let parent = target.and_then(|target| target.parent);
                         let new_rows = self
                             .dragging_signals
                             .clone()
                             .into_iter()
-                            .map(|signal_id| self.make_signal_row(signal_id, None))
+                            .map(|signal_id| self.make_signal_row(signal_id, parent))
                             .collect::<Vec<_>>();
                         let first_added = new_rows.first().map(|row| row.id);
                         self.rows.splice(insert_index..insert_index, new_rows);
@@ -824,6 +828,9 @@ struct VisibleWaveRow {
 #[derive(Clone, Copy)]
 struct DropTarget {
     row_index: usize,
+    parent: Option<u64>,
+    depth: usize,
+    y: f32,
     rect: Rect,
 }
 
@@ -836,6 +843,7 @@ enum VisibleWaveRowKind {
 const DEFAULT_ROW_LABEL_WIDTH: f32 = 360.0;
 const MIN_ROW_LABEL_WIDTH: f32 = 160.0;
 const ROW_HEIGHT: f32 = 28.0;
+const TERMINAL_DROP_SLOT_SPACING: f32 = ROW_HEIGHT * 0.75;
 
 fn draw_hierarchy(
     ui: &mut Ui,
@@ -1153,45 +1161,219 @@ fn included_row_ids(
         .collect()
 }
 
-fn drop_targets_for_depth(visible_rows: &[VisibleWaveRow], row_rects: &[Rect], max_depth: usize) -> Vec<DropTarget> {
-    drop_targets_for_depth_excluding(visible_rows, row_rects, max_depth, &BTreeSet::new())
-}
-
-fn drop_targets_for_depth_excluding(
+fn drop_targets_for_rows(
+    rows: &[WaveRow],
     visible_rows: &[VisibleWaveRow],
     row_rects: &[Rect],
-    max_depth: usize,
     excluded_ids: &BTreeSet<u64>,
 ) -> Vec<DropTarget> {
+    let row_parents = row_parent_map(rows);
+    let visible_by_row_index = visible_rows
+        .iter()
+        .enumerate()
+        .map(|(visible_index, row)| (row.row_index, visible_index))
+        .collect::<BTreeMap<_, _>>();
     let mut targets = Vec::new();
-    for (index, row) in visible_rows.iter().enumerate() {
-        if row.depth > max_depth || excluded_ids.contains(&row.row_id) {
+
+    push_child_slot_targets(
+        rows,
+        visible_rows,
+        row_rects,
+        &visible_by_row_index,
+        &row_parents,
+        excluded_ids,
+        None,
+        0,
+        &mut targets,
+    );
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if excluded_ids.contains(&row.id) || !matches!(row.kind, WaveRowKind::Group { .. }) {
             continue;
         }
-        let mut rect = row_rects[index];
-        let mut next_index = index + 1;
-        while let Some(next_row) = visible_rows.get(next_index) {
-            if next_row.depth <= row.depth {
-                break;
+        let depth = group_depth(Some(row.id), &row_parents);
+        if is_group_collapsed(row) {
+            if let Some(visible_index) = visible_by_row_index.get(&row_index).copied() {
+                let rect = row_rects[visible_index];
+                targets.push(DropTarget {
+                    row_index: row_block_end_index(rows, row_index, &row_parents),
+                    parent: Some(row.id),
+                    depth,
+                    y: rect.bottom(),
+                    rect,
+                });
             }
-            if !excluded_ids.contains(&next_row.row_id) {
-                rect = rect.union(row_rects[next_index]);
-            }
-            next_index += 1;
+        } else {
+            push_child_slot_targets(
+                rows,
+                visible_rows,
+                row_rects,
+                &visible_by_row_index,
+                &row_parents,
+                excluded_ids,
+                Some(row.id),
+                depth,
+                &mut targets,
+            );
         }
-        targets.push(DropTarget {
-            row_index: row.row_index,
-            rect,
-        });
     }
+
+    separate_terminal_drop_targets(&mut targets, rows.len());
+    targets.sort_by(|a, b| {
+        a.y.total_cmp(&b.y)
+            .then_with(|| b.depth.cmp(&a.depth))
+            .then_with(|| a.row_index.cmp(&b.row_index))
+    });
     targets
 }
 
-fn actual_insert_index_for_targets(targets: &[DropTarget], insert_index: usize, fallback: usize) -> usize {
-    targets
-        .get(insert_index)
-        .map(|target| target.row_index)
-        .unwrap_or(fallback)
+fn push_child_slot_targets(
+    rows: &[WaveRow],
+    visible_rows: &[VisibleWaveRow],
+    row_rects: &[Rect],
+    visible_by_row_index: &BTreeMap<usize, usize>,
+    row_parents: &BTreeMap<u64, Option<u64>>,
+    excluded_ids: &BTreeSet<u64>,
+    parent: Option<u64>,
+    depth: usize,
+    targets: &mut Vec<DropTarget>,
+) {
+    let child_indices = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(row_index, row)| {
+            (row.parent_id() == parent && !excluded_ids.contains(&row.id)).then_some(row_index)
+        })
+        .collect::<Vec<_>>();
+
+    if child_indices.is_empty() {
+        if let Some(parent_id) = parent {
+            if let Some(parent_index) = rows.iter().position(|row| row.id == parent_id) {
+                if let Some(visible_index) = visible_by_row_index.get(&parent_index).copied() {
+                    let rect = row_rects[visible_index];
+                    targets.push(DropTarget {
+                        row_index: parent_index + 1,
+                        parent,
+                        depth,
+                        y: rect.bottom(),
+                        rect,
+                    });
+                }
+            }
+        }
+        return;
+    }
+
+    if let Some(first_child_index) = child_indices.first().copied() {
+        if let Some(rect) = visible_block_rect(
+            rows,
+            visible_rows,
+            row_rects,
+            visible_by_row_index,
+            first_child_index,
+            excluded_ids,
+        ) {
+            targets.push(DropTarget {
+                row_index: first_child_index,
+                parent,
+                depth,
+                y: rect.top(),
+                rect,
+            });
+        }
+    }
+
+    for child_index in child_indices.iter().copied() {
+        if let Some(rect) = visible_block_rect(
+            rows,
+            visible_rows,
+            row_rects,
+            visible_by_row_index,
+            child_index,
+            excluded_ids,
+        ) {
+            targets.push(DropTarget {
+                row_index: row_block_end_index(rows, child_index, row_parents),
+                parent,
+                depth,
+                y: rect.bottom(),
+                rect,
+            });
+        }
+    }
+}
+
+fn separate_terminal_drop_targets(targets: &mut [DropTarget], terminal_row_index: usize) {
+    let Some(max_depth) = targets
+        .iter()
+        .filter_map(|target| (target.row_index == terminal_row_index).then_some(target.depth))
+        .max()
+    else {
+        return;
+    };
+
+    for target in targets
+        .iter_mut()
+        .filter(|target| target.row_index == terminal_row_index)
+    {
+        let offset = (max_depth - target.depth) as f32 * TERMINAL_DROP_SLOT_SPACING;
+        if offset == 0.0 {
+            continue;
+        }
+        target.y += offset;
+        target.rect = Rect::from_min_max(
+            pos2(target.rect.left(), target.y - ROW_HEIGHT / 2.0),
+            pos2(target.rect.right(), target.y + ROW_HEIGHT / 2.0),
+        );
+    }
+}
+
+fn visible_block_rect(
+    rows: &[WaveRow],
+    visible_rows: &[VisibleWaveRow],
+    row_rects: &[Rect],
+    visible_by_row_index: &BTreeMap<usize, usize>,
+    row_index: usize,
+    excluded_ids: &BTreeSet<u64>,
+) -> Option<Rect> {
+    let visible_index = visible_by_row_index.get(&row_index).copied()?;
+    let depth = visible_rows[visible_index].depth;
+    let mut rect = None;
+    for (index, visible_row) in visible_rows.iter().enumerate().skip(visible_index) {
+        if index > visible_index && visible_row.depth <= depth {
+            break;
+        }
+        if !excluded_ids.contains(&visible_row.row_id) {
+            rect = Some(rect.map_or(row_rects[index], |rect: Rect| rect.union(row_rects[index])));
+        }
+    }
+    if rect.is_none() && !excluded_ids.contains(&rows[row_index].id) {
+        rect = visible_by_row_index
+            .get(&row_index)
+            .copied()
+            .map(|visible_index| row_rects[visible_index]);
+    }
+    rect
+}
+
+fn row_block_end_index(rows: &[WaveRow], row_index: usize, row_parents: &BTreeMap<u64, Option<u64>>) -> usize {
+    let row_id = rows[row_index].id;
+    let mut end = row_index + 1;
+    while end < rows.len() && is_descendant_of(rows[end].id, row_id, row_parents) {
+        end += 1;
+    }
+    end
+}
+
+fn is_group_collapsed(row: &WaveRow) -> bool {
+    matches!(row.kind, WaveRowKind::Group { collapsed: true, .. })
+}
+
+fn drop_placement(target: &DropTarget) -> DropPlacement {
+    DropPlacement {
+        row_index: target.row_index,
+        parent: target.parent,
+    }
 }
 
 fn drag_row_ids(rows: &[WaveRow], start_index: usize, selected_rows: &BTreeSet<u64>) -> BTreeSet<u64> {
@@ -1239,10 +1421,10 @@ fn drain_drag_rows_for_move(
     (moved_rows, insert_index.min(rows.len()))
 }
 
-fn reparent_drag_roots_to_top_level(rows: &mut [WaveRow], row_ids: &BTreeSet<u64>) {
+fn reparent_drag_roots(rows: &mut [WaveRow], row_ids: &BTreeSet<u64>, new_parent: Option<u64>) {
     for row in rows {
         if row.parent_id().is_none_or(|parent| !row_ids.contains(&parent)) {
-            row.set_parent_id(None);
+            row.set_parent_id(new_parent);
         }
     }
 }
@@ -2105,24 +2287,60 @@ fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per
     }
 }
 
-fn insertion_index_for_targets(pointer_pos: egui::Pos2, targets: &[DropTarget]) -> usize {
+fn best_drop_target_index(pointer_pos: egui::Pos2, targets: &[DropTarget], label_width: f32) -> usize {
     targets
         .iter()
-        .position(|target| pointer_pos.y < target.rect.center().y)
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            drop_target_score(pointer_pos, a, label_width)
+                .total_cmp(&drop_target_score(pointer_pos, b, label_width))
+                .then_with(|| drop_target_depth_tiebreak(pointer_pos, a, b, label_width))
+        })
+        .map(|(index, _)| index)
         .unwrap_or(targets.len())
 }
 
-fn draw_insert_line_for_targets(ui: &Ui, insert_index: usize, targets: &[DropTarget], width: f32, fallback_y: f32) {
-    let anchor = targets
-        .get(insert_index)
-        .map(|target| target.rect.top())
-        .or_else(|| targets.last().map(|target| target.rect.bottom()))
-        .unwrap_or(fallback_y);
-    let left = targets
-        .first()
+fn drop_target_score(pointer_pos: egui::Pos2, target: &DropTarget, label_width: f32) -> f32 {
+    let y_score = (pointer_pos.y - target.y).abs();
+    let label_right = target.rect.left() + label_width;
+    let x_score = if pointer_pos.x <= label_right {
+        let target_x = target.rect.left() + 28.0 + target.depth as f32 * 18.0;
+        (pointer_pos.x - target_x).abs().min(120.0) * 0.35
+    } else {
+        0.0
+    };
+    y_score + x_score
+}
+
+fn drop_target_depth_tiebreak(
+    pointer_pos: egui::Pos2,
+    a: &DropTarget,
+    b: &DropTarget,
+    label_width: f32,
+) -> std::cmp::Ordering {
+    let label_right = a.rect.left() + label_width;
+    if pointer_pos.x <= label_right {
+        b.depth.cmp(&a.depth)
+    } else {
+        a.depth.cmp(&b.depth)
+    }
+}
+
+fn draw_insert_line_for_targets(ui: &Ui, target_index: usize, targets: &[DropTarget], width: f32, fallback_y: f32) {
+    let target = targets.get(target_index);
+    let anchor = target
+        .map(|target| target.y)
+        .unwrap_or_else(|| targets.last().map(|target| target.y).unwrap_or(fallback_y));
+    let base_left = target
+        .or_else(|| targets.last())
         .map(|target| target.rect.left())
         .unwrap_or_else(|| ui.min_rect().left());
-    let right = left + width;
+    let depth = target
+        .or_else(|| targets.last())
+        .map(|target| target.depth)
+        .unwrap_or(0);
+    let left = base_left + depth as f32 * 18.0;
+    let right = base_left + width;
     let painter = ui.ctx().layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         ui.make_persistent_id("insert-preview"),
@@ -2350,4 +2568,189 @@ fn get_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
 
 fn get_bit(bits: &[u8], bit: usize) -> bool {
     bits.get(bit / 8).is_some_and(|byte| ((byte >> (bit % 8)) & 1) != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signal(id: u64, parent: Option<u64>) -> WaveRow {
+        WaveRow {
+            id,
+            kind: WaveRowKind::Signal {
+                signal_id: id as usize,
+                parent,
+            },
+        }
+    }
+
+    fn group(id: u64, parent: Option<u64>, collapsed: bool) -> WaveRow {
+        WaveRow {
+            id,
+            kind: WaveRowKind::Group {
+                name: format!("g{id}"),
+                collapsed,
+                parent,
+                editing: false,
+            },
+        }
+    }
+
+    fn visible_rects(visible_rows: &[VisibleWaveRow]) -> Vec<Rect> {
+        visible_rows
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Rect::from_min_size(pos2(0.0, index as f32 * ROW_HEIGHT), vec2(400.0, ROW_HEIGHT)))
+            .collect()
+    }
+
+    fn placements(targets: &[DropTarget]) -> BTreeSet<(Option<u64>, usize)> {
+        targets.iter().map(|target| (target.parent, target.row_index)).collect()
+    }
+
+    fn move_rows_to(rows: &mut Vec<WaveRow>, row_ids: BTreeSet<u64>, row_index: usize, parent: Option<u64>) {
+        let (mut moved_rows, insert_index) = drain_drag_rows_for_move(rows, &row_ids, row_index);
+        reparent_drag_roots(&mut moved_rows, &row_ids, parent);
+        rows.splice(insert_index..insert_index, moved_rows);
+    }
+
+    #[test]
+    fn drop_targets_cover_group_boundaries_and_empty_groups() {
+        let rows = vec![
+            group(1, None, false),
+            signal(2, Some(1)),
+            signal(3, Some(1)),
+            group(4, None, false),
+            signal(5, None),
+        ];
+        let visible_rows = visible_wave_rows(&rows);
+        let rects = visible_rects(&visible_rows);
+        let targets = drop_targets_for_rows(&rows, &visible_rows, &rects, &BTreeSet::new());
+        let placements = placements(&targets);
+
+        assert!(placements.contains(&(None, 0)), "can drop right before a group");
+        assert!(placements.contains(&(Some(1), 1)), "can drop at the start of a group");
+        assert!(
+            placements.contains(&(Some(1), 2)),
+            "can drop between rows inside a group"
+        );
+        assert!(placements.contains(&(Some(1), 3)), "can drop at the end of a group");
+        assert!(placements.contains(&(None, 3)), "can drop right after a group");
+        assert!(placements.contains(&(Some(4), 4)), "can drop into an empty group");
+        assert!(placements.contains(&(None, 4)), "can drop after an empty group");
+        assert!(placements.contains(&(None, 5)), "can drop at the end of the top level");
+    }
+
+    #[test]
+    fn empty_group_target_uses_pointer_indent_to_choose_inside_or_after() {
+        let rows = vec![group(1, None, false), signal(2, None)];
+        let visible_rows = visible_wave_rows(&rows);
+        let rects = visible_rects(&visible_rows);
+        let targets = drop_targets_for_rows(&rows, &visible_rows, &rects, &BTreeSet::new());
+
+        let inside_index = best_drop_target_index(pos2(50.0, ROW_HEIGHT), &targets, DEFAULT_ROW_LABEL_WIDTH);
+        let outside_index = best_drop_target_index(pos2(25.0, ROW_HEIGHT), &targets, DEFAULT_ROW_LABEL_WIDTH);
+
+        assert_eq!(targets[inside_index].parent, Some(1));
+        assert_eq!(targets[inside_index].row_index, 1);
+        assert_eq!(targets[outside_index].parent, None);
+        assert_eq!(targets[outside_index].row_index, 1);
+    }
+
+    #[test]
+    fn final_empty_group_has_reachable_inside_and_after_targets() {
+        let rows = vec![group(1, None, false)];
+        let visible_rows = visible_wave_rows(&rows);
+        let rects = visible_rects(&visible_rows);
+        let targets = drop_targets_for_rows(&rows, &visible_rows, &rects, &BTreeSet::new());
+
+        let inside = targets
+            .iter()
+            .find(|target| target.parent == Some(1) && target.row_index == rows.len())
+            .expect("missing drop target inside final empty group");
+        let after = targets
+            .iter()
+            .find(|target| target.parent.is_none() && target.row_index == rows.len())
+            .expect("missing drop target after final empty group");
+        assert!(
+            after.y > inside.y,
+            "after-list target must be below inside-group target"
+        );
+
+        let inside_index = best_drop_target_index(pos2(50.0, inside.y), &targets, DEFAULT_ROW_LABEL_WIDTH);
+        let after_index = best_drop_target_index(
+            pos2(DEFAULT_ROW_LABEL_WIDTH + 80.0, after.y),
+            &targets,
+            DEFAULT_ROW_LABEL_WIDTH,
+        );
+
+        assert_eq!(targets[inside_index].parent, Some(1));
+        assert_eq!(targets[after_index].parent, None);
+    }
+
+    #[test]
+    fn wave_area_tiebreak_prefers_outside_when_boundary_is_shared() {
+        let rows = vec![group(1, None, false), signal(2, None)];
+        let visible_rows = visible_wave_rows(&rows);
+        let rects = visible_rects(&visible_rows);
+        let targets = drop_targets_for_rows(&rows, &visible_rows, &rects, &BTreeSet::new());
+        let shared_boundary_y = rects[0].bottom();
+
+        let target_index = best_drop_target_index(
+            pos2(DEFAULT_ROW_LABEL_WIDTH + 80.0, shared_boundary_y),
+            &targets,
+            DEFAULT_ROW_LABEL_WIDTH,
+        );
+
+        assert_eq!(targets[target_index].parent, None);
+        assert_eq!(targets[target_index].row_index, 1);
+    }
+
+    #[test]
+    fn moving_row_into_group_reparents_only_drag_roots() {
+        let mut rows = vec![group(1, None, false), signal(2, None), signal(3, Some(1))];
+        let row_ids = BTreeSet::from([2]);
+        let (mut moved_rows, insert_index) = drain_drag_rows_for_move(&mut rows, &row_ids, 1);
+        reparent_drag_roots(&mut moved_rows, &row_ids, Some(1));
+        rows.splice(insert_index..insert_index, moved_rows);
+
+        assert_eq!(rows[1].parent_id(), Some(1));
+        assert!(group_blocks_are_contiguous(&rows));
+    }
+
+    #[test]
+    fn moving_rows_to_every_group_boundary_keeps_groups_contiguous() {
+        for (row_index, parent, expected_order, expected_parent) in [
+            (0, None, vec![5, 1, 2, 3, 4], None),
+            (1, Some(1), vec![1, 5, 2, 3, 4], Some(1)),
+            (2, Some(1), vec![1, 2, 5, 3, 4], Some(1)),
+            (3, Some(1), vec![1, 2, 3, 5, 4], Some(1)),
+            (3, None, vec![1, 2, 3, 5, 4], None),
+            (4, Some(4), vec![1, 2, 3, 4, 5], Some(4)),
+            (4, None, vec![1, 2, 3, 4, 5], None),
+        ] {
+            let mut rows = vec![
+                group(1, None, false),
+                signal(2, Some(1)),
+                signal(3, Some(1)),
+                group(4, None, false),
+                signal(5, None),
+            ];
+            move_rows_to(&mut rows, BTreeSet::from([5]), row_index, parent);
+            assert_eq!(
+                rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+                expected_order,
+                "unexpected order for target ({parent:?}, {row_index})"
+            );
+            assert_eq!(
+                rows.iter().find(|row| row.id == 5).and_then(WaveRow::parent_id),
+                expected_parent,
+                "unexpected parent for target ({parent:?}, {row_index})"
+            );
+            assert!(
+                group_blocks_are_contiguous(&rows),
+                "group blocks split for target ({parent:?}, {row_index})"
+            );
+        }
+    }
 }
