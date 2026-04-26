@@ -45,10 +45,16 @@ struct WaveGuiApp {
     last_selected_signal: Option<usize>,
     last_group_name_click: Option<(u64, f64)>,
     row_drag: Option<RowDrag>,
+    zoom_drag: Option<ZoomDrag>,
     cursor_dragging: bool,
+    alt_cursor_pending: Option<u64>,
+    secondary_cursor_time: Option<u64>,
     dragging_signals: Vec<usize>,
     collapsed_hierarchy: BTreeSet<String>,
     expanded_rows: BTreeSet<WaveRowKey>,
+    selected_subsections: BTreeSet<WaveRowKey>,
+    display_options: BTreeMap<WaveRowKey, WaveDisplayOptions>,
+    context_menu: Option<WaveContextMenu>,
     show_ports: bool,
     show_signals: bool,
 }
@@ -65,6 +71,54 @@ struct RowDrag {
 struct DropPlacement {
     row_index: usize,
     parent: Option<u64>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ZoomDrag {
+    start_time: u64,
+    current_time: u64,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct WaveContextMenu {
+    pos: egui::Pos2,
+    key: Option<WaveRowKey>,
+    placement: DropPlacement,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum WaveRadix {
+    Bin,
+    Hex,
+    Dec,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum WaveRenderMode {
+    Digital,
+    Analog,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct WaveDisplayOptions {
+    radix: WaveRadix,
+    render_mode: WaveRenderMode,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+struct EdgeCounts {
+    posedges: usize,
+    negedges: usize,
+    toggles: usize,
+}
+
+impl Default for WaveDisplayOptions {
+    fn default() -> Self {
+        Self {
+            radix: WaveRadix::Dec,
+            render_mode: WaveRenderMode::Digital,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,13 +139,16 @@ enum WaveRowKind {
         parent: Option<u64>,
         editing: bool,
     },
+    Spacer {
+        parent: Option<u64>,
+    },
 }
 
 impl WaveRow {
     fn signal_id(&self) -> Option<usize> {
         match self.kind {
             WaveRowKind::Signal { signal_id, .. } => Some(signal_id),
-            WaveRowKind::Group { .. } => None,
+            WaveRowKind::Group { .. } | WaveRowKind::Spacer { .. } => None,
         }
     }
 
@@ -99,12 +156,15 @@ impl WaveRow {
         match self.kind {
             WaveRowKind::Signal { parent, .. } => parent,
             WaveRowKind::Group { parent, .. } => parent,
+            WaveRowKind::Spacer { parent } => parent,
         }
     }
 
     fn set_parent_id(&mut self, new_parent: Option<u64>) {
         match &mut self.kind {
-            WaveRowKind::Signal { parent, .. } | WaveRowKind::Group { parent, .. } => *parent = new_parent,
+            WaveRowKind::Signal { parent, .. } | WaveRowKind::Group { parent, .. } | WaveRowKind::Spacer { parent } => {
+                *parent = new_parent
+            }
         }
     }
 }
@@ -141,10 +201,16 @@ impl Default for WaveGuiApp {
             last_selected_signal: None,
             last_group_name_click: None,
             row_drag: None,
+            zoom_drag: None,
             cursor_dragging: false,
+            alt_cursor_pending: None,
+            secondary_cursor_time: None,
             dragging_signals: Vec::new(),
             collapsed_hierarchy: BTreeSet::new(),
             expanded_rows: BTreeSet::new(),
+            selected_subsections: BTreeSet::new(),
+            display_options: BTreeMap::new(),
+            context_menu: None,
             show_ports: true,
             show_signals: true,
         }
@@ -228,10 +294,24 @@ impl WaveGuiApp {
             }
             ui.separator();
             ui.label("Zoom:");
-            ui.add(egui::Slider::new(&mut self.pixels_per_time, 1.0..=80.0).logarithmic(true));
+            ui.add(
+                egui::Slider::new(&mut self.pixels_per_time, MIN_PIXELS_PER_TIME..=MAX_PIXELS_PER_TIME)
+                    .logarithmic(true),
+            );
             ui.separator();
             ui.label("Time:");
             ui.add(egui::DragValue::new(&mut self.cursor_time).speed(1));
+            if let Some(secondary_cursor_time) = self.secondary_cursor_time {
+                ui.colored_label(
+                    Color32::from_rgb(250, 235, 130),
+                    format!(
+                        "Cursor2: {secondary_cursor_time}  Δt: {}",
+                        self.cursor_time.abs_diff(secondary_cursor_time)
+                    ),
+                );
+            } else {
+                ui.label("Alt-click/C over waves: Cursor2");
+            }
             ui.label("Step N:");
             ui.add(egui::DragValue::new(&mut self.step_count).speed(1));
             if ui.button("Step").clicked() {
@@ -263,9 +343,9 @@ impl WaveGuiApp {
         if zoom_delta != 0.0 {
             let factor = (1.0_f32 + zoom_delta.abs() / 240.0).clamp(1.02, 2.0);
             if zoom_delta > 0.0 {
-                self.pixels_per_time = (self.pixels_per_time * factor).min(80.0);
+                self.pixels_per_time = (self.pixels_per_time * factor).min(MAX_PIXELS_PER_TIME);
             } else {
-                self.pixels_per_time = (self.pixels_per_time / factor).max(1.0);
+                self.pixels_per_time = (self.pixels_per_time / factor).max(MIN_PIXELS_PER_TIME);
             }
         }
 
@@ -292,12 +372,21 @@ impl WaveGuiApp {
             self.create_group_from_selection();
             debug_assert!(group_blocks_are_contiguous(&self.rows));
         }
+        if !text_editing
+            && ui.input(|input| input.key_pressed(Key::P) && (input.modifiers.ctrl || input.modifiers.command))
+        {
+            self.add_spacers_below_selected_signals();
+        }
         if ui.input(|input| input.key_pressed(Key::Delete)) {
             if !self.selected_rows.is_empty() {
                 delete_selected_rows(&mut self.rows, &self.selected_rows);
                 debug_assert!(group_blocks_are_contiguous(&self.rows));
                 self.expanded_rows
                     .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
+                self.selected_subsections
+                    .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
+                self.display_options
+                    .retain(|key, _| self.rows.iter().any(|row| row.id == key.row_id));
                 self.selected_rows.clear();
                 self.selected_row = None;
                 self.last_selected_row = None;
@@ -342,8 +431,17 @@ impl WaveGuiApp {
                 );
                 ui.separator();
                 let pointer_pos = ui.input(|input| input.pointer.interact_pos());
+                let wave_gesture_active = ui.input(|input| {
+                    input.modifiers.shift
+                        && input.pointer.primary_down()
+                        && input
+                            .pointer
+                            .press_origin()
+                            .is_some_and(|origin| origin.x >= axis_rect.left())
+                });
                 let mut start_row_drag: Option<(usize, usize)> = None;
                 let mut row_rects = Vec::new();
+                let mut row_context_keys = Vec::new();
                 let mut wave_bottom = axis_rect.bottom();
                 let visible_rows = visible_wave_rows(&self.rows);
                 for (visible_index, visible_row) in visible_rows.iter().enumerate() {
@@ -376,7 +474,8 @@ impl WaveGuiApp {
                                     &mut self.last_selected_row,
                                 );
                             }
-                            if (result.label_drag_started || group_pointer_drag_started(ui, result.rect))
+                            if !wave_gesture_active
+                                && (result.label_drag_started || group_pointer_drag_started(ui, result.rect))
                                 && self.row_drag.is_none()
                             {
                                 preserve_or_select_dragged_row(
@@ -388,6 +487,7 @@ impl WaveGuiApp {
                                 start_row_drag = Some((visible_row.row_index, visible_row.depth));
                             }
                             row_rects.push(result.rect);
+                            row_context_keys.push(result.context_key);
                             wave_bottom = wave_bottom.max(result.rect.bottom());
                         }
                         VisibleWaveRowKind::Signal { signal_id } => {
@@ -405,7 +505,10 @@ impl WaveGuiApp {
                                     row_selected,
                                     dragging,
                                     &self.expanded_rows,
+                                    &self.selected_subsections,
+                                    &self.display_options,
                                     self.cursor_time,
+                                    self.secondary_cursor_time,
                                     self.pixels_per_time,
                                     self.time_view_start,
                                     max_time,
@@ -426,15 +529,32 @@ impl WaveGuiApp {
                                 if let Some(time) = result.cursor_time {
                                     self.cursor_time = time;
                                 }
+                                if let Some(time) = result.secondary_cursor_time {
+                                    self.secondary_cursor_time = Some(time);
+                                }
                                 if result.cursor_drag_started {
                                     self.cursor_dragging = true;
+                                }
+                                if let Some(key) = result.clicked_key {
+                                    update_wave_row_selection(
+                                        ui,
+                                        visible_index,
+                                        &visible_rows,
+                                        &mut self.selected_rows,
+                                        &mut self.selected_row,
+                                        &mut self.last_selected_row,
+                                    );
+                                    update_subsection_selection(ui, key, &mut self.selected_subsections);
+                                } else if result.primary.clicked {
+                                    self.selected_subsections.clear();
                                 }
                                 for key in result.expand_toggles {
                                     if !self.expanded_rows.remove(&key) {
                                         self.expanded_rows.insert(key);
                                     }
                                 }
-                                if result.primary.label_drag_started && self.row_drag.is_none() {
+                                if !wave_gesture_active && result.primary.label_drag_started && self.row_drag.is_none()
+                                {
                                     preserve_or_select_dragged_row(
                                         visible_row.row_id,
                                         &mut self.selected_rows,
@@ -444,9 +564,70 @@ impl WaveGuiApp {
                                     start_row_drag = Some((visible_row.row_index, visible_row.depth));
                                 }
                                 row_rects.push(result.all_rect);
+                                row_context_keys.push(result.context_key);
                                 wave_bottom = wave_bottom.max(result.all_rect.bottom());
                             }
                         }
+                        VisibleWaveRowKind::Spacer => {
+                            let dragging = self
+                                .row_drag
+                                .as_ref()
+                                .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
+                            let result = draw_spacer_row(
+                                ui,
+                                visible_row.row_id,
+                                visible_index,
+                                row_selected,
+                                dragging,
+                                visible_row.depth,
+                                label_width,
+                                visible_wave_width,
+                            );
+                            if result.clicked {
+                                update_wave_row_selection(
+                                    ui,
+                                    visible_index,
+                                    &visible_rows,
+                                    &mut self.selected_rows,
+                                    &mut self.selected_row,
+                                    &mut self.last_selected_row,
+                                );
+                            }
+                            if !wave_gesture_active && result.label_drag_started && self.row_drag.is_none() {
+                                preserve_or_select_dragged_row(
+                                    visible_row.row_id,
+                                    &mut self.selected_rows,
+                                    &mut self.selected_row,
+                                    &mut self.last_selected_row,
+                                );
+                                start_row_drag = Some((visible_row.row_index, visible_row.depth));
+                            }
+                            row_rects.push(result.rect);
+                            row_context_keys.push(result.context_key);
+                            wave_bottom = wave_bottom.max(result.rect.bottom());
+                        }
+                    }
+                }
+
+                if let Some(pointer_pos) = pointer_pos {
+                    if ui.input(|input| input.pointer.secondary_clicked()) {
+                        let row_hit = row_rects.iter().position(|rect| rect.contains(pointer_pos));
+                        let placement = row_hit
+                            .map(|index| placement_after_row(&self.rows, visible_rows[index].row_index))
+                            .unwrap_or_else(|| {
+                                let targets =
+                                    drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &BTreeSet::new());
+                                let index = best_drop_target_index(pointer_pos, &targets, label_width);
+                                targets.get(index).map(drop_placement).unwrap_or(DropPlacement {
+                                    row_index: self.rows.len(),
+                                    parent: None,
+                                })
+                            });
+                        self.context_menu = Some(WaveContextMenu {
+                            pos: pointer_pos,
+                            key: row_hit.and_then(|index| row_context_keys[index]),
+                            placement,
+                        });
                     }
                 }
 
@@ -570,18 +751,99 @@ impl WaveGuiApp {
                     ],
                     Stroke::new(1.0, Color32::DARK_GRAY),
                 );
-                if self.cursor_dragging {
-                    if let Some(pointer_pos) = pointer_pos {
-                        if ui.input(|input| input.pointer.primary_down()) {
-                            self.cursor_time = time_from_pointer(
-                                axis_rect,
-                                pointer_pos,
-                                self.pixels_per_time,
-                                self.time_view_start,
-                                max_time,
-                            );
+                let (alt_down, primary_down, primary_pressed, primary_released, shift_down) = ui.input(|input| {
+                    (
+                        input.modifiers.alt,
+                        input.pointer.primary_down(),
+                        input.pointer.primary_pressed(),
+                        input.pointer.primary_released(),
+                        input.modifiers.shift,
+                    )
+                });
+                if let Some(pointer_pos) = pointer_pos {
+                    let alt_cursor_time = time_from_pointer(
+                        axis_rect,
+                        pointer_pos,
+                        self.pixels_per_time,
+                        self.time_view_start,
+                        max_time,
+                    );
+                    if alt_down && primary_down && cursor_span.contains(pointer_pos) {
+                        self.alt_cursor_pending = Some(alt_cursor_time);
+                        self.secondary_cursor_time = Some(alt_cursor_time);
+                    }
+                    if alt_down && primary_pressed && cursor_span.contains(pointer_pos) {
+                        self.secondary_cursor_time = Some(alt_cursor_time);
+                    }
+                    if primary_released {
+                        if let Some(time) = self.alt_cursor_pending.take() {
+                            self.secondary_cursor_time = Some(time);
                         }
                     }
+                    if ui.input(|input| input.key_pressed(Key::C)) && cursor_span.contains(pointer_pos) {
+                        self.secondary_cursor_time = Some(alt_cursor_time);
+                    }
+                }
+                if let Some(pointer_pos) = pointer_pos {
+                    if primary_down
+                        && !shift_down
+                        && !alt_down
+                        && self.row_drag.is_none()
+                        && pointer_pos.x >= axis_rect.left()
+                        && cursor_span.contains(pointer_pos)
+                    {
+                        self.cursor_dragging = true;
+                        self.cursor_time = time_from_pointer(
+                            axis_rect,
+                            pointer_pos,
+                            self.pixels_per_time,
+                            self.time_view_start,
+                            max_time,
+                        );
+                    }
+                    if primary_down && shift_down && self.row_drag.is_none() && cursor_span.contains(pointer_pos) {
+                        let time = time_from_pointer(
+                            axis_rect,
+                            pointer_pos,
+                            self.pixels_per_time,
+                            self.time_view_start,
+                            max_time,
+                        );
+                        if let Some(zoom_drag) = &mut self.zoom_drag {
+                            zoom_drag.current_time = time;
+                        } else {
+                            self.zoom_drag = Some(ZoomDrag {
+                                start_time: time,
+                                current_time: time,
+                            });
+                        }
+                        self.cursor_dragging = false;
+                    }
+                }
+                if pointer_released {
+                    if let Some(zoom_drag) = self.zoom_drag.take() {
+                        let release_time = pointer_pos
+                            .map(|pos| {
+                                time_from_pointer(axis_rect, pos, self.pixels_per_time, self.time_view_start, max_time)
+                            })
+                            .unwrap_or(zoom_drag.current_time);
+                        if let Some((time_view_start, pixels_per_time)) =
+                            zoom_to_selection(visible_wave_width, max_time, zoom_drag.start_time, release_time)
+                        {
+                            self.time_view_start = time_view_start;
+                            self.pixels_per_time = pixels_per_time;
+                        }
+                    }
+                }
+                if let Some(zoom_drag) = self.zoom_drag {
+                    draw_zoom_selection(
+                        ui.painter(),
+                        cursor_span,
+                        zoom_drag.start_time,
+                        zoom_drag.current_time,
+                        self.pixels_per_time,
+                        self.time_view_start,
+                    );
                 }
                 draw_cursor(
                     ui.painter(),
@@ -590,6 +852,16 @@ impl WaveGuiApp {
                     self.pixels_per_time,
                     self.time_view_start,
                 );
+                if let Some(secondary_cursor_time) = self.secondary_cursor_time {
+                    draw_dotted_cursor(
+                        ui.painter(),
+                        cursor_span,
+                        secondary_cursor_time,
+                        self.pixels_per_time,
+                        self.time_view_start,
+                    );
+                }
+                self.show_wave_context_menu(ui.ctx());
             });
     }
 
@@ -618,10 +890,16 @@ impl WaveGuiApp {
                 self.last_selected_signal = None;
                 self.last_group_name_click = None;
                 self.row_drag = None;
+                self.zoom_drag = None;
                 self.cursor_dragging = false;
+                self.alt_cursor_pending = None;
+                self.secondary_cursor_time = None;
                 self.dragging_signals.clear();
                 self.collapsed_hierarchy.clear();
                 self.expanded_rows.clear();
+                self.selected_subsections.clear();
+                self.display_options.clear();
+                self.context_menu = None;
                 self.store = Some(store);
                 self.status = format!("Loaded {}", path.display());
             }
@@ -716,6 +994,13 @@ impl WaveGuiApp {
         }
     }
 
+    fn make_spacer_row(&mut self, parent: Option<u64>) -> WaveRow {
+        WaveRow {
+            id: self.next_row_id(),
+            kind: WaveRowKind::Spacer { parent },
+        }
+    }
+
     fn add_signal_rows(&mut self, signal_ids: impl IntoIterator<Item = usize>) {
         let rows = signal_ids
             .into_iter()
@@ -790,6 +1075,138 @@ impl WaveGuiApp {
         self.selected_row = Some(group_id);
         self.last_selected_row = Some(group_id);
     }
+
+    fn insert_group_at(&mut self, placement: DropPlacement) {
+        let group = self.make_group_row("group".to_owned(), placement.parent);
+        let group_id = group.id;
+        let insert_index = placement.row_index.min(self.rows.len());
+        self.rows.insert(insert_index, group);
+        self.selected_rows.clear();
+        self.selected_rows.insert(group_id);
+        self.selected_row = Some(group_id);
+        self.last_selected_row = Some(group_id);
+        debug_assert!(group_blocks_are_contiguous(&self.rows));
+    }
+
+    fn insert_spacer_at(&mut self, placement: DropPlacement) {
+        let spacer = self.make_spacer_row(placement.parent);
+        let spacer_id = spacer.id;
+        let insert_index = placement.row_index.min(self.rows.len());
+        self.rows.insert(insert_index, spacer);
+        self.selected_rows.clear();
+        self.selected_rows.insert(spacer_id);
+        self.selected_row = Some(spacer_id);
+        self.last_selected_row = Some(spacer_id);
+        debug_assert!(group_blocks_are_contiguous(&self.rows));
+    }
+
+    fn add_spacers_below_selected_signals(&mut self) {
+        let selected_ids = self.selected_rows.clone();
+        let mut targets = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                (selected_ids.contains(&row.id) && matches!(row.kind, WaveRowKind::Signal { .. }))
+                    .then_some((index + 1, row.parent_id()))
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|(index, _)| *index);
+        targets.dedup();
+
+        let mut first_spacer = None;
+        for (index, parent) in targets.into_iter().rev() {
+            let spacer = self.make_spacer_row(parent);
+            first_spacer = Some(spacer.id);
+            self.rows.insert(index.min(self.rows.len()), spacer);
+        }
+        if let Some(first_spacer) = first_spacer {
+            self.selected_rows.clear();
+            self.selected_rows.insert(first_spacer);
+            self.selected_row = Some(first_spacer);
+            self.last_selected_row = Some(first_spacer);
+        }
+        debug_assert!(group_blocks_are_contiguous(&self.rows));
+    }
+
+    fn show_wave_context_menu(&mut self, ctx: &Context) {
+        let Some(menu) = self.context_menu else {
+            return;
+        };
+        let mut close = false;
+        egui::Area::new(egui::Id::new("wave-context-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(menu.pos)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(190.0);
+                    if let Some(key) = menu.key {
+                        ui.label("Radix");
+                        ui.horizontal(|ui| {
+                            for (label, radix) in [
+                                ("bin", WaveRadix::Bin),
+                                ("hex", WaveRadix::Hex),
+                                ("dec", WaveRadix::Dec),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    self.display_options.entry(key).or_default().radix = radix;
+                                    close = true;
+                                }
+                            }
+                        });
+                        ui.label("Render");
+                        ui.horizontal(|ui| {
+                            for (label, render_mode) in
+                                [("digital", WaveRenderMode::Digital), ("analog", WaveRenderMode::Analog)]
+                            {
+                                if ui.button(label).clicked() {
+                                    self.display_options.entry(key).or_default().render_mode = render_mode;
+                                    close = true;
+                                }
+                            }
+                        });
+                    } else {
+                        ui.add_enabled(false, egui::Button::new("radix: bin / hex / dec"));
+                        ui.add_enabled(false, egui::Button::new("render: digital / analog"));
+                    }
+
+                    ui.separator();
+                    let has_selected_signal = selected_signal_row_ids(&self.rows, &self.selected_rows)
+                        .next()
+                        .is_some();
+                    if ui
+                        .add_enabled(has_selected_signal, egui::Button::new("group selected signals"))
+                        .clicked()
+                    {
+                        self.create_group_from_selected_signals();
+                        close = true;
+                    }
+                    if ui.button("create empty group below").clicked() {
+                        self.insert_group_at(menu.placement);
+                        close = true;
+                    }
+                    if ui.button("create spacer below").clicked() {
+                        self.insert_spacer_at(menu.placement);
+                        close = true;
+                    }
+                });
+            });
+        if close || ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.context_menu = None;
+        }
+    }
+
+    fn create_group_from_selected_signals(&mut self) {
+        let signal_rows = selected_signal_row_ids(&self.rows, &self.selected_rows).collect::<BTreeSet<_>>();
+        if signal_rows.is_empty() {
+            return;
+        }
+        let old_selection = std::mem::replace(&mut self.selected_rows, signal_rows);
+        self.create_group_from_selection();
+        if self.selected_rows.is_empty() {
+            self.selected_rows = old_selection;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -797,8 +1214,11 @@ struct RowResult {
     clicked: bool,
     label_drag_started: bool,
     cursor_time: Option<u64>,
+    secondary_cursor_time: Option<u64>,
     cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
+    clicked_key: Option<WaveRowKey>,
+    context_key: Option<WaveRowKey>,
     rect: Rect,
     label_rect: Rect,
 }
@@ -808,8 +1228,11 @@ struct SignalRowsResult {
     all_rect: Rect,
     all_label_rect: Rect,
     cursor_time: Option<u64>,
+    secondary_cursor_time: Option<u64>,
     cursor_drag_started: bool,
     expand_toggles: Vec<WaveRowKey>,
+    clicked_key: Option<WaveRowKey>,
+    context_key: Option<WaveRowKey>,
 }
 
 struct TreeHeaderResult {
@@ -838,10 +1261,14 @@ struct DropTarget {
 enum VisibleWaveRowKind {
     Signal { signal_id: usize },
     Group,
+    Spacer,
 }
 
 const DEFAULT_ROW_LABEL_WIDTH: f32 = 360.0;
 const MIN_ROW_LABEL_WIDTH: f32 = 160.0;
+const MIN_PIXELS_PER_TIME: f32 = 1.0;
+const MAX_PIXELS_PER_TIME: f32 = 800.0;
+const CURSOR_STATS_COLUMN_WIDTH: f32 = 92.0;
 const ROW_HEIGHT: f32 = 28.0;
 const TERMINAL_DROP_SLOT_SPACING: f32 = ROW_HEIGHT * 0.75;
 
@@ -1095,6 +1522,12 @@ fn visible_wave_rows(rows: &[WaveRow]) -> Vec<VisibleWaveRow> {
                     row_id: row.id,
                     depth,
                     kind: VisibleWaveRowKind::Group,
+                }),
+                WaveRowKind::Spacer { .. } => Some(VisibleWaveRow {
+                    row_index,
+                    row_id: row.id,
+                    depth,
+                    kind: VisibleWaveRowKind::Spacer,
                 }),
                 WaveRowKind::Signal { signal_id, .. } => Some(VisibleWaveRow {
                     row_index,
@@ -1376,6 +1809,23 @@ fn drop_placement(target: &DropTarget) -> DropPlacement {
     }
 }
 
+fn placement_after_row(rows: &[WaveRow], row_index: usize) -> DropPlacement {
+    let row_parents = row_parent_map(rows);
+    DropPlacement {
+        row_index: row_block_end_index(rows, row_index, &row_parents),
+        parent: rows.get(row_index).and_then(WaveRow::parent_id),
+    }
+}
+
+fn selected_signal_row_ids<'a>(
+    rows: &'a [WaveRow],
+    selected_rows: &'a BTreeSet<u64>,
+) -> impl Iterator<Item = u64> + 'a {
+    rows.iter().filter_map(|row| {
+        (selected_rows.contains(&row.id) && matches!(row.kind, WaveRowKind::Signal { .. })).then_some(row.id)
+    })
+}
+
 fn drag_row_ids(rows: &[WaveRow], start_index: usize, selected_rows: &BTreeSet<u64>) -> BTreeSet<u64> {
     if start_index >= rows.len() {
         return BTreeSet::new();
@@ -1394,7 +1844,7 @@ fn drag_row_ids(rows: &[WaveRow], start_index: usize, selected_rows: &BTreeSet<u
                 })
                 .collect()
         }
-        WaveRowKind::Signal { .. } => BTreeSet::from([rows[start_index].id]),
+        WaveRowKind::Signal { .. } | WaveRowKind::Spacer { .. } => BTreeSet::from([rows[start_index].id]),
     }
 }
 
@@ -1524,6 +1974,18 @@ fn preserve_or_select_dragged_row(
     *last_selected_row = Some(row_id);
 }
 
+fn update_subsection_selection(ui: &Ui, key: WaveRowKey, selected_subsections: &mut BTreeSet<WaveRowKey>) {
+    let modifiers = ui.input(|input| input.modifiers);
+    if modifiers.ctrl || modifiers.command {
+        if !selected_subsections.remove(&key) {
+            selected_subsections.insert(key);
+        }
+    } else {
+        selected_subsections.clear();
+        selected_subsections.insert(key);
+    }
+}
+
 fn update_signal_selection(
     ui: &Ui,
     visible_signals: &[usize],
@@ -1602,6 +2064,19 @@ fn clamp_time_view_start(time_view_start: f32, visible_duration: f32, max_time: 
     } else {
         time_view_start.clamp(0.0, max_time - visible_duration)
     }
+}
+
+fn zoom_to_selection(visible_wave_width: f32, max_time: u64, a: u64, b: u64) -> Option<(f32, f32)> {
+    let start = a.min(b);
+    let end = a.max(b);
+    let duration = end.checked_sub(start)?;
+    if duration == 0 {
+        return None;
+    }
+    let pixels_per_time = (visible_wave_width / duration as f32).clamp(MIN_PIXELS_PER_TIME, MAX_PIXELS_PER_TIME);
+    let visible_duration = visible_wave_width / pixels_per_time;
+    let time_view_start = clamp_time_view_start(start as f32, visible_duration, max_time);
+    Some((time_view_start, pixels_per_time))
 }
 
 fn wave_content_width(time_view_start: f32, pixels_per_time: f32, visible_width: f32, max_time: u64) -> f32 {
@@ -1828,8 +2303,11 @@ fn draw_group_row(
         clicked: row_response.clicked(),
         label_drag_started: row_response.drag_started() || row_response.dragged(),
         cursor_time: None,
+        secondary_cursor_time: None,
         cursor_drag_started: false,
         expand_toggles: Vec::new(),
+        clicked_key: None,
+        context_key: None,
         rect: row_rect,
         label_rect,
     }
@@ -1842,6 +2320,66 @@ fn draw_group_guides(painter: &egui::Painter, label_rect: Rect, depth: usize) {
             [pos2(x, label_rect.top() - 1.0), pos2(x, label_rect.bottom() + 1.0)],
             Stroke::new(2.0, Color32::from_gray(120)),
         );
+    }
+}
+
+fn draw_spacer_row(
+    ui: &mut Ui,
+    row_id: u64,
+    row_index: usize,
+    selected: bool,
+    dragging: bool,
+    depth: usize,
+    label_width: f32,
+    wave_width: f32,
+) -> RowResult {
+    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
+    let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
+    let wave_rect = Rect::from_min_size(
+        pos2(row_rect.left() + label_width, row_rect.top()),
+        vec2(wave_width, ROW_HEIGHT),
+    );
+    let label_response = ui.interact(
+        label_rect,
+        ui.make_persistent_id(("spacer-row", row_id)),
+        Sense::click_and_drag(),
+    );
+    let wave_response = ui.interact(
+        wave_rect,
+        ui.make_persistent_id(("spacer-wave", row_id)),
+        Sense::click(),
+    );
+    let bg = if selected && !dragging {
+        Color32::from_rgb(38, 50, 72)
+    } else if label_response.hovered() || wave_response.hovered() {
+        Color32::from_rgb(32, 32, 38)
+    } else if row_index % 2 == 0 {
+        Color32::from_rgb(16, 16, 18)
+    } else {
+        Color32::from_rgb(20, 20, 23)
+    };
+    let painter = ui.painter_at(row_rect);
+    painter.rect_filled(row_rect, 0.0, bg);
+    draw_group_guides(ui.painter(), label_rect, depth);
+    painter.line_segment(
+        [
+            pos2(row_rect.left() + depth as f32 * 18.0 + 24.0, row_rect.center().y),
+            pos2(row_rect.right(), row_rect.center().y),
+        ],
+        Stroke::new(1.0, Color32::from_gray(45)),
+    );
+
+    RowResult {
+        clicked: label_response.clicked() || wave_response.clicked(),
+        label_drag_started: label_response.drag_started(),
+        cursor_time: None,
+        secondary_cursor_time: None,
+        cursor_drag_started: false,
+        expand_toggles: Vec::new(),
+        clicked_key: None,
+        context_key: None,
+        rect: row_rect,
+        label_rect,
     }
 }
 
@@ -1917,7 +2455,10 @@ fn draw_signal_rows(
     selected: bool,
     dragging: bool,
     expanded_rows: &BTreeSet<WaveRowKey>,
+    selected_subsections: &BTreeSet<WaveRowKey>,
+    display_options: &BTreeMap<WaveRowKey, WaveDisplayOptions>,
     cursor_time: u64,
+    secondary_cursor_time: Option<u64>,
     pixels_per_time: f32,
     time_view_start: f32,
     max_time: u64,
@@ -1945,7 +2486,10 @@ fn draw_signal_rows(
         true,
         group_depth,
         expanded_rows,
+        selected_subsections,
+        display_options,
         cursor_time,
+        secondary_cursor_time,
         pixels_per_time,
         time_view_start,
         max_time,
@@ -1968,7 +2512,10 @@ fn draw_signal_tree(
     can_reorder: bool,
     depth: usize,
     expanded_rows: &BTreeSet<WaveRowKey>,
+    selected_subsections: &BTreeSet<WaveRowKey>,
+    display_options: &BTreeMap<WaveRowKey, WaveDisplayOptions>,
     cursor_time: u64,
+    secondary_cursor_time: Option<u64>,
     pixels_per_time: f32,
     time_view_start: f32,
     max_time: u64,
@@ -1990,7 +2537,10 @@ fn draw_signal_tree(
         key,
         can_reorder,
         depth,
+        selected_subsections.contains(&key),
+        display_options.get(&key).copied().unwrap_or_default(),
         cursor_time,
+        secondary_cursor_time,
         pixels_per_time,
         time_view_start,
         max_time,
@@ -2002,8 +2552,11 @@ fn draw_signal_tree(
         all_rect: leaf.rect,
         all_label_rect: leaf.label_rect,
         cursor_time: leaf.cursor_time,
+        secondary_cursor_time: leaf.secondary_cursor_time,
         cursor_drag_started: leaf.cursor_drag_started,
         expand_toggles: leaf.expand_toggles,
+        clicked_key: leaf.clicked_key,
+        context_key: leaf.context_key,
     };
 
     if expanded {
@@ -2028,7 +2581,10 @@ fn draw_signal_tree(
                 false,
                 depth + 1,
                 expanded_rows,
+                selected_subsections,
+                display_options,
                 cursor_time,
+                secondary_cursor_time,
                 pixels_per_time,
                 time_view_start,
                 max_time,
@@ -2040,8 +2596,17 @@ fn draw_signal_tree(
             if result.cursor_time.is_none() {
                 result.cursor_time = child.cursor_time;
             }
+            if result.secondary_cursor_time.is_none() {
+                result.secondary_cursor_time = child.secondary_cursor_time;
+            }
             result.cursor_drag_started |= child.cursor_drag_started;
             result.expand_toggles.extend(child.expand_toggles);
+            if result.clicked_key.is_none() {
+                result.clicked_key = child.clicked_key;
+            }
+            if result.context_key.is_none() {
+                result.context_key = child.context_key;
+            }
         }
     }
 
@@ -2062,7 +2627,10 @@ fn draw_signal_leaf(
     key: WaveRowKey,
     can_reorder: bool,
     depth: usize,
+    subsection_selected: bool,
+    display_options: WaveDisplayOptions,
     cursor_time: u64,
+    secondary_cursor_time: Option<u64>,
     pixels_per_time: f32,
     time_view_start: f32,
     max_time: u64,
@@ -2090,6 +2658,8 @@ fn draw_signal_leaf(
 
     let bg = if selected && !dragging {
         Color32::from_rgb(35, 55, 85)
+    } else if subsection_selected {
+        Color32::from_rgb(52, 48, 74)
     } else if expandable && expanded {
         Color32::from_rgb(28, 42, 48)
     } else if label_response.hovered() || wave_response.hovered() {
@@ -2104,8 +2674,18 @@ fn draw_signal_leaf(
 
     let value = store
         .signal_value_at(signal.id, cursor_time)
-        .map(|bits| format_value_for_type(bits, key.bit_offset, ty))
+        .map(|bits| format_value_for_type_with_radix(bits, key.bit_offset, ty, display_options.radix))
         .unwrap_or_else(|| "x".to_owned());
+    let cursor_stats = secondary_cursor_time.map(|secondary| {
+        edge_counts(
+            &store.changes[signal.id],
+            key.bit_offset,
+            key.bit_len,
+            cursor_time,
+            secondary,
+        )
+    });
+    let stats_text = cursor_stats.map(|stats| format!("↑{} ↓{} ↕{}", stats.posedges, stats.negedges, stats.toggles));
     let icon_rect = Rect::from_min_size(
         pos2(
             label_rect.left() + 4.0 + depth as f32 * 18.0,
@@ -2121,29 +2701,70 @@ fn draw_signal_leaf(
     if expandable {
         draw_disclosure_icon(ui.painter(), icon_rect, expanded);
     }
-    painter.with_clip_rect(label_rect).text(
+    let label_text_rect = if stats_text.is_some() {
+        Rect::from_min_max(
+            label_rect.min,
+            pos2(
+                (label_rect.right() - CURSOR_STATS_COLUMN_WIDTH).max(label_rect.left()),
+                label_rect.bottom(),
+            ),
+        )
+    } else {
+        label_rect
+    };
+    painter.with_clip_rect(label_text_rect).text(
         pos2(icon_rect.right() + 4.0, label_rect.center().y),
         Align2::LEFT_CENTER,
         format!("{label} = {value}"),
         FontId::proportional(13.0),
         Color32::WHITE,
     );
+    if let Some(stats_text) = stats_text {
+        let stats_rect = Rect::from_min_max(
+            pos2(
+                (label_rect.right() - CURSOR_STATS_COLUMN_WIDTH).max(label_rect.left()),
+                label_rect.top(),
+            ),
+            label_rect.right_bottom(),
+        );
+        painter.line_segment(
+            [stats_rect.left_top(), stats_rect.left_bottom()],
+            Stroke::new(1.0, Color32::from_gray(58)),
+        );
+        painter.with_clip_rect(stats_rect).text(
+            stats_rect.center(),
+            Align2::CENTER_CENTER,
+            stats_text,
+            FontId::monospace(12.0),
+            Color32::from_rgb(250, 235, 130),
+        );
+    }
     draw_waveform(
         &painter,
         wave_rect,
         &store.changes[signal.id],
         key.bit_offset,
         ty,
+        display_options,
         pixels_per_time,
         time_view_start,
         max_time,
     );
+    let alt_down = ui.input(|input| input.modifiers.alt);
     let cursor_time = wave_response
         .interact_pointer_pos()
-        .filter(|pos| (wave_response.clicked() || wave_response.dragged()) && wave_rect.contains(*pos))
+        .filter(|pos| {
+            !alt_down
+                && !ui.input(|input| input.modifiers.shift)
+                && (wave_response.clicked() || wave_response.dragged())
+                && wave_rect.contains(*pos)
+        })
         .map(|pos| time_from_pointer(wave_rect, pos, pixels_per_time, time_view_start, max_time));
-    let cursor_drag_started = wave_response.drag_started()
-        || ui.input(|input| input.modifiers.shift) && wave_response.is_pointer_button_down_on();
+    let secondary_cursor_time = wave_response
+        .interact_pointer_pos()
+        .filter(|pos| alt_down && wave_response.clicked() && wave_rect.contains(*pos))
+        .map(|pos| time_from_pointer(wave_rect, pos, pixels_per_time, time_view_start, max_time));
+    let cursor_drag_started = !alt_down && !ui.input(|input| input.modifiers.shift) && wave_response.drag_started();
     let expand_toggles = icon_response
         .filter(|response| response.clicked())
         .map(|_| vec![key])
@@ -2153,8 +2774,11 @@ fn draw_signal_leaf(
         clicked: label_response.clicked() || wave_response.clicked(),
         label_drag_started: can_reorder && label_response.drag_started(),
         cursor_time,
+        secondary_cursor_time,
         cursor_drag_started,
         expand_toggles,
+        clicked_key: (!can_reorder && (label_response.clicked() || wave_response.clicked())).then_some(key),
+        context_key: (label_response.secondary_clicked() || wave_response.secondary_clicked()).then_some(key),
         rect: row_rect,
         label_rect,
     }
@@ -2166,6 +2790,7 @@ fn draw_waveform(
     changes: &[hwl_language::sim::recorder::WaveChange],
     bit_offset: usize,
     ty: &WaveSignalType,
+    display_options: WaveDisplayOptions,
     pixels_per_time: f32,
     time_view_start: f32,
     max_time: u64,
@@ -2180,6 +2805,20 @@ fn draw_waveform(
     let visible_start = time_view_start;
     let visible_end = (time_view_start + rect.width() / pixels_per_time).min(max_time as f32);
     if visible_end <= visible_start {
+        return;
+    }
+
+    if display_options.render_mode == WaveRenderMode::Analog {
+        draw_analog_waveform(
+            painter,
+            rect,
+            changes,
+            bit_offset,
+            ty,
+            pixels_per_time,
+            time_view_start,
+            max_time,
+        );
         return;
     }
 
@@ -2233,12 +2872,138 @@ fn draw_waveform(
                 rect,
                 segment_start,
                 segment_end,
-                &format_value_for_type(&change.bits, bit_offset, ty),
+                &format_value_for_type_with_radix(&change.bits, bit_offset, ty, display_options.radix),
                 pixels_per_time,
                 time_view_start,
             );
         }
     }
+}
+
+fn draw_analog_waveform(
+    painter: &egui::Painter,
+    rect: Rect,
+    changes: &[hwl_language::sim::recorder::WaveChange],
+    bit_offset: usize,
+    ty: &WaveSignalType,
+    pixels_per_time: f32,
+    time_view_start: f32,
+    max_time: u64,
+) {
+    let values = changes
+        .iter()
+        .map(|change| (change.time, numeric_value_for_type(&change.bits, bit_offset, ty)))
+        .collect::<Vec<_>>();
+    let Some((min_value, max_value)) = values.iter().fold(None, |range, (_, value)| match range {
+        None => Some((*value, *value)),
+        Some((min_value, max_value)) => Some((f64::min(min_value, *value), f64::max(max_value, *value))),
+    }) else {
+        return;
+    };
+    let value_span = (max_value - min_value).max(1.0);
+    let value_y =
+        |value: f64| rect.bottom() - 5.0 - (((value - min_value) / value_span) as f32) * (rect.height() - 10.0);
+    let visible_start = time_view_start;
+    let visible_end = (time_view_start + rect.width() / pixels_per_time).min(max_time as f32);
+    for (index, (time, value)) in values.iter().copied().enumerate() {
+        let start_time = time as f32;
+        let end_time = values
+            .get(index + 1)
+            .map(|(next_time, _)| *next_time as f32)
+            .unwrap_or(max_time as f32);
+        let segment_start = start_time.max(visible_start);
+        let segment_end = end_time.min(visible_end);
+        if segment_end <= segment_start {
+            continue;
+        }
+        let y = value_y(value);
+        painter.line_segment(
+            [
+                pos2(time_to_x(rect, segment_start, time_view_start, pixels_per_time), y),
+                pos2(time_to_x(rect, segment_end, time_view_start, pixels_per_time), y),
+            ],
+            Stroke::new(1.5, Color32::LIGHT_GREEN),
+        );
+        if let Some((next_time, next_value)) = values.get(index + 1).copied() {
+            let transition_time = next_time as f32;
+            if transition_time >= visible_start && transition_time <= visible_end {
+                let x = time_to_x(rect, transition_time, time_view_start, pixels_per_time);
+                painter.line_segment(
+                    [pos2(x, y), pos2(x, value_y(next_value))],
+                    Stroke::new(1.5, Color32::LIGHT_GREEN),
+                );
+            }
+        }
+    }
+    painter.text(
+        rect.left_top() + vec2(4.0, 2.0),
+        Align2::LEFT_TOP,
+        format!("{min_value:.0}..{max_value:.0}"),
+        FontId::monospace(10.0),
+        Color32::GRAY,
+    );
+}
+
+fn numeric_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) -> f64 {
+    match ty {
+        WaveSignalType::Bool => {
+            if get_bit(bits, bit_offset) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        &WaveSignalType::Int { signed, width } => {
+            if signed && width > 0 && width <= 127 && get_bit(bits, bit_offset + width - 1) {
+                let value = get_unsigned(bits, bit_offset, width) as i128 - (1i128 << width);
+                value as f64
+            } else {
+                get_unsigned(bits, bit_offset, width.min(128)) as f64
+            }
+        }
+        _ => get_unsigned(bits, bit_offset, ty.bit_len().min(128)) as f64,
+    }
+}
+
+fn edge_counts(
+    changes: &[hwl_language::sim::recorder::WaveChange],
+    bit_offset: usize,
+    bit_len: usize,
+    a: u64,
+    b: u64,
+) -> EdgeCounts {
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    let mut previous = changes
+        .iter()
+        .rev()
+        .find(|change| change.time < start)
+        .map(|change| change.bits.as_slice());
+    let mut counts = EdgeCounts::default();
+    for change in changes
+        .iter()
+        .filter(|change| change.time >= start && change.time < end)
+    {
+        if let Some(previous_bits) = previous {
+            if !bits_equal(previous_bits, &change.bits, bit_offset, bit_len) {
+                counts.toggles += 1;
+                if bit_len == 1 {
+                    let before = get_bit(previous_bits, bit_offset);
+                    let after = get_bit(&change.bits, bit_offset);
+                    match (before, after) {
+                        (false, true) => counts.posedges += 1,
+                        (true, false) => counts.negedges += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        previous = Some(change.bits.as_slice());
+    }
+    counts
+}
+
+fn bits_equal(a: &[u8], b: &[u8], bit_offset: usize, bit_len: usize) -> bool {
+    (0..bit_len).all(|index| get_bit(a, bit_offset + index) == get_bit(b, bit_offset + index))
 }
 
 fn major_tick_step(pixels_per_time: f32) -> u64 {
@@ -2285,6 +3050,60 @@ fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels_per
             Stroke::new(1.5, Color32::from_rgb(240, 180, 80)),
         );
     }
+}
+
+fn draw_dotted_cursor(
+    painter: &egui::Painter,
+    rect: Rect,
+    cursor_time: u64,
+    pixels_per_time: f32,
+    time_view_start: f32,
+) {
+    let x = time_to_x(rect, cursor_time as f32, time_view_start, pixels_per_time);
+    if x < rect.left() || x > rect.right() {
+        return;
+    }
+    let mut y = rect.top();
+    while y < rect.bottom() {
+        let y_end = (y + 7.0).min(rect.bottom());
+        painter.line_segment(
+            [pos2(x, y), pos2(x, y_end)],
+            Stroke::new(2.5, Color32::from_rgb(255, 225, 80)),
+        );
+        y += 12.0;
+    }
+}
+
+fn draw_zoom_selection(
+    painter: &egui::Painter,
+    rect: Rect,
+    start_time: u64,
+    current_time: u64,
+    pixels_per_time: f32,
+    time_view_start: f32,
+) {
+    let x0 = time_to_x(rect, start_time as f32, time_view_start, pixels_per_time);
+    let x1 = time_to_x(rect, current_time as f32, time_view_start, pixels_per_time);
+    let left = x0.min(x1).clamp(rect.left(), rect.right());
+    let right = x0.max(x1).clamp(rect.left(), rect.right());
+    painter.rect_filled(
+        Rect::from_min_max(rect.left_top(), pos2(left, rect.bottom())),
+        0.0,
+        Color32::from_rgba_premultiplied(0, 0, 0, 110),
+    );
+    painter.rect_filled(
+        Rect::from_min_max(pos2(right, rect.top()), rect.right_bottom()),
+        0.0,
+        Color32::from_rgba_premultiplied(0, 0, 0, 110),
+    );
+    painter.line_segment(
+        [pos2(left, rect.top()), pos2(left, rect.bottom())],
+        Stroke::new(2.0, Color32::WHITE),
+    );
+    painter.line_segment(
+        [pos2(right, rect.top()), pos2(right, rect.bottom())],
+        Stroke::new(2.0, Color32::WHITE),
+    );
 }
 
 fn best_drop_target_index(pointer_pos: egui::Pos2, targets: &[DropTarget], label_width: f32) -> usize {
@@ -2478,7 +3297,7 @@ fn composite_children(ty: &WaveSignalType) -> Vec<(String, WaveSignalType, usize
     result
 }
 
-fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) -> String {
+fn format_value_for_type_with_radix(bits: &[u8], bit_offset: usize, ty: &WaveSignalType, radix: WaveRadix) -> String {
     match ty {
         WaveSignalType::Bool => {
             if get_bit(bits, bit_offset) {
@@ -2487,11 +3306,11 @@ fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) ->
                 "false".to_owned()
             }
         }
-        &WaveSignalType::Int { signed, width } => format_int_value(bits, bit_offset, width, signed),
+        &WaveSignalType::Int { signed, width } => format_int_value(bits, bit_offset, width, signed, radix),
         WaveSignalType::Array { len, element } => {
             let stride = element.bit_len();
             let elements = (0..*len)
-                .map(|index| format_value_for_type(bits, bit_offset + index * stride, element))
+                .map(|index| format_value_for_type_with_radix(bits, bit_offset + index * stride, element, radix))
                 .collect::<Vec<_>>();
             format!("[{}]", elements.join(", "))
         }
@@ -2500,7 +3319,7 @@ fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) ->
             let values = elements
                 .iter()
                 .map(|element| {
-                    let value = format_value_for_type(bits, offset, element);
+                    let value = format_value_for_type_with_radix(bits, offset, element, radix);
                     offset += element.bit_len();
                     value
                 })
@@ -2516,7 +3335,7 @@ fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) ->
             let values = fields
                 .iter()
                 .map(|(field_name, field_ty)| {
-                    let value = format_value_for_type(bits, offset, field_ty);
+                    let value = format_value_for_type_with_radix(bits, offset, field_ty, radix);
                     offset += field_ty.bit_len();
                     format!("{field_name}={value}")
                 })
@@ -2531,7 +3350,7 @@ fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) ->
             };
             match payload_ty {
                 Some(payload_ty) => {
-                    let payload = format_value_for_type(bits, bit_offset + tag_width, payload_ty);
+                    let payload = format_value_for_type_with_radix(bits, bit_offset + tag_width, payload_ty, radix);
                     format!("{name}.{variant_name}({payload})")
                 }
                 None => format!("{name}.{variant_name}"),
@@ -2540,9 +3359,14 @@ fn format_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) ->
     }
 }
 
-fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool) -> String {
+fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool, radix: WaveRadix) -> String {
     if width == 0 {
         return "0".to_owned();
+    }
+    match radix {
+        WaveRadix::Bin => return format!("0b{}", bit_string(bits, bit_offset, width)),
+        WaveRadix::Hex => return format_hex_value(bits, bit_offset, width),
+        WaveRadix::Dec => {}
     }
     if width > 128 {
         return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
@@ -2554,6 +3378,22 @@ fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool) 
     } else {
         value.to_string()
     }
+}
+
+fn bit_string(bits: &[u8], bit_offset: usize, width: usize) -> String {
+    (0..width)
+        .rev()
+        .map(|index| if get_bit(bits, bit_offset + index) { '1' } else { '0' })
+        .collect()
+}
+
+fn format_hex_value(bits: &[u8], bit_offset: usize, width: usize) -> String {
+    if width > 128 {
+        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
+    }
+    let value = get_unsigned(bits, bit_offset, width);
+    let digits = width.div_ceil(4).max(1);
+    format!("0x{value:0digits$x}")
 }
 
 fn get_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
@@ -2752,5 +3592,91 @@ mod tests {
                 "group blocks split for target ({parent:?}, {row_index})"
             );
         }
+    }
+
+    #[test]
+    fn spacers_are_inserted_below_each_selected_signal() {
+        let mut app = WaveGuiApp::default();
+        let signal_a = app.make_signal_row(0, None);
+        let signal_b = app.make_signal_row(1, None);
+        let signal_a_id = signal_a.id;
+        let signal_b_id = signal_b.id;
+        app.rows = vec![signal_a, signal_b];
+        app.selected_rows = BTreeSet::from([signal_a_id, signal_b_id]);
+
+        app.add_spacers_below_selected_signals();
+
+        assert!(matches!(app.rows[0].kind, WaveRowKind::Signal { .. }));
+        assert!(matches!(app.rows[1].kind, WaveRowKind::Spacer { parent: None }));
+        assert!(matches!(app.rows[2].kind, WaveRowKind::Signal { .. }));
+        assert!(matches!(app.rows[3].kind, WaveRowKind::Spacer { parent: None }));
+    }
+
+    #[test]
+    fn radix_formatting_changes_integer_display() {
+        let ty = WaveSignalType::Int {
+            signed: false,
+            width: 8,
+        };
+        let bits = [0xab];
+
+        assert_eq!(format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Dec), "171");
+        assert_eq!(format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Hex), "0xab");
+        assert_eq!(
+            format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Bin),
+            "0b10101011"
+        );
+    }
+
+    #[test]
+    fn edge_counts_between_cursors_count_directional_edges() {
+        let changes = vec![
+            hwl_language::sim::recorder::WaveChange { time: 0, bits: vec![0] },
+            hwl_language::sim::recorder::WaveChange { time: 1, bits: vec![1] },
+            hwl_language::sim::recorder::WaveChange { time: 2, bits: vec![0] },
+            hwl_language::sim::recorder::WaveChange { time: 3, bits: vec![1] },
+        ];
+
+        let counts = edge_counts(&changes, 0, 1, 0, 3);
+
+        assert_eq!(counts.posedges, 1);
+        assert_eq!(counts.negedges, 1);
+        assert_eq!(counts.toggles, 2);
+    }
+
+    #[test]
+    fn edge_counts_include_start_and_exclude_end() {
+        let changes = vec![
+            hwl_language::sim::recorder::WaveChange { time: 0, bits: vec![0] },
+            hwl_language::sim::recorder::WaveChange { time: 1, bits: vec![1] },
+            hwl_language::sim::recorder::WaveChange { time: 2, bits: vec![0] },
+        ];
+
+        let counts = edge_counts(&changes, 0, 1, 1, 2);
+        assert_eq!(counts.posedges, 1);
+        assert_eq!(counts.negedges, 0);
+        assert_eq!(counts.toggles, 1);
+
+        let reversed = edge_counts(&changes, 0, 1, 2, 1);
+        assert_eq!(reversed.posedges, counts.posedges);
+        assert_eq!(reversed.negedges, counts.negedges);
+        assert_eq!(reversed.toggles, counts.toggles);
+    }
+
+    #[test]
+    fn zoom_to_selection_fits_range_when_not_clamped() {
+        let (time_view_start, pixels_per_time) = zoom_to_selection(900.0, 100, 13, 4).unwrap();
+
+        assert_eq!(time_view_start, 4.0);
+        assert_eq!(pixels_per_time, 100.0);
+    }
+
+    #[test]
+    fn zoom_to_selection_uses_release_order_and_clamps_to_trace_end() {
+        let (time_view_start, pixels_per_time) = zoom_to_selection(900.0, 20, 18, 10).unwrap();
+
+        assert_eq!(pixels_per_time, 112.5);
+        assert_eq!(time_view_start, 10.0);
+        assert!(zoom_to_selection(900.0, 20, 10, 10).is_none());
     }
 }
