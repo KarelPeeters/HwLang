@@ -1,3 +1,4 @@
+use crate::consts::{ROW_HEIGHT, TERMINAL_DROP_SLOT_SPACING};
 use eframe::egui::{self, Rect, Sense, Ui, pos2};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -95,9 +96,6 @@ pub enum VisibleWaveRowKind {
     Group,
     Spacer,
 }
-
-pub const ROW_HEIGHT: f32 = 28.0;
-const TERMINAL_DROP_SLOT_SPACING: f32 = ROW_HEIGHT * 0.75;
 
 pub fn visible_wave_rows(rows: &[WaveRow]) -> Vec<VisibleWaveRow> {
     let row_parents = row_parent_map(rows);
@@ -625,14 +623,14 @@ pub fn empty_panel_area_clicked(ui: &mut Ui) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::consts::{DEFAULT_ROW_LABEL_WIDTH, ROW_HEIGHT};
+
     use super::{
-        DropTarget, ROW_HEIGHT, VisibleWaveRow, WaveRow, WaveRowKind, best_drop_target_index, drain_drag_rows_for_move,
+        DropTarget, VisibleWaveRow, WaveRow, WaveRowKind, best_drop_target_index, drain_drag_rows_for_move,
         drop_targets_for_rows, group_blocks_are_contiguous, reparent_drag_roots, visible_wave_rows,
     };
     use eframe::egui::{Rect, pos2, vec2};
     use std::collections::BTreeSet;
-
-    const DEFAULT_ROW_LABEL_WIDTH: f32 = 360.0;
 
     fn signal(id: u64, parent: Option<u64>) -> WaveRow {
         WaveRow {
