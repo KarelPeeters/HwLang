@@ -1375,7 +1375,6 @@ dependencies = [
  "dashmap",
  "derive_more",
  "dlopen2",
- "eframe",
  "fnv",
  "hwl_std",
  "hwl_util",
@@ -1429,6 +1428,15 @@ dependencies = [
  "itertools 0.13.0",
  "num-bigint",
  "pyo3",
+ "serde_json",
+]
+
+[[package]]
+name = "hwl_sim"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "hwl_language",
  "serde_json",
 ]
 
