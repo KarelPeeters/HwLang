@@ -1,11 +1,18 @@
 mod consts;
+mod format;
 mod rows;
 mod time;
 
 use crate::consts::{
-    CURSOR_COLOR, CURSOR_STATS_COLUMN_WIDTH, DEFAULT_ROW_LABEL_WIDTH, MAX_PIXELS_PER_TIME, MIN_PIXELS_PER_TIME,
-    MIN_ROW_LABEL_WIDTH, ROW_HEIGHT,
+    COLOR_ADDED_SIGNAL_BG, COLOR_CURSOR, COLOR_CURSOR_STATS_BORDER, COLOR_DRAG_INSERT, COLOR_GROUP_EVEN_BG,
+    COLOR_GROUP_GUIDE_STROKE, COLOR_GROUP_HOVER_BG, COLOR_GROUP_ODD_BG, COLOR_GROUP_SELECTED_BG, COLOR_ROW_HOVER_BG,
+    COLOR_ROW_SELECTED_BG, COLOR_SEPARATOR_STROKE, COLOR_SPACER_EVEN_BG, COLOR_SPACER_HOVER_BG, COLOR_SPACER_LINE,
+    COLOR_SPACER_ODD_BG, COLOR_SPACER_SELECTED_BG, COLOR_STATUS_TEXT, COLOR_TEXT_MUTED, COLOR_TEXT_PRIMARY,
+    COLOR_TEXT_STRONG, COLOR_TRANSPARENT, COLOR_WAVE_EVEN_BG, COLOR_WAVE_EXPANDED_BG, COLOR_WAVE_ODD_BG,
+    COLOR_WAVE_SIGNAL_STROKE, COLOR_WAVE_SUBSECTION_BG, CURSOR_STATS_COLUMN_WIDTH, DEFAULT_ROW_LABEL_WIDTH,
+    MAX_PIXELS_PER_TIME, MIN_PIXELS_PER_TIME, MIN_ROW_LABEL_WIDTH, ROW_HEIGHT,
 };
+use crate::format::{WaveRadix, enum_tag_width, format_value_for_type_with_radix, get_bit, get_unsigned};
 use crate::rows::{
     DropPlacement, DropTarget, RowDrag, VisibleWaveRow, VisibleWaveRowKind, WaveRow, WaveRowKey, WaveRowKind,
     best_drop_target_index, delete_selected_rows, drag_row_ids, drain_drag_rows_for_move, drop_placement,
@@ -20,7 +27,7 @@ use crate::time::{
 };
 use eframe::egui::scroll_area::ScrollBarVisibility;
 use eframe::egui::{
-    self, Align2, CentralPanel, Color32, Context, FontId, Key, Rect, ScrollArea, Sense, Shape, SidePanel, Stroke,
+    self, Align2, CentralPanel, Context, FontId, Key, Rect, ScrollArea, Sense, Shape, SidePanel, Stroke,
     TopBottomPanel, Ui, ViewportBuilder, pos2, vec2,
 };
 use hwl_language::sim::recorder::{WaveSignal, WaveSignalKind, WaveSignalType, WaveStore};
@@ -84,13 +91,6 @@ struct WaveContextMenu {
     pos: egui::Pos2,
     key: Option<WaveRowKey>,
     placement: DropPlacement,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum WaveRadix {
-    Bin,
-    Hex,
-    Dec,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -254,7 +254,7 @@ impl WaveGuiApp {
             }
         });
         if !self.status.is_empty() {
-            ui.colored_label(Color32::LIGHT_BLUE, &self.status);
+            ui.colored_label(COLOR_STATUS_TEXT, &self.status);
         }
     }
 
@@ -685,7 +685,7 @@ impl WaveGuiApp {
                         pos2(axis_rect.left(), axis_rect.top()),
                         pos2(axis_rect.left(), cursor_bottom),
                     ],
-                    Stroke::new(1.0, Color32::DARK_GRAY),
+                    Stroke::new(1.0, COLOR_SEPARATOR_STROKE),
                 );
                 let (alt_down, primary_down, primary_pressed, primary_released, shift_down) = ui.input(|input| {
                     (
@@ -1263,11 +1263,11 @@ fn draw_signal_panel_row(
     let row_height = 22.0;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click_and_drag());
     if selected {
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 55, 85));
+        ui.painter().rect_filled(rect, 2.0, COLOR_ROW_SELECTED_BG);
     } else if already_added {
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(28, 42, 30));
+        ui.painter().rect_filled(rect, 2.0, COLOR_ADDED_SIGNAL_BG);
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(35, 35, 35));
+        ui.painter().rect_filled(rect, 2.0, COLOR_ROW_HOVER_BG);
     }
     let kind = match signal.kind {
         WaveSignalKind::Port => "port",
@@ -1278,14 +1278,14 @@ fn draw_signal_panel_row(
         Align2::LEFT_CENTER,
         kind,
         FontId::monospace(12.0),
-        Color32::GRAY,
+        COLOR_TEXT_MUTED,
     );
     ui.painter().text(
         pos2(rect.left() + 64.0, rect.center().y),
         Align2::LEFT_CENTER,
         format!("{}.{}", signal.path.join("."), signal.name),
         FontId::proportional(13.0),
-        Color32::LIGHT_GRAY,
+        COLOR_TEXT_PRIMARY,
     );
     if response.clicked() {
         update_signal_selection(ui, visible_signals, signal.id, selected_signals, last_selected_signal);
@@ -1337,11 +1337,11 @@ fn draw_module_header(
     }
     let expanded = has_children && !collapsed_hierarchy.contains(key);
     let bg = if selected_modules.contains(path) {
-        Color32::from_rgb(35, 55, 85)
+        COLOR_ROW_SELECTED_BG
     } else if label_response.hovered() || icon_response.as_ref().is_some_and(|response| response.hovered()) {
-        Color32::from_rgb(35, 35, 35)
+        COLOR_ROW_HOVER_BG
     } else {
-        Color32::TRANSPARENT
+        COLOR_TRANSPARENT
     };
     ui.painter().rect_filled(rect, 2.0, bg);
     if has_children {
@@ -1352,7 +1352,7 @@ fn draw_module_header(
         Align2::LEFT_CENTER,
         title,
         FontId::proportional(13.0),
-        Color32::LIGHT_GRAY,
+        COLOR_TEXT_PRIMARY,
     );
 
     TreeHeaderResult {
@@ -1533,13 +1533,13 @@ fn draw_group_row(
         None
     };
     let bg = if selected && !dragging {
-        Color32::from_rgb(45, 60, 90)
+        COLOR_GROUP_SELECTED_BG
     } else if row_response.hovered() {
-        Color32::from_rgb(45, 42, 55)
+        COLOR_GROUP_HOVER_BG
     } else if row_index % 2 == 0 {
-        Color32::from_rgb(30, 27, 36)
+        COLOR_GROUP_EVEN_BG
     } else {
-        Color32::from_rgb(35, 31, 42)
+        COLOR_GROUP_ODD_BG
     };
     painter.rect_filled(label_rect, 0.0, bg);
     draw_group_guides(ui.painter(), label_rect, depth);
@@ -1597,7 +1597,7 @@ fn draw_group_row(
                 Align2::LEFT_CENTER,
                 name,
                 FontId::proportional(13.0),
-                Color32::LIGHT_GRAY,
+                COLOR_TEXT_PRIMARY,
             );
         }
     }
@@ -1620,7 +1620,7 @@ fn draw_group_guides(painter: &egui::Painter, label_rect: Rect, depth: usize) {
         let x = label_rect.left() + 12.0 + level as f32 * 18.0;
         painter.line_segment(
             [pos2(x, label_rect.top() - 1.0), pos2(x, label_rect.bottom() + 1.0)],
-            Stroke::new(2.0, Color32::from_gray(120)),
+            Stroke::new(2.0, COLOR_GROUP_GUIDE_STROKE),
         );
     }
 }
@@ -1652,13 +1652,13 @@ fn draw_spacer_row(
         Sense::click(),
     );
     let bg = if selected && !dragging {
-        Color32::from_rgb(38, 50, 72)
+        COLOR_SPACER_SELECTED_BG
     } else if label_response.hovered() || wave_response.hovered() {
-        Color32::from_rgb(32, 32, 38)
+        COLOR_SPACER_HOVER_BG
     } else if row_index % 2 == 0 {
-        Color32::from_rgb(16, 16, 18)
+        COLOR_SPACER_EVEN_BG
     } else {
-        Color32::from_rgb(20, 20, 23)
+        COLOR_SPACER_ODD_BG
     };
     let painter = ui.painter_at(row_rect);
     painter.rect_filled(row_rect, 0.0, bg);
@@ -1668,7 +1668,7 @@ fn draw_spacer_row(
             pos2(row_rect.left() + depth as f32 * 18.0 + 24.0, row_rect.center().y),
             pos2(row_rect.right(), row_rect.center().y),
         ],
-        Stroke::new(1.0, Color32::from_gray(45)),
+        Stroke::new(1.0, COLOR_SPACER_LINE),
     );
 
     RowResult {
@@ -1717,7 +1717,7 @@ fn draw_drag_name_boxes(
     ));
     for rect in merged {
         let rect = rect.shrink2(vec2(4.0, 2.0));
-        painter.rect_stroke(rect, 3.0, Stroke::new(2.0, Color32::from_rgb(255, 70, 70)));
+        painter.rect_stroke(rect, 3.0, Stroke::new(2.0, COLOR_DRAG_INSERT));
     }
 }
 
@@ -1959,17 +1959,17 @@ fn draw_signal_leaf(
     let painter = ui.painter_at(row_rect);
 
     let bg = if selected && !dragging {
-        Color32::from_rgb(35, 55, 85)
+        COLOR_ROW_SELECTED_BG
     } else if subsection_selected {
-        Color32::from_rgb(52, 48, 74)
+        COLOR_WAVE_SUBSECTION_BG
     } else if expandable && expanded {
-        Color32::from_rgb(28, 42, 48)
+        COLOR_WAVE_EXPANDED_BG
     } else if label_response.hovered() || wave_response.hovered() {
-        Color32::from_rgb(35, 35, 35)
+        COLOR_ROW_HOVER_BG
     } else if row_index % 2 == 0 {
-        Color32::from_rgb(20, 20, 20)
+        COLOR_WAVE_EVEN_BG
     } else {
-        Color32::from_rgb(26, 26, 26)
+        COLOR_WAVE_ODD_BG
     };
     painter.rect_filled(row_rect, 0.0, bg);
     draw_group_guides(ui.painter(), label_rect, depth);
@@ -2019,7 +2019,7 @@ fn draw_signal_leaf(
         Align2::LEFT_CENTER,
         format!("{label} = {value}"),
         FontId::proportional(13.0),
-        Color32::WHITE,
+        COLOR_TEXT_STRONG,
     );
     if let Some(stats_text) = stats_text {
         let stats_rect = Rect::from_min_max(
@@ -2031,14 +2031,14 @@ fn draw_signal_leaf(
         );
         painter.line_segment(
             [stats_rect.left_top(), stats_rect.left_bottom()],
-            Stroke::new(1.0, Color32::from_gray(58)),
+            Stroke::new(1.0, COLOR_CURSOR_STATS_BORDER),
         );
         painter.with_clip_rect(stats_rect).text(
             stats_rect.center(),
             Align2::CENTER_CENTER,
             stats_text,
             FontId::monospace(12.0),
-            CURSOR_COLOR,
+            COLOR_CURSOR,
         );
     }
     draw_waveform(
@@ -2097,7 +2097,7 @@ fn draw_waveform(
     time_view_start: f32,
     max_time: u64,
 ) {
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::DARK_GRAY));
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, COLOR_SEPARATOR_STROKE));
     draw_time_grid(painter, rect, pixels_per_time, time_view_start, max_time);
 
     if changes.is_empty() {
@@ -2140,7 +2140,7 @@ fn draw_waveform(
                         pos2(time_to_x(rect, segment_start, time_view_start, pixels_per_time), y),
                         pos2(time_to_x(rect, segment_end, time_view_start, pixels_per_time), y),
                     ],
-                    Stroke::new(1.5, Color32::LIGHT_GREEN),
+                    Stroke::new(1.5, COLOR_WAVE_SIGNAL_STROKE),
                 );
             }
             if let Some(next) = changes.get(index + 1) {
@@ -2152,7 +2152,7 @@ fn draw_waveform(
                             pos2(x, bit_y(rect, get_bit(&change.bits, bit_offset))),
                             pos2(x, bit_y(rect, get_bit(&next.bits, bit_offset))),
                         ],
-                        Stroke::new(1.5, Color32::LIGHT_GREEN),
+                        Stroke::new(1.5, COLOR_WAVE_SIGNAL_STROKE),
                     );
                 }
             }
@@ -2224,7 +2224,7 @@ fn draw_analog_waveform(
                 pos2(time_to_x(rect, segment_start, time_view_start, pixels_per_time), y),
                 pos2(time_to_x(rect, segment_end, time_view_start, pixels_per_time), y),
             ],
-            Stroke::new(1.5, Color32::LIGHT_GREEN),
+            Stroke::new(1.5, COLOR_WAVE_SIGNAL_STROKE),
         );
         if let Some((next_time, next_value)) = values.get(index + 1).copied() {
             let transition_time = next_time as f32;
@@ -2232,7 +2232,7 @@ fn draw_analog_waveform(
                 let x = time_to_x(rect, transition_time, time_view_start, pixels_per_time);
                 painter.line_segment(
                     [pos2(x, y), pos2(x, value_y(next_value))],
-                    Stroke::new(1.5, Color32::LIGHT_GREEN),
+                    Stroke::new(1.5, COLOR_WAVE_SIGNAL_STROKE),
                 );
             }
         }
@@ -2242,7 +2242,7 @@ fn draw_analog_waveform(
         Align2::LEFT_TOP,
         format!("{min_value:.0}..{max_value:.0}"),
         FontId::monospace(10.0),
-        Color32::GRAY,
+        COLOR_TEXT_MUTED,
     );
 }
 
@@ -2267,14 +2267,6 @@ fn numeric_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) -
     }
 }
 
-fn enum_tag_width(variant_count: usize) -> usize {
-    if variant_count <= 1 {
-        0
-    } else {
-        usize::BITS as usize - (variant_count - 1).leading_zeros() as usize
-    }
-}
-
 fn draw_insert_line_for_targets(ui: &Ui, target_index: usize, targets: &[DropTarget], width: f32, fallback_y: f32) {
     let target = targets.get(target_index);
     let anchor = target
@@ -2296,7 +2288,7 @@ fn draw_insert_line_for_targets(ui: &Ui, target_index: usize, targets: &[DropTar
     ));
     painter.line_segment(
         [pos2(left, anchor), pos2(right, anchor)],
-        Stroke::new(3.0, Color32::from_rgb(255, 70, 70)),
+        Stroke::new(3.0, COLOR_DRAG_INSERT),
     );
     painter.add(Shape::convex_polygon(
         vec![
@@ -2304,7 +2296,7 @@ fn draw_insert_line_for_targets(ui: &Ui, target_index: usize, targets: &[DropTar
             pos2(left, anchor + 5.0),
             pos2(left + 8.0, anchor),
         ],
-        Color32::from_rgb(255, 70, 70),
+        COLOR_DRAG_INSERT,
         Stroke::NONE,
     ));
 }
@@ -2323,7 +2315,7 @@ fn draw_disclosure_icon(painter: &egui::Painter, rect: Rect, expanded: bool) {
             pos2(rect.right() - 2.0, rect.center().y),
         ]
     };
-    painter.add(Shape::convex_polygon(points, Color32::LIGHT_GRAY, Stroke::NONE));
+    painter.add(Shape::convex_polygon(points, COLOR_TEXT_PRIMARY, Stroke::NONE));
 }
 
 fn is_composite(ty: &WaveSignalType) -> bool {
@@ -2353,16 +2345,10 @@ fn draw_bus_segment(
     let x1 = time_to_x(rect, end_time, time_view_start, pixels_per_time);
     let y0 = rect.top() + 5.0;
     let y1 = rect.bottom() - 5.0;
-    painter.line_segment([pos2(x0, y0), pos2(x1, y0)], Stroke::new(1.0, Color32::LIGHT_BLUE));
-    painter.line_segment([pos2(x0, y1), pos2(x1, y1)], Stroke::new(1.0, Color32::LIGHT_BLUE));
-    painter.line_segment(
-        [pos2(x0, y0), pos2(x0 + 4.0, y1)],
-        Stroke::new(1.0, Color32::LIGHT_BLUE),
-    );
-    painter.line_segment(
-        [pos2(x0, y1), pos2(x0 + 4.0, y0)],
-        Stroke::new(1.0, Color32::LIGHT_BLUE),
-    );
+    painter.line_segment([pos2(x0, y0), pos2(x1, y0)], Stroke::new(1.0, COLOR_STATUS_TEXT));
+    painter.line_segment([pos2(x0, y1), pos2(x1, y1)], Stroke::new(1.0, COLOR_STATUS_TEXT));
+    painter.line_segment([pos2(x0, y0), pos2(x0 + 4.0, y1)], Stroke::new(1.0, COLOR_STATUS_TEXT));
+    painter.line_segment([pos2(x0, y1), pos2(x0 + 4.0, y0)], Stroke::new(1.0, COLOR_STATUS_TEXT));
 
     let segment_width = x1 - x0;
     let estimated_text_width = label.len() as f32 * 7.0;
@@ -2373,7 +2359,7 @@ fn draw_bus_segment(
             Align2::CENTER_CENTER,
             label,
             FontId::monospace(11.0),
-            Color32::WHITE,
+            COLOR_TEXT_STRONG,
         );
     }
 }
@@ -2427,124 +2413,10 @@ fn composite_children(ty: &WaveSignalType) -> Vec<(String, WaveSignalType, usize
     result
 }
 
-fn format_value_for_type_with_radix(bits: &[u8], bit_offset: usize, ty: &WaveSignalType, radix: WaveRadix) -> String {
-    match ty {
-        WaveSignalType::Bool => {
-            if get_bit(bits, bit_offset) {
-                "true".to_owned()
-            } else {
-                "false".to_owned()
-            }
-        }
-        &WaveSignalType::Int { signed, width } => format_int_value(bits, bit_offset, width, signed, radix),
-        WaveSignalType::Array { len, element } => {
-            let stride = element.bit_len();
-            let elements = (0..*len)
-                .map(|index| format_value_for_type_with_radix(bits, bit_offset + index * stride, element, radix))
-                .collect::<Vec<_>>();
-            format!("[{}]", elements.join(", "))
-        }
-        WaveSignalType::Tuple(elements) => {
-            let mut offset = bit_offset;
-            let values = elements
-                .iter()
-                .map(|element| {
-                    let value = format_value_for_type_with_radix(bits, offset, element, radix);
-                    offset += element.bit_len();
-                    value
-                })
-                .collect::<Vec<_>>();
-            if values.len() == 1 {
-                format!("({},)", values[0])
-            } else {
-                format!("({})", values.join(", "))
-            }
-        }
-        WaveSignalType::Struct { name, fields } => {
-            let mut offset = bit_offset;
-            let values = fields
-                .iter()
-                .map(|(field_name, field_ty)| {
-                    let value = format_value_for_type_with_radix(bits, offset, field_ty, radix);
-                    offset += field_ty.bit_len();
-                    format!("{field_name}={value}")
-                })
-                .collect::<Vec<_>>();
-            format!("{name}.new({})", values.join(", "))
-        }
-        WaveSignalType::Enum { name, variants } => {
-            let tag_width = enum_tag_width(variants.len());
-            let tag = get_unsigned(bits, bit_offset, tag_width) as usize;
-            let Some((variant_name, payload_ty)) = variants.get(tag) else {
-                return format!("{name}.<invalid {tag}>");
-            };
-            match payload_ty {
-                Some(payload_ty) => {
-                    let payload = format_value_for_type_with_radix(bits, bit_offset + tag_width, payload_ty, radix);
-                    format!("{name}.{variant_name}({payload})")
-                }
-                None => format!("{name}.{variant_name}"),
-            }
-        }
-    }
-}
-
-fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool, radix: WaveRadix) -> String {
-    if width == 0 {
-        return "0".to_owned();
-    }
-    match radix {
-        WaveRadix::Bin => return format!("0b{}", bit_string(bits, bit_offset, width)),
-        WaveRadix::Hex => return format_hex_value(bits, bit_offset, width),
-        WaveRadix::Dec => {}
-    }
-    if width > 128 {
-        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
-    }
-    let value = get_unsigned(bits, bit_offset, width);
-    if signed && width < 128 && get_bit(bits, bit_offset + width - 1) {
-        let signed_value = value as i128 - (1i128 << width);
-        signed_value.to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-fn bit_string(bits: &[u8], bit_offset: usize, width: usize) -> String {
-    (0..width)
-        .rev()
-        .map(|index| if get_bit(bits, bit_offset + index) { '1' } else { '0' })
-        .collect()
-}
-
-fn format_hex_value(bits: &[u8], bit_offset: usize, width: usize) -> String {
-    if width > 128 {
-        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
-    }
-    let value = get_unsigned(bits, bit_offset, width);
-    let digits = width.div_ceil(4).max(1);
-    format!("0x{value:0digits$x}")
-}
-
-fn get_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
-    let mut value = 0u128;
-    for i in 0..bit_len.min(128) {
-        if get_bit(bits, bit_offset + i) {
-            value |= 1u128 << i;
-        }
-    }
-    value
-}
-
-fn get_bit(bits: &[u8], bit: usize) -> bool {
-    bits.get(bit / 8).is_some_and(|byte| ((byte >> (bit % 8)) & 1) != 0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{WaveGuiApp, WaveRadix, format_value_for_type_with_radix};
+    use super::WaveGuiApp;
     use crate::rows::WaveRowKind;
-    use hwl_language::sim::recorder::WaveSignalType;
     use std::collections::BTreeSet;
 
     #[test]
@@ -2563,21 +2435,5 @@ mod tests {
         assert!(matches!(app.rows[1].kind, WaveRowKind::Spacer { parent: None }));
         assert!(matches!(app.rows[2].kind, WaveRowKind::Signal { .. }));
         assert!(matches!(app.rows[3].kind, WaveRowKind::Spacer { parent: None }));
-    }
-
-    #[test]
-    fn radix_formatting_changes_integer_display() {
-        let ty = WaveSignalType::Int {
-            signed: false,
-            width: 8,
-        };
-        let bits = [0xab];
-
-        assert_eq!(format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Dec), "171");
-        assert_eq!(format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Hex), "0xab");
-        assert_eq!(
-            format_value_for_type_with_radix(&bits, 0, &ty, WaveRadix::Bin),
-            "0b10101011"
-        );
     }
 }

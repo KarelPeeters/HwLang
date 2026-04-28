@@ -1,5 +1,10 @@
-use crate::consts::{CURSOR_COLOR, CURSOR_STATS_COLUMN_WIDTH, MAX_PIXELS_PER_TIME, MIN_PIXELS_PER_TIME};
-use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+use crate::consts::{
+    COLOR_CURSOR, COLOR_CURSOR_DELETE_BORDER, COLOR_CURSOR_STATS_BG, COLOR_CURSOR_STATS_BORDER, COLOR_TEXT_MUTED,
+    COLOR_TEXT_STRONG, COLOR_TIME_GRID, COLOR_TIME_SCROLL_BORDER, COLOR_TIME_SCROLL_HANDLE_FILL,
+    COLOR_TIME_SCROLL_HANDLE_STROKE, COLOR_TIME_SCROLL_TRACK, COLOR_ZOOM_SHADE, CURSOR_STATS_COLUMN_WIDTH,
+    MAX_PIXELS_PER_TIME, MIN_PIXELS_PER_TIME,
+};
+use eframe::egui::{self, Align2, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use hwl_language::sim::recorder::WaveChange;
 
 #[derive(Debug, Copy, Clone)]
@@ -91,10 +96,10 @@ pub fn draw_time_view_range(
         Align2::LEFT_CENTER,
         format!("Visible {:.0}..{:.0} / {max_time}", *time_view_start, visible_end),
         FontId::proportional(12.0),
-        Color32::GRAY,
+        COLOR_TEXT_MUTED,
     );
-    painter.rect_filled(track_rect, 3.0, Color32::from_gray(28));
-    painter.rect_stroke(track_rect, 3.0, Stroke::new(1.0, Color32::from_gray(62)));
+    painter.rect_filled(track_rect, 3.0, COLOR_TIME_SCROLL_TRACK);
+    painter.rect_stroke(track_rect, 3.0, Stroke::new(1.0, COLOR_TIME_SCROLL_BORDER));
 
     let handle_left = track_rect.left() + (*time_view_start / max_time_f) * track_rect.width();
     let handle_right = track_rect.left() + (visible_end / max_time_f) * track_rect.width();
@@ -105,8 +110,8 @@ pub fn draw_time_view_range(
             track_rect.center().y + 7.0,
         ),
     );
-    painter.rect_filled(handle_rect, 3.0, Color32::from_rgba_premultiplied(110, 130, 170, 120));
-    painter.rect_stroke(handle_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(130, 150, 190)));
+    painter.rect_filled(handle_rect, 3.0, COLOR_TIME_SCROLL_HANDLE_FILL);
+    painter.rect_stroke(handle_rect, 3.0, Stroke::new(1.0, COLOR_TIME_SCROLL_HANDLE_STROKE));
 }
 
 pub fn draw_time_axis(
@@ -127,7 +132,7 @@ pub fn draw_time_axis(
     let painter = ui.painter_at(rect);
     painter.line_segment(
         [pos2(rect.left(), rect.bottom()), pos2(rect.right(), rect.bottom())],
-        Stroke::new(1.0, Color32::GRAY),
+        Stroke::new(1.0, COLOR_TEXT_MUTED),
     );
     draw_time_grid(&painter, rect, pixels_per_time, time_view_start, max_time);
 
@@ -140,14 +145,14 @@ pub fn draw_time_axis(
         }
         painter.line_segment(
             [pos2(x, rect.bottom()), pos2(x, rect.bottom() - 6.0)],
-            Stroke::new(1.0, Color32::GRAY),
+            Stroke::new(1.0, COLOR_TEXT_MUTED),
         );
         painter.text(
             pos2(x + 2.0, rect.top()),
             Align2::LEFT_TOP,
             t.to_string(),
             FontId::monospace(11.0),
-            Color32::GRAY,
+            COLOR_TEXT_MUTED,
         );
         t = t.saturating_add(tick_step);
     }
@@ -160,14 +165,14 @@ pub fn draw_cursor_stats_header(ui: &mut Ui, axis_rect: Rect, cursor_time: u64, 
         pos2(axis_rect.left(), axis_rect.bottom()),
     );
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(24, 24, 28));
+    painter.rect_filled(rect, 0.0, COLOR_CURSOR_STATS_BG);
     painter.line_segment(
         [rect.left_top(), rect.left_bottom()],
-        Stroke::new(1.0, Color32::from_gray(58)),
+        Stroke::new(1.0, COLOR_CURSOR_STATS_BORDER),
     );
     painter.line_segment(
         [rect.right_top(), rect.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(58)),
+        Stroke::new(1.0, COLOR_CURSOR_STATS_BORDER),
     );
 
     let delete_rect = Rect::from_min_size(rect.min + vec2(2.0, 3.0), vec2(18.0, rect.height() - 6.0));
@@ -182,9 +187,9 @@ pub fn draw_cursor_stats_header(ui: &mut Ui, axis_rect: Rect, cursor_time: u64, 
         Stroke::new(
             1.0,
             if delete_response.hovered() {
-                CURSOR_COLOR
+                COLOR_CURSOR
             } else {
-                Color32::from_gray(90)
+                COLOR_CURSOR_DELETE_BORDER
             },
         ),
     );
@@ -193,7 +198,7 @@ pub fn draw_cursor_stats_header(ui: &mut Ui, axis_rect: Rect, cursor_time: u64, 
         Align2::CENTER_CENTER,
         "×",
         FontId::proportional(13.0),
-        CURSOR_COLOR,
+        COLOR_CURSOR,
     );
 
     let delta = cursor_delta(cursor_time, secondary_cursor_time);
@@ -207,7 +212,7 @@ pub fn draw_cursor_stats_header(ui: &mut Ui, axis_rect: Rect, cursor_time: u64, 
             Align2::LEFT_CENTER,
             format!("t2:{secondary_cursor_time} Δ:{delta:+}"),
             FontId::monospace(10.5),
-            CURSOR_COLOR,
+            COLOR_CURSOR,
         );
 
     delete_response.clicked()
@@ -274,7 +279,7 @@ pub fn draw_time_grid(painter: &egui::Painter, rect: Rect, pixels_per_time: f32,
         }
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(42)),
+            Stroke::new(1.0, COLOR_TIME_GRID),
         );
         t = t.saturating_add(tick_step);
     }
@@ -289,7 +294,7 @@ pub fn draw_cursor(painter: &egui::Painter, rect: Rect, cursor_time: u64, pixels
     if x >= rect.left() && x <= rect.right() {
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.5, CURSOR_COLOR),
+            Stroke::new(1.5, COLOR_CURSOR),
         );
     }
 }
@@ -308,7 +313,7 @@ pub fn draw_dotted_cursor(
     let mut y = rect.top();
     while y < rect.bottom() {
         let y_end = (y + 7.0).min(rect.bottom());
-        painter.line_segment([pos2(x, y), pos2(x, y_end)], Stroke::new(2.5, CURSOR_COLOR));
+        painter.line_segment([pos2(x, y), pos2(x, y_end)], Stroke::new(2.5, COLOR_CURSOR));
         y += 12.0;
     }
 }
@@ -328,20 +333,20 @@ pub fn draw_zoom_selection(
     painter.rect_filled(
         Rect::from_min_max(rect.left_top(), pos2(left, rect.bottom())),
         0.0,
-        Color32::from_rgba_premultiplied(0, 0, 0, 110),
+        COLOR_ZOOM_SHADE,
     );
     painter.rect_filled(
         Rect::from_min_max(pos2(right, rect.top()), rect.right_bottom()),
         0.0,
-        Color32::from_rgba_premultiplied(0, 0, 0, 110),
+        COLOR_ZOOM_SHADE,
     );
     painter.line_segment(
         [pos2(left, rect.top()), pos2(left, rect.bottom())],
-        Stroke::new(2.0, Color32::WHITE),
+        Stroke::new(2.0, COLOR_TEXT_STRONG),
     );
     painter.line_segment(
         [pos2(right, rect.top()), pos2(right, rect.bottom())],
-        Stroke::new(2.0, Color32::WHITE),
+        Stroke::new(2.0, COLOR_TEXT_STRONG),
     );
 }
 
