@@ -9,7 +9,7 @@ workspace = true
 
 [features]
 wrap_verilator = ["dep:dlopen2"]
-wrap_cpp = ["dep:dlopen2"]
+wrap_cpp = ["dep:dlopen2", "dep:inkwell"]
 
 [dependencies]
 hwl_util.workspace = true
@@ -21,6 +21,7 @@ derive_more.workspace = true
 dlopen2 = { workspace = true, optional = true }
 fnv.workspace = true
 indexmap = { workspace = true, features = ["serde"] }
+inkwell = { workspace = true, optional = true }
 itertools.workspace = true
 lalrpop-util.workspace = true
 lazy_static.workspace = true

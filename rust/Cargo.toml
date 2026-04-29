@@ -37,6 +37,7 @@ fluent-uri = "0.1.4"
 fnv = "1.0.7"
 getrandom = "0.2.15" # keep in sync with random
 indexmap = "2.2.6"
+inkwell = { version = "0.9.0", default-features = false, features = ["llvm20-1-force-static", "target-x86"] }
 itertools = "0.13.0"
 lalrpop = { version = "0.20.2", features = [] }
 lalrpop-util = { version = "0.20.2", features = [] }

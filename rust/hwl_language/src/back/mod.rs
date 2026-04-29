@@ -1,5 +1,7 @@
 mod cpp_bits;
 
+#[cfg(feature = "wrap_cpp")]
+pub mod lower_llvm;
 pub mod lower_verilog;
 
 pub mod lower_verilator;

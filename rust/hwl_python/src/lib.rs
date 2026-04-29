@@ -1,8 +1,7 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use hwl_language::back::lower_cpp::lower_to_cpp;
-use hwl_language::back::lower_cpp_wrap::{LoweredCppWrap, lower_cpp_wrap};
+use hwl_language::back::lower_llvm::{LoweredLlvm, lower_to_llvm_object};
 use hwl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
 use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_cpp::{
@@ -972,32 +971,24 @@ impl Module {
             )));
         }
 
-        let (ir_database, ir_module, source_cpp) = self.lower_cpp_impl(py)?;
-        let lowered_wrap = lower_cpp_wrap(&ir_database.modules, ir_module, &source_cpp);
-        let LoweredCppWrap {
-            source: source_wrapper,
-            check_hash,
-        } = lowered_wrap;
-
-        let name_lowered = "lowered.cpp";
-        let name_wrapper = "wrapper.cpp";
+        let (ir_database, ir_module) = self.lower_ir_impl(py)?;
+        let name_object = "lowered.o";
         let name_so = "sim_cpp.so";
+        let path_object = build_dir.join(name_object);
         let path_so = build_dir.join(name_so);
-        std::fs::write(build_dir.join(name_lowered), &source_cpp)?;
-        std::fs::write(build_dir.join(name_wrapper), &source_wrapper)?;
+        let LoweredLlvm { check_hash, signals: _ } =
+            lower_to_llvm_object(&ir_database.modules, ir_module, &path_object)
+                .map_err(|e| VerilationException::new_err(format!("LLVM lowering failed: {e}")))?;
 
         py.allow_threads::<PyResult<()>, _>(|| {
             run_command(
-                Command::new("g++")
-                    .arg("-O0")
-                    .arg("-fPIC")
+                Command::new("clang")
                     .arg("-shared")
-                    .arg("-std=c++17")
-                    .arg(name_wrapper)
+                    .arg(name_object)
                     .arg("-o")
                     .arg(name_so),
                 build_dir,
-                "g++",
+                "clang",
             )
         })?;
 
@@ -1073,19 +1064,6 @@ impl Module {
         let lowered = lower_to_verilog(&diags, &ir_database, &[ir_module]);
         let lowered = map_diag_error(py, &diags, source, lowered)?;
 
-        Ok((ir_database, ir_module, lowered))
-    }
-
-    fn lower_cpp_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, String)> {
-        let (ir_database, ir_module) = self.lower_ir_impl(py)?;
-        let compile = self.compile.borrow(py);
-        let parsed_ref = compile.parsed.borrow(py);
-        let source_ref = parsed_ref.source.borrow(py);
-        let source = &source_ref.source;
-
-        let diags = Diagnostics::new();
-        let lowered = lower_to_cpp(&diags, &ir_database.modules, &[ir_module]);
-        let lowered = map_diag_error(py, &diags, source, lowered)?;
         Ok((ir_database, ir_module, lowered))
     }
 }
