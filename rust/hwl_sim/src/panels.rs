@@ -3,6 +3,7 @@ use crate::consts::{
     COLOR_TRANSPARENT,
 };
 use crate::rows::WaveRow;
+use crate::state::SelectionState;
 use crate::widgets::draw_disclosure_icon;
 use eframe::egui::{Align2, FontId, Rect, Sense, Ui, pos2, vec2};
 use hwl_language::sim::recorder::{WaveSignalKind, WaveStore};
@@ -16,10 +17,8 @@ struct TreeHeaderResult {
 pub fn draw_hierarchy(
     ui: &mut Ui,
     store: &WaveStore,
-    selected_modules: &mut BTreeSet<Vec<String>>,
-    last_selected_module: &mut Option<Vec<String>>,
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
+    module_selection: &mut SelectionState<Vec<String>>,
+    signal_selection: &mut SelectionState<usize>,
     collapsed_hierarchy: &mut BTreeSet<String>,
     prefix: &[String],
 ) {
@@ -45,25 +44,22 @@ pub fn draw_hierarchy(
             &child,
             &key,
             &next_prefix,
-            selected_modules,
+            &module_selection.selected,
             collapsed_hierarchy,
             has_submodules,
             0,
         );
         if header.clicked {
-            update_module_selection(ui, store, &next_prefix, selected_modules, last_selected_module);
-            selected_signals.clear();
-            *last_selected_signal = None;
+            update_module_selection(ui, store, &next_prefix, module_selection);
+            signal_selection.clear();
         }
         if header.expanded {
             ui.indent(key, |ui| {
                 draw_hierarchy(
                     ui,
                     store,
-                    selected_modules,
-                    last_selected_module,
-                    selected_signals,
-                    last_selected_signal,
+                    module_selection,
+                    signal_selection,
                     collapsed_hierarchy,
                     &next_prefix,
                 )
@@ -78,13 +74,11 @@ pub fn draw_signal_panel_row(
     visible_signals: &[usize],
     signal_id: usize,
     rows: &[WaveRow],
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
-    dragging_signals: &mut Vec<usize>,
-) {
+    signal_selection: &mut SelectionState<usize>,
+) -> Option<Vec<usize>> {
     let signal = &store.signals[signal_id];
     let already_added = rows.iter().any(|row| row.signal_id() == Some(signal.id));
-    let selected = selected_signals.contains(&signal.id);
+    let selected = signal_selection.selected.contains(&signal.id);
     let row_height = 22.0;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click_and_drag());
     if selected {
@@ -113,16 +107,15 @@ pub fn draw_signal_panel_row(
         COLOR_TEXT_PRIMARY,
     );
     if response.clicked() {
-        update_signal_selection(ui, visible_signals, signal.id, selected_signals, last_selected_signal);
+        update_signal_selection(ui, visible_signals, signal.id, signal_selection);
     }
     if response.drag_started() || response.dragged() {
-        if !selected_signals.contains(&signal.id) {
-            selected_signals.clear();
-            selected_signals.insert(signal.id);
-            *last_selected_signal = Some(signal.id);
+        if !signal_selection.selected.contains(&signal.id) {
+            signal_selection.select_only(signal.id);
         }
-        *dragging_signals = selected_signals.iter().copied().collect();
+        return Some(signal_selection.selected.iter().copied().collect());
     }
+    None
 }
 
 fn draw_module_header(
@@ -244,69 +237,15 @@ fn update_signal_selection(
     ui: &Ui,
     visible_signals: &[usize],
     signal_id: usize,
-    selected_signals: &mut BTreeSet<usize>,
-    last_selected_signal: &mut Option<usize>,
+    selection: &mut SelectionState<usize>,
 ) {
     let modifiers = ui.input(|input| input.modifiers);
-    if modifiers.shift {
-        if let Some(anchor) = *last_selected_signal {
-            let start = visible_signals.iter().position(|candidate| *candidate == anchor);
-            let end = visible_signals.iter().position(|candidate| *candidate == signal_id);
-            if let (Some(start), Some(end)) = (start, end) {
-                let (start, end) = if start <= end { (start, end) } else { (end, start) };
-                for visible_signal in &visible_signals[start..=end] {
-                    selected_signals.insert(*visible_signal);
-                }
-            } else {
-                selected_signals.insert(signal_id);
-            }
-        } else {
-            selected_signals.insert(signal_id);
-        }
-    } else if modifiers.ctrl || modifiers.command {
-        if !selected_signals.remove(&signal_id) {
-            selected_signals.insert(signal_id);
-        }
-        *last_selected_signal = Some(signal_id);
-    } else {
-        selected_signals.clear();
-        selected_signals.insert(signal_id);
-        *last_selected_signal = Some(signal_id);
-    }
+    selection.apply_visible_selection(signal_id, visible_signals, modifiers, false);
 }
 
-fn update_module_selection(
-    ui: &Ui,
-    store: &WaveStore,
-    path: &[String],
-    selected_modules: &mut BTreeSet<Vec<String>>,
-    last_selected_module: &mut Option<Vec<String>>,
-) {
+fn update_module_selection(ui: &Ui, store: &WaveStore, path: &[String], selection: &mut SelectionState<Vec<String>>) {
     let modifiers = ui.input(|input| input.modifiers);
     let path = path.to_owned();
-    if modifiers.shift {
-        if let Some(anchor) = last_selected_module.clone() {
-            let paths = module_paths(store);
-            let start = paths.iter().position(|candidate| candidate == &anchor);
-            let end = paths.iter().position(|candidate| candidate == &path);
-            if let (Some(start), Some(end)) = (start, end) {
-                let (start, end) = if start <= end { (start, end) } else { (end, start) };
-                for module_path in &paths[start..=end] {
-                    selected_modules.insert(module_path.clone());
-                }
-            } else {
-                selected_modules.insert(path.clone());
-            }
-        } else {
-            selected_modules.insert(path.clone());
-        }
-    } else if modifiers.ctrl || modifiers.command {
-        if !selected_modules.remove(&path) {
-            selected_modules.insert(path.clone());
-        }
-    } else {
-        selected_modules.clear();
-        selected_modules.insert(path.clone());
-    }
-    *last_selected_module = Some(path);
+    let paths = module_paths(store);
+    selection.apply_visible_selection(path, &paths, modifiers, true);
 }

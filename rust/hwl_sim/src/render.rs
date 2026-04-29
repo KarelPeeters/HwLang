@@ -1,7 +1,8 @@
+use crate::bits::{get_bit, get_unsigned};
 use crate::consts::{
     COLOR_SEPARATOR_STROKE, COLOR_STATUS_TEXT, COLOR_TEXT_MUTED, COLOR_TEXT_STRONG, COLOR_WAVE_SIGNAL_STROKE,
 };
-use crate::format::{WaveRadix, format_value_for_type_with_radix, get_bit, get_unsigned};
+use crate::format::{WaveRadix, format_value_for_type_with_radix};
 use crate::time::{draw_time_grid, time_to_x};
 use eframe::egui::{self, Align2, FontId, Rect, Stroke, pos2, vec2};
 use hwl_language::sim::recorder::{WaveChange, WaveSignalType};

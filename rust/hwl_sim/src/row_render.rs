@@ -5,10 +5,12 @@ use crate::consts::{
     COLOR_TEXT_PRIMARY, COLOR_TEXT_STRONG, COLOR_WAVE_EVEN_BG, COLOR_WAVE_EXPANDED_BG, COLOR_WAVE_ODD_BG,
     COLOR_WAVE_SUBSECTION_BG, CURSOR_STATS_COLUMN_WIDTH, ROW_HEIGHT,
 };
-use crate::format::{enum_tag_width, format_value_for_type_with_radix};
+use crate::format::format_value_for_type_with_radix;
 use crate::render::{WaveDisplayOptions, draw_waveform};
 use crate::rows::{DropTarget, VisibleWaveRow, WaveRow, WaveRowKey, WaveRowKind};
+use crate::state::SelectionState;
 use crate::time::{edge_counts, time_from_pointer, wave_content_width};
+use crate::type_layout::composite_children;
 use crate::widgets::draw_disclosure_icon;
 use eframe::egui::{self, Align2, FontId, Key, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use hwl_language::sim::recorder::{WaveSignal, WaveSignalType, WaveStore};
@@ -40,16 +42,60 @@ pub struct SignalRowsResult {
     pub context_key: Option<WaveRowKey>,
 }
 
-pub fn update_subsection_selection(ui: &Ui, key: WaveRowKey, selected_subsections: &mut BTreeSet<WaveRowKey>) {
+#[derive(Clone, Copy)]
+pub struct WaveViewport {
+    pub pixels_per_time: f32,
+    pub time_view_start: f32,
+    pub max_time: u64,
+    pub label_width: f32,
+    pub wave_width: f32,
+}
+
+pub struct SignalRenderContext<'a> {
+    pub store: &'a WaveStore,
+    pub expanded_rows: &'a BTreeSet<WaveRowKey>,
+    pub selected_subsections: &'a BTreeSet<WaveRowKey>,
+    pub display_options: &'a BTreeMap<WaveRowKey, WaveDisplayOptions>,
+    pub cursor_time: u64,
+    pub secondary_cursor_time: Option<u64>,
+    pub viewport: WaveViewport,
+}
+
+#[derive(Clone, Copy)]
+pub struct SignalRowState {
+    pub row_id: u64,
+    pub row_index: usize,
+    pub selected: bool,
+    pub dragging: bool,
+    pub group_depth: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SignalTreeState {
+    row_index: usize,
+    selected: bool,
+    dragging: bool,
+    can_reorder: bool,
+    depth: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SignalLeafState {
+    row_index: usize,
+    selected: bool,
+    dragging: bool,
+    expandable: bool,
+    expanded: bool,
+    key: WaveRowKey,
+    can_reorder: bool,
+    depth: usize,
+    subsection_selected: bool,
+    display_options: WaveDisplayOptions,
+}
+
+pub fn update_subsection_selection(ui: &Ui, key: WaveRowKey, selected_subsections: &mut SelectionState<WaveRowKey>) {
     let modifiers = ui.input(|input| input.modifiers);
-    if modifiers.ctrl || modifiers.command {
-        if !selected_subsections.remove(&key) {
-            selected_subsections.insert(key);
-        }
-    } else {
-        selected_subsections.clear();
-        selected_subsections.insert(key);
-    }
+    selected_subsections.apply_single_selection(key, modifiers);
 }
 
 pub fn draw_group_row(
@@ -304,26 +350,12 @@ pub fn group_pointer_drag_started(ui: &Ui, rect: Rect) -> bool {
 
 pub fn draw_signal_rows(
     ui: &mut Ui,
-    store: &WaveStore,
     signal: &WaveSignal,
-    row_id: u64,
-    row_index: usize,
-    selected: bool,
-    dragging: bool,
-    expanded_rows: &BTreeSet<WaveRowKey>,
-    selected_subsections: &BTreeSet<WaveRowKey>,
-    display_options: &BTreeMap<WaveRowKey, WaveDisplayOptions>,
-    cursor_time: u64,
-    secondary_cursor_time: Option<u64>,
-    pixels_per_time: f32,
-    time_view_start: f32,
-    max_time: u64,
-    group_depth: usize,
-    label_width: f32,
-    wave_width: f32,
+    row: SignalRowState,
+    ctx: &SignalRenderContext<'_>,
 ) -> SignalRowsResult {
     let key = WaveRowKey {
-        row_id,
+        row_id: row.row_id,
         signal_id: signal.id,
         bit_offset: 0,
         bit_len: signal.bit_len,
@@ -331,76 +363,49 @@ pub fn draw_signal_rows(
     };
     draw_signal_tree(
         ui,
-        store,
         signal,
         &format!("{}.{}", signal.path.join("."), signal.name),
         &signal.ty,
         key,
-        row_index,
-        selected,
-        dragging,
-        true,
-        group_depth,
-        expanded_rows,
-        selected_subsections,
-        display_options,
-        cursor_time,
-        secondary_cursor_time,
-        pixels_per_time,
-        time_view_start,
-        max_time,
-        label_width,
-        wave_width,
+        SignalTreeState {
+            row_index: row.row_index,
+            selected: row.selected,
+            dragging: row.dragging,
+            can_reorder: true,
+            depth: row.group_depth,
+        },
+        ctx,
     )
 }
 
 fn draw_signal_tree(
     ui: &mut Ui,
-    store: &WaveStore,
     signal: &WaveSignal,
     label: &str,
     ty: &WaveSignalType,
     key: WaveRowKey,
-    row_index: usize,
-    selected: bool,
-    dragging: bool,
-    can_reorder: bool,
-    depth: usize,
-    expanded_rows: &BTreeSet<WaveRowKey>,
-    selected_subsections: &BTreeSet<WaveRowKey>,
-    display_options: &BTreeMap<WaveRowKey, WaveDisplayOptions>,
-    cursor_time: u64,
-    secondary_cursor_time: Option<u64>,
-    pixels_per_time: f32,
-    time_view_start: f32,
-    max_time: u64,
-    label_width: f32,
-    wave_width: f32,
+    state: SignalTreeState,
+    ctx: &SignalRenderContext<'_>,
 ) -> SignalRowsResult {
-    let expanded = is_composite(ty) && expanded_rows.contains(&key);
+    let expanded = is_composite(ty) && ctx.expanded_rows.contains(&key);
     let leaf = draw_signal_leaf(
         ui,
-        store,
         signal,
         label,
         ty,
-        row_index,
-        selected && can_reorder,
-        dragging,
-        is_composite(ty),
-        expanded,
-        key,
-        can_reorder,
-        depth,
-        selected_subsections.contains(&key),
-        display_options.get(&key).copied().unwrap_or_default(),
-        cursor_time,
-        secondary_cursor_time,
-        pixels_per_time,
-        time_view_start,
-        max_time,
-        label_width,
-        wave_width,
+        SignalLeafState {
+            row_index: state.row_index,
+            selected: state.selected && state.can_reorder,
+            dragging: state.dragging,
+            expandable: is_composite(ty),
+            expanded,
+            key,
+            can_reorder: state.can_reorder,
+            depth: state.depth,
+            subsection_selected: ctx.selected_subsections.contains(&key),
+            display_options: ctx.display_options.get(&key).copied().unwrap_or_default(),
+        },
+        ctx,
     );
     let mut result = SignalRowsResult {
         primary: leaf.clone(),
@@ -415,36 +420,28 @@ fn draw_signal_tree(
     };
 
     if expanded {
-        for (child_index, (name, child_ty, offset, len)) in composite_children(ty).into_iter().enumerate() {
+        for (child_index, child_info) in composite_children(ty).into_iter().enumerate() {
             let child_key = WaveRowKey {
                 signal_id: signal.id,
                 row_id: key.row_id,
-                bit_offset: key.bit_offset + offset,
-                bit_len: len.max(child_ty.bit_len()),
+                bit_offset: key.bit_offset + child_info.bit_offset,
+                bit_len: child_info.bit_len.max(child_info.ty.bit_len()),
                 part: key.part.wrapping_mul(131).wrapping_add(child_index as u64 + 1),
             };
             let child = draw_signal_tree(
                 ui,
-                store,
                 signal,
-                &name,
-                &child_ty,
+                &child_info.name,
+                &child_info.ty,
                 child_key,
-                row_index,
-                false,
-                dragging,
-                false,
-                depth + 1,
-                expanded_rows,
-                selected_subsections,
-                display_options,
-                cursor_time,
-                secondary_cursor_time,
-                pixels_per_time,
-                time_view_start,
-                max_time,
-                label_width,
-                wave_width,
+                SignalTreeState {
+                    row_index: state.row_index,
+                    selected: false,
+                    dragging: state.dragging,
+                    can_reorder: false,
+                    depth: state.depth + 1,
+                },
+                ctx,
             );
             result.all_rect = result.all_rect.union(child.all_rect);
             result.all_label_rect = result.all_label_rect.union(child.all_label_rect);
@@ -470,91 +467,89 @@ fn draw_signal_tree(
 
 fn draw_signal_leaf(
     ui: &mut Ui,
-    store: &WaveStore,
     signal: &WaveSignal,
     label: &str,
     ty: &WaveSignalType,
-    row_index: usize,
-    selected: bool,
-    dragging: bool,
-    expandable: bool,
-    expanded: bool,
-    key: WaveRowKey,
-    can_reorder: bool,
-    depth: usize,
-    subsection_selected: bool,
-    display_options: WaveDisplayOptions,
-    cursor_time: u64,
-    secondary_cursor_time: Option<u64>,
-    pixels_per_time: f32,
-    time_view_start: f32,
-    max_time: u64,
-    label_width: f32,
-    wave_width: f32,
+    state: SignalLeafState,
+    ctx: &SignalRenderContext<'_>,
 ) -> RowResult {
-    let (row_rect, _) = ui.allocate_exact_size(vec2(label_width + wave_width, ROW_HEIGHT), Sense::hover());
-    let label_rect = Rect::from_min_size(row_rect.min, vec2(label_width, ROW_HEIGHT));
-    let content_wave_width = wave_content_width(time_view_start, pixels_per_time, wave_width, max_time);
+    let viewport = ctx.viewport;
+    let (row_rect, _) = ui.allocate_exact_size(
+        vec2(viewport.label_width + viewport.wave_width, ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let label_rect = Rect::from_min_size(row_rect.min, vec2(viewport.label_width, ROW_HEIGHT));
+    let content_wave_width = wave_content_width(
+        viewport.time_view_start,
+        viewport.pixels_per_time,
+        viewport.wave_width,
+        viewport.max_time,
+    );
     let wave_rect = Rect::from_min_size(
-        pos2(row_rect.left() + label_width, row_rect.top()),
+        pos2(row_rect.left() + viewport.label_width, row_rect.top()),
         vec2(content_wave_width, ROW_HEIGHT),
     );
     let label_response = ui.interact(
         label_rect,
-        ui.make_persistent_id(("row-label", key)),
+        ui.make_persistent_id(("row-label", state.key)),
         Sense::click_and_drag(),
     );
     let wave_response = ui.interact(
         wave_rect,
-        ui.make_persistent_id(("row-wave", key)),
+        ui.make_persistent_id(("row-wave", state.key)),
         Sense::click_and_drag(),
     );
     let painter = ui.painter_at(row_rect);
 
-    let bg = if selected && !dragging {
+    let bg = if state.selected && !state.dragging {
         COLOR_ROW_SELECTED_BG
-    } else if subsection_selected {
+    } else if state.subsection_selected {
         COLOR_WAVE_SUBSECTION_BG
-    } else if expandable && expanded {
+    } else if state.expandable && state.expanded {
         COLOR_WAVE_EXPANDED_BG
     } else if label_response.hovered() || wave_response.hovered() {
         COLOR_ROW_HOVER_BG
-    } else if row_index % 2 == 0 {
+    } else if state.row_index % 2 == 0 {
         COLOR_WAVE_EVEN_BG
     } else {
         COLOR_WAVE_ODD_BG
     };
     painter.rect_filled(row_rect, 0.0, bg);
-    draw_group_guides(ui.painter(), label_rect, depth);
+    draw_group_guides(ui.painter(), label_rect, state.depth);
 
-    let value = store
-        .signal_value_at(signal.id, cursor_time)
-        .map(|bits| format_value_for_type_with_radix(bits, key.bit_offset, ty, display_options.radix))
+    let value = ctx
+        .store
+        .signal_value_at(signal.id, ctx.cursor_time)
+        .map(|bits| format_value_for_type_with_radix(bits, state.key.bit_offset, ty, state.display_options.radix))
         .unwrap_or_else(|| "x".to_owned());
-    let cursor_stats = secondary_cursor_time.map(|secondary| {
+    let cursor_stats = ctx.secondary_cursor_time.map(|secondary| {
         edge_counts(
-            &store.changes[signal.id],
-            key.bit_offset,
-            key.bit_len,
-            cursor_time,
+            &ctx.store.changes[signal.id],
+            state.key.bit_offset,
+            state.key.bit_len,
+            ctx.cursor_time,
             secondary,
         )
     });
     let stats_text = cursor_stats.map(|stats| format!("↑{} ↓{} ↕{}", stats.posedges, stats.negedges, stats.toggles));
     let icon_rect = Rect::from_min_size(
         pos2(
-            label_rect.left() + 4.0 + depth as f32 * 18.0,
+            label_rect.left() + 4.0 + state.depth as f32 * 18.0,
             label_rect.center().y - 6.0,
         ),
         vec2(12.0, 12.0),
     );
-    let icon_response = if expandable {
-        Some(ui.interact(icon_rect, ui.make_persistent_id(("row-expand", key)), Sense::click()))
+    let icon_response = if state.expandable {
+        Some(ui.interact(
+            icon_rect,
+            ui.make_persistent_id(("row-expand", state.key)),
+            Sense::click(),
+        ))
     } else {
         None
     };
-    if expandable {
-        draw_disclosure_icon(ui.painter(), icon_rect, expanded);
+    if state.expandable {
+        draw_disclosure_icon(ui.painter(), icon_rect, state.expanded);
     }
     let label_text_rect = if stats_text.is_some() {
         Rect::from_min_max(
@@ -597,13 +592,13 @@ fn draw_signal_leaf(
     draw_waveform(
         &painter,
         wave_rect,
-        &store.changes[signal.id],
-        key.bit_offset,
+        &ctx.store.changes[signal.id],
+        state.key.bit_offset,
         ty,
-        display_options,
-        pixels_per_time,
-        time_view_start,
-        max_time,
+        state.display_options,
+        viewport.pixels_per_time,
+        viewport.time_view_start,
+        viewport.max_time,
     );
     let alt_down = ui.input(|input| input.modifiers.alt);
     let cursor_time = wave_response
@@ -614,26 +609,42 @@ fn draw_signal_leaf(
                 && (wave_response.clicked() || wave_response.dragged())
                 && wave_rect.contains(*pos)
         })
-        .map(|pos| time_from_pointer(wave_rect, pos, pixels_per_time, time_view_start, max_time));
+        .map(|pos| {
+            time_from_pointer(
+                wave_rect,
+                pos,
+                viewport.pixels_per_time,
+                viewport.time_view_start,
+                viewport.max_time,
+            )
+        });
     let secondary_cursor_time = wave_response
         .interact_pointer_pos()
         .filter(|pos| alt_down && wave_response.clicked() && wave_rect.contains(*pos))
-        .map(|pos| time_from_pointer(wave_rect, pos, pixels_per_time, time_view_start, max_time));
+        .map(|pos| {
+            time_from_pointer(
+                wave_rect,
+                pos,
+                viewport.pixels_per_time,
+                viewport.time_view_start,
+                viewport.max_time,
+            )
+        });
     let cursor_drag_started = !alt_down && !ui.input(|input| input.modifiers.shift) && wave_response.drag_started();
     let expand_toggles = icon_response
         .filter(|response| response.clicked())
-        .map(|_| vec![key])
+        .map(|_| vec![state.key])
         .unwrap_or_default();
 
     RowResult {
         clicked: label_response.clicked() || wave_response.clicked(),
-        label_drag_started: can_reorder && label_response.drag_started(),
+        label_drag_started: state.can_reorder && label_response.drag_started(),
         cursor_time,
         secondary_cursor_time,
         cursor_drag_started,
         expand_toggles,
-        clicked_key: (!can_reorder && (label_response.clicked() || wave_response.clicked())).then_some(key),
-        context_key: (label_response.secondary_clicked() || wave_response.secondary_clicked()).then_some(key),
+        clicked_key: (!state.can_reorder && (label_response.clicked() || wave_response.clicked())).then_some(state.key),
+        context_key: (label_response.secondary_clicked() || wave_response.secondary_clicked()).then_some(state.key),
         rect: row_rect,
         label_rect,
     }
@@ -681,53 +692,4 @@ fn is_composite(ty: &WaveSignalType) -> bool {
             | WaveSignalType::Struct { .. }
             | WaveSignalType::Enum { .. }
     )
-}
-
-fn composite_children(ty: &WaveSignalType) -> Vec<(String, WaveSignalType, usize, usize)> {
-    let mut result = Vec::new();
-    match ty {
-        WaveSignalType::Array { len, element } => {
-            let stride = element.bit_len();
-            for i in 0..*len {
-                result.push((format!("[{i}]"), element.as_ref().clone(), i * stride, stride));
-            }
-        }
-        WaveSignalType::Tuple(elements) => {
-            let mut offset = 0;
-            for (i, element) in elements.iter().enumerate() {
-                let len = element.bit_len();
-                result.push((format!(".{i}"), element.clone(), offset, len));
-                offset += len;
-            }
-        }
-        WaveSignalType::Struct { fields, .. } => {
-            let mut offset = 0;
-            for (name, element) in fields {
-                let len = element.bit_len();
-                result.push((format!(".{name}"), element.clone(), offset, len));
-                offset += len;
-            }
-        }
-        WaveSignalType::Enum { variants, .. } => {
-            let tag_width = enum_tag_width(variants.len());
-            result.push((
-                ".tag".to_owned(),
-                WaveSignalType::Int {
-                    signed: false,
-                    width: tag_width,
-                },
-                0,
-                tag_width,
-            ));
-            let payload_offset = tag_width;
-            for (name, payload) in variants {
-                if let Some(payload) = payload {
-                    let len = payload.bit_len();
-                    result.push((format!(".{name}"), payload.clone(), payload_offset, len));
-                }
-            }
-        }
-        _ => {}
-    }
-    result
 }

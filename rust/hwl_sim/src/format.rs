@@ -1,18 +1,11 @@
-use hwl_language::sim::recorder::WaveSignalType;
+use crate::bits::{get_bit, get_unsigned};
+use hwl_language::sim::recorder::{WaveSignalType, enum_tag_width};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WaveRadix {
     Bin,
     Hex,
     Dec,
-}
-
-pub fn enum_tag_width(variant_count: usize) -> usize {
-    if variant_count <= 1 {
-        0
-    } else {
-        usize::BITS as usize - (variant_count - 1).leading_zeros() as usize
-    }
 }
 
 pub fn format_value_for_type_with_radix(
@@ -117,20 +110,6 @@ fn format_hex_value(bits: &[u8], bit_offset: usize, width: usize) -> String {
     let value = get_unsigned(bits, bit_offset, width);
     let digits = width.div_ceil(4).max(1);
     format!("0x{value:0digits$x}")
-}
-
-pub fn get_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
-    let mut value = 0u128;
-    for i in 0..bit_len.min(128) {
-        if get_bit(bits, bit_offset + i) {
-            value |= 1u128 << i;
-        }
-    }
-    value
-}
-
-pub fn get_bit(bits: &[u8], bit: usize) -> bool {
-    bits.get(bit / 8).is_some_and(|byte| ((byte >> (bit % 8)) & 1) != 0)
 }
 
 #[cfg(test)]

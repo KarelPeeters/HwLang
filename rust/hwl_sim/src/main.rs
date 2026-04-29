@@ -1,10 +1,13 @@
+mod bits;
 mod consts;
 mod format;
 mod panels;
 mod render;
 mod row_render;
 mod rows;
+mod state;
 mod time;
+mod type_layout;
 mod widgets;
 
 use crate::consts::{
@@ -13,10 +16,11 @@ use crate::consts::{
 };
 use crate::format::WaveRadix;
 use crate::panels::{draw_hierarchy, draw_signal_panel_row, filtered_signal_ids, filtered_signal_ids_for_module};
-use crate::render::{WaveDisplayOptions, WaveRenderMode};
+use crate::render::WaveRenderMode;
 use crate::row_render::{
-    draw_drag_name_boxes, draw_group_row, draw_insert_line_for_targets, draw_signal_rows, draw_spacer_row,
-    group_pointer_drag_started, update_subsection_selection,
+    SignalRenderContext, SignalRowState, WaveViewport, draw_drag_name_boxes, draw_group_row,
+    draw_insert_line_for_targets, draw_signal_rows, draw_spacer_row, group_pointer_drag_started,
+    update_subsection_selection,
 };
 use crate::rows::{
     DropPlacement, RowDrag, VisibleWaveRowKind, WaveRow, WaveRowKey, WaveRowKind, best_drop_target_index,
@@ -25,6 +29,7 @@ use crate::rows::{
     preserve_or_select_dragged_row, reparent_drag_roots, row_parent_map, selected_signal_row_ids,
     update_wave_row_selection, visible_wave_rows,
 };
+use crate::state::{CursorState, DragState, RowKeyedState, SelectionState};
 use crate::time::{
     ZoomDrag, clamp_time_view_start, draw_cursor, draw_cursor_stats_header, draw_dotted_cursor, draw_time_axis,
     draw_time_view_range, draw_zoom_selection, time_from_pointer, zoom_to_selection,
@@ -35,7 +40,7 @@ use eframe::egui::{
     pos2,
 };
 use hwl_language::sim::recorder::WaveStore;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
@@ -64,27 +69,16 @@ struct WaveGuiApp {
     pixels_per_time: f32,
     time_view_start: f32,
     row_label_width: f32,
-    cursor_time: u64,
+    cursor: CursorState,
     run_to_time: u64,
     step_count: u64,
-    selected_row: Option<u64>,
-    selected_rows: BTreeSet<u64>,
-    last_selected_row: Option<u64>,
-    selected_modules: BTreeSet<Vec<String>>,
-    last_selected_module: Option<Vec<String>>,
-    selected_signals: BTreeSet<usize>,
-    last_selected_signal: Option<usize>,
+    row_selection: SelectionState<u64>,
+    module_selection: SelectionState<Vec<String>>,
+    signal_selection: SelectionState<usize>,
     last_group_name_click: Option<(u64, f64)>,
-    row_drag: Option<RowDrag>,
-    zoom_drag: Option<ZoomDrag>,
-    cursor_dragging: bool,
-    alt_cursor_pending: Option<u64>,
-    secondary_cursor_time: Option<u64>,
-    dragging_signals: Vec<usize>,
+    drag: DragState,
     collapsed_hierarchy: BTreeSet<String>,
-    expanded_rows: BTreeSet<WaveRowKey>,
-    selected_subsections: BTreeSet<WaveRowKey>,
-    display_options: BTreeMap<WaveRowKey, WaveDisplayOptions>,
+    row_state: RowKeyedState,
     context_menu: Option<WaveContextMenu>,
     show_ports: bool,
     show_signals: bool,
@@ -108,27 +102,16 @@ impl Default for WaveGuiApp {
             pixels_per_time: 10.0,
             time_view_start: 0.0,
             row_label_width: DEFAULT_ROW_LABEL_WIDTH,
-            cursor_time: 0,
+            cursor: CursorState::default(),
             run_to_time: 0,
             step_count: 1,
-            selected_row: None,
-            selected_rows: BTreeSet::new(),
-            last_selected_row: None,
-            selected_modules: BTreeSet::new(),
-            last_selected_module: None,
-            selected_signals: BTreeSet::new(),
-            last_selected_signal: None,
+            row_selection: SelectionState::default(),
+            module_selection: SelectionState::default(),
+            signal_selection: SelectionState::default(),
             last_group_name_click: None,
-            row_drag: None,
-            zoom_drag: None,
-            cursor_dragging: false,
-            alt_cursor_pending: None,
-            secondary_cursor_time: None,
-            dragging_signals: Vec::new(),
+            drag: DragState::default(),
             collapsed_hierarchy: BTreeSet::new(),
-            expanded_rows: BTreeSet::new(),
-            selected_subsections: BTreeSet::new(),
-            display_options: BTreeMap::new(),
+            row_state: RowKeyedState::default(),
             context_menu: None,
             show_ports: true,
             show_signals: true,
@@ -154,37 +137,20 @@ impl eframe::App for WaveGuiApp {
                 if let Some(store) = self.store.clone() {
                     ui.horizontal(|ui| {
                         if ui.button("Clear").clicked() {
-                            self.rows.clear();
-                            self.next_row_id = 1;
-                            self.selected_row = None;
-                            self.selected_rows.clear();
-                            self.last_selected_row = None;
-                            self.selected_modules.clear();
-                            self.last_selected_module = None;
-                            self.selected_signals.clear();
-                            self.last_selected_signal = None;
-                            self.last_group_name_click = None;
-                            self.row_drag = None;
-                            self.cursor_dragging = false;
-                            self.dragging_signals.clear();
-                            self.collapsed_hierarchy.clear();
-                            self.expanded_rows.clear();
+                            self.reset_wave_state();
                         }
                     });
                     ScrollArea::vertical().show(ui, |ui| {
                         draw_hierarchy(
                             ui,
                             &store,
-                            &mut self.selected_modules,
-                            &mut self.last_selected_module,
-                            &mut self.selected_signals,
-                            &mut self.last_selected_signal,
+                            &mut self.module_selection,
+                            &mut self.signal_selection,
                             &mut self.collapsed_hierarchy,
                             &[],
                         );
                         if empty_panel_area_clicked(ui) {
-                            self.selected_modules.clear();
-                            self.last_selected_module = None;
+                            self.module_selection.clear();
                         }
                     });
                 } else {
@@ -205,6 +171,37 @@ impl eframe::App for WaveGuiApp {
 }
 
 impl WaveGuiApp {
+    fn reset_wave_state(&mut self) {
+        let store = self.store.take();
+        let path = std::mem::take(&mut self.path);
+        let status = std::mem::take(&mut self.status);
+        let pixels_per_time = self.pixels_per_time;
+        let time_view_start = self.time_view_start;
+        let row_label_width = self.row_label_width;
+        let cursor = CursorState {
+            primary: self.cursor.primary,
+            ..Default::default()
+        };
+        let run_to_time = self.run_to_time;
+        let step_count = self.step_count;
+        let show_ports = self.show_ports;
+        let show_signals = self.show_signals;
+        *self = Self {
+            store,
+            path,
+            status,
+            pixels_per_time,
+            time_view_start,
+            row_label_width,
+            cursor,
+            run_to_time,
+            step_count,
+            show_ports,
+            show_signals,
+            ..Default::default()
+        };
+    }
+
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Store:");
@@ -223,17 +220,17 @@ impl WaveGuiApp {
             );
             ui.separator();
             ui.label("Time:");
-            ui.add(egui::DragValue::new(&mut self.cursor_time).speed(1));
+            ui.add(egui::DragValue::new(&mut self.cursor.primary).speed(1));
             ui.label("Alt-click/C over waves: Cursor2");
             ui.label("Step N:");
             ui.add(egui::DragValue::new(&mut self.step_count).speed(1));
             if ui.button("Step").clicked() {
-                self.cursor_time = self.cursor_time.saturating_add(self.step_count.max(1));
+                self.cursor.primary = self.cursor.primary.saturating_add(self.step_count.max(1));
             }
             ui.label("Run to:");
             ui.add(egui::DragValue::new(&mut self.run_to_time).speed(1));
             if ui.button("Run").clicked() {
-                self.cursor_time = self.run_to_time;
+                self.cursor.primary = self.run_to_time;
             }
         });
         if !self.status.is_empty() {
@@ -270,14 +267,15 @@ impl WaveGuiApp {
             visible_wave_width / self.pixels_per_time,
             max_time,
         );
-        self.cursor_time = self.cursor_time.min(max_time);
+        self.cursor.primary = self.cursor.primary.min(max_time);
         let visible_rows = visible_wave_rows(&self.rows);
 
         let text_editing = ui.ctx().wants_keyboard_input();
         if !text_editing && ui.input(|input| input.key_pressed(Key::A) && input.modifiers.ctrl) {
-            self.selected_rows = visible_rows.iter().map(|row| row.row_id).collect();
-            self.selected_row = visible_rows.first().map(|row| row.row_id);
-            self.last_selected_row = self.selected_row;
+            self.row_selection.replace_selected(
+                visible_rows.iter().map(|row| row.row_id).collect(),
+                visible_rows.first().map(|row| row.row_id),
+            );
         }
         if !text_editing
             && ui.input(|input| input.key_pressed(Key::G) && (input.modifiers.ctrl || input.modifiers.command))
@@ -291,28 +289,22 @@ impl WaveGuiApp {
             self.add_spacers_below_selected_signals();
         }
         if ui.input(|input| input.key_pressed(Key::Delete)) {
-            if !self.selected_rows.is_empty() {
-                delete_selected_rows(&mut self.rows, &self.selected_rows);
+            if !self.row_selection.selected.is_empty() {
+                delete_selected_rows(&mut self.rows, &self.row_selection.selected);
                 debug_assert!(group_blocks_are_contiguous(&self.rows));
-                self.expanded_rows
-                    .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
-                self.selected_subsections
-                    .retain(|key| self.rows.iter().any(|row| row.id == key.row_id));
-                self.display_options
-                    .retain(|key, _| self.rows.iter().any(|row| row.id == key.row_id));
-                self.selected_rows.clear();
-                self.selected_row = None;
-                self.last_selected_row = None;
+                self.row_state.retain_existing_rows(&self.rows);
+                self.row_selection.clear();
             }
         }
         let pointer_released = ui.input(|input| input.pointer.any_released());
         if pointer_released {
-            self.cursor_dragging = false;
-        } else if !ui.input(|input| input.pointer.primary_down()) && self.row_drag.is_none() {
-            self.dragging_signals.clear();
+            self.cursor.dragging_primary = false;
+        } else {
+            self.drag
+                .clear_signals_if_idle(ui.input(|input| input.pointer.primary_down()));
         }
 
-        if self.rows.is_empty() && self.row_drag.is_none() && self.dragging_signals.is_empty() {
+        if self.rows.is_empty() && self.drag.is_none() {
             return;
         }
 
@@ -342,10 +334,9 @@ impl WaveGuiApp {
                     label_width,
                     visible_wave_width,
                 );
-                if let Some(secondary_cursor_time) = self.secondary_cursor_time {
-                    if draw_cursor_stats_header(ui, axis_rect, self.cursor_time, secondary_cursor_time) {
-                        self.secondary_cursor_time = None;
-                        self.alt_cursor_pending = None;
+                if let Some(secondary_cursor_time) = self.cursor.secondary {
+                    if draw_cursor_stats_header(ui, axis_rect, self.cursor.primary, secondary_cursor_time) {
+                        self.cursor.clear_secondary();
                     }
                 }
                 ui.separator();
@@ -364,13 +355,13 @@ impl WaveGuiApp {
                 let mut wave_bottom = axis_rect.bottom();
                 let visible_rows = visible_wave_rows(&self.rows);
                 for (visible_index, visible_row) in visible_rows.iter().enumerate() {
-                    let row_selected = self.selected_rows.contains(&visible_row.row_id)
-                        || self.selected_row == Some(visible_row.row_id);
+                    let row_selected = self.row_selection.selected.contains(&visible_row.row_id)
+                        || self.row_selection.primary == Some(visible_row.row_id);
                     match visible_row.kind {
                         VisibleWaveRowKind::Group => {
                             let dragging = self
-                                .row_drag
-                                .as_ref()
+                                .drag
+                                .row()
                                 .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
                             let result = draw_group_row(
                                 ui,
@@ -384,25 +375,13 @@ impl WaveGuiApp {
                                 dragging,
                             );
                             if result.clicked {
-                                update_wave_row_selection(
-                                    ui,
-                                    visible_index,
-                                    &visible_rows,
-                                    &mut self.selected_rows,
-                                    &mut self.selected_row,
-                                    &mut self.last_selected_row,
-                                );
+                                update_wave_row_selection(ui, visible_index, &visible_rows, &mut self.row_selection);
                             }
                             if !wave_gesture_active
                                 && (result.label_drag_started || group_pointer_drag_started(ui, result.rect))
-                                && self.row_drag.is_none()
+                                && self.drag.is_none()
                             {
-                                preserve_or_select_dragged_row(
-                                    visible_row.row_id,
-                                    &mut self.selected_rows,
-                                    &mut self.selected_row,
-                                    &mut self.last_selected_row,
-                                );
+                                preserve_or_select_dragged_row(visible_row.row_id, &mut self.row_selection);
                                 start_row_drag = Some((visible_row.row_index, visible_row.depth));
                             }
                             row_rects.push(result.rect);
@@ -412,74 +391,69 @@ impl WaveGuiApp {
                         VisibleWaveRowKind::Signal { signal_id } => {
                             if let Some(signal) = store.signals.get(signal_id) {
                                 let dragging = self
-                                    .row_drag
-                                    .as_ref()
+                                    .drag
+                                    .row()
                                     .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
+                                let render_context = SignalRenderContext {
+                                    store: &store,
+                                    expanded_rows: &self.row_state.expanded,
+                                    selected_subsections: &self.row_state.selected_subsections.selected,
+                                    display_options: &self.row_state.display_options,
+                                    cursor_time: self.cursor.primary,
+                                    secondary_cursor_time: self.cursor.secondary,
+                                    viewport: WaveViewport {
+                                        pixels_per_time: self.pixels_per_time,
+                                        time_view_start: self.time_view_start,
+                                        max_time,
+                                        label_width,
+                                        wave_width: visible_wave_width,
+                                    },
+                                };
                                 let result = draw_signal_rows(
                                     ui,
-                                    &store,
                                     signal,
-                                    visible_row.row_id,
-                                    visible_index,
-                                    row_selected,
-                                    dragging,
-                                    &self.expanded_rows,
-                                    &self.selected_subsections,
-                                    &self.display_options,
-                                    self.cursor_time,
-                                    self.secondary_cursor_time,
-                                    self.pixels_per_time,
-                                    self.time_view_start,
-                                    max_time,
-                                    visible_row.depth,
-                                    label_width,
-                                    visible_wave_width,
+                                    SignalRowState {
+                                        row_id: visible_row.row_id,
+                                        row_index: visible_index,
+                                        selected: row_selected,
+                                        dragging,
+                                        group_depth: visible_row.depth,
+                                    },
+                                    &render_context,
                                 );
                                 if result.primary.clicked {
                                     update_wave_row_selection(
                                         ui,
                                         visible_index,
                                         &visible_rows,
-                                        &mut self.selected_rows,
-                                        &mut self.selected_row,
-                                        &mut self.last_selected_row,
+                                        &mut self.row_selection,
                                     );
                                 }
                                 if let Some(time) = result.cursor_time {
-                                    self.cursor_time = time;
+                                    self.cursor.primary = time;
                                 }
                                 if let Some(time) = result.secondary_cursor_time {
-                                    self.secondary_cursor_time = Some(time);
+                                    self.cursor.set_secondary(time);
                                 }
                                 if result.cursor_drag_started {
-                                    self.cursor_dragging = true;
+                                    self.cursor.dragging_primary = true;
                                 }
                                 if let Some(key) = result.clicked_key {
                                     update_wave_row_selection(
                                         ui,
                                         visible_index,
                                         &visible_rows,
-                                        &mut self.selected_rows,
-                                        &mut self.selected_row,
-                                        &mut self.last_selected_row,
+                                        &mut self.row_selection,
                                     );
-                                    update_subsection_selection(ui, key, &mut self.selected_subsections);
+                                    update_subsection_selection(ui, key, &mut self.row_state.selected_subsections);
                                 } else if result.primary.clicked {
-                                    self.selected_subsections.clear();
+                                    self.row_state.selected_subsections.clear();
                                 }
                                 for key in result.expand_toggles {
-                                    if !self.expanded_rows.remove(&key) {
-                                        self.expanded_rows.insert(key);
-                                    }
+                                    self.row_state.toggle_expanded(key);
                                 }
-                                if !wave_gesture_active && result.primary.label_drag_started && self.row_drag.is_none()
-                                {
-                                    preserve_or_select_dragged_row(
-                                        visible_row.row_id,
-                                        &mut self.selected_rows,
-                                        &mut self.selected_row,
-                                        &mut self.last_selected_row,
-                                    );
+                                if !wave_gesture_active && result.primary.label_drag_started && self.drag.is_none() {
+                                    preserve_or_select_dragged_row(visible_row.row_id, &mut self.row_selection);
                                     start_row_drag = Some((visible_row.row_index, visible_row.depth));
                                 }
                                 row_rects.push(result.all_rect);
@@ -489,8 +463,8 @@ impl WaveGuiApp {
                         }
                         VisibleWaveRowKind::Spacer => {
                             let dragging = self
-                                .row_drag
-                                .as_ref()
+                                .drag
+                                .row()
                                 .is_some_and(|drag| drag.row_ids.contains(&visible_row.row_id));
                             let result = draw_spacer_row(
                                 ui,
@@ -503,22 +477,10 @@ impl WaveGuiApp {
                                 visible_wave_width,
                             );
                             if result.clicked {
-                                update_wave_row_selection(
-                                    ui,
-                                    visible_index,
-                                    &visible_rows,
-                                    &mut self.selected_rows,
-                                    &mut self.selected_row,
-                                    &mut self.last_selected_row,
-                                );
+                                update_wave_row_selection(ui, visible_index, &visible_rows, &mut self.row_selection);
                             }
-                            if !wave_gesture_active && result.label_drag_started && self.row_drag.is_none() {
-                                preserve_or_select_dragged_row(
-                                    visible_row.row_id,
-                                    &mut self.selected_rows,
-                                    &mut self.selected_row,
-                                    &mut self.last_selected_row,
-                                );
+                            if !wave_gesture_active && result.label_drag_started && self.drag.is_none() {
+                                preserve_or_select_dragged_row(visible_row.row_id, &mut self.row_selection);
                                 start_row_drag = Some((visible_row.row_index, visible_row.depth));
                             }
                             row_rects.push(result.rect);
@@ -550,13 +512,13 @@ impl WaveGuiApp {
                     }
                 }
 
-                if let (Some(row_drag), Some(pointer_pos)) = (&mut self.row_drag, pointer_pos) {
+                if let (Some(row_drag), Some(pointer_pos)) = (self.drag.row_mut(), pointer_pos) {
                     let drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_drag.row_ids);
                     row_drag.target_index = best_drop_target_index(pointer_pos, &drop_targets, label_width);
                     row_drag.placement = drop_targets.get(row_drag.target_index).map(drop_placement);
                 }
                 let left_drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &BTreeSet::new());
-                let left_drag_target_index = if !self.dragging_signals.is_empty() {
+                let left_drag_target_index = if !self.drag.signal_ids().is_empty() {
                     Some(pointer_pos.map_or(left_drop_targets.len(), |pos| {
                         best_drop_target_index(pos, &left_drop_targets, label_width)
                     }))
@@ -565,14 +527,14 @@ impl WaveGuiApp {
                 };
                 if let Some((start_index, _drag_depth)) = start_row_drag {
                     if start_index < self.rows.len() {
-                        let row_ids = drag_row_ids(&self.rows, start_index, &self.selected_rows);
+                        let row_ids = drag_row_ids(&self.rows, start_index, &self.row_selection.selected);
                         let first_id = self.rows[start_index].id;
                         let drop_targets = drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_ids);
                         let target_index = pointer_pos.map_or(drop_targets.len(), |pos| {
                             best_drop_target_index(pos, &drop_targets, label_width)
                         });
                         let placement = drop_targets.get(target_index).map(drop_placement);
-                        self.row_drag = Some(RowDrag {
+                        self.drag = DragState::Row(RowDrag {
                             row_ids,
                             first_id,
                             target_index,
@@ -581,12 +543,12 @@ impl WaveGuiApp {
                     }
                 }
 
-                if let Some(row_drag) = &self.row_drag {
+                if let Some(row_drag) = self.drag.row() {
                     draw_drag_name_boxes(ui, &visible_rows, &row_rects, &row_drag.row_ids, label_width);
                 }
 
                 let fallback_insert_y = axis_rect.bottom() + 7.0;
-                if let Some(row_drag) = &self.row_drag {
+                if let Some(row_drag) = self.drag.row() {
                     let preview_targets =
                         drop_targets_for_rows(&self.rows, &visible_rows, &row_rects, &row_drag.row_ids);
                     draw_insert_line_for_targets(
@@ -605,8 +567,8 @@ impl WaveGuiApp {
                         fallback_insert_y,
                     );
                 }
-                if pointer_released && self.row_drag.is_some() {
-                    if let Some(row_drag) = self.row_drag.take() {
+                if pointer_released && self.drag.row().is_some() {
+                    if let Some(row_drag) = self.drag.take_row() {
                         let raw_insert_index = row_drag
                             .placement
                             .map(|placement| placement.row_index)
@@ -617,12 +579,9 @@ impl WaveGuiApp {
                         reparent_drag_roots(&mut rows, &row_drag.row_ids, new_parent);
                         self.rows.splice(insert_index..insert_index, rows);
                         debug_assert!(group_blocks_are_contiguous(&self.rows));
-                        self.selected_row = Some(row_drag.first_id);
-                        self.selected_rows.clear();
-                        self.selected_rows.insert(row_drag.first_id);
-                        self.last_selected_row = Some(row_drag.first_id);
+                        self.row_selection.select_only(row_drag.first_id);
                     }
-                } else if pointer_released && !self.dragging_signals.is_empty() {
+                } else if pointer_released && !self.drag.signal_ids().is_empty() {
                     if ui.rect_contains_pointer(ui.max_rect()) {
                         let visible_rows = visible_wave_rows(&self.rows);
                         let drop_targets =
@@ -632,21 +591,19 @@ impl WaveGuiApp {
                         let insert_index = target.map(|target| target.row_index).unwrap_or(self.rows.len());
                         let parent = target.and_then(|target| target.parent);
                         let new_rows = self
-                            .dragging_signals
-                            .clone()
+                            .drag
+                            .signal_ids()
+                            .to_vec()
                             .into_iter()
                             .map(|signal_id| self.make_signal_row(signal_id, parent))
                             .collect::<Vec<_>>();
                         let first_added = new_rows.first().map(|row| row.id);
                         self.rows.splice(insert_index..insert_index, new_rows);
                         if let Some(first_added) = first_added {
-                            self.selected_rows.clear();
-                            self.selected_rows.insert(first_added);
-                            self.selected_row = Some(first_added);
-                            self.last_selected_row = Some(first_added);
+                            self.row_selection.select_only(first_added);
                         }
                     }
-                    self.dragging_signals.clear();
+                    self.drag = DragState::None;
                 }
                 let cursor_bottom = wave_bottom.max(ui.clip_rect().bottom());
                 let cursor_span = Rect::from_min_max(axis_rect.min, pos2(axis_rect.right(), cursor_bottom));
@@ -688,31 +645,28 @@ impl WaveGuiApp {
                         max_time,
                     );
                     if alt_down && primary_down && cursor_span.contains(pointer_pos) {
-                        self.alt_cursor_pending = Some(alt_cursor_time);
-                        self.secondary_cursor_time = Some(alt_cursor_time);
+                        self.cursor.update_pending_secondary(alt_cursor_time);
                     }
                     if alt_down && primary_pressed && cursor_span.contains(pointer_pos) {
-                        self.secondary_cursor_time = Some(alt_cursor_time);
+                        self.cursor.set_secondary(alt_cursor_time);
                     }
                     if primary_released {
-                        if let Some(time) = self.alt_cursor_pending.take() {
-                            self.secondary_cursor_time = Some(time);
-                        }
+                        self.cursor.commit_pending_secondary();
                     }
                     if ui.input(|input| input.key_pressed(Key::C)) && cursor_span.contains(pointer_pos) {
-                        self.secondary_cursor_time = Some(alt_cursor_time);
+                        self.cursor.set_secondary(alt_cursor_time);
                     }
                 }
                 if let Some(pointer_pos) = pointer_pos {
                     if primary_down
                         && !shift_down
                         && !alt_down
-                        && self.row_drag.is_none()
+                        && self.drag.is_none()
                         && pointer_pos.x >= axis_rect.left()
                         && cursor_span.contains(pointer_pos)
                     {
-                        self.cursor_dragging = true;
-                        self.cursor_time = time_from_pointer(
+                        self.cursor.dragging_primary = true;
+                        self.cursor.primary = time_from_pointer(
                             axis_rect,
                             pointer_pos,
                             self.pixels_per_time,
@@ -720,7 +674,11 @@ impl WaveGuiApp {
                             max_time,
                         );
                     }
-                    if primary_down && shift_down && self.row_drag.is_none() && cursor_span.contains(pointer_pos) {
+                    if primary_down
+                        && shift_down
+                        && (self.drag.is_none() || self.drag.zoom().is_some())
+                        && cursor_span.contains(pointer_pos)
+                    {
                         let time = time_from_pointer(
                             axis_rect,
                             pointer_pos,
@@ -728,19 +686,19 @@ impl WaveGuiApp {
                             self.time_view_start,
                             max_time,
                         );
-                        if let Some(zoom_drag) = &mut self.zoom_drag {
+                        if let Some(zoom_drag) = self.drag.zoom_mut() {
                             zoom_drag.current_time = time;
                         } else {
-                            self.zoom_drag = Some(ZoomDrag {
+                            self.drag = DragState::Zoom(ZoomDrag {
                                 start_time: time,
                                 current_time: time,
                             });
                         }
-                        self.cursor_dragging = false;
+                        self.cursor.dragging_primary = false;
                     }
                 }
                 if pointer_released {
-                    if let Some(zoom_drag) = self.zoom_drag.take() {
+                    if let Some(zoom_drag) = self.drag.take_zoom() {
                         let release_time = pointer_pos
                             .map(|pos| {
                                 time_from_pointer(axis_rect, pos, self.pixels_per_time, self.time_view_start, max_time)
@@ -754,7 +712,7 @@ impl WaveGuiApp {
                         }
                     }
                 }
-                if let Some(zoom_drag) = self.zoom_drag {
+                if let Some(zoom_drag) = self.drag.zoom() {
                     draw_zoom_selection(
                         ui.painter(),
                         cursor_span,
@@ -767,11 +725,11 @@ impl WaveGuiApp {
                 draw_cursor(
                     ui.painter(),
                     cursor_span,
-                    self.cursor_time,
+                    self.cursor.primary,
                     self.pixels_per_time,
                     self.time_view_start,
                 );
-                if let Some(secondary_cursor_time) = self.secondary_cursor_time {
+                if let Some(secondary_cursor_time) = self.cursor.secondary {
                     draw_dotted_cursor(
                         ui.painter(),
                         cursor_span,
@@ -785,42 +743,29 @@ impl WaveGuiApp {
     }
 
     fn load_store(&mut self) {
-        let path = PathBuf::from(self.path.trim());
+        let path_text = self.path.clone();
+        let path = PathBuf::from(path_text.trim());
         match std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|s| serde_json::from_str::<WaveStore>(&s).map_err(|e| e.to_string()))
         {
             Ok(store) => {
-                self.cursor_time = store.max_time();
-                self.time_view_start = 0.0;
-                self.rows.clear();
-                self.next_row_id = 1;
-                self.selected_row = None;
-                self.selected_rows.clear();
-                self.last_selected_row = None;
-                self.selected_modules.clear();
+                let max_time = store.max_time();
+                let mut module_selection = SelectionState::default();
                 if let Some(root_path) = store.signals.first().map(|signal| signal.path.clone()) {
-                    self.selected_modules.insert(root_path.clone());
-                    self.last_selected_module = Some(root_path);
-                } else {
-                    self.last_selected_module = None;
+                    module_selection.select_only(root_path);
                 }
-                self.selected_signals.clear();
-                self.last_selected_signal = None;
-                self.last_group_name_click = None;
-                self.row_drag = None;
-                self.zoom_drag = None;
-                self.cursor_dragging = false;
-                self.alt_cursor_pending = None;
-                self.secondary_cursor_time = None;
-                self.dragging_signals.clear();
-                self.collapsed_hierarchy.clear();
-                self.expanded_rows.clear();
-                self.selected_subsections.clear();
-                self.display_options.clear();
-                self.context_menu = None;
-                self.store = Some(store);
-                self.status = format!("Loaded {}", path.display());
+                *self = Self {
+                    store: Some(store),
+                    path: path_text,
+                    status: format!("Loaded {}", path.display()),
+                    cursor: CursorState {
+                        primary: max_time,
+                        ..Default::default()
+                    },
+                    module_selection,
+                    ..Default::default()
+                };
             }
             Err(err) => {
                 self.status = format!("Load failed: {err}");
@@ -835,10 +780,9 @@ impl WaveGuiApp {
         });
         ui.separator();
 
-        if self.selected_modules.is_empty() {
+        if self.module_selection.selected.is_empty() {
             if empty_panel_area_clicked(ui) {
-                self.selected_signals.clear();
-                self.last_selected_signal = None;
+                self.signal_selection.clear();
             }
             return;
         }
@@ -850,42 +794,53 @@ impl WaveGuiApp {
         });
         ui.separator();
 
-        let signal_ids = filtered_signal_ids(store, &self.selected_modules, self.show_ports, self.show_signals);
-        self.selected_signals.retain(|signal_id| signal_ids.contains(signal_id));
+        let signal_ids = filtered_signal_ids(
+            store,
+            &self.module_selection.selected,
+            self.show_ports,
+            self.show_signals,
+        );
+        self.signal_selection
+            .selected
+            .retain(|signal_id| signal_ids.contains(signal_id));
         if signal_ids.is_empty() {
             if empty_panel_area_clicked(ui) {
-                self.selected_signals.clear();
-                self.last_selected_signal = None;
+                self.signal_selection.clear();
             }
             return;
         }
 
         ScrollArea::vertical().show(ui, |ui| {
             for &signal_id in &signal_ids {
-                draw_signal_panel_row(
+                if let Some(signal_ids) = draw_signal_panel_row(
                     ui,
                     store,
                     &signal_ids,
                     signal_id,
                     &self.rows,
-                    &mut self.selected_signals,
-                    &mut self.last_selected_signal,
-                    &mut self.dragging_signals,
-                );
+                    &mut self.signal_selection,
+                ) {
+                    self.drag = DragState::Signals(signal_ids);
+                }
             }
             if empty_panel_area_clicked(ui) {
-                self.selected_signals.clear();
-                self.last_selected_signal = None;
+                self.signal_selection.clear();
             }
         });
     }
 
     fn add_selected_or_visible_signals(&mut self, store: &WaveStore) {
-        let visible_signals = filtered_signal_ids(store, &self.selected_modules, self.show_ports, self.show_signals);
-        self.selected_signals
+        let visible_signals = filtered_signal_ids(
+            store,
+            &self.module_selection.selected,
+            self.show_ports,
+            self.show_signals,
+        );
+        self.signal_selection
+            .selected
             .retain(|signal_id| visible_signals.contains(signal_id));
-        if self.selected_signals.is_empty() {
-            let selected_modules = self.selected_modules.iter().cloned().collect::<Vec<_>>();
+        if self.signal_selection.selected.is_empty() {
+            let selected_modules = self.module_selection.selected.iter().cloned().collect::<Vec<_>>();
             for module_path in selected_modules {
                 let module_signals =
                     filtered_signal_ids_for_module(store, &module_path, self.show_ports, self.show_signals);
@@ -895,7 +850,7 @@ impl WaveGuiApp {
                 }
             }
         } else {
-            let signal_ids = self.selected_signals.iter().copied().collect::<Vec<_>>();
+            let signal_ids = self.signal_selection.selected.iter().copied().collect::<Vec<_>>();
             self.add_signal_rows(signal_ids);
         }
     }
@@ -952,17 +907,15 @@ impl WaveGuiApp {
     }
 
     fn create_group_from_selection(&mut self) {
-        if self.selected_rows.is_empty() {
+        if self.row_selection.selected.is_empty() {
             let group = self.make_group_row("group".to_owned(), None);
-            self.selected_rows.clear();
-            self.selected_rows.insert(group.id);
-            self.selected_row = Some(group.id);
-            self.last_selected_row = Some(group.id);
+            let group_id = group.id;
+            self.row_selection.select_only(group_id);
             self.rows.push(group);
             return;
         }
 
-        let selected = self.selected_rows.clone();
+        let selected = self.row_selection.selected.clone();
         let row_parents = row_parent_map(&self.rows);
         let included_ids = included_row_ids(&self.rows, &selected, &row_parents);
         let mut selected_indices = self
@@ -1001,10 +954,7 @@ impl WaveGuiApp {
         let insert_index = insert_index.min(self.rows.len());
         self.rows
             .splice(insert_index..insert_index, std::iter::once(group).chain(grouped_rows));
-        self.selected_rows.clear();
-        self.selected_rows.insert(group_id);
-        self.selected_row = Some(group_id);
-        self.last_selected_row = Some(group_id);
+        self.row_selection.select_only(group_id);
     }
 
     fn insert_group_at(&mut self, placement: DropPlacement) {
@@ -1012,10 +962,7 @@ impl WaveGuiApp {
         let group_id = group.id;
         let insert_index = placement.row_index.min(self.rows.len());
         self.rows.insert(insert_index, group);
-        self.selected_rows.clear();
-        self.selected_rows.insert(group_id);
-        self.selected_row = Some(group_id);
-        self.last_selected_row = Some(group_id);
+        self.row_selection.select_only(group_id);
         debug_assert!(group_blocks_are_contiguous(&self.rows));
     }
 
@@ -1024,15 +971,12 @@ impl WaveGuiApp {
         let spacer_id = spacer.id;
         let insert_index = placement.row_index.min(self.rows.len());
         self.rows.insert(insert_index, spacer);
-        self.selected_rows.clear();
-        self.selected_rows.insert(spacer_id);
-        self.selected_row = Some(spacer_id);
-        self.last_selected_row = Some(spacer_id);
+        self.row_selection.select_only(spacer_id);
         debug_assert!(group_blocks_are_contiguous(&self.rows));
     }
 
     fn add_spacers_below_selected_signals(&mut self) {
-        let selected_ids = self.selected_rows.clone();
+        let selected_ids = self.row_selection.selected.clone();
         let mut targets = self
             .rows
             .iter()
@@ -1052,10 +996,7 @@ impl WaveGuiApp {
             self.rows.insert(index.min(self.rows.len()), spacer);
         }
         if let Some(first_spacer) = first_spacer {
-            self.selected_rows.clear();
-            self.selected_rows.insert(first_spacer);
-            self.selected_row = Some(first_spacer);
-            self.last_selected_row = Some(first_spacer);
+            self.row_selection.select_only(first_spacer);
         }
         debug_assert!(group_blocks_are_contiguous(&self.rows));
     }
@@ -1064,8 +1005,12 @@ impl WaveGuiApp {
         let Some(menu) = self.context_menu else {
             return;
         };
+        if menu.key.is_some_and(|key| !self.context_menu_key_is_valid(key)) {
+            self.context_menu = None;
+            return;
+        }
         let mut close = false;
-        egui::Area::new(egui::Id::new("wave-context-menu"))
+        let area = egui::Area::new(egui::Id::new("wave-context-menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(menu.pos)
             .show(ctx, |ui| {
@@ -1080,7 +1025,7 @@ impl WaveGuiApp {
                                 ("dec", WaveRadix::Dec),
                             ] {
                                 if ui.button(label).clicked() {
-                                    self.display_options.entry(key).or_default().radix = radix;
+                                    self.row_state.display_options.entry(key).or_default().radix = radix;
                                     close = true;
                                 }
                             }
@@ -1091,7 +1036,7 @@ impl WaveGuiApp {
                                 [("digital", WaveRenderMode::Digital), ("analog", WaveRenderMode::Analog)]
                             {
                                 if ui.button(label).clicked() {
-                                    self.display_options.entry(key).or_default().render_mode = render_mode;
+                                    self.row_state.display_options.entry(key).or_default().render_mode = render_mode;
                                     close = true;
                                 }
                             }
@@ -1102,7 +1047,7 @@ impl WaveGuiApp {
                     }
 
                     ui.separator();
-                    let has_selected_signal = selected_signal_row_ids(&self.rows, &self.selected_rows)
+                    let has_selected_signal = selected_signal_row_ids(&self.rows, &self.row_selection.selected)
                         .next()
                         .is_some();
                     if ui
@@ -1122,20 +1067,33 @@ impl WaveGuiApp {
                     }
                 });
             });
-        if close || ctx.input(|input| input.key_pressed(Key::Escape)) {
+        let clicked_outside = ctx.input(|input| {
+            input.pointer.any_click()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| !area.response.rect.contains(pos))
+        });
+        if close || clicked_outside || ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.context_menu = None;
         }
     }
 
+    fn context_menu_key_is_valid(&self, key: WaveRowKey) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.id == key.row_id && row.signal_id() == Some(key.signal_id))
+    }
+
     fn create_group_from_selected_signals(&mut self) {
-        let signal_rows = selected_signal_row_ids(&self.rows, &self.selected_rows).collect::<BTreeSet<_>>();
+        let signal_rows = selected_signal_row_ids(&self.rows, &self.row_selection.selected).collect::<BTreeSet<_>>();
         if signal_rows.is_empty() {
             return;
         }
-        let old_selection = std::mem::replace(&mut self.selected_rows, signal_rows);
+        let old_selection = std::mem::replace(&mut self.row_selection.selected, signal_rows);
         self.create_group_from_selection();
-        if self.selected_rows.is_empty() {
-            self.selected_rows = old_selection;
+        if self.row_selection.selected.is_empty() {
+            self.row_selection.selected = old_selection;
         }
     }
 }
@@ -1154,7 +1112,7 @@ mod tests {
         let signal_a_id = signal_a.id;
         let signal_b_id = signal_b.id;
         app.rows = vec![signal_a, signal_b];
-        app.selected_rows = BTreeSet::from([signal_a_id, signal_b_id]);
+        app.row_selection.selected = BTreeSet::from([signal_a_id, signal_b_id]);
 
         app.add_spacers_below_selected_signals();
 

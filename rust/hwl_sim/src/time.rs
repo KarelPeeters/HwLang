@@ -1,3 +1,4 @@
+use crate::bits::{bits_equal, get_bit};
 use crate::consts::{
     COLOR_CURSOR, COLOR_CURSOR_DELETE_BORDER, COLOR_CURSOR_STATS_BG, COLOR_CURSOR_STATS_BORDER, COLOR_TEXT_MUTED,
     COLOR_TEXT_STRONG, COLOR_TIME_GRID, COLOR_TIME_SCROLL_BORDER, COLOR_TIME_SCROLL_HANDLE_FILL,
@@ -251,14 +252,6 @@ pub fn edge_counts(changes: &[WaveChange], bit_offset: usize, bit_len: usize, st
         previous = Some(change.bits.as_slice());
     }
     counts
-}
-
-fn bits_equal(a: &[u8], b: &[u8], bit_offset: usize, bit_len: usize) -> bool {
-    (0..bit_len).all(|index| get_bit(a, bit_offset + index) == get_bit(b, bit_offset + index))
-}
-
-fn get_bit(bits: &[u8], bit: usize) -> bool {
-    bits.get(bit / 8).is_some_and(|byte| ((byte >> (bit % 8)) & 1) != 0)
 }
 
 fn major_tick_step(pixels_per_time: f32) -> u64 {

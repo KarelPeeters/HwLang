@@ -204,7 +204,7 @@ fn enum_type_to_wave(info: &IrEnumType) -> Result<WaveSignalType, CppSimError> {
     })
 }
 
-fn enum_tag_width(variant_count: usize) -> usize {
+pub fn enum_tag_width(variant_count: usize) -> usize {
     if variant_count <= 1 {
         0
     } else {

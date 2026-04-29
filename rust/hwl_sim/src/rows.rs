@@ -1,4 +1,5 @@
 use crate::consts::{ROW_HEIGHT, TERMINAL_DROP_SLOT_SPACING};
+use crate::state::SelectionState;
 use eframe::egui::{self, Rect, Sense, Ui, pos2};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -521,55 +522,16 @@ pub fn update_wave_row_selection(
     ui: &Ui,
     visible_index: usize,
     visible_rows: &[VisibleWaveRow],
-    selected_rows: &mut BTreeSet<u64>,
-    selected_row: &mut Option<u64>,
-    last_selected_row: &mut Option<u64>,
+    selection: &mut SelectionState<u64>,
 ) {
     let row_id = visible_rows[visible_index].row_id;
     let modifiers = ui.input(|input| input.modifiers);
-    if modifiers.shift {
-        if let Some(anchor) = *last_selected_row {
-            let start = visible_rows.iter().position(|row| row.row_id == anchor);
-            if let Some(start) = start {
-                let (start, end) = if start <= visible_index {
-                    (start, visible_index)
-                } else {
-                    (visible_index, start)
-                };
-                for row in &visible_rows[start..=end] {
-                    selected_rows.insert(row.row_id);
-                }
-            } else {
-                selected_rows.insert(row_id);
-            }
-        } else {
-            selected_rows.insert(row_id);
-        }
-    } else if modifiers.ctrl || modifiers.command {
-        if !selected_rows.remove(&row_id) {
-            selected_rows.insert(row_id);
-        }
-        *last_selected_row = Some(row_id);
-    } else {
-        selected_rows.clear();
-        selected_rows.insert(row_id);
-        *last_selected_row = Some(row_id);
-    }
-    *selected_row = Some(row_id);
+    let visible_ids = visible_rows.iter().map(|row| row.row_id).collect::<Vec<_>>();
+    selection.apply_visible_selection(row_id, &visible_ids, modifiers, false);
 }
 
-pub fn preserve_or_select_dragged_row(
-    row_id: u64,
-    selected_rows: &mut BTreeSet<u64>,
-    selected_row: &mut Option<u64>,
-    last_selected_row: &mut Option<u64>,
-) {
-    if !selected_rows.contains(&row_id) {
-        selected_rows.clear();
-        selected_rows.insert(row_id);
-    }
-    *selected_row = Some(row_id);
-    *last_selected_row = Some(row_id);
+pub fn preserve_or_select_dragged_row(row_id: u64, selection: &mut SelectionState<u64>) {
+    selection.preserve_or_select(row_id);
 }
 
 pub fn best_drop_target_index(pointer_pos: egui::Pos2, targets: &[DropTarget], label_width: f32) -> usize {
