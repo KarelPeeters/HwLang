@@ -65,6 +65,13 @@ enum Stage {
     Next,
 }
 
+fn type_signedness(ty: &IrType) -> Signed {
+    match ty {
+        IrType::Int(range) => IntRepresentation::for_range(range.as_ref()).signed(),
+        IrType::Bool | IrType::Array(_, _) | IrType::Tuple(_) | IrType::Struct(_) | IrType::Enum(_) => Signed::Unsigned,
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 struct ModuleTypes<'ctx> {
     signals: StructType<'ctx>,
@@ -330,8 +337,9 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
             for reset in &async_reset.resets {
                 let (signal, value) = &reset.inner;
                 let target = IrAssignmentTarget::simple(IrSignalOrVariable::Signal(*signal));
+                let value_ty = value.ty(module_info, locals);
                 let value = ctx.eval(value)?;
-                ctx.codegen_assignment(&target, value)?;
+                ctx.codegen_assignment(&target, value, &value_ty)?;
             }
             ctx.branch_if_open(after)?;
             self.builder.position_at_end(after);
@@ -1257,8 +1265,9 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
     fn codegen_statement(&mut self, stmt: &IrStatement) -> Result<(), String> {
         match stmt {
             IrStatement::Assign(target, expr) => {
+                let value_ty = expr.ty(self.module_info, self.locals);
                 let value = self.eval(expr)?;
-                self.codegen_assignment(target, value)?;
+                self.codegen_assignment(target, value, &value_ty)?;
             }
             IrStatement::Block(block) => self.codegen_block(block)?,
             IrStatement::If(if_stmt) => self.codegen_if(if_stmt)?,
@@ -1353,22 +1362,27 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
         Ok(())
     }
 
-    fn codegen_assignment(&mut self, target: &IrAssignmentTarget, value: IntValue<'ctx>) -> Result<(), String> {
+    fn codegen_assignment(
+        &mut self,
+        target: &IrAssignmentTarget,
+        value: IntValue<'ctx>,
+        value_ty: &IrType,
+    ) -> Result<(), String> {
         let base = self.assignment_base_ptr(target.base)?;
         let mut offset = self.cg.llvm_type(base.ty)?.const_zero();
-        let mut current_ty = base.ty;
-        for step in &target.steps {
+        let mut current_ty = base.ty.clone();
+        for (step_index, step) in target.steps.iter().enumerate() {
             match step {
                 IrTargetStep::ArrayIndex(index) => {
-                    let IrType::Array(inner, _) = current_ty else {
+                    let IrType::Array(inner, _) = &current_ty else {
                         return Err("array index assignment target applied to non-array".to_owned());
                     };
                     let index = self
                         .cg
-                        .cast_value(self.eval(index)?, current_ty, Signed::Unsigned, "index_cast")?;
+                        .cast_value(self.eval(index)?, base.ty, Signed::Unsigned, "index_cast")?;
                     let inner_bits = self
                         .cg
-                        .llvm_type(current_ty)?
+                        .llvm_type(base.ty)?
                         .const_int(biguint_to_u64(&inner.size_bits())?, false);
                     let scaled = self
                         .cg
@@ -1380,18 +1394,18 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
                         .builder
                         .build_int_add(offset, scaled, "offset")
                         .map_err(|e| e.to_string())?;
-                    current_ty = inner;
+                    current_ty = inner.as_ref().clone();
                 }
                 IrTargetStep::ArraySlice { start, len } => {
-                    let IrType::Array(inner, _) = current_ty else {
+                    let IrType::Array(inner, _) = &current_ty else {
                         return Err("array slice assignment target applied to non-array".to_owned());
                     };
-                    let start =
-                        self.cg
-                            .cast_value(self.eval(start)?, current_ty, Signed::Unsigned, "slice_start_cast")?;
+                    let start = self
+                        .cg
+                        .cast_value(self.eval(start)?, base.ty, Signed::Unsigned, "slice_start_cast")?;
                     let inner_bits = self
                         .cg
-                        .llvm_type(current_ty)?
+                        .llvm_type(base.ty)?
                         .const_int(biguint_to_u64(&inner.size_bits())?, false);
                     let scaled = self
                         .cg
@@ -1404,18 +1418,23 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
                         .build_int_add(offset, scaled, "offset")
                         .map_err(|e| e.to_string())?;
                     let slice_ty = IrType::Array(inner.clone(), len.clone());
-                    return self.store_partial(base, offset, &slice_ty, value);
+                    if step_index == target.steps.len() - 1 {
+                        return self.store_partial(base, offset, &slice_ty, value);
+                    }
+                    current_ty = slice_ty;
                 }
             }
         }
         if target.steps.is_empty() {
-            let value = self.cg.cast_value(value, base.ty, Signed::Unsigned, "assign_cast")?;
+            let value = self
+                .cg
+                .cast_value(value, base.ty, type_signedness(value_ty), "assign_cast")?;
             self.cg
                 .builder
                 .build_store(base.ptr, value)
                 .map_err(|e| e.to_string())?;
         } else {
-            self.store_partial(base, offset, current_ty, value)?;
+            self.store_partial(base, offset, &current_ty, value)?;
         }
         Ok(())
     }
@@ -1444,7 +1463,7 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
         let offset = self
             .cg
             .builder
-            .build_int_cast(offset, base_type, "offset_cast")
+            .build_int_cast_sign_flag(offset, base_type, false, "offset_cast")
             .map_err(|e| e.to_string())?;
         let mask = self
             .cg
@@ -1463,7 +1482,12 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
         let value = self
             .cg
             .builder
-            .build_int_cast(value, base_type, "part_value_cast")
+            .build_int_cast_sign_flag(value, base_type, false, "part_value_cast")
+            .map_err(|e| e.to_string())?;
+        let value = self
+            .cg
+            .builder
+            .build_and(value, ones, "part_value_masked")
             .map_err(|e| e.to_string())?;
         let shifted = self
             .cg
@@ -1535,56 +1559,106 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
             }
             IrExpressionLarge::IntArithmetic(op, range, left, right) => {
                 let result_ty = IrType::Int(range.clone());
-                let repr = IntRepresentation::for_range(range.as_ref());
-                let left = self.cg.cast_value(self.eval(left)?, &result_ty, repr.signed(), "lhs")?;
+                let left_ty = left.ty(self.module_info, self.locals);
+                let right_ty = right.ty(self.module_info, self.locals);
+                let result_width = u32::try_from(&result_ty.size_bits())
+                    .map_err(|_| format!("LLVM backend value is too wide: {} bits", result_ty.size_bits()))?
+                    .max(1);
+                let left_width = u32::try_from(&left_ty.size_bits())
+                    .map_err(|_| format!("LLVM backend value is too wide: {} bits", left_ty.size_bits()))?
+                    .max(1);
+                let right_width = u32::try_from(&right_ty.size_bits())
+                    .map_err(|_| format!("LLVM backend value is too wide: {} bits", right_ty.size_bits()))?
+                    .max(1);
+                let op_signed =
+                    type_signedness(&left_ty) == Signed::Signed || type_signedness(&right_ty) == Signed::Signed;
+                let left_op_width = if op_signed && type_signedness(&left_ty) == Signed::Unsigned {
+                    left_width + 1
+                } else {
+                    left_width
+                };
+                let right_op_width = if op_signed && type_signedness(&right_ty) == Signed::Unsigned {
+                    right_width + 1
+                } else {
+                    right_width
+                };
+                let op_width = result_width.max(left_op_width).max(right_op_width);
+                let op_type = self
+                    .cg
+                    .context
+                    .custom_width_int_type(std::num::NonZeroU32::new(op_width).unwrap())
+                    .map_err(str::to_owned)?;
+                let left = self
+                    .cg
+                    .builder
+                    .build_int_cast_sign_flag(
+                        self.eval(left)?,
+                        op_type,
+                        type_signedness(&left_ty) == Signed::Signed,
+                        "lhs",
+                    )
+                    .map_err(|e| e.to_string())?;
                 let right = self
                     .cg
-                    .cast_value(self.eval(right)?, &result_ty, repr.signed(), "rhs")?;
-                match op {
+                    .builder
+                    .build_int_cast_sign_flag(
+                        self.eval(right)?,
+                        op_type,
+                        type_signedness(&right_ty) == Signed::Signed,
+                        "rhs",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let result = match op {
                     IrIntArithmeticOp::Add => self.cg.builder.build_int_add(left, right, "add"),
                     IrIntArithmeticOp::Sub => self.cg.builder.build_int_sub(left, right, "sub"),
                     IrIntArithmeticOp::Mul => self.cg.builder.build_int_mul(left, right, "mul"),
-                    IrIntArithmeticOp::Div => match repr.signed() {
-                        Signed::Signed => self.cg.builder.build_int_signed_div(left, right, "div"),
-                        Signed::Unsigned => self.cg.builder.build_int_unsigned_div(left, right, "div"),
+                    IrIntArithmeticOp::Div => match op_signed {
+                        true => self.signed_floor_div_rem(left, right, true),
+                        false => self.cg.builder.build_int_unsigned_div(left, right, "div"),
                     },
-                    IrIntArithmeticOp::Mod => match repr.signed() {
-                        Signed::Signed => self.cg.builder.build_int_signed_rem(left, right, "mod"),
-                        Signed::Unsigned => self.cg.builder.build_int_unsigned_rem(left, right, "mod"),
+                    IrIntArithmeticOp::Mod => match op_signed {
+                        true => self.signed_floor_div_rem(left, right, false),
+                        false => self.cg.builder.build_int_unsigned_rem(left, right, "mod"),
                     },
-                    IrIntArithmeticOp::Shr => {
-                        self.cg
-                            .builder
-                            .build_right_shift(left, right, repr.signed() == Signed::Signed, "shr")
-                    }
+                    IrIntArithmeticOp::Shr => self.cg.builder.build_right_shift(left, right, op_signed, "shr"),
                     IrIntArithmeticOp::Shl => self.cg.builder.build_left_shift(left, right, "shl"),
-                    IrIntArithmeticOp::Pow => {
-                        return Err("integer power is not supported in the LLVM simulator yet".to_owned());
-                    }
+                    IrIntArithmeticOp::Pow => self.codegen_pow(left, right),
                 }
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+                self.cg.cast_value(
+                    result,
+                    &result_ty,
+                    if op_signed { Signed::Signed } else { Signed::Unsigned },
+                    "arith_result",
+                )
             }
             IrExpressionLarge::IntCompare(op, left, right) => {
                 let left_ty = left.ty(self.module_info, self.locals);
                 let right_ty = right.ty(self.module_info, self.locals);
                 let width_ty = if left_ty.size_bits() >= right_ty.size_bits() {
-                    left_ty
+                    left_ty.clone()
                 } else {
-                    right_ty
+                    right_ty.clone()
                 };
                 let left = self
                     .cg
-                    .cast_value(self.eval(left)?, &width_ty, Signed::Signed, "cmp_lhs")?;
+                    .cast_value(self.eval(left)?, &width_ty, type_signedness(&left_ty), "cmp_lhs")?;
                 let right = self
                     .cg
-                    .cast_value(self.eval(right)?, &width_ty, Signed::Signed, "cmp_rhs")?;
-                let pred = match op {
-                    IrIntCompareOp::Eq => IntPredicate::EQ,
-                    IrIntCompareOp::Neq => IntPredicate::NE,
-                    IrIntCompareOp::Lt => IntPredicate::SLT,
-                    IrIntCompareOp::Lte => IntPredicate::SLE,
-                    IrIntCompareOp::Gt => IntPredicate::SGT,
-                    IrIntCompareOp::Gte => IntPredicate::SGE,
+                    .cast_value(self.eval(right)?, &width_ty, type_signedness(&right_ty), "cmp_rhs")?;
+                let signed =
+                    type_signedness(&left_ty) == Signed::Signed || type_signedness(&right_ty) == Signed::Signed;
+                let pred = match (op, signed) {
+                    (IrIntCompareOp::Eq, _) => IntPredicate::EQ,
+                    (IrIntCompareOp::Neq, _) => IntPredicate::NE,
+                    (IrIntCompareOp::Lt, true) => IntPredicate::SLT,
+                    (IrIntCompareOp::Lte, true) => IntPredicate::SLE,
+                    (IrIntCompareOp::Gt, true) => IntPredicate::SGT,
+                    (IrIntCompareOp::Gte, true) => IntPredicate::SGE,
+                    (IrIntCompareOp::Lt, false) => IntPredicate::ULT,
+                    (IrIntCompareOp::Lte, false) => IntPredicate::ULE,
+                    (IrIntCompareOp::Gt, false) => IntPredicate::UGT,
+                    (IrIntCompareOp::Gte, false) => IntPredicate::UGE,
                 };
                 self.cg
                     .builder
@@ -1759,14 +1833,103 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
                 self.cg.cast_value(self.eval(value)?, ty, Signed::Unsigned, "cast_bits")
             }
             IrExpressionLarge::ExpandIntRange(range, value) | IrExpressionLarge::ConstrainIntRange(range, value) => {
+                let value_ty = value.ty(self.module_info, self.locals);
                 self.cg.cast_value(
                     self.eval(value)?,
                     &IrType::Int(range.clone()),
-                    Signed::Unsigned,
+                    type_signedness(&value_ty),
                     "cast_int_range",
                 )
             }
         }
+    }
+
+    fn signed_floor_div_rem(
+        &self,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+        want_div: bool,
+    ) -> Result<IntValue<'ctx>, inkwell::builder::BuilderError> {
+        let zero = left.get_type().const_zero();
+        let one = left.get_type().const_int(1, false);
+        let trunc_div = self.cg.builder.build_int_signed_div(left, right, "trunc_div")?;
+        let trunc_rem = self.cg.builder.build_int_signed_rem(left, right, "trunc_rem")?;
+        let rem_nonzero = self
+            .cg
+            .builder
+            .build_int_compare(IntPredicate::NE, trunc_rem, zero, "rem_nonzero")?;
+        let left_neg = self
+            .cg
+            .builder
+            .build_int_compare(IntPredicate::SLT, left, zero, "lhs_neg")?;
+        let right_neg = self
+            .cg
+            .builder
+            .build_int_compare(IntPredicate::SLT, right, zero, "rhs_neg")?;
+        let signs_differ = self.cg.builder.build_xor(left_neg, right_neg, "signs_differ")?;
+        let adjust = self.cg.builder.build_and(rem_nonzero, signs_differ, "floor_adjust")?;
+        let div_adjusted = self.cg.builder.build_int_sub(trunc_div, one, "floor_div")?;
+        let rem_adjusted = self.cg.builder.build_int_add(trunc_rem, right, "floor_rem")?;
+        let result = if want_div {
+            self.cg.builder.build_select(adjust, div_adjusted, trunc_div, "div")?
+        } else {
+            self.cg.builder.build_select(adjust, rem_adjusted, trunc_rem, "mod")?
+        };
+        Ok(result.into_int_value())
+    }
+
+    fn codegen_pow(
+        &self,
+        base: IntValue<'ctx>,
+        exponent: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, inkwell::builder::BuilderError> {
+        let ty = base.get_type();
+        let acc_ptr = self.cg.builder.build_alloca(ty, "pow_acc")?;
+        let exp_ptr = self.cg.builder.build_alloca(ty, "pow_exp")?;
+        self.cg.builder.build_store(acc_ptr, ty.const_int(1, false))?;
+        self.cg.builder.build_store(exp_ptr, exponent)?;
+
+        let cond_block = self.cg.context.append_basic_block(self.function, "pow_cond");
+        let body_block = self.cg.context.append_basic_block(self.function, "pow_body");
+        let after_block = self.cg.context.append_basic_block(self.function, "pow_after");
+        self.cg.builder.build_unconditional_branch(cond_block)?;
+
+        self.cg.builder.position_at_end(cond_block);
+        let exp = self
+            .cg
+            .builder
+            .build_load(ty, exp_ptr, "pow_exp_value")?
+            .into_int_value();
+        let cond = self
+            .cg
+            .builder
+            .build_int_compare(IntPredicate::NE, exp, ty.const_zero(), "pow_continue")?;
+        self.cg
+            .builder
+            .build_conditional_branch(cond, body_block, after_block)?;
+
+        self.cg.builder.position_at_end(body_block);
+        let acc = self
+            .cg
+            .builder
+            .build_load(ty, acc_ptr, "pow_acc_value")?
+            .into_int_value();
+        let acc = self.cg.builder.build_int_mul(acc, base, "pow_acc_next")?;
+        self.cg.builder.build_store(acc_ptr, acc)?;
+        let exp = self
+            .cg
+            .builder
+            .build_load(ty, exp_ptr, "pow_exp_value")?
+            .into_int_value();
+        let exp = self
+            .cg
+            .builder
+            .build_int_sub(exp, ty.const_int(1, false), "pow_exp_next")?;
+        self.cg.builder.build_store(exp_ptr, exp)?;
+        self.cg.builder.build_unconditional_branch(cond_block)?;
+
+        self.cg.builder.position_at_end(after_block);
+        Ok(self.cg.builder.build_load(ty, acc_ptr, "pow_result")?.into_int_value())
     }
 
     fn concat_values(&mut self, elements: Vec<(&IrExpression, IrType)>) -> Result<IntValue<'ctx>, String> {

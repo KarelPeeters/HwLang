@@ -3,8 +3,6 @@ from pathlib import Path
 from typing import Tuple, List
 
 import hwl
-import pytest
-
 from hwl_sandbox.common.util import compile_custom
 
 
@@ -33,15 +31,12 @@ class CompiledCompare:
         self.eval_mod_inst.step(1)
         val_res_mod = ports.p_res.value
 
-        # eval module through the native C++ simulator
-        try:
-            cpp_ports = self.eval_cpp_inst.ports
-            for p_name, v in zip(cpp_ports, values):
-                cpp_ports[p_name].value = v
-            self.eval_cpp_inst.step(1)
-            val_res_cpp = cpp_ports.p_res.value
-        except (hwl.DiagnosticException, hwl.VerilationException) as e:
-            pytest.xfail(f"C++ backend failed during comparison: {e}")
+        # eval module through the native simulator backend
+        cpp_ports = self.eval_cpp_inst.ports
+        for p_name, v in zip(cpp_ports, values):
+            cpp_ports[p_name].value = v
+        self.eval_cpp_inst.step(1)
+        val_res_cpp = cpp_ports.p_res.value
 
         return val_res_func, val_res_mod, val_res_cpp
 
@@ -49,8 +44,7 @@ class CompiledCompare:
         val_res_func, val_res_mod, val_res_cpp = self.eval(values)
         assert val_res_func == expected, f"Function result {val_res_func} != expected {expected}"
         assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
-        if val_res_cpp != expected:
-            pytest.xfail(f"C++ module result {val_res_cpp} != expected {expected}")
+        assert val_res_cpp == expected, f"C++ module result {val_res_cpp} != expected {expected}"
 
 
 def compare_codegen(ty_inputs: List[str], ty_res: str, body: str, prefix: str) -> hwl.Compile:
@@ -111,10 +105,7 @@ def compare_body(
     build_dir_verilated.mkdir(parents=True, exist_ok=True)
     build_dir_cpp.mkdir(parents=True, exist_ok=True)
     eval_mod_inst = eval_mod.as_verilated(build_dir_verilated).instance()
-    try:
-        eval_cpp_inst = eval_mod.as_cpp(build_dir_cpp).instance()
-    except (hwl.DiagnosticException, hwl.VerilationException) as e:
-        pytest.xfail(f"C++ backend unavailable for this comparison: {e}")
+    eval_cpp_inst = eval_mod.as_cpp(build_dir_cpp).instance()
 
     return CompiledCompare(
         input_count=len(ty_inputs),
