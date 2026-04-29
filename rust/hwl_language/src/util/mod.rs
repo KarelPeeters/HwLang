@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 
 pub mod arena;
 pub mod big_int;
+pub mod bit_pack;
 pub mod data;
 pub mod exhaust;
 pub mod int;

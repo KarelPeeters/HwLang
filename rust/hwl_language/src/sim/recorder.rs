@@ -1,9 +1,9 @@
 use crate::back::lower_cpp_wrap::{CppSignalInfo, CppSignalKind};
-use crate::back::wrap_cpp::{CppSimError, CppSimInstance, port_size_bytes};
+use crate::back::wrap_cpp::{CppSimError, CppSimInstance};
 use crate::mid::ir::{IrEnumType, IrType};
 use crate::util::big_int::BigUint;
+use crate::util::bit_pack::{pack_bits, packed_bit, packed_bits_equal, packed_unsigned};
 use crate::util::int::{IntRepresentation, Signed};
-use itertools::enumerate;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,12 +212,14 @@ pub fn enum_tag_width(variant_count: usize) -> usize {
     }
 }
 
-fn pack_bits(bits: &[bool]) -> Vec<u8> {
-    let mut buffer = vec![0u8; port_size_bytes(bits.len())];
-    for (i, bit) in enumerate(bits) {
-        if *bit {
-            buffer[i / 8] |= 1 << (i % 8);
-        }
-    }
-    buffer
+pub fn packed_wave_unsigned(bits: &[u8], bit_offset: usize, bit_len: usize) -> u128 {
+    packed_unsigned(bits, bit_offset, bit_len)
+}
+
+pub fn packed_wave_bit(bits: &[u8], bit: usize) -> bool {
+    packed_bit(bits, bit)
+}
+
+pub fn packed_wave_bits_equal(a: &[u8], b: &[u8], bit_offset: usize, bit_len: usize) -> bool {
+    packed_bits_equal(a, b, bit_offset, bit_len)
 }

@@ -1,3 +1,4 @@
+use crate::back::cpp_bits::{CppBitLoad, CppBitStore, emit_value_from_bits, emit_value_to_bits};
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
@@ -12,7 +13,6 @@ use crate::mid::ir::{
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, separator_non_trailing};
@@ -617,7 +617,8 @@ impl CodegenBlockContext<'_> {
                     let tmp_result = self.new_temporary();
                     swriteln!(self.f, "{indent}std::array<bool, {size_bits}> {tmp_result};");
 
-                    self.impl_to_bits(indent, ty, tmp_result, "0", &value.to_string())?;
+                    let result = tmp_result.to_string();
+                    self.emit_value_to_bits(indent, ty, &value.to_string(), &result, "0");
 
                     Evaluated::Temporary(tmp_result)
                 }
@@ -628,7 +629,9 @@ impl CodegenBlockContext<'_> {
                     let tmp_result = self.new_temporary();
                     swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
 
-                    self.impl_from_bits(indent, ty, &tmp_result.to_string(), value, "0")?;
+                    let result = tmp_result.to_string();
+                    let value = value.to_string();
+                    self.emit_value_from_bits(indent, ty, &result, &value, "0");
 
                     Evaluated::Temporary(tmp_result)
                 }
@@ -648,216 +651,40 @@ impl CodegenBlockContext<'_> {
         Ok(result)
     }
 
-    fn impl_to_bits(
-        &mut self,
-        indent: Indent,
-        ty: &IrType,
-        result: Temporary,
-        result_offset: &str,
-        value: &str,
-    ) -> DiagResult {
-        // TODO maybe it's better to switch to just storing bits for everything in C++ too?
-        match ty {
-            IrType::Bool => {
-                swriteln!(self.f, "{indent}{result}[{result_offset}] = {value};",);
-            }
-            IrType::Int(range) => {
-                // TODO this this pretty inefficient
-                // TODO this is probably not correct for signed values
-                let tmp_i = self.new_temporary();
-                let size_bits = IntRepresentation::for_range(range.as_ref()).size_bits();
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {size_bits}; {tmp_i}++) {{"
-                );
-                swriteln!(
-                    self.f,
-                    "{indent}{I}{result}[{result_offset} + {tmp_i}] = ({value} >> {tmp_i}) & 1;"
-                );
-                swriteln!(self.f, "{indent}}}");
-            }
-            IrType::Array(ty_inner, ty_len) => {
-                let ty_inner_size = ty_inner.size_bits();
-                let tmp_i = self.new_temporary();
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
-                );
-                self.impl_to_bits(
-                    indent.nest(),
-                    ty_inner,
-                    result,
-                    &format!("{result_offset} + {tmp_i} * {ty_inner_size}"),
-                    &format!("{value}[{tmp_i}]"),
-                )?;
-                swriteln!(self.f, "{indent}}}");
-            }
-            IrType::Tuple(elements) => {
-                let mut offset = BigUint::ZERO;
-                for (field_i, field_ty) in enumerate(elements) {
-                    self.impl_to_bits(
-                        indent,
-                        field_ty,
-                        result,
-                        &format!("{result_offset} + {offset}"),
-                        &format!("std::get<{field_i}>({value})"),
-                    )?;
-                    offset += field_ty.size_bits();
-                }
-            }
-            IrType::Struct(info) => {
-                let mut offset = BigUint::ZERO;
-                for (field_i, field_ty) in enumerate(info.fields.values()) {
-                    self.impl_to_bits(
-                        indent,
-                        field_ty,
-                        result,
-                        &format!("{result_offset} + {offset}"),
-                        &format!("std::get<{field_i}>({value})"),
-                    )?;
-                    offset += field_ty.size_bits();
-                }
-            }
-            IrType::Enum(info) => {
-                // tag
-                self.impl_to_bits(
-                    indent,
-                    &IrType::Int(info.tag_range()),
-                    result,
-                    result_offset,
-                    &format!("static_cast<int64_t>({value}.index())"),
-                )?;
-
-                // payload
-                let payload_offset = info.tag_size_bits();
-                let payload_offset_str = format!("{result_offset} + {payload_offset}");
-
-                swriteln!(self.f, "{indent}switch ({value}.index()) {{");
-                for (variant_i, payload_ty) in enumerate(info.variants.values()) {
-                    if let Some(payload_ty) = payload_ty {
-                        swriteln!(self.f, "{indent}{I}case {variant_i}: {{");
-                        self.impl_to_bits(
-                            indent.nest().nest(),
-                            payload_ty,
-                            result,
-                            &payload_offset_str,
-                            &format!("std::get<{variant_i}>({value})"),
-                        )?;
-                        swriteln!(self.f, "{indent}{I}{I}break;");
-                        swriteln!(self.f, "{indent}{I}}}");
-                    }
-                }
-                swriteln!(self.f, "{indent}}}");
-
-                // padding already defaults to zero, so no need to clear those extra bits
-            }
-        }
-
-        Ok(())
+    fn emit_value_to_bits(&mut self, indent: Indent, ty: &IrType, value: &str, result: &str, result_offset: &str) {
+        let mut next_temporary_index = self.next_temporary_index;
+        emit_value_to_bits(
+            self.f,
+            indent,
+            ty,
+            value,
+            result_offset,
+            CppBitStore::BoolArray { array: result },
+            &mut |_, _| {
+                let temporary = Temporary(next_temporary_index);
+                next_temporary_index += 1;
+                temporary.to_string()
+            },
+        );
+        self.next_temporary_index = next_temporary_index;
     }
-    fn impl_from_bits(
-        &mut self,
-        indent: Indent,
-        ty: &IrType,
-        result: &str,
-        value: Temporary,
-        value_offset: &str,
-    ) -> DiagResult {
-        match ty {
-            IrType::Bool => {
-                swriteln!(self.f, "{indent}{result} = {value}[{value_offset}];",);
-            }
-            IrType::Int(range) => {
-                // TODO this this pretty inefficient
-                // TODO this is probably not correct for signed values
-                let tmp_i = self.new_temporary();
-                let size_bits = IntRepresentation::for_range(range.as_ref()).size_bits();
 
-                swriteln!(self.f, "{indent}{result} = 0;");
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {size_bits}; {tmp_i}++) {{"
-                );
-                swriteln!(
-                    self.f,
-                    "{indent}{I}{result} |= ({value}[{value_offset} + {tmp_i}] << {tmp_i});"
-                );
-                swriteln!(self.f, "{indent}}}");
-            }
-            IrType::Array(ty_inner, ty_len) => {
-                let ty_inner_size = ty_inner.size_bits();
-                let tmp_i = self.new_temporary();
-                swriteln!(
-                    self.f,
-                    "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {ty_len}; {tmp_i}++) {{"
-                );
-                self.impl_from_bits(
-                    indent.nest(),
-                    ty_inner,
-                    &format!("{result}[{tmp_i}]"),
-                    value,
-                    &format!("{value_offset} + {tmp_i} * {ty_inner_size}"),
-                )?;
-                swriteln!(self.f, "{indent}}}");
-            }
-            IrType::Tuple(tys_inner) => {
-                let mut offset = BigUint::ZERO;
-                for (element_i, element) in enumerate(tys_inner) {
-                    self.impl_from_bits(
-                        indent,
-                        element,
-                        &format!("std::get<{element_i}>({result})"),
-                        value,
-                        &format!("{value_offset} + {offset}"),
-                    )?;
-                    offset += element.size_bits();
-                }
-            }
-            IrType::Struct(info) => {
-                let mut offset = BigUint::ZERO;
-                for (field_i, field_ty) in enumerate(info.fields.values()) {
-                    self.impl_from_bits(
-                        indent,
-                        field_ty,
-                        &format!("std::get<{field_i}>({result})"),
-                        value,
-                        &format!("{value_offset} + {offset}"),
-                    )?;
-                    offset += field_ty.size_bits();
-                }
-            }
-            IrType::Enum(info) => {
-                // tag
-                let tag_ty = IrType::Int(info.tag_range());
-                let tag_tmp = self.new_temporary();
-                swriteln!(self.f, "{indent}int64_t {tag_tmp};");
-                self.impl_from_bits(indent, &tag_ty, &tag_tmp.to_string(), value, value_offset)?;
-
-                // payload
-                let payload_offset = info.tag_size_bits();
-                let payload_offset_str = format!("{value_offset} + {payload_offset}");
-
-                swriteln!(self.f, "{indent}switch ({tag_tmp}) {{");
-                for (variant_i, payload_ty) in enumerate(info.variants.values()) {
-                    swriteln!(self.f, "{indent}{I}case {variant_i}: {{");
-                    swriteln!(self.f, "{indent}{I}{I}({result}).emplace<{variant_i}>();");
-                    if let Some(payload_ty) = payload_ty {
-                        self.impl_from_bits(
-                            indent.nest().nest(),
-                            payload_ty,
-                            &format!("std::get<{variant_i}>({result})"),
-                            value,
-                            &payload_offset_str,
-                        )?;
-                    }
-                    swriteln!(self.f, "{indent}{I}{I}break;");
-                    swriteln!(self.f, "{indent}{I}}}");
-                }
-                swriteln!(self.f, "{indent}}}");
-            }
-        }
-
-        Ok(())
+    fn emit_value_from_bits(&mut self, indent: Indent, ty: &IrType, result: &str, value: &str, value_offset: &str) {
+        let mut next_temporary_index = self.next_temporary_index;
+        emit_value_from_bits(
+            self.f,
+            indent,
+            ty,
+            result,
+            value_offset,
+            CppBitLoad::BoolArray { array: value },
+            &mut |_, _| {
+                let temporary = Temporary(next_temporary_index);
+                next_temporary_index += 1;
+                temporary.to_string()
+            },
+        );
+        self.next_temporary_index = next_temporary_index;
     }
 
     fn generate_nested_block(&mut self, indent: Indent, block: &IrBlock, stage_read: Stage) -> DiagResult {

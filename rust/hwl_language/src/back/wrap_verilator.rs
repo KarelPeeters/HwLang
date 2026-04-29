@@ -8,10 +8,10 @@ use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Spanned;
 use crate::util::arena::{Arena, IndexType};
 use crate::util::big_int::BigUint;
+use crate::util::bit_pack::{bit_buffer_size_bytes, pack_bits_into, unpack_bits};
 use dlopen2::wrapper::{Container, WrapperApi};
 use indexmap::IndexMap;
-use itertools::{Either, Itertools, enumerate};
-use num_integer::div_ceil;
+use itertools::Either;
 use std::ffi::{CString, NulError, c_char, c_void};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -189,7 +189,7 @@ impl VerilatedInstance {
         let port_info = &self.lib.ports()[port];
 
         let size_bits = usize::try_from(port_info.ty.size_bits()).map_err(VerilatorError::PortTooLarge)?;
-        let size_bytes = port_size_bytes(size_bits);
+        let size_bytes = bit_buffer_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
 
         // zero-width ports don't exist in verilog, so don't try to access them
@@ -203,9 +203,7 @@ impl VerilatedInstance {
             }
         }
 
-        let bits = (0..size_bits)
-            .map(|i| (buffer[i / 8] >> (i % 8)) & 1 != 0)
-            .collect_vec();
+        let bits = unpack_bits(&buffer, size_bits);
 
         let value = port_info.ty.value_from_bits(&bits).map_err(|e| match e {
             Either::Left(FromBitsInvalidValue) => {
@@ -243,13 +241,9 @@ impl VerilatedInstance {
             .map_err(|_: ToBitsWrongType| Either::Left(VerilatorError::InternalError("to_bits failed")))?;
 
         let size_bits = bits.len();
-        let size_bytes = port_size_bytes(size_bits);
+        let size_bytes = bit_buffer_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
-        for (i, bit) in enumerate(bits) {
-            if bit {
-                buffer[i / 8] |= 1 << (i % 8);
-            }
-        }
+        pack_bits_into(&bits, &mut buffer);
 
         // zero-width ports don't exist in verilog, so don't try to access them
         if size_bits != 0 {
@@ -263,20 +257,6 @@ impl VerilatedInstance {
         }
 
         Ok(())
-    }
-}
-
-fn port_size_bytes(size_bits: usize) -> usize {
-    match size_bits {
-        // empty ports, they don't actually exist in verilog
-        0 => 0,
-        // single word scalar ports
-        1..=8 => 1,
-        9..=16 => 2,
-        17..=32 => 4,
-        33..=64 => 8,
-        // wide ports
-        65.. => div_ceil(size_bits, 32) * 4,
     }
 }
 

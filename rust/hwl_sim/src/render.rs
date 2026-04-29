@@ -1,11 +1,10 @@
-use crate::bits::{get_bit, get_unsigned};
 use crate::consts::{
     COLOR_SEPARATOR_STROKE, COLOR_STATUS_TEXT, COLOR_TEXT_MUTED, COLOR_TEXT_STRONG, COLOR_WAVE_SIGNAL_STROKE,
 };
 use crate::format::{WaveRadix, format_value_for_type_with_radix};
 use crate::time::{draw_time_grid, time_to_x};
 use eframe::egui::{self, Align2, FontId, Rect, Stroke, pos2, vec2};
-use hwl_language::sim::recorder::{WaveChange, WaveSignalType};
+use hwl_language::sim::recorder::{WaveChange, WaveSignalType, packed_wave_bit, packed_wave_unsigned};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WaveRenderMode {
@@ -76,7 +75,7 @@ pub fn draw_waveform(
             let segment_start = start_time.max(visible_start);
             let segment_end = end_time.min(visible_end);
             if segment_end > segment_start {
-                let y = bit_y(rect, get_bit(&change.bits, bit_offset));
+                let y = bit_y(rect, packed_wave_bit(&change.bits, bit_offset));
                 painter.line_segment(
                     [
                         pos2(time_to_x(rect, segment_start, time_view_start, pixels_per_time), y),
@@ -91,8 +90,8 @@ pub fn draw_waveform(
                     let x = time_to_x(rect, transition_time, time_view_start, pixels_per_time);
                     painter.line_segment(
                         [
-                            pos2(x, bit_y(rect, get_bit(&change.bits, bit_offset))),
-                            pos2(x, bit_y(rect, get_bit(&next.bits, bit_offset))),
+                            pos2(x, bit_y(rect, packed_wave_bit(&change.bits, bit_offset))),
+                            pos2(x, bit_y(rect, packed_wave_bit(&next.bits, bit_offset))),
                         ],
                         Stroke::new(1.5, COLOR_WAVE_SIGNAL_STROKE),
                     );
@@ -191,21 +190,21 @@ fn draw_analog_waveform(
 fn numeric_value_for_type(bits: &[u8], bit_offset: usize, ty: &WaveSignalType) -> f64 {
     match ty {
         WaveSignalType::Bool => {
-            if get_bit(bits, bit_offset) {
+            if packed_wave_bit(bits, bit_offset) {
                 1.0
             } else {
                 0.0
             }
         }
         &WaveSignalType::Int { signed, width } => {
-            if signed && width > 0 && width <= 127 && get_bit(bits, bit_offset + width - 1) {
-                let value = get_unsigned(bits, bit_offset, width) as i128 - (1i128 << width);
+            if signed && width > 0 && width <= 127 && packed_wave_bit(bits, bit_offset + width - 1) {
+                let value = packed_wave_unsigned(bits, bit_offset, width) as i128 - (1i128 << width);
                 value as f64
             } else {
-                get_unsigned(bits, bit_offset, width.min(128)) as f64
+                packed_wave_unsigned(bits, bit_offset, width.min(128)) as f64
             }
         }
-        _ => get_unsigned(bits, bit_offset, ty.bit_len().min(128)) as f64,
+        _ => packed_wave_unsigned(bits, bit_offset, ty.bit_len().min(128)) as f64,
     }
 }
 

@@ -1,5 +1,4 @@
-use crate::bits::{get_bit, get_unsigned};
-use hwl_language::sim::recorder::{WaveSignalType, enum_tag_width};
+use hwl_language::sim::recorder::{WaveSignalType, enum_tag_width, packed_wave_bit, packed_wave_unsigned};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum WaveRadix {
@@ -16,7 +15,7 @@ pub fn format_value_for_type_with_radix(
 ) -> String {
     match ty {
         WaveSignalType::Bool => {
-            if get_bit(bits, bit_offset) {
+            if packed_wave_bit(bits, bit_offset) {
                 "true".to_owned()
             } else {
                 "false".to_owned()
@@ -60,7 +59,7 @@ pub fn format_value_for_type_with_radix(
         }
         WaveSignalType::Enum { name, variants } => {
             let tag_width = enum_tag_width(variants.len());
-            let tag = get_unsigned(bits, bit_offset, tag_width) as usize;
+            let tag = packed_wave_unsigned(bits, bit_offset, tag_width) as usize;
             let Some((variant_name, payload_ty)) = variants.get(tag) else {
                 return format!("{name}.<invalid {tag}>");
             };
@@ -85,10 +84,10 @@ fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool, 
         WaveRadix::Dec => {}
     }
     if width > 128 {
-        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
+        return format!("0x{:x}...", packed_wave_unsigned(bits, bit_offset, 128));
     }
-    let value = get_unsigned(bits, bit_offset, width);
-    if signed && width < 128 && get_bit(bits, bit_offset + width - 1) {
+    let value = packed_wave_unsigned(bits, bit_offset, width);
+    if signed && width < 128 && packed_wave_bit(bits, bit_offset + width - 1) {
         let signed_value = value as i128 - (1i128 << width);
         signed_value.to_string()
     } else {
@@ -99,15 +98,21 @@ fn format_int_value(bits: &[u8], bit_offset: usize, width: usize, signed: bool, 
 fn bit_string(bits: &[u8], bit_offset: usize, width: usize) -> String {
     (0..width)
         .rev()
-        .map(|index| if get_bit(bits, bit_offset + index) { '1' } else { '0' })
+        .map(|index| {
+            if packed_wave_bit(bits, bit_offset + index) {
+                '1'
+            } else {
+                '0'
+            }
+        })
         .collect()
 }
 
 fn format_hex_value(bits: &[u8], bit_offset: usize, width: usize) -> String {
     if width > 128 {
-        return format!("0x{:x}...", get_unsigned(bits, bit_offset, 128));
+        return format!("0x{:x}...", packed_wave_unsigned(bits, bit_offset, 128));
     }
-    let value = get_unsigned(bits, bit_offset, width);
+    let value = packed_wave_unsigned(bits, bit_offset, width);
     let digits = width.div_ceil(4).max(1);
     format!("0x{value:0digits$x}")
 }

@@ -1,4 +1,3 @@
-mod bits;
 mod consts;
 mod format;
 mod panels;

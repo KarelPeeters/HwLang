@@ -1,12 +1,11 @@
+use crate::back::cpp_bits::{CppBitLoad, CppBitStore, emit_value_from_bits, emit_value_to_bits, offset_identifier};
 use crate::mid::ir::{
-    IrEnumType, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection,
-    IrPortInfo, IrSignal, IrType, IrWire, IrWireInfo,
+    IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo,
+    IrSignal, IrType, IrWire, IrWireInfo,
 };
 use crate::syntax::ast::PortDirection;
 use crate::util::Indent;
 use crate::util::arena::{Idx, IndexType};
-use crate::util::big_int::BigUint;
-use crate::util::int::IntRepresentation;
 use fnv::FnvHasher;
 use hwl_util::swriteln;
 use itertools::enumerate;
@@ -216,7 +215,15 @@ fn emit_set_port(modules: &IrModules, top_module: IrModule, f: &mut String) {
                 "{I}{I}{I}if (!hwlang_cpp_wrap::check_len({size_bits}, data_len)) return hwlang_cpp_wrap::RESULT_BAD_INDEX;"
             );
             let expr = format!("instance->next_ports.{}", port_expr(port, port_info));
-            emit_unpack_value(f, Indent::new(3), &port_info.ty, &expr, "0");
+            emit_value_from_bits(
+                f,
+                Indent::new(3),
+                &port_info.ty,
+                &expr,
+                "0",
+                CppBitLoad::PackedData { data: "data" },
+                &mut wrapped_temp_name,
+            );
             swriteln!(f, "{I}{I}{I}return hwlang_cpp_wrap::RESULT_OK;");
         }
         swriteln!(f, "{I}{I}}}");
@@ -263,202 +270,17 @@ fn emit_get_case(f: &mut String, index: usize, expr: &str, ty: &IrType) {
         "{I}{I}{I}if (!hwlang_cpp_wrap::check_len({size_bits}, data_len)) return hwlang_cpp_wrap::RESULT_BAD_INDEX;"
     );
     swriteln!(f, "{I}{I}{I}hwlang_cpp_wrap::clear_data(data_len, data);");
-    emit_pack_value(f, Indent::new(3), ty, expr, "0");
+    emit_value_to_bits(
+        f,
+        Indent::new(3),
+        ty,
+        expr,
+        "0",
+        CppBitStore::PackedData { data: "data" },
+        &mut wrapped_temp_name,
+    );
     swriteln!(f, "{I}{I}{I}return hwlang_cpp_wrap::RESULT_OK;");
     swriteln!(f, "{I}{I}}}");
-}
-
-fn emit_pack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, offset: &str) {
-    match ty {
-        IrType::Bool => {
-            swriteln!(f, "{indent}hwlang_cpp_wrap::write_bit(data, {offset}, {value});");
-        }
-        IrType::Int(range) => {
-            let width = IntRepresentation::for_range(range.as_ref()).size_bits();
-            let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(
-                f,
-                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{"
-            );
-            swriteln!(
-                f,
-                "{indent}{I}hwlang_cpp_wrap::write_bit(data, {offset} + {tmp_i}, (({value}) >> {tmp_i}) & 1);"
-            );
-            swriteln!(f, "{indent}}}");
-        }
-        IrType::Array(inner, len) => {
-            let inner_bits = inner.size_bits();
-            let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(
-                f,
-                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{"
-            );
-            emit_pack_value(
-                f,
-                indent.nest(),
-                inner,
-                &format!("({value})[{tmp_i}]"),
-                &format!("{offset} + {tmp_i} * {inner_bits}"),
-            );
-            swriteln!(f, "{indent}}}");
-        }
-        IrType::Tuple(elements) => {
-            let mut child_offset = BigUint::ZERO;
-            for (i, element) in enumerate(elements) {
-                emit_pack_value(
-                    f,
-                    indent,
-                    element,
-                    &format!("std::get<{i}>({value})"),
-                    &format!("{offset} + {child_offset}"),
-                );
-                child_offset += element.size_bits();
-            }
-        }
-        IrType::Struct(info) => {
-            let mut child_offset = BigUint::ZERO;
-            for (i, element) in enumerate(info.fields.values()) {
-                emit_pack_value(
-                    f,
-                    indent,
-                    element,
-                    &format!("std::get<{i}>({value})"),
-                    &format!("{offset} + {child_offset}"),
-                );
-                child_offset += element.size_bits();
-            }
-        }
-        IrType::Enum(info) => {
-            emit_pack_value(
-                f,
-                indent,
-                &IrType::Int(info.tag_range()),
-                &format!("static_cast<int64_t>(({value}).index())"),
-                offset,
-            );
-            let payload_offset = info.tag_size_bits();
-            swriteln!(f, "{indent}switch (({value}).index()) {{");
-            for (variant_i, payload_ty) in enumerate(info.variants.values()) {
-                if let Some(payload_ty) = payload_ty {
-                    swriteln!(f, "{indent}{I}case {variant_i}: {{");
-                    emit_pack_value(
-                        f,
-                        indent.nest().nest(),
-                        payload_ty,
-                        &format!("std::get<{variant_i}>({value})"),
-                        &format!("{offset} + {payload_offset}"),
-                    );
-                    swriteln!(f, "{indent}{I}{I}break;");
-                    swriteln!(f, "{indent}{I}}}");
-                }
-            }
-            swriteln!(f, "{indent}}}");
-        }
-    }
-}
-
-fn emit_unpack_value(f: &mut String, indent: Indent, ty: &IrType, value: &str, offset: &str) {
-    match ty {
-        IrType::Bool => {
-            swriteln!(f, "{indent}{value} = hwlang_cpp_wrap::read_bit(data, {offset});");
-        }
-        IrType::Int(range) => {
-            let repr = IntRepresentation::for_range(range.as_ref());
-            let width = repr.size_bits();
-            let tmp = format!("v_{}", offset_identifier(offset));
-            let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(f, "{indent}uint64_t {tmp} = 0;");
-            swriteln!(
-                f,
-                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {width}; {tmp_i}++) {{"
-            );
-            swriteln!(
-                f,
-                "{indent}{I}if (hwlang_cpp_wrap::read_bit(data, {offset} + {tmp_i})) {tmp} |= (uint64_t{{1}} << {tmp_i});"
-            );
-            swriteln!(f, "{indent}}}");
-            match repr {
-                IntRepresentation::Unsigned { .. } => {
-                    swriteln!(f, "{indent}{value} = static_cast<int64_t>({tmp});");
-                }
-                IntRepresentation::Signed { width_1 } => {
-                    let sign_adjust = width_1 + 1;
-                    swriteln!(
-                        f,
-                        "{indent}{value} = hwlang_cpp_wrap::read_bit(data, {offset} + {width_1}) ? static_cast<int64_t>({tmp}) - (int64_t{{1}} << {sign_adjust}) : static_cast<int64_t>({tmp});"
-                    );
-                }
-            }
-        }
-        IrType::Array(inner, len) => {
-            let inner_bits = inner.size_bits();
-            let tmp_i = format!("i_{}", offset_identifier(offset));
-            swriteln!(
-                f,
-                "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {len}; {tmp_i}++) {{"
-            );
-            emit_unpack_value(
-                f,
-                indent.nest(),
-                inner,
-                &format!("({value})[{tmp_i}]"),
-                &format!("{offset} + {tmp_i} * {inner_bits}"),
-            );
-            swriteln!(f, "{indent}}}");
-        }
-        IrType::Tuple(elements) => {
-            let mut child_offset = BigUint::ZERO;
-            for (i, element) in enumerate(elements) {
-                emit_unpack_value(
-                    f,
-                    indent,
-                    element,
-                    &format!("std::get<{i}>({value})"),
-                    &format!("{offset} + {child_offset}"),
-                );
-                child_offset += element.size_bits();
-            }
-        }
-        IrType::Struct(info) => {
-            let mut child_offset = BigUint::ZERO;
-            for (i, element) in enumerate(info.fields.values()) {
-                emit_unpack_value(
-                    f,
-                    indent,
-                    element,
-                    &format!("std::get<{i}>({value})"),
-                    &format!("{offset} + {child_offset}"),
-                );
-                child_offset += element.size_bits();
-            }
-        }
-        IrType::Enum(info) => emit_unpack_enum(f, indent, info, value, offset),
-    }
-}
-
-fn emit_unpack_enum(f: &mut String, indent: Indent, info: &IrEnumType, value: &str, offset: &str) {
-    let tag_ty = IrType::Int(info.tag_range());
-    let tag_tmp = format!("tag_{}", offset_identifier(offset));
-    swriteln!(f, "{indent}int64_t {tag_tmp} = 0;");
-    emit_unpack_value(f, indent, &tag_ty, &tag_tmp, offset);
-    let payload_offset = info.tag_size_bits();
-    swriteln!(f, "{indent}switch ({tag_tmp}) {{");
-    for (variant_i, payload_ty) in enumerate(info.variants.values()) {
-        swriteln!(f, "{indent}{I}case {variant_i}: {{");
-        swriteln!(f, "{indent}{I}{I}({value}).template emplace<{variant_i}>();");
-        if let Some(payload_ty) = payload_ty {
-            emit_unpack_value(
-                f,
-                indent.nest().nest(),
-                payload_ty,
-                &format!("std::get<{variant_i}>({value})"),
-                &format!("{offset} + {payload_offset}"),
-            );
-        }
-        swriteln!(f, "{indent}{I}{I}break;");
-        swriteln!(f, "{indent}{I}}}");
-    }
-    swriteln!(f, "{indent}}}");
 }
 
 fn collect_signals_recursive(
@@ -639,11 +461,8 @@ fn name_str(prefix: &str, index: Idx, id: Option<&str>) -> String {
     }
 }
 
-fn offset_identifier(offset: &str) -> String {
-    offset
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+fn wrapped_temp_name(prefix: &str, offset: &str) -> String {
+    format!("{prefix}_{}", offset_identifier(offset))
 }
 
 const I: &str = Indent::I;

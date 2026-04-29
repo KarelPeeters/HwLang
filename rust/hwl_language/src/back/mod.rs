@@ -1,3 +1,5 @@
+mod cpp_bits;
+
 pub mod lower_verilog;
 
 pub mod lower_verilator;

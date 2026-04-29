@@ -9,10 +9,10 @@ use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Spanned;
 use crate::util::arena::{Arena, IndexType};
 use crate::util::big_int::BigUint;
+use crate::util::bit_pack::{bit_buffer_size_bytes, pack_bits_into, unpack_bits};
 use dlopen2::wrapper::{Container, WrapperApi};
 use indexmap::IndexMap;
-use itertools::{Either, Itertools, enumerate};
-use num_integer::div_ceil;
+use itertools::Either;
 use std::ffi::c_void;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -198,9 +198,9 @@ impl CppSimInstance {
             .map_err(|_: ToBitsWrongType| Either::Left(CppSimError::InternalError("to_bits failed")))?;
 
         let size_bits = bits.len();
-        let size_bytes = port_size_bytes(size_bits);
+        let size_bytes = bit_buffer_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
-        pack_bits(&bits, &mut buffer);
+        pack_bits_into(&bits, &mut buffer);
 
         if size_bits != 0 {
             unsafe {
@@ -237,7 +237,7 @@ impl CppSimInstance {
 
     fn read_port_bits(&self, port_index: usize, ty: &crate::mid::ir::IrType) -> Result<Vec<bool>, CppSimError> {
         let size_bits = usize::try_from(ty.size_bits()).map_err(CppSimError::PortTooLarge)?;
-        let size_bytes = port_size_bytes(size_bits);
+        let size_bytes = bit_buffer_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
         if size_bits != 0 {
             unsafe {
@@ -253,7 +253,7 @@ impl CppSimInstance {
 
     fn read_signal_bits(&self, signal_id: usize, ty: &crate::mid::ir::IrType) -> Result<Vec<bool>, CppSimError> {
         let size_bits = usize::try_from(ty.size_bits()).map_err(CppSimError::PortTooLarge)?;
-        let size_bytes = port_size_bytes(size_bits);
+        let size_bytes = bit_buffer_size_bytes(size_bits);
         let mut buffer = vec![0u8; size_bytes];
         if size_bits != 0 {
             unsafe {
@@ -266,31 +266,6 @@ impl CppSimInstance {
         }
         Ok(unpack_bits(&buffer, size_bits))
     }
-}
-
-pub(crate) fn port_size_bytes(size_bits: usize) -> usize {
-    match size_bits {
-        0 => 0,
-        1..=8 => 1,
-        9..=16 => 2,
-        17..=32 => 4,
-        33..=64 => 8,
-        65.. => div_ceil(size_bits, 32) * 4,
-    }
-}
-
-fn pack_bits(bits: &[bool], buffer: &mut [u8]) {
-    for (i, bit) in enumerate(bits) {
-        if *bit {
-            buffer[i / 8] |= 1 << (i % 8);
-        }
-    }
-}
-
-fn unpack_bits(buffer: &[u8], size_bits: usize) -> Vec<bool> {
-    (0..size_bits)
-        .map(|i| (buffer[i / 8] >> (i % 8)) & 1 != 0)
-        .collect_vec()
 }
 
 fn check_result(result: u8, context: &'static str) -> Result<(), CppSimError> {

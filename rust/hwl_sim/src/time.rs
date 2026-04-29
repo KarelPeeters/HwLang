@@ -1,4 +1,3 @@
-use crate::bits::{bits_equal, get_bit};
 use crate::consts::{
     COLOR_CURSOR, COLOR_CURSOR_DELETE_BORDER, COLOR_CURSOR_STATS_BG, COLOR_CURSOR_STATS_BORDER, COLOR_TEXT_MUTED,
     COLOR_TEXT_STRONG, COLOR_TIME_GRID, COLOR_TIME_SCROLL_BORDER, COLOR_TIME_SCROLL_HANDLE_FILL,
@@ -6,7 +5,7 @@ use crate::consts::{
     MAX_PIXELS_PER_TIME, MIN_PIXELS_PER_TIME,
 };
 use eframe::egui::{self, Align2, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
-use hwl_language::sim::recorder::WaveChange;
+use hwl_language::sim::recorder::{WaveChange, packed_wave_bit, packed_wave_bits_equal};
 
 #[derive(Debug, Copy, Clone)]
 pub struct ZoomDrag {
@@ -236,11 +235,11 @@ pub fn edge_counts(changes: &[WaveChange], bit_offset: usize, bit_len: usize, st
         .filter(|change| change.time >= start && change.time < end)
     {
         if let Some(previous_bits) = previous {
-            if !bits_equal(previous_bits, &change.bits, bit_offset, bit_len) {
+            if !packed_wave_bits_equal(previous_bits, &change.bits, bit_offset, bit_len) {
                 counts.toggles += 1;
                 if bit_len == 1 {
-                    let before = get_bit(previous_bits, bit_offset);
-                    let after = get_bit(&change.bits, bit_offset);
+                    let before = packed_wave_bit(previous_bits, bit_offset);
+                    let after = packed_wave_bit(&change.bits, bit_offset);
                     match (before, after) {
                         (false, true) => counts.posedges += 1,
                         (true, false) => counts.negedges += 1,
