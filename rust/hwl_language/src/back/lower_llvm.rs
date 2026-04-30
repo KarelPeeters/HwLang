@@ -39,12 +39,23 @@ pub fn lower_to_llvm_object(modules: &IrModules, top_module: IrModule, output: &
 
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).map_err(|e| e.to_string())?;
+    let optimization_level = match std::env::var("HWL_LLVM_OPT").as_deref() {
+        Ok("1" | "less") => OptimizationLevel::Less,
+        Ok("2" | "default") => OptimizationLevel::Default,
+        Ok("3" | "aggressive") => OptimizationLevel::Aggressive,
+        Ok("0") | Err(_) => OptimizationLevel::None,
+        Ok(value) => {
+            return Err(format!(
+                "invalid HWL_LLVM_OPT value `{value}`, expected 0, 1, 2, 3, less, default, or aggressive"
+            ));
+        }
+    };
     let target_machine = target
         .create_target_machine(
             &triple,
             TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic"),
             TargetMachine::get_host_cpu_features().to_str().unwrap_or(""),
-            OptimizationLevel::None,
+            optimization_level,
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -103,6 +114,7 @@ struct LlvmCodegen<'ctx, 'ir> {
     ptr_type: inkwell::types::PointerType<'ctx>,
     i1_type: IntType<'ctx>,
     i8_type: IntType<'ctx>,
+    i32_type: IntType<'ctx>,
     i64_type: IntType<'ctx>,
 }
 
@@ -124,6 +136,7 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
             ptr_type: context.ptr_type(AddressSpace::default()),
             i1_type: context.bool_type(),
             i8_type: context.i8_type(),
+            i32_type: context.i32_type(),
             i64_type: context.i64_type(),
         }
     }
@@ -552,38 +565,134 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         let prev_port_ptrs = self.build_top_port_ptrs(top_types, prev_ports)?;
         let next_port_ptrs = self.build_top_port_ptrs(top_types, next_ports)?;
         let top_function = self.module_functions[&self.top_module.inner().index()];
-        for _ in 0..32 {
-            self.builder
-                .build_call(
-                    top_function,
-                    &[
-                        prev_signals.into(),
-                        prev_port_ptrs.ptr.into(),
-                        next_signals.into(),
-                        next_port_ptrs.ptr.into(),
-                    ],
-                    "",
-                )
-                .map_err(|e| e.to_string())?;
-            let next_signals_value = self
-                .builder
-                .build_load(top_types.signals, next_signals, "next_signals_value")
-                .map_err(|e| e.to_string())?;
-            let next_ports_value = self
-                .builder
-                .build_load(top_types.ports_val, next_ports, "next_ports_value")
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(prev_signals, next_signals_value)
-                .map_err(|e| e.to_string())?;
-            self.builder
-                .build_store(prev_ports, next_ports_value)
-                .map_err(|e| e.to_string())?;
-        }
+
+        let counter_ptr = self
+            .builder
+            .build_alloca(self.i8_type, "settle_iter")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(counter_ptr, self.i8_type.const_zero())
+            .map_err(|e| e.to_string())?;
+
+        let cond_block = self.context.append_basic_block(function, "settle_cond");
+        let body_block = self.context.append_basic_block(function, "settle_body");
+        let after_block = self.context.append_basic_block(function, "settle_after");
+        self.builder
+            .build_unconditional_branch(cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(cond_block);
+        let counter = self
+            .builder
+            .build_load(self.i8_type, counter_ptr, "settle_iter")
+            .map_err(|e| e.to_string())?
+            .into_int_value();
+        let counter_lt_limit = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                counter,
+                self.i8_type.const_int(32, false),
+                "settle_has_iter",
+            )
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(counter_lt_limit, body_block, after_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(body_block);
+        self.builder
+            .build_call(
+                top_function,
+                &[
+                    prev_signals.into(),
+                    prev_port_ptrs.ptr.into(),
+                    next_signals.into(),
+                    next_port_ptrs.ptr.into(),
+                ],
+                "",
+            )
+            .map_err(|e| e.to_string())?;
+        let signals_stable = self.memory_equal(prev_signals, next_signals, top_types.signals)?;
+        let ports_stable = self.memory_equal(prev_ports, next_ports, top_types.ports_val)?;
+        let stable = self
+            .builder
+            .build_and(signals_stable, ports_stable, "settle_stable")
+            .map_err(|e| e.to_string())?;
+        self.copy_memory(prev_signals, next_signals, top_types.signals)?;
+        self.copy_memory(prev_ports, next_ports, top_types.ports_val)?;
+        let next_counter = self
+            .builder
+            .build_int_add(counter, self.i8_type.const_int(1, false), "settle_next_iter")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(counter_ptr, next_counter)
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_conditional_branch(stable, after_block, cond_block)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(after_block);
         self.builder
             .build_return(Some(&self.i8_type.const_zero()))
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn memory_equal(
+        &self,
+        left: PointerValue<'ctx>,
+        right: PointerValue<'ctx>,
+        ty: StructType<'ctx>,
+    ) -> Result<IntValue<'ctx>, String> {
+        let memcmp = self.module.get_function("memcmp").unwrap_or_else(|| {
+            self.module.add_function(
+                "memcmp",
+                self.i32_type.fn_type(
+                    &[self.ptr_type.into(), self.ptr_type.into(), self.i64_type.into()],
+                    false,
+                ),
+                None,
+            )
+        });
+        let size = self.struct_size_i64(ty)?;
+        let cmp = self
+            .builder
+            .build_call(memcmp, &[left.into(), right.into(), size.into()], "memcmp")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| "memcmp should return a value".to_owned())?
+            .into_int_value();
+        self.builder
+            .build_int_compare(IntPredicate::EQ, cmp, self.i32_type.const_zero(), "memory_equal")
+            .map_err(|e| e.to_string())
+    }
+
+    fn copy_memory(
+        &self,
+        dest: PointerValue<'ctx>,
+        src: PointerValue<'ctx>,
+        ty: StructType<'ctx>,
+    ) -> Result<(), String> {
+        let size = self.struct_size_i64(ty)?;
+        self.builder
+            .build_memcpy(dest, 1, src, 1, size)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn struct_size_i64(&self, ty: StructType<'ctx>) -> Result<IntValue<'ctx>, String> {
+        let size = ty
+            .size_of()
+            .ok_or_else(|| "cannot compute size of opaque struct".to_owned())?;
+        if size.get_type() == self.i64_type {
+            Ok(size)
+        } else {
+            self.builder
+                .build_int_cast_sign_flag(size, self.i64_type, false, "struct_size")
+                .map_err(|e| e.to_string())
+        }
     }
 
     fn codegen_get_port(&self, instance_type: StructType<'ctx>, top_types: ModuleTypes<'ctx>) -> Result<(), String> {
