@@ -4,21 +4,21 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess,
     IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrModule,
     IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPortConnection, IrSignal, IrSignalOrVariable,
-    IrStatement, IrTargetStep, IrType, IrVariables,
+    IrStatement, IrStringSubstitution, IrTargetStep, IrType, IrVariables,
 };
-use crate::syntax::ast::PortDirection;
+use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::util::arena::IndexType;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::{IntRepresentation, Signed};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::module::{Linkage, Module};
+use inkwell::module::Module;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, IntType, StructType};
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
-use itertools::enumerate;
+use itertools::{Itertools, enumerate};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -70,7 +70,7 @@ pub fn lower_to_llvm_object(modules: &IrModules, top_module: IrModule, output: &
     })
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 enum Stage {
     Prev,
     Next,
@@ -90,16 +90,90 @@ struct ModuleTypes<'ctx> {
     ports_ptr: StructType<'ctx>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 struct PortPtrs<'ctx> {
     ty: StructType<'ctx>,
     ptr: PointerValue<'ctx>,
+    direct: Option<Vec<PointerValue<'ctx>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
 struct ValuePtr<'ctx, 'ir> {
     ptr: PointerValue<'ctx>,
     ty: &'ir IrType,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct SignalKey {
+    path: Vec<usize>,
+    kind: SignalKeyKind,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct PolarizedSignalKey {
+    signal: SignalKey,
+    inverted: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct SignalValueCacheKey {
+    signal: PolarizedSignalKey,
+    stage: Stage,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum SignalKeyKind {
+    Port(usize),
+    Wire(usize),
+    Dummy { child_index: usize, dummy_index: usize },
+}
+
+#[derive(Debug, Clone)]
+struct ScheduledNode {
+    module: IrModule,
+    path: Vec<usize>,
+    child_index: usize,
+    kind: ScheduledNodeKind,
+    read_next: HashSet<SignalKey>,
+    partial_read_next: HashSet<SignalKey>,
+    write_next: HashSet<SignalKey>,
+    clock_key: Option<PolarizedSignalKey>,
+    reset_key: Option<PolarizedSignalKey>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ScheduledNodeKind {
+    Comb,
+    AsyncReset,
+    ClockEdge,
+}
+
+#[derive(Debug)]
+struct ScheduleScope {
+    module: IrModule,
+    path: Vec<usize>,
+    port_aliases: Vec<SignalKey>,
+}
+
+#[derive(Debug, Default)]
+struct SignalAccesses {
+    reads: HashSet<SignalKey>,
+    partial_reads: HashSet<SignalKey>,
+    writes: HashSet<SignalKey>,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum ScheduleReadStage {
+    Next,
+}
+
+#[derive(Debug, Clone)]
+struct CodegenScope<'ctx> {
+    module: IrModule,
+    prev_signals: PointerValue<'ctx>,
+    prev_ports: PortPtrs<'ctx>,
+    next_signals: PointerValue<'ctx>,
+    next_ports: PortPtrs<'ctx>,
 }
 
 struct LlvmCodegen<'ctx, 'ir> {
@@ -110,11 +184,9 @@ struct LlvmCodegen<'ctx, 'ir> {
     top_module: IrModule,
     check_hash: u64,
     module_types: HashMap<usize, ModuleTypes<'ctx>>,
-    module_functions: HashMap<usize, FunctionValue<'ctx>>,
     ptr_type: inkwell::types::PointerType<'ctx>,
     i1_type: IntType<'ctx>,
     i8_type: IntType<'ctx>,
-    i32_type: IntType<'ctx>,
     i64_type: IntType<'ctx>,
 }
 
@@ -132,21 +204,15 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
             top_module,
             check_hash: hasher.finish(),
             module_types: HashMap::new(),
-            module_functions: HashMap::new(),
             ptr_type: context.ptr_type(AddressSpace::default()),
             i1_type: context.bool_type(),
             i8_type: context.i8_type(),
-            i32_type: context.i32_type(),
             i64_type: context.i64_type(),
         }
     }
 
     fn codegen(&mut self) -> Result<(), String> {
         self.declare_types()?;
-        self.declare_module_functions();
-        for module in ir_modules_topological_sort(self.modules, [self.top_module]) {
-            self.codegen_module_function(module)?;
-        }
         self.codegen_exports()?;
         Ok(())
     }
@@ -220,182 +286,410 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         Ok(())
     }
 
-    fn declare_module_functions(&mut self) {
-        for module in ir_modules_topological_sort(self.modules, [self.top_module]) {
-            let module_index = module.inner().index();
-            let types = self.module_types[&module_index];
-            let fn_type = self.context.void_type().fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.ptr_type.into(),
-                    self.ptr_type.into(),
-                    self.ptr_type.into(),
-                ],
-                false,
-            );
-            let function =
-                self.module
-                    .add_function(&format!("module_{module_index}_all"), fn_type, Some(Linkage::Internal));
-            let _ = types;
-            self.module_functions.insert(module_index, function);
-        }
+    fn build_schedule(&self) -> Result<Vec<ScheduledNode>, String> {
+        let top_info = &self.modules[self.top_module];
+        let top_aliases = top_info
+            .ports
+            .iter()
+            .map(|(port, _)| SignalKey {
+                path: Vec::new(),
+                kind: SignalKeyKind::Port(port.inner().index()),
+            })
+            .collect();
+        let scope = ScheduleScope {
+            module: self.top_module,
+            path: Vec::new(),
+            port_aliases: top_aliases,
+        };
+        let mut nodes = Vec::new();
+        self.collect_schedule_nodes(scope, &mut nodes)?;
+        self.toposort_schedule(nodes)
     }
 
-    fn codegen_module_function(&mut self, module: IrModule) -> Result<(), String> {
-        let module_index = module.inner().index();
-        let function = self.module_functions[&module_index];
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
-
-        let types = self.module_types[&module_index];
-        let prev_signals = function.get_nth_param(0).unwrap().into_pointer_value();
-        let prev_ports = PortPtrs {
-            ty: types.ports_ptr,
-            ptr: function.get_nth_param(1).unwrap().into_pointer_value(),
-        };
-        let next_signals = function.get_nth_param(2).unwrap().into_pointer_value();
-        let next_ports = PortPtrs {
-            ty: types.ports_ptr,
-            ptr: function.get_nth_param(3).unwrap().into_pointer_value(),
-        };
-
-        let module_info = &self.modules[module];
+    fn collect_schedule_nodes(&self, scope: ScheduleScope, nodes: &mut Vec<ScheduledNode>) -> Result<(), String> {
+        let module_info = &self.modules[scope.module];
         for (child_index, child) in enumerate(&module_info.children) {
             match &child.inner {
                 IrModuleChild::ClockedProcess(proc) => {
-                    self.codegen_clocked_process(
-                        function,
-                        module,
-                        child_index,
-                        proc,
-                        prev_signals,
-                        prev_ports,
-                        next_signals,
-                        next_ports,
-                    )?;
+                    if proc.async_reset.is_some() {
+                        nodes.push(self.schedule_clocked_node(
+                            &scope,
+                            child_index,
+                            proc,
+                            ScheduledNodeKind::AsyncReset,
+                        )?);
+                    }
+                    nodes.push(self.schedule_clocked_node(&scope, child_index, proc, ScheduledNodeKind::ClockEdge)?);
                 }
                 IrModuleChild::CombinatorialProcess(proc) => {
-                    self.codegen_comb_process(function, module, child_index, proc, next_signals, next_ports)?;
+                    let mut accesses = SignalAccesses::default();
+                    self.collect_block_accesses(
+                        &scope,
+                        &proc.locals,
+                        &proc.block,
+                        ScheduleReadStage::Next,
+                        &mut accesses,
+                    );
+                    nodes.push(ScheduledNode {
+                        module: scope.module,
+                        path: scope.path.clone(),
+                        child_index,
+                        kind: ScheduledNodeKind::Comb,
+                        read_next: accesses.reads,
+                        partial_read_next: accesses.partial_reads,
+                        write_next: accesses.writes,
+                        clock_key: None,
+                        reset_key: None,
+                    });
                 }
                 IrModuleChild::ModuleInternalInstance(instance) => {
-                    self.codegen_internal_instance(
-                        module,
-                        child_index,
-                        instance,
-                        prev_signals,
-                        prev_ports,
-                        next_signals,
-                        next_ports,
-                    )?;
+                    let child_scope = self.child_schedule_scope(&scope, child_index, instance)?;
+                    self.collect_schedule_nodes(child_scope, nodes)?;
                 }
                 IrModuleChild::ModuleExternalInstance(_) => {
                     return Err("external modules are not supported in the LLVM simulator".to_owned());
                 }
             }
         }
-
-        self.builder.build_return(None).map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn codegen_clocked_process(
+    fn schedule_clocked_node(
         &self,
-        function: FunctionValue<'ctx>,
-        module: IrModule,
+        scope: &ScheduleScope,
         child_index: usize,
         proc: &IrClockedProcess,
-        prev_signals: PointerValue<'ctx>,
-        prev_ports: PortPtrs<'ctx>,
-        next_signals: PointerValue<'ctx>,
-        next_ports: PortPtrs<'ctx>,
-    ) -> Result<(), String> {
-        let IrClockedProcess {
-            locals,
-            clock_signal,
-            clock_block,
-            async_reset,
-        } = proc;
-        let module_info = &self.modules[module];
-
-        if let Some(async_reset) = async_reset {
-            let reset_body = self
-                .context
-                .append_basic_block(function, &format!("child_{child_index}_reset"));
-            let after = self
-                .context
-                .append_basic_block(function, &format!("child_{child_index}_after_reset"));
-            let reset = self.eval_polarized_signal(
-                module_info,
-                async_reset.signal.inner,
-                Stage::Next,
-                next_signals,
-                next_ports,
-            )?;
-            self.builder
-                .build_conditional_branch(reset, reset_body, after)
-                .map_err(|e| e.to_string())?;
-            self.builder.position_at_end(reset_body);
-            let mut ctx = BlockCodegen::new(
-                self,
-                function,
-                module_info,
-                locals,
-                Stage::Next,
-                prev_signals,
-                prev_ports,
-                next_signals,
-                next_ports,
-            )?;
-            for reset in &async_reset.resets {
-                let (signal, value) = &reset.inner;
-                let target = IrAssignmentTarget::simple(IrSignalOrVariable::Signal(*signal));
-                let value_ty = value.ty(module_info, locals);
-                let value = ctx.eval(value)?;
-                ctx.codegen_assignment(&target, value, &value_ty)?;
+        kind: ScheduledNodeKind,
+    ) -> Result<ScheduledNode, String> {
+        let mut accesses = SignalAccesses::default();
+        match kind {
+            ScheduledNodeKind::AsyncReset => {
+                let async_reset = proc
+                    .async_reset
+                    .as_ref()
+                    .ok_or_else(|| "async-reset schedule node without async reset".to_owned())?;
+                accesses
+                    .reads
+                    .insert(self.resolve_signal_key(scope, async_reset.signal.inner.signal));
+                let empty_locals = IrVariables::new();
+                for reset in &async_reset.resets {
+                    let (signal, value) = &reset.inner;
+                    accesses.writes.insert(self.resolve_signal_key(scope, *signal));
+                    self.collect_expression_accesses(
+                        scope,
+                        &empty_locals,
+                        value,
+                        ScheduleReadStage::Next,
+                        &mut accesses,
+                    );
+                }
             }
-            ctx.branch_if_open(after)?;
-            self.builder.position_at_end(after);
+            ScheduledNodeKind::ClockEdge => {
+                accesses
+                    .reads
+                    .insert(self.resolve_signal_key(scope, proc.clock_signal.inner.signal));
+                if let Some(async_reset) = &proc.async_reset {
+                    accesses
+                        .reads
+                        .insert(self.resolve_signal_key(scope, async_reset.signal.inner.signal));
+                }
+                self.collect_block_accesses(
+                    scope,
+                    &proc.locals,
+                    &proc.clock_block,
+                    ScheduleReadStage::Next,
+                    &mut accesses,
+                );
+            }
+            ScheduledNodeKind::Comb => unreachable!("clocked node cannot be combinatorial"),
+        }
+        Ok(ScheduledNode {
+            module: scope.module,
+            path: scope.path.clone(),
+            child_index,
+            kind,
+            read_next: accesses.reads,
+            partial_read_next: accesses.partial_reads,
+            write_next: accesses.writes,
+            clock_key: matches!(kind, ScheduledNodeKind::ClockEdge)
+                .then(|| self.resolve_polarized_signal_key(scope, proc.clock_signal.inner)),
+            reset_key: proc
+                .async_reset
+                .as_ref()
+                .filter(|_| matches!(kind, ScheduledNodeKind::AsyncReset | ScheduledNodeKind::ClockEdge))
+                .map(|async_reset| self.resolve_polarized_signal_key(scope, async_reset.signal.inner)),
+        })
+    }
+
+    fn child_schedule_scope(
+        &self,
+        scope: &ScheduleScope,
+        child_index: usize,
+        instance: &IrModuleInternalInstance,
+    ) -> Result<ScheduleScope, String> {
+        let mut child_path = scope.path.clone();
+        child_path.push(child_index);
+
+        let mut aliases = Vec::new();
+        let mut dummy_index = 0usize;
+        for connection in &instance.port_connections {
+            let key = match connection.inner {
+                IrPortConnection::Input(signal) | IrPortConnection::Output(Some(signal)) => {
+                    self.resolve_signal_key(scope, signal)
+                }
+                IrPortConnection::Output(None) => {
+                    let key = SignalKey {
+                        path: scope.path.clone(),
+                        kind: SignalKeyKind::Dummy {
+                            child_index,
+                            dummy_index,
+                        },
+                    };
+                    dummy_index += 1;
+                    key
+                }
+            };
+            aliases.push(key);
         }
 
-        let clock_prev =
-            self.eval_polarized_signal(module_info, clock_signal.inner, Stage::Prev, prev_signals, prev_ports)?;
-        let clock_next =
-            self.eval_polarized_signal(module_info, clock_signal.inner, Stage::Next, next_signals, next_ports)?;
-        let not_prev = self
-            .builder
-            .build_not(clock_prev, "clk_not_prev")
-            .map_err(|e| e.to_string())?;
-        let is_edge = self
-            .builder
-            .build_and(not_prev, clock_next, "clk_edge")
-            .map_err(|e| e.to_string())?;
-        let body = self
-            .context
-            .append_basic_block(function, &format!("child_{child_index}_clock_body"));
-        let after = self
-            .context
-            .append_basic_block(function, &format!("child_{child_index}_clock_after"));
-        self.builder
-            .build_conditional_branch(is_edge, body, after)
-            .map_err(|e| e.to_string())?;
-        self.builder.position_at_end(body);
+        Ok(ScheduleScope {
+            module: instance.module,
+            path: child_path,
+            port_aliases: aliases,
+        })
+    }
 
-        let mut ctx = BlockCodegen::new(
-            self,
-            function,
-            module_info,
-            locals,
-            Stage::Prev,
-            prev_signals,
-            prev_ports,
-            next_signals,
-            next_ports,
-        )?;
-        ctx.codegen_block(clock_block)?;
-        ctx.branch_if_open(after)?;
-        self.builder.position_at_end(after);
-        Ok(())
+    fn resolve_signal_key(&self, scope: &ScheduleScope, signal: IrSignal) -> SignalKey {
+        match signal {
+            IrSignal::Port(port) => scope.port_aliases[port.inner().index()].clone(),
+            IrSignal::Wire(wire) => SignalKey {
+                path: scope.path.clone(),
+                kind: SignalKeyKind::Wire(wire.inner().index()),
+            },
+        }
+    }
+
+    fn resolve_polarized_signal_key(
+        &self,
+        scope: &ScheduleScope,
+        signal: crate::front::signal::Polarized<IrSignal>,
+    ) -> PolarizedSignalKey {
+        PolarizedSignalKey {
+            signal: self.resolve_signal_key(scope, signal.signal),
+            inverted: signal.inverted,
+        }
+    }
+
+    fn collect_block_accesses(
+        &self,
+        scope: &ScheduleScope,
+        locals: &IrVariables,
+        block: &IrBlock,
+        read_stage: ScheduleReadStage,
+        accesses: &mut SignalAccesses,
+    ) {
+        for stmt in &block.statements {
+            self.collect_statement_accesses(scope, locals, &stmt.inner, read_stage, accesses);
+        }
+    }
+
+    fn collect_statement_accesses(
+        &self,
+        scope: &ScheduleScope,
+        locals: &IrVariables,
+        stmt: &IrStatement,
+        read_stage: ScheduleReadStage,
+        accesses: &mut SignalAccesses,
+    ) {
+        match stmt {
+            IrStatement::Assign(target, expr) => {
+                self.collect_assignment_target_accesses(scope, locals, target, read_stage, accesses);
+                self.collect_expression_accesses(scope, locals, expr, read_stage, accesses);
+            }
+            IrStatement::Block(block) => self.collect_block_accesses(scope, locals, block, read_stage, accesses),
+            IrStatement::If(if_stmt) => {
+                self.collect_expression_accesses(scope, locals, &if_stmt.condition, read_stage, accesses);
+                self.collect_block_accesses(scope, locals, &if_stmt.then_block, read_stage, accesses);
+                if let Some(else_block) = &if_stmt.else_block {
+                    self.collect_block_accesses(scope, locals, else_block, read_stage, accesses);
+                }
+            }
+            IrStatement::For(for_stmt) => {
+                self.collect_block_accesses(scope, locals, &for_stmt.block, read_stage, accesses);
+            }
+            IrStatement::Print(pieces) => {
+                for piece in pieces {
+                    if let StringPiece::Substitute(subst) = piece {
+                        match subst {
+                            IrStringSubstitution::Integer(expr, _) => {
+                                self.collect_expression_accesses(scope, locals, expr, read_stage, accesses);
+                            }
+                        }
+                    }
+                }
+            }
+            IrStatement::AssertFailed => {}
+        }
+    }
+
+    fn collect_assignment_target_accesses(
+        &self,
+        scope: &ScheduleScope,
+        locals: &IrVariables,
+        target: &IrAssignmentTarget,
+        read_stage: ScheduleReadStage,
+        accesses: &mut SignalAccesses,
+    ) {
+        if let IrSignalOrVariable::Signal(signal) = target.base {
+            let key = self.resolve_signal_key(scope, signal);
+            accesses.writes.insert(key.clone());
+            if !target.steps.is_empty() && matches!(read_stage, ScheduleReadStage::Next) {
+                accesses.partial_reads.insert(key);
+            }
+        }
+        for step in &target.steps {
+            match step {
+                IrTargetStep::ArrayIndex(index) => {
+                    self.collect_expression_accesses(scope, locals, index, read_stage, accesses);
+                }
+                IrTargetStep::ArraySlice { start, len: _ } => {
+                    self.collect_expression_accesses(scope, locals, start, read_stage, accesses);
+                }
+            }
+        }
+    }
+
+    fn collect_expression_accesses(
+        &self,
+        scope: &ScheduleScope,
+        locals: &IrVariables,
+        expr: &IrExpression,
+        read_stage: ScheduleReadStage,
+        accesses: &mut SignalAccesses,
+    ) {
+        match expr {
+            IrExpression::Signal(signal) => {
+                if matches!(read_stage, ScheduleReadStage::Next) {
+                    accesses.reads.insert(self.resolve_signal_key(scope, *signal));
+                }
+            }
+            IrExpression::Variable(_) | IrExpression::Bool(_) | IrExpression::Int(_) => {}
+            IrExpression::Large(index) => match &self.modules[scope.module].large[*index] {
+                IrExpressionLarge::Undefined(_) => {}
+                IrExpressionLarge::BoolNot(inner) => {
+                    self.collect_expression_accesses(scope, locals, inner, read_stage, accesses);
+                }
+                IrExpressionLarge::BoolBinary(_, left, right)
+                | IrExpressionLarge::IntArithmetic(_, _, left, right)
+                | IrExpressionLarge::IntCompare(_, left, right) => {
+                    self.collect_expression_accesses(scope, locals, left, read_stage, accesses);
+                    self.collect_expression_accesses(scope, locals, right, read_stage, accesses);
+                }
+                IrExpressionLarge::TupleLiteral(elements) | IrExpressionLarge::StructLiteral(_, elements) => {
+                    for element in elements {
+                        self.collect_expression_accesses(scope, locals, element, read_stage, accesses);
+                    }
+                }
+                IrExpressionLarge::ArrayLiteral(_, _, elements) => {
+                    for element in elements {
+                        match element {
+                            IrArrayLiteralElement::Single(expr) | IrArrayLiteralElement::Spread(expr) => {
+                                self.collect_expression_accesses(scope, locals, expr, read_stage, accesses);
+                            }
+                        }
+                    }
+                }
+                IrExpressionLarge::EnumLiteral(_, _, payload) => {
+                    if let Some(payload) = payload {
+                        self.collect_expression_accesses(scope, locals, payload, read_stage, accesses);
+                    }
+                }
+                IrExpressionLarge::ArrayIndex { base, index } => {
+                    self.collect_expression_accesses(scope, locals, base, read_stage, accesses);
+                    self.collect_expression_accesses(scope, locals, index, read_stage, accesses);
+                }
+                IrExpressionLarge::ArraySlice { base, start, len: _ } => {
+                    self.collect_expression_accesses(scope, locals, base, read_stage, accesses);
+                    self.collect_expression_accesses(scope, locals, start, read_stage, accesses);
+                }
+                IrExpressionLarge::TupleIndex { base, index: _ }
+                | IrExpressionLarge::StructField { base, field: _ }
+                | IrExpressionLarge::EnumTag { base }
+                | IrExpressionLarge::EnumPayload { base, variant: _ }
+                | IrExpressionLarge::ToBits(_, base)
+                | IrExpressionLarge::FromBits(_, base)
+                | IrExpressionLarge::ExpandIntRange(_, base)
+                | IrExpressionLarge::ConstrainIntRange(_, base) => {
+                    self.collect_expression_accesses(scope, locals, base, read_stage, accesses);
+                }
+            },
+        }
+        let _ = locals;
+    }
+
+    fn toposort_schedule(&self, nodes: Vec<ScheduledNode>) -> Result<Vec<ScheduledNode>, String> {
+        let mut writers: HashMap<SignalKey, Vec<usize>> = HashMap::new();
+        for (node_index, node) in enumerate(&nodes) {
+            for key in &node.write_next {
+                writers.entry(key.clone()).or_default().push(node_index);
+            }
+        }
+
+        let mut edges: Vec<HashSet<usize>> = vec![HashSet::new(); nodes.len()];
+        let mut indegree = vec![0usize; nodes.len()];
+        for (reader_index, node) in enumerate(&nodes) {
+            for key in node.read_next.iter().chain(&node.partial_read_next) {
+                if let Some(signal_writers) = writers.get(key) {
+                    for &writer_index in signal_writers {
+                        if writer_index != reader_index && edges[writer_index].insert(reader_index) {
+                            indegree[reader_index] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut ready = (0..nodes.len()).filter(|&i| indegree[i] == 0).collect::<Vec<_>>();
+        let mut order = Vec::with_capacity(nodes.len());
+        while let Some(node_index) = ready.first().copied() {
+            ready.remove(0);
+            order.push(node_index);
+            for &to in &edges[node_index] {
+                indegree[to] -= 1;
+                if indegree[to] == 0 {
+                    let insert_at = ready.partition_point(|&existing| existing < to);
+                    ready.insert(insert_at, to);
+                }
+            }
+        }
+
+        if order.len() != nodes.len() {
+            let cycle_nodes = indegree
+                .iter()
+                .positions(|&degree| degree != 0)
+                .take(12)
+                .map(|i| self.schedule_node_name(&nodes[i]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "combinational cycle not supported by scheduled LLVM backend; involved nodes include: {cycle_nodes}"
+            ));
+        }
+
+        Ok(order.into_iter().map(|i| nodes[i].clone()).collect())
+    }
+
+    fn schedule_node_name(&self, node: &ScheduledNode) -> String {
+        let module_info = &self.modules[node.module];
+        let module_name = module_info
+            .debug_info_id
+            .inner
+            .clone()
+            .unwrap_or_else(|| format!("module_{}", node.module.inner().index()));
+        format!(
+            "{module_name}@{:?} child {} {:?}",
+            node.path, node.child_index, node.kind
+        )
     }
 
     fn codegen_comb_process(
@@ -423,60 +717,11 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
             &proc.locals,
             Stage::Next,
             next_signals,
-            next_ports,
+            next_ports.clone(),
             next_signals,
-            next_ports,
+            next_ports.clone(),
         )?;
         ctx.codegen_block(&proc.block)?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn codegen_internal_instance(
-        &self,
-        module: IrModule,
-        child_index: usize,
-        instance: &IrModuleInternalInstance,
-        prev_signals: PointerValue<'ctx>,
-        prev_ports: PortPtrs<'ctx>,
-        next_signals: PointerValue<'ctx>,
-        next_ports: PortPtrs<'ctx>,
-    ) -> Result<(), String> {
-        let module_info = &self.modules[module];
-        let child_module = instance.module;
-        let child_types = self.module_types[&child_module.inner().index()];
-        let child_function = self.module_functions[&child_module.inner().index()];
-
-        let prev_child_signals = self.child_signals_ptr(module_info, prev_signals, child_index)?;
-        let next_child_signals = self.child_signals_ptr(module_info, next_signals, child_index)?;
-        let prev_child_ports = self.build_child_ports(
-            module_info,
-            prev_signals,
-            prev_ports,
-            child_index,
-            instance,
-            child_types.ports_ptr,
-        )?;
-        let next_child_ports = self.build_child_ports(
-            module_info,
-            next_signals,
-            next_ports,
-            child_index,
-            instance,
-            child_types.ports_ptr,
-        )?;
-        self.builder
-            .build_call(
-                child_function,
-                &[
-                    prev_child_signals.into(),
-                    prev_child_ports.ptr.into(),
-                    next_child_signals.into(),
-                    next_child_ports.ptr.into(),
-                ],
-                "",
-            )
-            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -564,109 +809,423 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         let next_ports = self.struct_field_ptr(instance_type, instance, 3, "next_ports")?;
         let prev_port_ptrs = self.build_top_port_ptrs(top_types, prev_ports)?;
         let next_port_ptrs = self.build_top_port_ptrs(top_types, next_ports)?;
-        let top_function = self.module_functions[&self.top_module.inner().index()];
 
-        let counter_ptr = self
-            .builder
-            .build_alloca(self.i8_type, "settle_iter")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(counter_ptr, self.i8_type.const_zero())
-            .map_err(|e| e.to_string())?;
+        let top_scope = CodegenScope {
+            module: self.top_module,
+            prev_signals,
+            prev_ports: prev_port_ptrs.clone(),
+            next_signals,
+            next_ports: next_port_ptrs.clone(),
+        };
+        let mut scopes = HashMap::new();
+        scopes.insert(Vec::new(), top_scope);
+        self.codegen_child_scopes(&mut scopes, Vec::new())?;
+        let schedule = self.build_schedule()?;
+        let written_signals = schedule
+            .iter()
+            .flat_map(|node| node.write_next.iter().cloned())
+            .collect::<HashSet<_>>();
+        let mut signal_value_cache = HashMap::new();
+        let mut node_index = 0;
+        while node_index < schedule.len() {
+            let node = &schedule[node_index];
+            if matches!(node.kind, ScheduledNodeKind::AsyncReset | ScheduledNodeKind::ClockEdge) {
+                let mut end = node_index + 1;
+                while end < schedule.len() && self.same_guard_group(node, &schedule[end]) {
+                    end += 1;
+                }
+                if end > node_index + 1 {
+                    self.codegen_guard_group(
+                        function,
+                        &schedule[node_index..end],
+                        &scopes,
+                        &written_signals,
+                        &mut signal_value_cache,
+                    )?;
+                    node_index = end;
+                    continue;
+                }
+            }
 
-        let cond_block = self.context.append_basic_block(function, "settle_cond");
-        let body_block = self.context.append_basic_block(function, "settle_body");
-        let after_block = self.context.append_basic_block(function, "settle_after");
-        self.builder
-            .build_unconditional_branch(cond_block)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(cond_block);
-        let counter = self
-            .builder
-            .build_load(self.i8_type, counter_ptr, "settle_iter")
-            .map_err(|e| e.to_string())?
-            .into_int_value();
-        let counter_lt_limit = self
-            .builder
-            .build_int_compare(
-                IntPredicate::ULT,
-                counter,
-                self.i8_type.const_int(32, false),
-                "settle_has_iter",
-            )
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_conditional_branch(counter_lt_limit, body_block, after_block)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(body_block);
-        self.builder
-            .build_call(
-                top_function,
-                &[
-                    prev_signals.into(),
-                    prev_port_ptrs.ptr.into(),
-                    next_signals.into(),
-                    next_port_ptrs.ptr.into(),
-                ],
-                "",
-            )
-            .map_err(|e| e.to_string())?;
-        let signals_stable = self.memory_equal(prev_signals, next_signals, top_types.signals)?;
-        let ports_stable = self.memory_equal(prev_ports, next_ports, top_types.ports_val)?;
-        let stable = self
-            .builder
-            .build_and(signals_stable, ports_stable, "settle_stable")
-            .map_err(|e| e.to_string())?;
+            let scope = scopes
+                .get(&node.path)
+                .ok_or_else(|| format!("missing codegen scope for scheduled path {:?}", node.path))?
+                .clone();
+            self.codegen_scheduled_node(function, node, scope, &written_signals, &mut signal_value_cache)?;
+            node_index += 1;
+        }
         self.copy_memory(prev_signals, next_signals, top_types.signals)?;
         self.copy_memory(prev_ports, next_ports, top_types.ports_val)?;
-        let next_counter = self
-            .builder
-            .build_int_add(counter, self.i8_type.const_int(1, false), "settle_next_iter")
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_store(counter_ptr, next_counter)
-            .map_err(|e| e.to_string())?;
-        self.builder
-            .build_conditional_branch(stable, after_block, cond_block)
-            .map_err(|e| e.to_string())?;
-
-        self.builder.position_at_end(after_block);
         self.builder
             .build_return(Some(&self.i8_type.const_zero()))
             .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    fn memory_equal(
+    fn same_guard_group(&self, left: &ScheduledNode, right: &ScheduledNode) -> bool {
+        left.kind == right.kind && left.clock_key == right.clock_key && left.reset_key == right.reset_key
+    }
+
+    fn codegen_child_scopes(
         &self,
-        left: PointerValue<'ctx>,
-        right: PointerValue<'ctx>,
-        ty: StructType<'ctx>,
-    ) -> Result<IntValue<'ctx>, String> {
-        let memcmp = self.module.get_function("memcmp").unwrap_or_else(|| {
-            self.module.add_function(
-                "memcmp",
-                self.i32_type.fn_type(
-                    &[self.ptr_type.into(), self.ptr_type.into(), self.i64_type.into()],
-                    false,
-                ),
-                None,
-            )
-        });
-        let size = self.struct_size_i64(ty)?;
-        let cmp = self
-            .builder
-            .build_call(memcmp, &[left.into(), right.into(), size.into()], "memcmp")
-            .map_err(|e| e.to_string())?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| "memcmp should return a value".to_owned())?
-            .into_int_value();
+        scopes: &mut HashMap<Vec<usize>, CodegenScope<'ctx>>,
+        path: Vec<usize>,
+    ) -> Result<(), String> {
+        let scope = scopes
+            .get(&path)
+            .ok_or_else(|| format!("missing codegen scope for path {path:?}"))?
+            .clone();
+        let module_info = &self.modules[scope.module];
+        for (child_index, child) in enumerate(&module_info.children) {
+            let IrModuleChild::ModuleInternalInstance(instance) = &child.inner else {
+                continue;
+            };
+            let child_types = self.module_types[&instance.module.inner().index()];
+            let mut child_path = path.clone();
+            child_path.push(child_index);
+            let child_scope = CodegenScope {
+                module: instance.module,
+                prev_signals: self.child_signals_ptr(module_info, scope.prev_signals, child_index)?,
+                prev_ports: self.build_child_ports(
+                    module_info,
+                    scope.prev_signals,
+                    scope.prev_ports.clone(),
+                    child_index,
+                    instance,
+                    child_types.ports_ptr,
+                )?,
+                next_signals: self.child_signals_ptr(module_info, scope.next_signals, child_index)?,
+                next_ports: self.build_child_ports(
+                    module_info,
+                    scope.next_signals,
+                    scope.next_ports.clone(),
+                    child_index,
+                    instance,
+                    child_types.ports_ptr,
+                )?,
+            };
+            scopes.insert(child_path.clone(), child_scope);
+            self.codegen_child_scopes(scopes, child_path)?;
+        }
+        Ok(())
+    }
+
+    fn codegen_scheduled_node(
+        &self,
+        function: FunctionValue<'ctx>,
+        node: &ScheduledNode,
+        scope: CodegenScope<'ctx>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<(), String> {
+        let module_info = &self.modules[node.module];
+        match (&module_info.children[node.child_index].inner, node.kind) {
+            (IrModuleChild::CombinatorialProcess(proc), ScheduledNodeKind::Comb) => {
+                self.codegen_comb_process(
+                    function,
+                    node.module,
+                    node.child_index,
+                    proc,
+                    scope.next_signals,
+                    scope.next_ports,
+                )?;
+            }
+            (IrModuleChild::ClockedProcess(proc), ScheduledNodeKind::AsyncReset) => {
+                self.codegen_async_reset_node(function, node, proc, scope, written_signals, signal_value_cache)?;
+            }
+            (IrModuleChild::ClockedProcess(proc), ScheduledNodeKind::ClockEdge) => {
+                self.codegen_clock_edge_node(function, node, proc, scope, written_signals, signal_value_cache)?;
+            }
+            _ => return Err("scheduled node kind did not match IR child".to_owned()),
+        }
+        Ok(())
+    }
+
+    fn codegen_guard_group(
+        &self,
+        function: FunctionValue<'ctx>,
+        nodes: &[ScheduledNode],
+        scopes: &HashMap<Vec<usize>, CodegenScope<'ctx>>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<(), String> {
+        let first = &nodes[0];
+        let first_scope = scopes
+            .get(&first.path)
+            .ok_or_else(|| format!("missing codegen scope for scheduled path {:?}", first.path))?
+            .clone();
+        let first_module_info = &self.modules[first.module];
+        match first.kind {
+            ScheduledNodeKind::AsyncReset => {
+                let IrModuleChild::ClockedProcess(first_proc) = &first_module_info.children[first.child_index].inner
+                else {
+                    return Err("async-reset group contained non-clocked process".to_owned());
+                };
+                let async_reset = first_proc
+                    .async_reset
+                    .as_ref()
+                    .ok_or_else(|| "async-reset group node without async reset".to_owned())?;
+                let reset_body = self.context.append_basic_block(function, "reset_group");
+                let after = self.context.append_basic_block(function, "after_reset_group");
+                let reset = self.eval_polarized_signal_cached(
+                    first_module_info,
+                    async_reset.signal.inner,
+                    first.reset_key.as_ref(),
+                    Stage::Next,
+                    first_scope.next_signals,
+                    first_scope.next_ports.clone(),
+                    written_signals,
+                    signal_value_cache,
+                )?;
+                self.builder
+                    .build_conditional_branch(reset, reset_body, after)
+                    .map_err(|e| e.to_string())?;
+                self.builder.position_at_end(reset_body);
+                for node in nodes {
+                    let module_info = &self.modules[node.module];
+                    let IrModuleChild::ClockedProcess(proc) = &module_info.children[node.child_index].inner else {
+                        return Err("async-reset group contained non-clocked process".to_owned());
+                    };
+                    let scope = scopes
+                        .get(&node.path)
+                        .ok_or_else(|| format!("missing codegen scope for scheduled path {:?}", node.path))?
+                        .clone();
+                    self.codegen_async_reset_body(function, proc, scope)?;
+                }
+                self.branch_if_open(after)?;
+                self.builder.position_at_end(after);
+            }
+            ScheduledNodeKind::ClockEdge => {
+                let IrModuleChild::ClockedProcess(first_proc) = &first_module_info.children[first.child_index].inner
+                else {
+                    return Err("clock group contained non-clocked process".to_owned());
+                };
+                let should_run = self.codegen_clock_guard(
+                    first_module_info,
+                    first,
+                    first_proc,
+                    first_scope,
+                    written_signals,
+                    signal_value_cache,
+                )?;
+                let body = self.context.append_basic_block(function, "clock_group");
+                let after = self.context.append_basic_block(function, "after_clock_group");
+                self.builder
+                    .build_conditional_branch(should_run, body, after)
+                    .map_err(|e| e.to_string())?;
+                self.builder.position_at_end(body);
+                for node in nodes {
+                    let module_info = &self.modules[node.module];
+                    let IrModuleChild::ClockedProcess(proc) = &module_info.children[node.child_index].inner else {
+                        return Err("clock group contained non-clocked process".to_owned());
+                    };
+                    let scope = scopes
+                        .get(&node.path)
+                        .ok_or_else(|| format!("missing codegen scope for scheduled path {:?}", node.path))?
+                        .clone();
+                    self.codegen_clock_edge_body(function, module_info, proc, scope)?;
+                }
+                self.branch_if_open(after)?;
+                self.builder.position_at_end(after);
+            }
+            ScheduledNodeKind::Comb => unreachable!("combinatorial nodes are not guard grouped"),
+        }
+        Ok(())
+    }
+
+    fn codegen_async_reset_node(
+        &self,
+        function: FunctionValue<'ctx>,
+        node: &ScheduledNode,
+        proc: &IrClockedProcess,
+        scope: CodegenScope<'ctx>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<(), String> {
+        let module_info = &self.modules[scope.module];
+        let child_index = node.child_index;
+        let async_reset = proc
+            .async_reset
+            .as_ref()
+            .ok_or_else(|| "async-reset schedule node without async reset".to_owned())?;
+        let reset_body = self
+            .context
+            .append_basic_block(function, &format!("child_{child_index}_reset"));
+        let after = self
+            .context
+            .append_basic_block(function, &format!("child_{child_index}_after_reset"));
+        let reset = self.eval_polarized_signal_cached(
+            module_info,
+            async_reset.signal.inner,
+            node.reset_key.as_ref(),
+            Stage::Next,
+            scope.next_signals,
+            scope.next_ports.clone(),
+            written_signals,
+            signal_value_cache,
+        )?;
         self.builder
-            .build_int_compare(IntPredicate::EQ, cmp, self.i32_type.const_zero(), "memory_equal")
-            .map_err(|e| e.to_string())
+            .build_conditional_branch(reset, reset_body, after)
+            .map_err(|e| e.to_string())?;
+
+        self.builder.position_at_end(reset_body);
+        self.codegen_async_reset_body(function, proc, scope)?;
+        self.branch_if_open(after)?;
+        self.builder.position_at_end(after);
+        Ok(())
+    }
+
+    fn codegen_async_reset_body(
+        &self,
+        function: FunctionValue<'ctx>,
+        proc: &IrClockedProcess,
+        scope: CodegenScope<'ctx>,
+    ) -> Result<(), String> {
+        let module_info = &self.modules[scope.module];
+        let async_reset = proc
+            .async_reset
+            .as_ref()
+            .ok_or_else(|| "async-reset body without async reset".to_owned())?;
+        let mut ctx = BlockCodegen::new(
+            self,
+            function,
+            module_info,
+            &proc.locals,
+            Stage::Next,
+            scope.prev_signals,
+            scope.prev_ports.clone(),
+            scope.next_signals,
+            scope.next_ports.clone(),
+        )?;
+        for reset in &async_reset.resets {
+            let (signal, value) = &reset.inner;
+            let target = IrAssignmentTarget::simple(IrSignalOrVariable::Signal(*signal));
+            let value_ty = value.ty(module_info, &proc.locals);
+            let value = ctx.eval(value)?;
+            ctx.codegen_assignment(&target, value, &value_ty)?;
+        }
+        Ok(())
+    }
+
+    fn codegen_clock_edge_node(
+        &self,
+        function: FunctionValue<'ctx>,
+        node: &ScheduledNode,
+        proc: &IrClockedProcess,
+        scope: CodegenScope<'ctx>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<(), String> {
+        let module_info = &self.modules[scope.module];
+        let child_index = node.child_index;
+        let should_run = self.codegen_clock_guard(
+            module_info,
+            node,
+            proc,
+            scope.clone(),
+            written_signals,
+            signal_value_cache,
+        )?;
+
+        let body = self
+            .context
+            .append_basic_block(function, &format!("child_{child_index}_clock_body"));
+        let after = self
+            .context
+            .append_basic_block(function, &format!("child_{child_index}_clock_after"));
+        self.builder
+            .build_conditional_branch(should_run, body, after)
+            .map_err(|e| e.to_string())?;
+        self.builder.position_at_end(body);
+
+        self.codegen_clock_edge_body(function, module_info, proc, scope)?;
+        self.branch_if_open(after)?;
+        self.builder.position_at_end(after);
+        Ok(())
+    }
+
+    fn codegen_clock_guard(
+        &self,
+        module_info: &IrModuleInfo,
+        node: &ScheduledNode,
+        proc: &IrClockedProcess,
+        scope: CodegenScope<'ctx>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<IntValue<'ctx>, String> {
+        let clock_prev = self.eval_polarized_signal_cached(
+            module_info,
+            proc.clock_signal.inner,
+            node.clock_key.as_ref(),
+            Stage::Prev,
+            scope.prev_signals,
+            scope.prev_ports.clone(),
+            written_signals,
+            signal_value_cache,
+        )?;
+        let clock_next = self.eval_polarized_signal_cached(
+            module_info,
+            proc.clock_signal.inner,
+            node.clock_key.as_ref(),
+            Stage::Next,
+            scope.next_signals,
+            scope.next_ports.clone(),
+            written_signals,
+            signal_value_cache,
+        )?;
+        let not_prev = self
+            .builder
+            .build_not(clock_prev, "clk_not_prev")
+            .map_err(|e| e.to_string())?;
+        let mut should_run = self
+            .builder
+            .build_and(not_prev, clock_next, "clk_edge")
+            .map_err(|e| e.to_string())?;
+
+        if let Some(async_reset) = &proc.async_reset {
+            let reset = self.eval_polarized_signal_cached(
+                module_info,
+                async_reset.signal.inner,
+                node.reset_key.as_ref(),
+                Stage::Next,
+                scope.next_signals,
+                scope.next_ports.clone(),
+                written_signals,
+                signal_value_cache,
+            )?;
+            let not_reset = self
+                .builder
+                .build_not(reset, "clk_not_reset")
+                .map_err(|e| e.to_string())?;
+            should_run = self
+                .builder
+                .build_and(should_run, not_reset, "clk_edge_without_reset")
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(should_run)
+    }
+
+    fn codegen_clock_edge_body(
+        &self,
+        function: FunctionValue<'ctx>,
+        module_info: &IrModuleInfo,
+        proc: &IrClockedProcess,
+        scope: CodegenScope<'ctx>,
+    ) -> Result<(), String> {
+        let mut ctx = BlockCodegen::new(
+            self,
+            function,
+            module_info,
+            &proc.locals,
+            Stage::Next,
+            scope.prev_signals,
+            scope.prev_ports.clone(),
+            scope.next_signals,
+            scope.next_ports.clone(),
+        )?;
+        ctx.codegen_block(&proc.clock_block)?;
+        Ok(())
     }
 
     fn copy_memory(
@@ -679,6 +1238,19 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         self.builder
             .build_memcpy(dest, 1, src, 1, size)
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn branch_if_open(&self, target: BasicBlock<'ctx>) -> Result<(), String> {
+        if self
+            .builder
+            .get_insert_block()
+            .is_some_and(|block| block.get_terminator().is_none())
+        {
+            self.builder
+                .build_unconditional_branch(target)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -891,20 +1463,15 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         top_types: ModuleTypes<'ctx>,
         ports_val_ptr: PointerValue<'ctx>,
     ) -> Result<PortPtrs<'ctx>, String> {
-        let result = self
-            .builder
-            .build_alloca(top_types.ports_ptr, "top_ports")
-            .map_err(|e| e.to_string())?;
+        let mut direct = Vec::new();
         for (i, _) in enumerate(&self.modules[self.top_module].ports) {
             let value_ptr = self.struct_field_ptr(top_types.ports_val, ports_val_ptr, i as u32, "port_value")?;
-            let ptr_field = self.struct_field_ptr(top_types.ports_ptr, result, i as u32, "port_ptr")?;
-            self.builder
-                .build_store(ptr_field, value_ptr)
-                .map_err(|e| e.to_string())?;
+            direct.push(value_ptr);
         }
         Ok(PortPtrs {
             ty: top_types.ports_ptr,
-            ptr: result,
+            ptr: self.ptr_type.const_null(),
+            direct: Some(direct),
         })
     }
 
@@ -917,30 +1484,25 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         instance: &IrModuleInternalInstance,
         child_ports_ty: StructType<'ctx>,
     ) -> Result<PortPtrs<'ctx>, String> {
-        let result = self
-            .builder
-            .build_alloca(child_ports_ty, "child_ports")
-            .map_err(|e| e.to_string())?;
-        let child_module_info = &self.modules[instance.module];
         let mut dummy_index = 0u32;
-        for (connection_index, connection) in enumerate(&instance.port_connections) {
+        let mut direct = Vec::new();
+        for connection in &instance.port_connections {
             let ptr = match connection.inner {
                 IrPortConnection::Input(signal) | IrPortConnection::Output(Some(signal)) => {
-                    self.signal_ptr(module_info, signal, signals, ports)?
+                    self.signal_ptr(module_info, signal, signals, ports.clone())?
                 }
                 IrPortConnection::Output(None) => {
                     let field_index = self.child_dummy_field_index(module_info, child_index, dummy_index);
                     dummy_index += 1;
-                    let _port_info = child_module_info.ports.get_by_index(connection_index).unwrap().1;
                     self.struct_field_ptr(self.module_signal_type(module_info), signals, field_index, "dummy")?
                 }
             };
-            let field = self.struct_field_ptr(child_ports_ty, result, connection_index as u32, "child_port")?;
-            self.builder.build_store(field, ptr).map_err(|e| e.to_string())?;
+            direct.push(ptr);
         }
         Ok(PortPtrs {
             ty: child_ports_ty,
-            ptr: result,
+            ptr: self.ptr_type.const_null(),
+            direct: Some(direct),
         })
     }
 
@@ -954,13 +1516,7 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         let module_info = &self.modules[module];
         let hidden = self.hidden_parent_bridge_wires(module_info);
         for (port_index, (_port, port_info)) in enumerate(&module_info.ports) {
-            let ptr_field = self.struct_field_ptr(ports.ty, ports.ptr, port_index as u32, "port_ptr")?;
-            let ptr = self
-                .builder
-                .build_load(self.ptr_type, ptr_field, "port_ptr_value")
-                .map_err(|e| e.to_string())?
-                .into_pointer_value();
-            out.push((ptr, &port_info.ty));
+            out.push((self.port_ptr(&ports, port_index)?, &port_info.ty));
         }
         for (wire, wire_info) in &module_info.wires {
             if hidden.contains(&wire.inner().index()) {
@@ -972,8 +1528,14 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
             if let IrModuleChild::ModuleInternalInstance(instance) = &child.inner {
                 let child_signals = self.child_signals_ptr(module_info, signals, child_index)?;
                 let child_ports_ty = self.module_types[&instance.module.inner().index()].ports_ptr;
-                let child_ports =
-                    self.build_child_ports(module_info, signals, ports, child_index, instance, child_ports_ty)?;
+                let child_ports = self.build_child_ports(
+                    module_info,
+                    signals,
+                    ports.clone(),
+                    child_index,
+                    instance,
+                    child_ports_ty,
+                )?;
                 self.collect_signal_ptrs(instance.module, child_signals, child_ports, out)?;
             }
         }
@@ -1144,6 +1706,22 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         Ok(value)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn eval_polarized_signal_cached(
+        &self,
+        module_info: &IrModuleInfo,
+        signal: crate::front::signal::Polarized<IrSignal>,
+        key: Option<&PolarizedSignalKey>,
+        stage: Stage,
+        signals: PointerValue<'ctx>,
+        ports: PortPtrs<'ctx>,
+        written_signals: &HashSet<SignalKey>,
+        signal_value_cache: &mut HashMap<SignalValueCacheKey, IntValue<'ctx>>,
+    ) -> Result<IntValue<'ctx>, String> {
+        let _ = (key, written_signals, signal_value_cache);
+        self.eval_polarized_signal(module_info, signal, stage, signals, ports)
+    }
+
     fn load_signal(
         &self,
         module_info: &IrModuleInfo,
@@ -1171,16 +1749,21 @@ impl<'ctx, 'ir> LlvmCodegen<'ctx, 'ir> {
         ports: PortPtrs<'ctx>,
     ) -> Result<PointerValue<'ctx>, String> {
         match signal {
-            IrSignal::Port(port) => {
-                let field = self.struct_field_ptr(ports.ty, ports.ptr, port.inner().index() as u32, "port_ptr")?;
-                Ok(self
-                    .builder
-                    .build_load(self.ptr_type, field, "port_ptr_value")
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value())
-            }
+            IrSignal::Port(port) => self.port_ptr(&ports, port.inner().index()),
             IrSignal::Wire(wire) => self.wire_ptr(module_info, wire, signals),
         }
+    }
+
+    fn port_ptr(&self, ports: &PortPtrs<'ctx>, port_index: usize) -> Result<PointerValue<'ctx>, String> {
+        if let Some(direct) = &ports.direct {
+            return Ok(direct[port_index]);
+        }
+        let field = self.struct_field_ptr(ports.ty, ports.ptr, port_index as u32, "port_ptr")?;
+        Ok(self
+            .builder
+            .build_load(self.ptr_type, field, "port_ptr_value")
+            .map_err(|e| e.to_string())?
+            .into_pointer_value())
     }
 
     fn wire_ptr(
@@ -1617,7 +2200,7 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
             IrSignalOrVariable::Signal(signal) => {
                 let ptr = self
                     .cg
-                    .signal_ptr(self.module_info, signal, self.next_signals, self.next_ports)?;
+                    .signal_ptr(self.module_info, signal, self.next_signals, self.next_ports.clone())?;
                 let ty = match signal {
                     IrSignal::Port(port) => &self.module_info.ports[port].ty,
                     IrSignal::Wire(wire) => &self.module_info.wires[wire].ty,
@@ -2104,8 +2687,8 @@ impl<'a, 'ctx, 'ir> BlockCodegen<'a, 'ctx, 'ir> {
 
     fn stage_values(&self, stage: Stage) -> (PointerValue<'ctx>, PortPtrs<'ctx>) {
         match stage {
-            Stage::Prev => (self.prev_signals, self.prev_ports),
-            Stage::Next => (self.next_signals, self.next_ports),
+            Stage::Prev => (self.prev_signals, self.prev_ports.clone()),
+            Stage::Next => (self.next_signals, self.next_ports.clone()),
         }
     }
 
