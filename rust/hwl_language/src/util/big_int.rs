@@ -664,6 +664,11 @@ impl<T: Into<BigUint>> std::ops::AddAssign<T> for BigUint {
         *self = &*self + rhs.into();
     }
 }
+impl std::ops::AddAssign<&BigUint> for BigUint {
+    fn add_assign(&mut self, rhs: &BigUint) {
+        *self = &*self + rhs;
+    }
+}
 
 impl<T: Into<BigInt>> std::ops::AddAssign<T> for BigInt {
     fn add_assign(&mut self, rhs: T) {

@@ -1662,6 +1662,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         right: &IrExpression,
     ) -> DiagResult<Evaluated<'n>> {
         // expand operands to a common range that contains all operands and the result
+        // TODO just constraining everything to the output bit representation should be correct too
         let range_left = left.ty(self.module, self.locals).unwrap_int();
         let range_right = right.ty(self.module, self.locals).unwrap_int();
         let range_all = result_range

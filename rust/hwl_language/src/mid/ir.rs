@@ -113,6 +113,7 @@ pub struct IrModuleInfo {
     pub wires: Arena<IrWire, IrWireInfo>,
     pub large: IrLargeArena,
 
+    // child names (if any) any not guaranteed to be unique
     pub children: Vec<Spanned<IrModuleChild>>,
 
     pub debug_info_location: String,
@@ -258,6 +259,9 @@ pub struct IrIfStatement {
 
 #[derive(Debug, Clone)]
 pub struct IrForStatement {
+    // The index variable used to store the current value of the loop index.
+    // Must have an integer type that can store the entire iteration range, plus the inclusive end of the range.
+    // TODO relax this constraint, the backend can create an additional loop index variable if it really wants to
     pub index: IrVariable,
     pub range: ClosedRange<BigInt>,
     pub block: IrBlock,
@@ -306,7 +310,9 @@ pub enum IrExpressionLarge {
     BoolBinary(IrBoolBinaryOp, IrExpression, IrExpression),
     IntArithmetic(
         IrIntArithmeticOp,
-        // the range of the resulting value
+        // The range of the resulting value.
+        // This is a promise made from the frontend to the IR, if the frontend has additional information
+        //   it can be tighter than the naive output range of the operation.
         ClosedNonEmptyRange<BigInt>,
         IrExpression,
         IrExpression,
