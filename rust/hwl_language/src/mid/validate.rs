@@ -201,14 +201,9 @@ impl IrBlock {
                     let index_ty = IrExpression::Variable(index).ty(module, locals);
                     let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
 
-                    // variable range must contain loop range including the end to simplify backend codegen
-                    let range_inc = ClosedRange {
-                        start: &range.start,
-                        end: &(&range.end + 1u8),
-                    };
-                    if !index_range.contains_range(range_inc) {
+                    if !index_range.contains_range(range.as_ref()) {
                         let msg = format!(
-                            "IR IrForStatement variable must contain loop range including end: variable {index_range:?} but loop {range:?}"
+                            "IR IrForStatement variable must contain loop range: variable {index_range:?} but loop {range:?}"
                         );
                         return Err(diags.report_error_internal(stmt.span, msg));
                     }

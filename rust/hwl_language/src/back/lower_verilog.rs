@@ -18,10 +18,10 @@ use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt, VecExt};
 use crate::util::int::{IntRepresentation, Signed};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
-use crate::util::{Indent, ResultExt, separator_non_trailing};
+use crate::util::{separator_non_trailing, Indent, ResultExt};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, Itertools, enumerate};
+use itertools::{enumerate, Either, Itertools};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -1166,7 +1166,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let indent = self.indent;
         let diags = self.diags;
 
-        match &stmt.inner {
+        match stmt.inner {
             IrStatement::Assign(target, source) => {
                 let source = match self.lower_expression(stmt.span, source)? {
                     Ok(source) => source,
@@ -1198,39 +1198,44 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                 swriteln!(self.f);
             }
-            IrStatement::For(IrForStatement { index, range, block }) => {
-                let index = *index;
-
-                // we will need to form an inclusive range, which will give weird results for empty ranges
-                if !range.is_empty() {
-                    let ClosedRange { start, end } = range;
-                    let end_inc = end - 1;
-
-                    let index_ty = IrExpression::Variable(index).ty(self.module, self.locals).unwrap_int();
-
-                    match NonZeroWidthRange::new(index_ty) {
-                        Ok(index_ty) => {
-                            let index = match self.name_map.map_var(index) {
-                                Ok(index) => index,
-                                Err(ZeroWidth) => {
-                                    return Err(diags.report_error_internal(stmt.span, "index var zero-width"));
-                                }
-                            };
-
-                            let start = lower_int_constant(&index_ty, start);
-                            let end_inc = lower_int_constant(&index_ty, &end_inc);
-                            swriteln!(
-                                self.f,
-                                "{indent}for({index} = {start}; {index} <= {end_inc}; {index} = {index} + 1) begin"
-                            );
-                            self.lower_block_indented(block)?;
-                            swriteln!(self.f, "{indent}end");
-                        }
-                        Err(ZeroWidth) => {
-                            // the loop would also run for zero iterations, so just skip it
-                        }
-                    }
+            &IrStatement::For(IrForStatement {
+                                  index,
+                                  ref range,
+                                  ref block,
+                              }) => {
+                // we will need to form an inclusive range, which will give weird results for empty ranges,
+                //   so just skip empty ranges
+                if range.is_empty() {
+                    return Ok(());
                 }
+
+                // base range is non-empty => range_inc contains multiple values => cannot be zero-width
+                let range_inc = ClosedNonEmptyRange {
+                    start: range.start.clone(),
+                    end: &range.end + 1,
+                };
+                let range_inc = NonZeroWidthRange::new(range_inc).unwrap();
+
+                // create/map variables
+                let index = match self.name_map.map_var(index) {
+                    Ok(index) => index,
+                    Err(ZeroWidth) => {
+                        return Err(diags.report_error_internal(stmt.span, "index var zero-width"));
+                    }
+                };
+                let index_tmp =
+                    self.new_temporary(stmt.span, VerilogType::new_from_range(diags, stmt.span, &range_inc)?)?;
+
+                // emit loop
+                let start_eval = lower_int_constant(&range_inc, &range.start);
+                let end_eval = lower_int_constant(&range_inc, &range.end);
+                swriteln!(
+                    self.f,
+                    "{indent}for({index_tmp} = {start_eval}; {index_tmp} < {end_eval}; {index_tmp} = {index_tmp} + 1) begin"
+                );
+                swriteln!(self.f, "{indent}{I}{index} = {index_tmp};");
+                self.lower_block_indented(block)?;
+                swriteln!(self.f, "{indent}end");
             }
             IrStatement::Print(string) => {
                 self.lower_print(stmt.span, string)?;
@@ -1742,7 +1747,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 format!("{a_adj} / {b}")
             }
             OperatorDivMod::Mod => {
-                let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, range_all)?)?;
+                let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, &range_all)?)?;
                 swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
                 let should_adjust = MaybeBool::and(
                     &MaybeBool::is_not_zero(&tmp_mod, ClosedRange::from(result_range.range().as_ref())),
@@ -2083,7 +2088,7 @@ impl VerilogType {
         }
     }
 
-    pub fn new_from_range(diags: &Diagnostics, span: Span, range: NonZeroWidthRange) -> DiagResult<VerilogType> {
+    pub fn new_from_range(diags: &Diagnostics, span: Span, range: &NonZeroWidthRange) -> DiagResult<VerilogType> {
         let repr = IntRepresentation::for_range(range.range().as_ref());
         Ok(Self::new_array(diags, span, BigUint::from(repr.size_bits()))?.expect("range should be non-zero-width"))
     }

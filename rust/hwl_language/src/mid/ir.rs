@@ -260,8 +260,7 @@ pub struct IrIfStatement {
 #[derive(Debug, Clone)]
 pub struct IrForStatement {
     // The index variable used to store the current value of the loop index.
-    // Must have an integer type that can store the entire iteration range, plus the inclusive end of the range.
-    // TODO relax this constraint, the backend can create an additional loop index variable if it really wants to
+    // Must have an integer type that can store the entire iteration range.
     pub index: IrVariable,
     pub range: ClosedRange<BigInt>,
     pub block: IrBlock,

@@ -65,7 +65,7 @@ def test_print_hardware():
         }
     """)
     f: hwl.Module = c.resolve("top.f")
-    print(f.as_verilog())
+    print(f.as_verilog().source)
 
 
 def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
@@ -79,7 +79,7 @@ def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
     """
     c = compile_custom(src)
     f: hwl.Module = c.resolve("top.f")
-    print(f.as_verilog())
+    print(f.as_verilog().source)
     inst = f.as_verilated(tmp_dir).instance()
 
     inst.ports.x.value = [False, True, False, True]

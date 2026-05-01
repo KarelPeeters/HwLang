@@ -334,12 +334,8 @@ fn print_hardware_sub(
                     start: BigInt::ZERO,
                     end: BigInt::from(len),
                 };
-                let range_inc = ClosedNonEmptyRange {
-                    start: BigInt::ZERO,
-                    end: BigInt::from(len) + 1,
-                };
                 let index = new_ir_var(IrVariableInfo {
-                    ty: IrType::Int(range_inc),
+                    ty: IrType::Int(range.clone()),
                     debug_info_span: span,
                     debug_info_id: Some("i_str".to_owned()),
                 });
