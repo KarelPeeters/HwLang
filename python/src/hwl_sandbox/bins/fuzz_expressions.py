@@ -2,11 +2,13 @@ import random
 import re
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
+
 import hwl
-import time
+
 from hwl_sandbox.common.compare import compare_body, compare_get_type, compare_codegen
 from hwl_sandbox.common.util_no_hwl import enable_rust_backtraces
 
@@ -117,6 +119,14 @@ def try_sample_value(state: SampleState, rng, ty_int_not_bool: bool, depth: int)
                 return rng.choice(state.available_values_int)
             if not ty_int_not_bool and state.available_values_bool:
                 return rng.choice(state.available_values_bool)
+
+        # use a constant
+        if rng.random() < 0.1:
+            if ty_int_not_bool:
+                res = str(sample_range_edge(rng, max_abs=None))
+            else:
+                res = str(rng.randrange(2) == 0).lower()
+            return res
 
         # create a new input
         input_str = f"a{len(state.inputs)}"
