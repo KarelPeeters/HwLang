@@ -1302,22 +1302,21 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             let ty = expr.ty(self.module, self.locals);
             let ty_verilog = try_inner!(VerilogType::new_from_ir(self.diags, span, &ty)?);
 
-            let tmp = self.new_temporary(span, ty_verilog)?;
-            let indent = self.indent;
-            swriteln!(self.f, "{indent}{tmp} = {eval};");
-
+            let tmp = self.new_temporary_assign(span, ty_verilog, eval)?;
             Ok(Ok(Evaluated::Temporary(tmp)))
         }
     }
 
     fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Result<Evaluated<'n>, ZeroWidth>> {
+        let diags = self.diags;
+        let module = self.module;
+        let locals = self.locals;
         let name_map = self.name_map;
-        let indent = self.indent;
 
         // skip any zero-width expressions
         //   expressions are always pure, they can never have side-effects
-        let result_ty = expr.ty(self.module, self.locals);
-        let result_ty_verilog = match VerilogType::new_from_ir(self.diags, span, &result_ty)? {
+        let result_ty = expr.ty(module, locals);
+        let result_ty_verilog = match VerilogType::new_from_ir(diags, span, &result_ty)? {
             Ok(ty) => ty,
             Err(ZeroWidth) => {
                 return Ok(Err(ZeroWidth));
@@ -1368,8 +1367,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // find common range that contains all operands
-                        let left_range = left.ty(self.module, self.locals).unwrap_int();
-                        let right_range = right.ty(self.module, self.locals).unwrap_int();
+                        let left_range = left.ty(module, locals).unwrap_int();
+                        let right_range = right.ty(module, locals).unwrap_int();
                         let combined_range = left_range.union(right_range);
                         let combined_range =
                             NonZeroWidthRange::new(combined_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1448,7 +1447,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
-                        let base_ty = base.ty(self.module, self.locals);
+                        let base_ty = base.ty(module, locals);
                         let bit_range = bit_index_range(&base_ty.size_bits());
                         let (element_ty, _) = base_ty.unwrap_array();
                         let element_size_bits = element_ty.size_bits();
@@ -1460,7 +1459,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
-                        let base_ty = base.ty(self.module, self.locals);
+                        let base_ty = base.ty(module, locals);
                         let bit_range = bit_index_range(&base_ty.size_bits());
 
                         let (element_ty, _) = base_ty.unwrap_array();
@@ -1473,7 +1472,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, start, &element_size_bits, &len_bits)
                     }
                     &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let ty = base.ty(self.module, self.locals).unwrap_tuple();
+                        let ty = base.ty(module, locals).unwrap_tuple();
                         let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
                         let size_bits = ty[index].size_bits();
 
@@ -1481,7 +1480,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
                     }
                     &IrExpressionLarge::StructField { ref base, field } => {
-                        let base_ty = base.ty(self.module, self.locals).unwrap_struct();
+                        let base_ty = base.ty(module, locals).unwrap_struct();
                         let offset = base_ty.field_offset(field);
                         let size_bits = base_ty.fields[field].size_bits();
 
@@ -1489,14 +1488,14 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, offset, &BigUint::ONE, &size_bits)
                     }
                     IrExpressionLarge::EnumTag { base } => {
-                        let base_ty = base.ty(self.module, self.locals).unwrap_enum();
+                        let base_ty = base.ty(module, locals).unwrap_enum();
                         let size_bits = base_ty.tag_size_bits();
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
                         evaluate_bit_slice(base, BigUint::ZERO, &BigUint::ONE, &size_bits)
                     }
                     &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                        let base_ty = base.ty(self.module, self.locals).unwrap_enum();
+                        let base_ty = base.ty(module, locals).unwrap_enum();
 
                         let offset = base_ty.tag_size_bits();
                         let size_bits = base_ty.variants[variant]
@@ -1509,12 +1508,44 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     }
 
                     IrExpressionLarge::ToBits(_ty, value) => {
-                        // in verilog everything is just a bit vector, so we don't need to do anything
-                        return self.lower_expression(span, value);
+                        // in verilog everything is just bits, so we don't need to do much work here
+                        //   we do need to be careful when switching between bit/array representations for single bools
+                        let value_ty = VerilogType::new_from_ir(diags, span, &value.ty(module, locals))?
+                            .expect("already checked zero-width result");
+                        let value = self
+                            .lower_expression(span, value)?
+                            .expect("already checked zero-width result");
+
+                        match value_ty {
+                            VerilogType::Bit => {
+                                // force cast to array through intermediate assignment
+                                let tmp = self.new_temporary_assign(span, result_ty_verilog, value)?;
+                                Evaluated::Temporary(tmp)
+                            }
+                            VerilogType::Array(_) => {
+                                // already array, no need to do anything
+                                value
+                            }
+                        }
                     }
                     IrExpressionLarge::FromBits(_ty, value) => {
-                        // in verilog everything is just a bit vector, so we don't need to do anything
-                        return self.lower_expression(span, value);
+                        // in verilog everything is just bits, so we don't need to do much work here
+                        //   we do need to be careful when switching between bit/array representations for single bools
+                        let value = self
+                            .lower_expression(span, value)?
+                            .expect("already checked zero-width result");
+
+                        match result_ty_verilog {
+                            VerilogType::Bit => {
+                                // force cast to scalar through intermediate assignment
+                                let tmp = self.new_temporary_assign(span, result_ty_verilog, value)?;
+                                Evaluated::Temporary(tmp)
+                            }
+                            VerilogType::Array(_) => {
+                                // already array, no need to do anything
+                                value
+                            }
+                        }
                     }
                     IrExpressionLarge::ExpandIntRange(target, value) => {
                         let target =
@@ -1532,8 +1563,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         };
 
                         // store in temporary to force truncation
-                        let tmp = self.new_temporary(span, result_ty_verilog)?;
-                        swriteln!(self.f, "{indent}{tmp} = {value};");
+                        let tmp = self.new_temporary_assign(span, result_ty_verilog, value)?;
                         Evaluated::Temporary(tmp)
                     }
                 }
@@ -1625,9 +1655,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     Err(ZeroWidth) => return Ok(left),
                 };
 
-                let indent = self.indent;
-                let tmp = self.new_temporary(span, result_ty_verilog)?;
-                swriteln!(self.f, "{indent}{tmp} = {left} << {right};");
+                let expr = format_args!("{left} << {right}");
+                let tmp = self.new_temporary_assign(span, result_ty_verilog, expr)?;
                 Ok(Evaluated::Temporary(tmp))
             }
             IrIntArithmeticOp::Shr => {
@@ -1642,15 +1671,14 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     Err(ZeroWidth) => return Ok(left),
                 };
 
-                let indent = self.indent;
-                let tmp = self.new_temporary(span, result_ty_verilog)?;
-
-                if left_can_be_neg {
+                let tmp = if left_can_be_neg {
                     let left_singed = left.as_signed();
-                    swriteln!(self.f, "{indent}{tmp} = $unsigned({left_singed} >>> {right});");
+                    let expr = format_args!("$unsigned({left_singed} >>> {right})");
+                    self.new_temporary_assign(span, result_ty_verilog, expr)?
                 } else {
-                    swriteln!(self.f, "{indent}{tmp} = {left} >> {right};");
-                }
+                    let expr = format_args!("{left} >> {right}");
+                    self.new_temporary_assign(span, result_ty_verilog, expr)?
+                };
 
                 Ok(Evaluated::Temporary(tmp))
             }
@@ -1683,10 +1711,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let right = self.lower_expression_int_expanded(span, &range_all, right)?;
 
         // store result in a temporary to force truncation
-        // TODO skip if no truncation is actually necessary
-        let indent = self.indent;
-        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-        swriteln!(self.f, "{indent}{res_tmp} = {left} {op_str} {right};");
+        // TODO skip if no truncation is actually necessary?
+        let expr = format_args!("{left} {op_str} {right}");
+        let res_tmp = self.new_temporary_assign(span, result_ty_verilog, expr)?;
 
         Ok(Evaluated::Temporary(res_tmp))
     }
@@ -1702,7 +1729,6 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     ) -> DiagResult<Evaluated<'n>> {
         // TODO replace division by constant with magic multiply + shift, EDA tools probably don't reliably do this
         // TODO warn for division by non-constant?
-        let indent = self.indent;
         let diags = self.diags;
 
         let range_a = a.ty(self.module, self.locals).unwrap_int();
@@ -1747,8 +1773,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 format!("{a_adj} / {b}")
             }
             OperatorDivMod::Mod => {
-                let tmp_mod = self.new_temporary(span, VerilogType::new_from_range(diags, span, &range_all)?)?;
-                swriteln!(self.f, "{indent}{tmp_mod} = {a} % {b};");
+                let ty_verilog_all = VerilogType::new_from_range(diags, span, &range_all)?;
+                let expr = format_args!("{a} % {b}");
+                let tmp_mod = self.new_temporary_assign(span, ty_verilog_all, expr)?;
+
                 let should_adjust = MaybeBool::and(
                     &MaybeBool::is_not_zero(&tmp_mod, ClosedRange::from(result_range.range().as_ref())),
                     &signs_differ,
@@ -1758,9 +1786,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         };
 
         // store in temporary to force truncation
-        let res_tmp = self.new_temporary(span, result_ty_verilog)?;
-        swriteln!(self.f, "{indent}{res_tmp} = {res_expr};");
-
+        let res_tmp = self.new_temporary_assign(span, result_ty_verilog, res_expr)?;
         Ok(Evaluated::Temporary(res_tmp))
     }
 
@@ -1901,6 +1927,14 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         swrite!(g, "]");
 
         Ok(g)
+    }
+
+    /// Create a new temporary and immediately assign the given value to it.
+    /// This can be used to get a named expression, or to force truncation or type casts.
+    fn new_temporary_assign(&mut self, span: Span, ty: VerilogType, value: impl Display) -> DiagResult<Temporary<'n>> {
+        let tmp = self.new_temporary(span, ty)?;
+        swriteln!(self.f, "{tmp} = {value};");
+        Ok(tmp)
     }
 
     fn new_temporary(&mut self, span: Span, ty: VerilogType) -> DiagResult<Temporary<'n>> {
