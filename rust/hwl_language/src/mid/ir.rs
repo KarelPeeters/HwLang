@@ -5,7 +5,7 @@
 //! * writes only become visible to other blocks once all blocks (recursively) triggered by the current event
 //!   have fully finished running.
 //!
-//! If a local variable is read without being written to, the resulting value is undefined.
+//! If a local variable is read without first being written to, the resulting value is undefined.
 
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked};
 use crate::front::signal::Polarized;
@@ -160,8 +160,7 @@ pub enum IrModuleChild {
 
 #[derive(Debug, Clone)]
 pub struct IrClockedProcess {
-    // TODO rename to variables
-    pub locals: IrVariables,
+    pub variables: IrVariables,
     pub async_reset: Option<IrAsyncResetInfo>,
     pub clock_signal: Spanned<Polarized<IrSignal>>,
     pub clock_block: IrBlock,
@@ -176,7 +175,7 @@ pub struct IrAsyncResetInfo {
 
 #[derive(Debug, Clone)]
 pub struct IrCombinatorialProcess {
-    pub locals: IrVariables,
+    pub variables: IrVariables,
     pub block: IrBlock,
 }
 
@@ -553,7 +552,7 @@ impl IrAssignmentTarget {
 
 impl IrExpression {
     // TODO avoid clones
-    pub fn ty(&self, module: &IrModuleInfo, locals: &IrVariables) -> IrType {
+    pub fn ty(&self, module: &IrModuleInfo, variables: &IrVariables) -> IrType {
         match self {
             IrExpression::Bool(_) => IrType::Bool,
             IrExpression::Int(v) => IrType::Int(ClosedNonEmptyRange::single(v.clone())),
@@ -562,13 +561,13 @@ impl IrExpression {
                 IrSignal::Port(port) => module.ports[port].ty.clone(),
                 IrSignal::Wire(wire) => module.wires[wire].ty.clone(),
             },
-            &IrExpression::Variable(var) => locals[var].ty.clone(),
+            &IrExpression::Variable(var) => variables[var].ty.clone(),
 
             &IrExpression::Large(expr) => {
                 match &module.large[expr] {
                     IrExpressionLarge::Undefined(ty) => ty.clone(),
                     IrExpressionLarge::BoolNot(_) => IrType::Bool,
-                    IrExpressionLarge::BoolBinary(_, left, _) => left.ty(module, locals),
+                    IrExpressionLarge::BoolBinary(_, left, _) => left.ty(module, variables),
                     IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
                     IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
@@ -576,34 +575,34 @@ impl IrExpression {
                         IrType::Array(Box::new(ty_inner.clone()), len.clone())
                     }
                     IrExpressionLarge::TupleLiteral(v) => {
-                        IrType::Tuple(v.iter().map(|x| x.ty(module, locals)).collect())
+                        IrType::Tuple(v.iter().map(|x| x.ty(module, variables)).collect())
                     }
                     IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
                     IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
 
                     IrExpressionLarge::ArrayIndex { base, .. } => {
-                        let (inner_ty, _) = base.ty(module, locals).unwrap_array();
+                        let (inner_ty, _) = base.ty(module, variables).unwrap_array();
                         inner_ty
                     }
                     IrExpressionLarge::ArraySlice { base, start: _, len } => {
-                        let (inner_ty, _) = base.ty(module, locals).unwrap_array();
+                        let (inner_ty, _) = base.ty(module, variables).unwrap_array();
                         IrType::Array(Box::new(inner_ty), len.clone())
                     }
                     &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let base_ty = base.ty(module, locals).unwrap_tuple();
+                        let base_ty = base.ty(module, variables).unwrap_tuple();
                         base_ty[index].clone()
                     }
                     // TODO store resulting type in expression instead?
                     &IrExpressionLarge::StructField { ref base, field } => {
-                        let base_ty = base.ty(module, locals).unwrap_struct();
+                        let base_ty = base.ty(module, variables).unwrap_struct();
                         base_ty.fields[field].clone()
                     }
                     IrExpressionLarge::EnumTag { base } => {
-                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        let base_ty = base.ty(module, variables).unwrap_enum();
                         IrType::Int(base_ty.tag_range())
                     }
                     &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        let base_ty = base.ty(module, variables).unwrap_enum();
                         base_ty.variants[variant]
                             .as_ref()
                             .expect("cannot get payload of non-payload variant")

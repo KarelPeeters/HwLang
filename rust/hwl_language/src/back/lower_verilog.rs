@@ -259,7 +259,7 @@ struct ModuleNameMap<'n> {
 struct ProcessNameMap<'n> {
     module_name_map: ModuleNameMap<'n>,
     shadow_name_map: &'n IndexMap<IrSignal, LoweredName>,
-    variables: &'n IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>,
+    variable_name_map: &'n IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>,
 }
 
 impl<'n> ModuleNameMap<'n> {
@@ -281,7 +281,7 @@ impl<'n> ProcessNameMap<'n> {
     }
 
     pub fn map_var(&self, v: IrVariable) -> Result<&'n LoweredName, ZeroWidth> {
-        self.variables.get(&v).unwrap().as_ref_ok()
+        self.variable_name_map.get(&v).unwrap().as_ref_ok()
     }
 }
 
@@ -735,7 +735,7 @@ fn lower_combinatorial_process(
     span: Span,
     process: &IrCombinatorialProcess,
 ) -> DiagResult {
-    let IrCombinatorialProcess { locals, block } = process;
+    let IrCombinatorialProcess { variables, block } = process;
 
     let indent = Indent::new(2);
     let mut f_decl = String::new();
@@ -753,13 +753,14 @@ fn lower_combinatorial_process(
         dummy_name = module_name_map.dummy_name
     );
 
-    let variables = declare_and_init_variables(diags, &mut f_decl, &mut f_init, indent, &mut name_scope, locals)?;
+    let variable_name_map =
+        declare_and_init_variables(diags, &mut f_decl, &mut f_init, indent, &mut name_scope, variables)?;
 
     // combinatorial processes don't have register shadowing, they can't write to any
     let process_name_map = ProcessNameMap {
         module_name_map,
         shadow_name_map: &IndexMap::default(),
-        variables: &variables,
+        variable_name_map: &variable_name_map,
     };
 
     let temporaries = GrowVec::new();
@@ -767,7 +768,7 @@ fn lower_combinatorial_process(
         diags,
         large: &module_info.large,
         module: module_info,
-        locals,
+        variables,
         is_clocked_process: false,
         name_map: process_name_map,
         name_scope: &mut name_scope,
@@ -797,7 +798,7 @@ fn lower_clocked_process(
     process: &IrClockedProcess,
 ) -> DiagResult {
     let &IrClockedProcess {
-        ref locals,
+        ref variables,
         clock_signal,
         ref clock_block,
         ref async_reset,
@@ -821,11 +822,17 @@ fn lower_clocked_process(
     let mut f_init = String::new();
     let mut f_body = String::new();
 
-    // declare locals and shadow registers
+    // declare variables and shadow registers
     let shadow_regs = collect_shadow_registers(&module_info.large, clock_block);
 
-    let variables =
-        declare_and_init_variables(diags, &mut f_decl, &mut f_init, Indent::new(2), &mut name_scope, locals)?;
+    let variable_name_map = declare_and_init_variables(
+        diags,
+        &mut f_decl,
+        &mut f_init,
+        Indent::new(2),
+        &mut name_scope,
+        variables,
+    )?;
     let shadow_name_map = declare_shadow_signals(
         diags,
         &mut f_decl,
@@ -838,7 +845,7 @@ fn lower_clocked_process(
     // build new name map
     let process_name_map = ProcessNameMap {
         module_name_map,
-        variables: &variables,
+        variable_name_map: &variable_name_map,
         shadow_name_map: &shadow_name_map,
     };
 
@@ -860,7 +867,7 @@ fn lower_clocked_process(
         diags,
         large: &module_info.large,
         module: module_info,
-        locals,
+        variables,
         is_clocked_process: true,
         name_map: process_name_map,
         name_scope: &mut name_scope,
@@ -889,7 +896,7 @@ fn lower_clocked_process(
                 diags,
                 large: &module_info.large,
                 module: module_info,
-                locals,
+                variables,
                 is_clocked_process: true,
                 name_map: process_name_map,
                 name_scope: &mut name_scope,
@@ -944,11 +951,11 @@ fn declare_and_init_variables(
     f_init: &mut String,
     indent: Indent,
     name_scope: &mut LoweredNameScope,
-    locals: &IrVariables,
+    variables: &IrVariables,
 ) -> DiagResult<IndexMap<IrVariable, Result<LoweredName, ZeroWidth>>> {
     let mut result = IndexMap::new();
 
-    for (variable, variable_info) in locals {
+    for (variable, variable_info) in variables {
         let &IrVariableInfo {
             ref ty,
             debug_info_span,
@@ -1022,7 +1029,7 @@ fn declare_temporaries(f_decl: &mut String, f_init: &mut String, indent: Indent,
 }
 
 fn declare_local(f_decl: &mut String, f_init: &mut String, indent: Indent, ty: VerilogType, name: &LoweredName) {
-    // x-initialize all locals to avoid inferring latches
+    // x-initialize all variables to avoid inferring latches
     let ty_prefix = ty.prefix();
     let ty_size_bits = ty.size_bits();
     swriteln!(f_decl, "{indent}reg {ty_prefix}{name};");
@@ -1142,7 +1149,7 @@ struct LowerBlockContext<'a, 'n> {
     diags: &'a Diagnostics,
     large: &'a IrLargeArena,
     module: &'a IrModuleInfo,
-    locals: &'a IrVariables,
+    variables: &'a IrVariables,
 
     is_clocked_process: bool,
     name_map: ProcessNameMap<'n>,
@@ -1286,7 +1293,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 StringPiece::Substitute(p) => match p {
                     IrStringSubstitution::Integer(p, radix) => {
                         // TODO how does signed bin/hex behave?
-                        let signed = p.ty(self.module, self.locals).unwrap_int().as_ref().start.is_negative();
+                        let signed = p
+                            .ty(self.module, self.variables)
+                            .unwrap_int()
+                            .as_ref()
+                            .start
+                            .is_negative();
                         let p = self.lower_expression(span, p)?;
 
                         let radix = match radix {
@@ -1325,7 +1337,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         if eval.is_named() {
             Ok(Ok(eval))
         } else {
-            let ty = expr.ty(self.module, self.locals);
+            let ty = expr.ty(self.module, self.variables);
             let ty_verilog = try_inner!(VerilogType::new_from_ir(self.diags, span, &ty)?);
 
             let tmp = self.new_temporary_assign(span, ty_verilog, eval)?;
@@ -1336,12 +1348,12 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     fn lower_expression(&mut self, span: Span, expr: &IrExpression) -> DiagResult<Result<Evaluated<'n>, ZeroWidth>> {
         let diags = self.diags;
         let module = self.module;
-        let locals = self.locals;
+        let variables = self.variables;
         let name_map = self.name_map;
 
         // skip any zero-width expressions
         //   expressions are always pure, they can never have side-effects
-        let result_ty = expr.ty(module, locals);
+        let result_ty = expr.ty(module, variables);
         let result_ty_verilog = match VerilogType::new_from_ir(diags, span, &result_ty)? {
             Ok(ty) => ty,
             Err(ZeroWidth) => {
@@ -1393,8 +1405,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     }
                     IrExpressionLarge::IntCompare(op, left, right) => {
                         // find common range that contains all operands
-                        let left_range = left.ty(module, locals).unwrap_int();
-                        let right_range = right.ty(module, locals).unwrap_int();
+                        let left_range = left.ty(module, variables).unwrap_int();
+                        let right_range = right.ty(module, variables).unwrap_int();
                         let combined_range = left_range.union(right_range);
                         let combined_range =
                             NonZeroWidthRange::new(combined_range).unwrap_or(NonZeroWidthRange::ZERO_ONE);
@@ -1473,7 +1485,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArrayIndex { base, index } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
-                        let base_ty = base.ty(module, locals);
+                        let base_ty = base.ty(module, variables);
                         let bit_range = bit_index_range(&base_ty.size_bits());
                         let (element_ty, _) = base_ty.unwrap_array();
                         let element_size_bits = element_ty.size_bits();
@@ -1485,7 +1497,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ArraySlice { base, start, len } => {
                         // TODO constant fold if index is a constant?
                         // TODO expose the extra knowledge we have about integer ranges to verilog?
-                        let base_ty = base.ty(module, locals);
+                        let base_ty = base.ty(module, variables);
                         let bit_range = bit_index_range(&base_ty.size_bits());
 
                         let (element_ty, _) = base_ty.unwrap_array();
@@ -1498,7 +1510,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, start, &element_size_bits, &len_bits)
                     }
                     &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let ty = base.ty(module, locals).unwrap_tuple();
+                        let ty = base.ty(module, variables).unwrap_tuple();
                         let start_bits = ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
                         let size_bits = ty[index].size_bits();
 
@@ -1506,7 +1518,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, start_bits, &BigUint::ONE, &size_bits)
                     }
                     &IrExpressionLarge::StructField { ref base, field } => {
-                        let base_ty = base.ty(module, locals).unwrap_struct();
+                        let base_ty = base.ty(module, variables).unwrap_struct();
                         let offset = base_ty.field_offset(field);
                         let size_bits = base_ty.fields[field].size_bits();
 
@@ -1514,14 +1526,14 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         evaluate_bit_slice(base, offset, &BigUint::ONE, &size_bits)
                     }
                     IrExpressionLarge::EnumTag { base } => {
-                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        let base_ty = base.ty(module, variables).unwrap_enum();
                         let size_bits = base_ty.tag_size_bits();
 
                         let base = try_inner!(self.lower_expression_as_named(span, base)?);
                         evaluate_bit_slice(base, BigUint::ZERO, &BigUint::ONE, &size_bits)
                     }
                     &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                        let base_ty = base.ty(module, locals).unwrap_enum();
+                        let base_ty = base.ty(module, variables).unwrap_enum();
 
                         let offset = base_ty.tag_size_bits();
                         let size_bits = base_ty.variants[variant]
@@ -1536,7 +1548,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     IrExpressionLarge::ToBits(_ty, value) => {
                         // in verilog everything is just bits, so we don't need to do much work here
                         //   we do need to be careful when switching between bit/array representations for single bools
-                        let value_ty = VerilogType::new_from_ir(diags, span, &value.ty(module, locals))?
+                        let value_ty = VerilogType::new_from_ir(diags, span, &value.ty(module, variables))?
                             .expect("already checked zero-width result");
                         let value = self
                             .lower_expression(span, value)?
@@ -1686,7 +1698,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 Ok(Evaluated::Temporary(tmp))
             }
             IrIntArithmeticOp::Shr => {
-                let left_can_be_neg = left.ty(self.module, self.locals).unwrap_int().start.is_negative();
+                let left_can_be_neg = left.ty(self.module, self.variables).unwrap_int().start.is_negative();
 
                 let left = match self.lower_expression(span, left)? {
                     Ok(left) => left,
@@ -1723,8 +1735,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     ) -> DiagResult<Evaluated<'n>> {
         // expand operands to a common range that contains all operands and the result
         // TODO just constraining everything to the output bit representation should be correct too
-        let range_left = left.ty(self.module, self.locals).unwrap_int();
-        let range_right = right.ty(self.module, self.locals).unwrap_int();
+        let range_left = left.ty(self.module, self.variables).unwrap_int();
+        let range_right = right.ty(self.module, self.variables).unwrap_int();
         let range_all = result_range
             .range()
             .as_ref()
@@ -1758,8 +1770,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         // TODO warn for division by non-constant?
         let diags = self.diags;
 
-        let range_a = a.ty(self.module, self.locals).unwrap_int();
-        let range_b = b.ty(self.module, self.locals).unwrap_int();
+        let range_a = a.ty(self.module, self.variables).unwrap_int();
+        let range_b = b.ty(self.module, self.variables).unwrap_int();
 
         // TODO these ranges could be tighter in many cases
         let range_adj_one = ClosedNonEmptyRange {
@@ -1842,7 +1854,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         }
 
         // general case
-        let value_ty = value.ty(self.module, self.locals);
+        let value_ty = value.ty(self.module, self.variables);
         let value_ty = value_ty.unwrap_int();
 
         let value = match self.lower_expression(span, value)? {
@@ -1863,7 +1875,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let &IrAssignmentTarget { base, ref steps } = target;
 
         // evaluate indexing steps
-        let base_ty = base.as_expression().ty(self.module, self.locals);
+        let base_ty = base.as_expression().ty(self.module, self.variables);
         let steps = self.build_target_steps(span, base_ty, steps)?;
 
         // actually do the assignment(s)

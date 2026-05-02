@@ -41,7 +41,7 @@ impl IrModuleInfo {
             match &child.inner {
                 IrModuleChild::ClockedProcess(process) => {
                     let IrClockedProcess {
-                        locals,
+                        variables,
                         clock_signal,
                         clock_block,
                         async_reset,
@@ -59,7 +59,7 @@ impl IrModuleInfo {
                         &IrType::Bool,
                         &clock_signal_inner_expr.ty(self, no_variables),
                     )?;
-                    clock_block.validate(diags, self, locals)?;
+                    clock_block.validate(diags, self, variables)?;
 
                     if let Some(async_reset) = async_reset {
                         let IrAsyncResetInfo {
@@ -83,15 +83,15 @@ impl IrModuleInfo {
                         for reset in resets {
                             let &(reg, ref value) = &reset.inner;
 
-                            let empty_locals = IrVariables::new();
-                            let reg_ty = IrExpression::Signal(reg).ty(self, &empty_locals);
+                            let empty_variables = IrVariables::new();
+                            let reg_ty = IrExpression::Signal(reg).ty(self, &empty_variables);
 
-                            check_type_match(diags, reset.span, &reg_ty, &value.ty(self, &empty_locals))?
+                            check_type_match(diags, reset.span, &reg_ty, &value.ty(self, &empty_variables))?
                         }
                     }
                 }
                 IrModuleChild::CombinatorialProcess(process) => {
-                    process.block.validate(diags, self, &process.locals)?;
+                    process.block.validate(diags, self, &process.variables)?;
                 }
                 IrModuleChild::ModuleInternalInstance(instance) => {
                     let &IrModuleInternalInstance {
@@ -176,19 +176,19 @@ impl IrModuleInfo {
 }
 
 impl IrBlock {
-    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, locals: &IrVariables) -> DiagResult {
+    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, variables: &IrVariables) -> DiagResult {
         for stmt in &self.statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
-                    let target_ty = assignment_target_ty(module, locals, target);
+                    let target_ty = assignment_target_ty(module, variables, target);
 
-                    expr.validate(diags, module, locals, stmt.span)?;
-                    let expr_ty = expr.ty(module, locals);
+                    expr.validate(diags, module, variables, stmt.span)?;
+                    let expr_ty = expr.ty(module, variables);
 
                     check_type_match(diags, stmt.span, &target_ty, &expr_ty)?;
                 }
                 IrStatement::Block(block) => {
-                    block.validate(diags, module, locals)?;
+                    block.validate(diags, module, variables)?;
                 }
                 IrStatement::If(if_stmt) => {
                     let IrIfStatement {
@@ -197,13 +197,13 @@ impl IrBlock {
                         else_block,
                     } = if_stmt;
 
-                    condition.validate(diags, module, locals, stmt.span)?;
-                    check_type_is_bool(diags, stmt.span, &condition.ty(module, locals))?;
+                    condition.validate(diags, module, variables, stmt.span)?;
+                    check_type_is_bool(diags, stmt.span, &condition.ty(module, variables))?;
 
-                    then_block.validate(diags, module, locals)?;
+                    then_block.validate(diags, module, variables)?;
 
                     if let Some(else_block) = else_block {
-                        else_block.validate(diags, module, locals)?;
+                        else_block.validate(diags, module, variables)?;
                     }
                 }
                 IrStatement::For(for_stmt) => {
@@ -212,7 +212,7 @@ impl IrBlock {
                         ref range,
                         ref block,
                     } = for_stmt;
-                    let index_ty = IrExpression::Variable(index).ty(module, locals);
+                    let index_ty = IrExpression::Variable(index).ty(module, variables);
                     let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
 
                     if !index_range.contains_range(range.as_ref()) {
@@ -222,9 +222,9 @@ impl IrBlock {
                         return Err(diags.report_error_internal(stmt.span, msg));
                     }
 
-                    block.validate(diags, module, locals)?;
+                    block.validate(diags, module, variables)?;
                 }
-                IrStatement::Print(pieces) => validate_string(diags, module, locals, stmt.span, pieces)?,
+                IrStatement::Print(pieces) => validate_string(diags, module, variables, stmt.span, pieces)?,
                 IrStatement::AssertFailed => {}
             }
         }
@@ -235,7 +235,7 @@ impl IrBlock {
 fn validate_string(
     diags: &Diagnostics,
     module: &IrModuleInfo,
-    locals: &IrVariables,
+    variables: &IrVariables,
     span: Span,
     s: &IrString,
 ) -> DiagResult {
@@ -244,8 +244,8 @@ fn validate_string(
             StringPiece::Literal(_) => {}
             StringPiece::Substitute(p) => match p {
                 IrStringSubstitution::Integer(p, _) => {
-                    p.validate(diags, module, locals, span)?;
-                    check_type_is_int(diags, span, &p.ty(module, locals))?;
+                    p.validate(diags, module, variables, span)?;
+                    check_type_is_int(diags, span, &p.ty(module, variables))?;
                 }
             },
         }
@@ -253,10 +253,14 @@ fn validate_string(
     Ok(())
 }
 
-fn assignment_target_ty<'a>(module: &'a IrModuleInfo, locals: &'a IrVariables, target: &IrAssignmentTarget) -> IrType {
+fn assignment_target_ty<'a>(
+    module: &'a IrModuleInfo,
+    variables: &'a IrVariables,
+    target: &IrAssignmentTarget,
+) -> IrType {
     let IrAssignmentTarget { base, steps } = target;
 
-    let mut curr_ty = base.as_expression().ty(module, locals);
+    let mut curr_ty = base.as_expression().ty(module, variables);
 
     for step in steps {
         curr_ty = match step {
@@ -275,13 +279,19 @@ fn assignment_target_ty<'a>(module: &'a IrModuleInfo, locals: &'a IrVariables, t
 }
 
 impl IrExpression {
-    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, locals: &IrVariables, span: Span) -> DiagResult {
+    pub fn validate(
+        &self,
+        diags: &Diagnostics,
+        module: &IrModuleInfo,
+        variables: &IrVariables,
+        span: Span,
+    ) -> DiagResult {
         let large = &module.large;
 
         // validate operands
         let mut any_err = Ok(());
         self.for_each_operand(large, &mut |op| {
-            any_err = any_err.and(op.validate(diags, module, locals, span))
+            any_err = any_err.and(op.validate(diags, module, variables, span))
         });
         any_err?;
 
@@ -300,7 +310,7 @@ impl IrExpression {
                 }
             },
             &IrExpression::Variable(var) => {
-                let _ = locals[var];
+                let _ = variables[var];
             }
 
             // actual type checks
@@ -309,19 +319,19 @@ impl IrExpression {
                     // always valid
                 }
                 IrExpressionLarge::BoolNot(inner) => {
-                    check_type_is_bool(diags, span, &inner.ty(module, locals))?;
+                    check_type_is_bool(diags, span, &inner.ty(module, variables))?;
                 }
                 IrExpressionLarge::BoolBinary(_op, left, right) => {
-                    check_type_is_bool(diags, span, &left.ty(module, locals))?;
-                    check_type_is_bool(diags, span, &right.ty(module, locals))?;
+                    check_type_is_bool(diags, span, &left.ty(module, variables))?;
+                    check_type_is_bool(diags, span, &right.ty(module, variables))?;
                 }
                 IrExpressionLarge::IntArithmetic(_op, _range, left, right) => {
-                    check_type_is_int(diags, span, &left.ty(module, locals))?;
-                    check_type_is_int(diags, span, &right.ty(module, locals))?;
+                    check_type_is_int(diags, span, &left.ty(module, variables))?;
+                    check_type_is_int(diags, span, &right.ty(module, variables))?;
                 }
                 IrExpressionLarge::IntCompare(_op, left, right) => {
-                    check_type_is_int(diags, span, &left.ty(module, locals))?;
-                    check_type_is_int(diags, span, &right.ty(module, locals))?;
+                    check_type_is_int(diags, span, &left.ty(module, variables))?;
+                    check_type_is_int(diags, span, &right.ty(module, variables))?;
                 }
                 IrExpressionLarge::TupleLiteral(_values) => {
                     // always valid
@@ -331,12 +341,12 @@ impl IrExpression {
                     for value in values {
                         match value {
                             IrArrayLiteralElement::Single(value) => {
-                                let value_ty = value.ty(module, locals);
+                                let value_ty = value.ty(module, variables);
                                 check_type_match(diags, span, inner_ty, &value_ty)?;
                                 actual_len += 1u32;
                             }
                             IrArrayLiteralElement::Spread(value) => {
-                                let value_ty = value.ty(module, locals);
+                                let value_ty = value.ty(module, variables);
                                 let (value_inner_ty, value_len) = check_type_is_array(diags, span, &value_ty)?;
                                 check_type_match(diags, span, inner_ty, value_inner_ty)?;
                                 actual_len += value_len;
@@ -352,7 +362,7 @@ impl IrExpression {
                         return Err(diags.report_error_internal(span, "IR StructLiteral wrong field count"));
                     }
                     for ((_, field_ty), field_value) in zip_eq(&ty.fields, values) {
-                        let value_ty = field_value.ty(module, locals);
+                        let value_ty = field_value.ty(module, variables);
                         check_type_match(diags, span, field_ty, &value_ty)?;
                     }
                 }
@@ -365,17 +375,17 @@ impl IrExpression {
                     match (ty_payload, payload) {
                         (None, None) => {}
                         (Some(payload_ty), Some(payload_expr)) => {
-                            let value_ty = payload_expr.ty(module, locals);
+                            let value_ty = payload_expr.ty(module, variables);
                             check_type_match(diags, span, payload_ty, &value_ty)?;
                         }
                         _ => return Err(diags.report_error_internal(span, "IR EnumLiteral payload mismatch")),
                     }
                 }
                 IrExpressionLarge::ArrayIndex { base, index } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
 
-                    let index_ty = index.ty(module, locals);
+                    let index_ty = index.ty(module, variables);
                     let index_range = check_type_is_int(diags, span, &index_ty)?;
 
                     let valid_range = ClosedRange {
@@ -387,10 +397,10 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
 
-                    let start_ty = start.ty(module, locals);
+                    let start_ty = start.ty(module, variables);
                     let start_range = check_type_is_int(diags, span, &start_ty)?;
 
                     let valid_range = ClosedRange {
@@ -402,7 +412,7 @@ impl IrExpression {
                     }
                 }
                 &IrExpressionLarge::TupleIndex { ref base, index } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let base_ty = check_type_is_tuple(diags, span, &base_ty)?;
 
                     if index >= base_ty.len() {
@@ -410,7 +420,7 @@ impl IrExpression {
                     }
                 }
                 &IrExpressionLarge::StructField { ref base, field } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let base_ty = check_type_is_struct(diags, span, &base_ty)?;
 
                     if field >= base_ty.fields.len() {
@@ -418,11 +428,11 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::EnumTag { base } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let _ = check_type_is_enum(diags, span, &base_ty)?;
                 }
                 &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                    let base_ty = base.ty(module, locals);
+                    let base_ty = base.ty(module, variables);
                     let base_ty = check_type_is_enum(diags, span, &base_ty)?;
 
                     if variant >= base_ty.variants.len() {
@@ -434,18 +444,18 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::ToBits(ty, expr) => {
-                    if ty != &expr.ty(module, locals) {
+                    if ty != &expr.ty(module, variables) {
                         return Err(diags.report_error_internal(span, "IR ToBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::FromBits(ty, expr) => {
-                    let expr_ty = expr.ty(module, locals);
+                    let expr_ty = expr.ty(module, variables);
                     if expr_ty != IrType::Array(Box::new(IrType::Bool), ty.size_bits()) {
                         return Err(diags.report_error_internal(span, "IR FromBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::ExpandIntRange(outer, inner) => {
-                    let inner_ty = inner.ty(module, locals);
+                    let inner_ty = inner.ty(module, variables);
                     let inner_range = check_type_is_int(diags, span, &inner_ty)?;
 
                     if !outer.contains_range(inner_range.as_ref()) {
@@ -453,7 +463,7 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::ConstrainIntRange(outer, inner) => {
-                    let inner_ty = inner.ty(module, locals);
+                    let inner_ty = inner.ty(module, variables);
                     let inner_range = check_type_is_int(diags, span, &inner_ty)?;
 
                     if !inner_range.contains_range(outer.as_ref()) {

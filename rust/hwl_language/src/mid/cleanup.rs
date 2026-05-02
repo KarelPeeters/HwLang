@@ -22,7 +22,7 @@ pub fn cleanup_module(ir: &mut IrModuleInfo) {
         match &mut child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
-                    locals,
+                    variables,
                     async_reset,
                     clock_signal: _,
                     clock_block,
@@ -31,11 +31,11 @@ pub fn cleanup_module(ir: &mut IrModuleInfo) {
                 // we don't need to worry about this, it is not allowed to access variables
                 let _ = async_reset;
 
-                cleanup_process(large, locals, clock_block);
+                cleanup_process(large, variables, clock_block);
             }
             IrModuleChild::CombinatorialProcess(proc) => {
-                let IrCombinatorialProcess { locals, block } = proc;
-                cleanup_process(large, locals, block);
+                let IrCombinatorialProcess { variables, block } = proc;
+                cleanup_process(large, variables, block);
             }
             IrModuleChild::ModuleInternalInstance(_) => {}
             IrModuleChild::ModuleExternalInstance(_) => {}
@@ -43,14 +43,14 @@ pub fn cleanup_module(ir: &mut IrModuleInfo) {
     }
 }
 
-fn cleanup_process(large: &mut IrLargeArena, locals: &mut IrVariables, block: &mut IrBlock) {
+fn cleanup_process(large: &mut IrLargeArena, variables: &mut IrVariables, block: &mut IrBlock) {
     inline_vars_process(large, block);
 
     let mut used_vars = IndexSet::new();
     collect_used_vars_block(large, &mut used_vars, block);
 
     remove_dead_vars_block(block, &used_vars);
-    locals.retain(|var, _| used_vars.contains(&var));
+    variables.retain(|var, _| used_vars.contains(&var));
 }
 
 fn collect_used_vars_block(large: &IrLargeArena, used: &mut IndexSet<IrVariable>, block: &IrBlock) {

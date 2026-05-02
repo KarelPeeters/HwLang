@@ -876,7 +876,7 @@ impl BodyContext {
 
                         // record process
                         let process = IrCombinatorialProcess {
-                            locals: ir_vars,
+                            variables: ir_vars,
                             block: ir_block,
                         };
                         self.children
@@ -1021,7 +1021,7 @@ impl BodyContext {
 
         // record process
         let process = IrCombinatorialProcess {
-            locals: ir_vars,
+            variables: ir_vars,
             block: ir_block,
         };
         self.children
@@ -1205,7 +1205,7 @@ impl BodyContext {
         // record process
         let clock_ir = Spanned::new(clock.span, ctx.domain_signal_to_ir(clock)?);
         let process = IrClockedProcess {
-            locals: ir_vars,
+            variables: ir_vars,
             async_reset,
             clock_signal: clock_ir,
             clock_block,
@@ -1572,7 +1572,7 @@ impl BodyContext {
                                 ),
                             });
                             let process = IrCombinatorialProcess {
-                                locals: ir_vars,
+                                variables: ir_vars,
                                 block: ir_block,
                             };
                             let child = IrModuleChild::CombinatorialProcess(process);

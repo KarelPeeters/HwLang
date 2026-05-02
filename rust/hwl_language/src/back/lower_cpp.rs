@@ -127,7 +127,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
-                    locals,
+                    variables,
                     clock_signal,
                     clock_block,
                     async_reset,
@@ -147,7 +147,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                     let mut ctx = CodegenBlockContext {
                         diags,
                         module_info,
-                        locals,
+                        variables,
                         f: &mut f_step,
                         next_temporary_index: 0,
                     };
@@ -196,7 +196,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 let mut ctx = CodegenBlockContext {
                     diags,
                     module_info,
-                    locals,
+                    variables,
                     f: &mut f_step,
                     next_temporary_index: 0,
                 };
@@ -210,8 +210,8 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(ctx.f, "{I}}}");
                 swriteln!(ctx.f);
 
-                //   declare locals
-                for (var, var_info) in locals {
+                //   declare variables
+                for (var, var_info) in variables {
                     let ty_str = type_to_cpp(diags, var_info.debug_info_span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
@@ -222,7 +222,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 swriteln!(f_step);
             }
             IrModuleChild::CombinatorialProcess(proc) => {
-                let IrCombinatorialProcess { locals, block } = proc;
+                let IrCombinatorialProcess { variables, block } = proc;
 
                 let func_step = format!("module_{module_index}_child_{child_index}_comb");
                 swriteln!(f_step_all, "{I}{func_step}({step_args});");
@@ -231,11 +231,11 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 let mut ctx = CodegenBlockContext {
                     diags,
                     module_info,
-                    locals,
+                    variables,
                     f: &mut f_step,
                     next_temporary_index: 0,
                 };
-                for (var, var_info) in locals {
+                for (var, var_info) in variables {
                     let ty_str = type_to_cpp(diags, var_info.debug_info_span, &var_info.ty)?;
                     let name = var_str(var, var_info);
                     swriteln!(ctx.f, "{I}{ty_str} {name};");
@@ -371,7 +371,7 @@ impl Display for Stage {
 struct CodegenBlockContext<'a> {
     diags: &'a Diagnostics,
     module_info: &'a IrModuleInfo,
-    locals: &'a IrVariables,
+    variables: &'a IrVariables,
     f: &'a mut String,
     next_temporary_index: usize,
 }
@@ -388,7 +388,7 @@ impl CodegenBlockContext<'_> {
             Evaluated::Temporary(v) => Ok(v),
             Evaluated::Inline(v) => {
                 let tmp = self.new_temporary();
-                let ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+                let ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.variables))?;
                 swriteln!(self.f, "{indent}{ty_str} {tmp} = {v};");
                 Ok(tmp)
             }
@@ -427,7 +427,7 @@ impl CodegenBlockContext<'_> {
 
             &IrExpression::Signal(s) => self.eval_signal(s, stage_read),
 
-            &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.locals[var])),
+            &IrExpression::Variable(var) => Evaluated::Inline(var_str(var, &self.variables[var])),
 
             &IrExpression::Large(expr_large) => match &self.module_info.large[expr_large] {
                 IrExpressionLarge::Undefined(_) => {
@@ -485,7 +485,7 @@ impl CodegenBlockContext<'_> {
                         .map(|e| self.eval(indent, span, e, stage_read))
                         .try_collect_vec()?;
 
-                    let result_ty = expr.ty(self.module_info, self.locals);
+                    let result_ty = expr.ty(self.module_info, self.variables);
                     let result_ty_str = type_to_cpp(self.diags, span, &result_ty)?;
                     let tmp_result = self.new_temporary();
 
@@ -561,7 +561,7 @@ impl CodegenBlockContext<'_> {
                             }
                             IrArrayLiteralElement::Spread(value) => {
                                 let value_eval = self.eval(indent, span, value, stage_read)?;
-                                let element_len = unwrap_match!(value.ty(self.module_info, self.locals), IrType::Array(_, element_len) => element_len);
+                                let element_len = unwrap_match!(value.ty(self.module_info, self.variables), IrType::Array(_, element_len) => element_len);
                                 swriteln!(
                                     self.f,
                                     "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});"
@@ -583,7 +583,7 @@ impl CodegenBlockContext<'_> {
                     let start_eval = self.eval(indent, span, start, stage_read)?;
 
                     let tmp_result = self.new_temporary();
-                    let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.locals))?;
+                    let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.variables))?;
 
                     swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
                     swriteln!(
@@ -910,7 +910,7 @@ impl CodegenBlockContext<'_> {
                     } = for_stmt;
                     let ClosedRange { start, end } = range;
 
-                    let index_var = Evaluated::Inline(var_str(index, &self.locals[index]));
+                    let index_var = Evaluated::Inline(var_str(index, &self.variables[index]));
                     swrite!(
                         self.f,
                         "{indent}for ({index_var} = {start}; {index_var} < {end}; {index_var}++)"
@@ -983,7 +983,7 @@ impl CodegenBlockContext<'_> {
                 false
             }
             IrSignalOrVariable::Variable(var) => {
-                let var_str = var_str(var, &self.locals[var]);
+                let var_str = var_str(var, &self.variables[var]);
                 swrite!(target_str, "{}", var_str);
                 false
             }
