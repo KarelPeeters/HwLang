@@ -1698,8 +1698,9 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 };
 
                 let tmp = if left_can_be_neg {
+                    // the final temporary assignment also casts away the signedness for us
                     let left_singed = left.as_signed();
-                    let expr = format_args!("$unsigned({left_singed} >>> {right})");
+                    let expr = format_args!("{left_singed} >>> {right}");
                     self.new_temporary_assign(span, result_ty_verilog, expr)?
                 } else {
                     let expr = format_args!("{left} >> {right}");
