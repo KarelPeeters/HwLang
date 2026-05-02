@@ -109,11 +109,12 @@ new_index_type!(pub IrVariable);
 
 #[derive(Debug, Clone)]
 pub struct IrModuleInfo {
+    /// port names must be unique
     pub ports: Arena<IrPort, IrPortInfo>,
     pub wires: Arena<IrWire, IrWireInfo>,
     pub large: IrLargeArena,
 
-    // child names (if any) any not guaranteed to be unique
+    /// child names are not guaranteed to be unique
     pub children: Vec<Spanned<IrModuleChild>>,
 
     pub debug_info_location: String,
@@ -186,14 +187,12 @@ pub struct IrModuleInternalInstance {
     pub port_connections: Vec<Spanned<IrPortConnection>>,
 }
 
-// TODO ensure this works for zero-width ports
 #[derive(Debug, Clone)]
 pub struct IrModuleExternalInstance {
     pub name: Option<String>,
     pub module_name: String,
     pub generic_args: Option<Vec<(String, BigInt)>>,
-    pub port_names: Vec<String>,
-    pub port_connections: Vec<Spanned<IrPortConnection>>,
+    pub port_connections: IndexMap<String, (IrType, Spanned<IrPortConnection>)>,
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -6,3 +6,13 @@ module external_module#(
 );
     assign y = x + 1;
 endmodule
+
+module external_module_zero(
+    // omit x, zero width
+    output [0:0] y
+);
+    assign y = 1;
+endmodule
+
+module external_module_no_ports();
+endmodule

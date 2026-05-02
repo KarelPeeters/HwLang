@@ -135,7 +135,6 @@ impl IrModuleInfo {
                         name: _,
                         module_name,
                         generic_args,
-                        port_names,
                         port_connections,
                     } = instance;
 
@@ -144,14 +143,29 @@ impl IrModuleInfo {
                         return Err(diags.report_error_internal(child.span, msg));
                     }
 
-                    // the IR does not store type information for external modules, we just have to trust these
+                    // just trust generic args, the IR does not store type information for them
                     let _ = generic_args;
-                    let _ = port_connections;
 
-                    if port_names.len() != port_connections.len() {
-                        return Err(
-                            diags.report_error_internal(child.span, "IR ModuleExternalInstance port length mismatch")
-                        );
+                    // check port connections
+                    for (port_ty, connection) in port_connections.values() {
+                        let conn_ty = match connection.inner {
+                            IrPortConnection::Input(expr) => {
+                                let inner_expr = IrExpression::Signal(expr);
+                                inner_expr.validate(diags, self, no_variables, connection.span)?;
+
+                                let conn_ty = inner_expr.ty(self, no_variables);
+                                Some(conn_ty)
+                            }
+                            IrPortConnection::Output(expr) => match expr {
+                                Some(IrSignal::Wire(wire)) => Some(self.wires[wire].ty.clone()),
+                                Some(IrSignal::Port(port)) => Some(self.ports[port].ty.clone()),
+                                None => None,
+                            },
+                        };
+
+                        if let Some(conn_ty) = conn_ty {
+                            check_type_match(diags, connection.span, port_ty, &conn_ty)?;
+                        }
                     }
                 }
             }

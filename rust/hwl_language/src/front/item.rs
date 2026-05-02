@@ -27,7 +27,7 @@ use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
 use hwl_util::swrite;
 use indexmap::IndexMap;
-use itertools::{Itertools, zip_eq};
+use itertools::zip_eq;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -802,17 +802,18 @@ impl CompileItemContext<'_, '_> {
                             Arc::new(scope_params),
                             &ast.ports,
                         )?;
-                        let port_names = header
-                            .ports_ir
-                            .values()
-                            .map(|port_info| port_info.name.clone())
-                            .collect_vec();
 
+                        // collect result
+                        let ports = header
+                            .ports
+                            .values()
+                            .map(|info| (info.name.clone(), info.ty.inner.clone()))
+                            .collect();
                         Ok(ElaboratedModuleExternalInfo {
                             ast_ref,
                             module_name: ast.id.str(source).to_owned(),
                             generic_args,
-                            port_names,
+                            ports,
                             connectors,
                         })
                     },

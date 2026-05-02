@@ -462,15 +462,11 @@ fn lower_module_ports(
 fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrSignal> {
     let mut signals = IndexSet::new();
 
-    let mut visit_connections = |connections: &Vec<Spanned<IrPortConnection>>| {
-        for connection in connections {
-            match connection.inner {
-                IrPortConnection::Input(_) => {}
-                IrPortConnection::Output(signal) => {
-                    if let Some(signal) = signal {
-                        signals.insert(signal);
-                    }
-                }
+    let mut visit_connection = |connection: IrPortConnection| match connection {
+        IrPortConnection::Input(_) => {}
+        IrPortConnection::Output(signal) => {
+            if let Some(signal) = signal {
+                signals.insert(signal);
             }
         }
     };
@@ -479,8 +475,16 @@ fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrSign
         match &child.inner {
             IrModuleChild::ClockedProcess(_) => {}
             IrModuleChild::CombinatorialProcess(_) => {}
-            IrModuleChild::ModuleInternalInstance(inst) => visit_connections(&inst.port_connections),
-            IrModuleChild::ModuleExternalInstance(inst) => visit_connections(&inst.port_connections),
+            IrModuleChild::ModuleInternalInstance(inst) => {
+                for connection in &inst.port_connections {
+                    visit_connection(connection.inner);
+                }
+            }
+            IrModuleChild::ModuleExternalInstance(inst) => {
+                for (_, connection) in inst.port_connections.values() {
+                    visit_connection(connection.inner);
+                }
+            }
         }
     }
 
@@ -555,6 +559,7 @@ fn lower_module_statements(
 ) -> DiagResult {
     let diags = ctx.diags;
 
+    // TODO ensure that child labels are unique
     for (child_index, child) in enumerate(&module_info.children) {
         newline_module.start_group_and_item(f);
 
@@ -583,35 +588,35 @@ fn lower_module_statements(
                 )?;
             }
             IrModuleChild::ModuleInternalInstance(instance) => {
-                let IrModuleInternalInstance {
-                    name,
+                let &IrModuleInternalInstance {
+                    ref name,
                     module,
-                    port_connections,
+                    ref port_connections,
                 } = instance;
 
-                let inner_module = ctx.module_map.get(module).unwrap();
-                let inner_module_name = &inner_module.name;
+                let inner_module = ctx.module_map.get(&module).unwrap();
+                let inner_module_info = &ctx.modules[module];
 
+                swrite!(f, "{I}{} ", inner_module.name);
                 if let Some(name) = name {
-                    let name_safe = LoweredName(name.clone());
-                    swrite!(f, "{I}{inner_module_name} {name_safe}");
+                    swrite!(f, "{}", LoweredName(name));
                 } else {
-                    swrite!(f, "{I}{inner_module_name} instance_{child_index}");
+                    swrite!(f, "instance_{child_index}");
                 }
 
-                let port_name = |port_index| {
-                    // TODO avoid clone here
-                    let (_port, name) = inner_module.ports.get_index(port_index).unwrap();
-                    name.clone()
-                };
-                lower_port_connections(f, port_connections, module_name_map, port_name)?;
+                let connections = port_connections.iter().enumerate().map(|(port_index, connection)| {
+                    let (&port, port_name) = inner_module.ports.get_index(port_index).unwrap();
+                    let port_name = port_name.as_ref_ok().map(LoweredName::as_ref);
+                    let port_ty = &inner_module_info.ports[port].ty;
+                    (port_name, port_ty, connection.inner)
+                });
+                lower_port_connections(f, module_name_map, connections)?;
             }
             IrModuleChild::ModuleExternalInstance(instance) => {
                 let IrModuleExternalInstance {
                     name,
                     module_name,
                     generic_args,
-                    port_names,
                     port_connections,
                 } = instance;
 
@@ -637,8 +642,10 @@ fn lower_module_statements(
                     swrite!(f, " instance_{child_index}");
                 }
 
-                let port_name = |port_index: usize| Ok(LoweredName(&port_names[port_index]));
-                lower_port_connections(f, port_connections, module_name_map, port_name)?;
+                let connections = port_connections.iter().map(|(port_name, (port_ty, connection))| {
+                    (Ok(LoweredName(port_name.as_ref())), port_ty, connection.inner)
+                });
+                lower_port_connections(f, module_name_map, connections)?;
             }
         }
     }
@@ -646,59 +653,48 @@ fn lower_module_statements(
     Ok(())
 }
 
-fn lower_port_connections<S: AsRef<str>>(
+fn lower_port_connections<'a, 'b>(
     f: &mut String,
-    instance_connections: &Vec<Spanned<IrPortConnection>>,
     parent_name_map: ModuleNameMap,
-    child_port_name: impl Fn(usize) -> Result<LoweredName<S>, ZeroWidth>,
+    connections: impl IntoIterator<Item = (Result<LoweredName<&'a str>, ZeroWidth>, &'b IrType, IrPortConnection)>,
 ) -> DiagResult {
     swrite!(f, "(");
 
-    if instance_connections.is_empty() {
-        swriteln!(f, ");");
-        return Ok(());
-    }
-    swriteln!(f);
+    let mut any_prev = false;
 
-    let mut first = true;
+    for (port_name, port_ty, connection) in connections {
+        if port_ty.size_bits().is_zero() {
+            continue;
+        }
 
-    for (port_index, connection) in enumerate(instance_connections) {
-        let port_name = match child_port_name(port_index) {
-            Ok(port_name) => port_name,
-            Err(ZeroWidth) => continue,
+        let port_name = unwrap_zero_width(port_name);
+        let signal = match connection {
+            IrPortConnection::Input(s) => Some(s),
+            IrPortConnection::Output(s) => s,
         };
+        let signal_name = signal.map(|s| unwrap_zero_width(parent_name_map.map_signal(s)));
 
-        if !first {
-            swriteln!(f, ",");
+        if any_prev {
+            swrite!(f, ",");
         }
-        swrite!(f, "{I}{I}.{port_name}(");
-
-        match connection.inner {
-            IrPortConnection::Input(expr) => {
-                let signal_name = unwrap_zero_width(parent_name_map.map_signal(expr));
-                swrite!(f, "{signal_name}");
-            }
-            IrPortConnection::Output(signal) => {
-                match signal {
-                    None => {
-                        // write nothing, resulting in an empty `()`
-                    }
-                    Some(signal) => {
-                        let signal_name = unwrap_zero_width(parent_name_map.map_signal(signal));
-                        swrite!(f, "{signal_name}");
-                    }
-                }
-            }
-        }
-
-        swrite!(f, ")",);
-        first = false;
-    }
-
-    if !first {
         swriteln!(f);
+
+        swrite!(f, "{I}{I}.{port_name}(");
+        if let Some(signal_name) = signal_name {
+            swrite!(f, "{signal_name}");
+        }
+        swrite!(f, ")");
+
+        any_prev = true;
     }
-    swriteln!(f, "{I});");
+
+    if any_prev {
+        swriteln!(f);
+        swriteln!(f, "{I});");
+    } else {
+        swriteln!(f, ");");
+    }
+
     Ok(())
 }
 
@@ -1199,10 +1195,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 swriteln!(self.f);
             }
             &IrStatement::For(IrForStatement {
-                                  index,
-                                  ref range,
-                                  ref block,
-                              }) => {
+                index,
+                ref range,
+                ref block,
+            }) => {
                 // we will need to form an inclusive range, which will give weird results for empty ranges,
                 //   so just skip empty ranges
                 if range.is_empty() {
@@ -2190,6 +2186,12 @@ fn diag_big_int_to_u32(diags: &Diagnostics, span: Span, value: &BigInt, message:
             "used here",
         )
     })
+}
+
+impl<S: AsRef<str>> LoweredName<S> {
+    pub fn as_ref(&self) -> LoweredName<&str> {
+        LoweredName(self.0.as_ref())
+    }
 }
 
 impl<S: AsRef<str>> Display for LoweredName<S> {

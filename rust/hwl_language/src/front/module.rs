@@ -40,7 +40,7 @@ use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use itertools::{Either, Itertools, chain, enumerate};
+use itertools::{Either, Itertools, chain, enumerate, zip_eq};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -77,9 +77,9 @@ pub struct ElaboratedModuleHeader<A> {
     elab_module: ElaboratedModule,
     debug_info_params: Option<Vec<(String, String)>>,
 
-    ports: ArenaPorts,
+    pub ports: ArenaPorts,
     port_interfaces: ArenaPortInterfaces,
-    pub ports_ir: Arena<IrPort, IrPortInfo>,
+    ports_ir: Arena<IrPort, IrPortInfo>,
 
     scope_params: Arc<FrozenScope>,
     scope_ports: ScopeContent,
@@ -99,7 +99,7 @@ pub struct ElaboratedModuleExternalInfo {
     pub ast_ref: AstRefModuleExternal,
     pub module_name: String,
     pub generic_args: Option<Vec<(String, BigInt)>>,
-    pub port_names: Vec<String>,
+    pub ports: Vec<(String, HardwareType)>,
     pub connectors: ArenaConnectors,
 }
 
@@ -1256,11 +1256,11 @@ impl BodyContext {
                     ast_ref,
                     module_name,
                     generic_args,
-                    port_names,
+                    ports,
                     connectors,
                 } = ctx.refs.shared.elaboration_arenas.module_external_info(module);
                 (
-                    ElaboratedModule::External((module_name, generic_args, port_names)),
+                    ElaboratedModule::External((module_name, generic_args, ports)),
                     connectors,
                     refs.fixed.parsed[*ast_ref].ports.span,
                 )
@@ -1368,13 +1368,16 @@ impl BodyContext {
                 module: module_ir,
                 port_connections: ir_connections,
             }),
-            ElaboratedModule::External((module_name, generic_args, port_names)) => {
+            ElaboratedModule::External((module_name, generic_args, ports)) => {
+                let port_connections: IndexMap<_, _> = zip_eq(ports, ir_connections)
+                    .map(|((port_name, port_ty), connection)| (port_name.clone(), (port_ty.as_ir(refs), connection)))
+                    .collect();
+
                 IrModuleChild::ModuleExternalInstance(IrModuleExternalInstance {
                     name,
                     module_name: module_name.clone(),
                     generic_args: generic_args.clone(),
-                    port_names: port_names.clone(),
-                    port_connections: ir_connections,
+                    port_connections,
                 })
             }
         };

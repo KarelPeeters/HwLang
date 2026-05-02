@@ -123,6 +123,66 @@ def test_instantiate_external_module(tmp_dir: Path):
         assert top_inst.ports.y.value == v + 1
 
 
+def test_instantiate_zero_width_ports(tmp_dir: Path):
+    src = """
+    module top ports(
+        x: in async uint(0),
+        y0: out async uint(0),
+        y1: out async uint(0),
+    ) {
+        instance internal_module ports(x, y0=y0, y1=_);
+        instance external_module_no_ports ports(x, y0=y1, y1=_);
+    }
+
+    module internal_module ports(
+        x: in async uint(0),
+        y0: out async uint(0),
+        y1: out async uint(0),
+    ) {
+        comb {
+            y0 = x;
+            y1 = x;
+        }
+    }
+    external module external_module_no_ports ports(
+        x: in async uint(0),
+        y0: out async uint(0),
+        y1: out async uint(0),
+    )
+    
+    """
+    c = compile_custom(src)
+    top: hwl.Module = c.resolve("top.top")
+    print(top.as_verilog().source)
+
+    extra_verilog_files = [Path(__file__).parent / "external.v"]
+    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
+    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+
+    top_inst.ports.x.value = 0
+    top_inst.step(1)
+    assert top_inst.ports.y0.value == 0
+    assert top_inst.ports.y1.value == 0
+
+
+def test_instantiate_external_module_no_ports(tmp_dir: Path):
+    src = """
+    external module external_module_no_ports ports()
+    module top ports() {
+        instance external_module_no_ports ports();
+    }
+    """
+    c = compile_custom(src)
+    top: hwl.Module = c.resolve("top.top")
+    print(top.as_verilog().source)
+
+    extra_verilog_files = [Path(__file__).parent / "external.v"]
+    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
+    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+
+    top_inst.step(1)
+
+
 def test_cyclic_instantiation_almost():
     src = """
     module foo(n: uint) ports(x: in async bool, y: out async bool) {
