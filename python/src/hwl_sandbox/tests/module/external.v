@@ -16,3 +16,6 @@ endmodule
 
 module external_module_no_ports();
 endmodule
+
+module \input ();
+endmodule

@@ -17,11 +17,12 @@ use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt, VecExt};
 use crate::util::int::{IntRepresentation, Signed};
+use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
-use crate::util::{separator_non_trailing, Indent, ResultExt};
+use crate::util::{Indent, ResultExt, separator_non_trailing};
 use hwl_util::{swrite, swriteln};
 use indexmap::{IndexMap, IndexSet};
-use itertools::{enumerate, Either, Itertools};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -309,6 +310,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
 
     let mut f = String::new();
 
+    // comment above the module containing some metadata
     // TODO don't use absolute paths here, they cause non-reproducible builds
     swriteln!(f, "// module {}", debug_info_id.inner.unwrap_or("_"));
     swriteln!(f, "//   defined in \"{debug_info_location}\"",);
@@ -320,6 +322,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         }
     }
 
+    // module header
     let mut module_name_scope = LoweredNameScope::default();
     let signals_driven_by_instances = collect_signals_driven_by_instances(module_info);
 
@@ -333,6 +336,10 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     )?;
     swriteln!(f, ");");
 
+    // reserve child names as soon as possible, to hopefully get the original names
+    let child_names = reserve_module_child_names(diags, &module_info.children, &mut module_name_scope)?;
+
+    // lower wires
     let mut newline_module = NewlineGenerator::new();
     let wire_name_map = lower_module_wires(
         diags,
@@ -354,6 +361,7 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
     newline_module.start_item(&mut f);
     swriteln!(f, "{I}wire {dummy_name} = 1'b0;");
 
+    // lower statements
     let module_names = ModuleNameMap {
         dummy_name: &dummy_name,
         ports: &port_name_map,
@@ -365,10 +373,12 @@ fn lower_module(ctx: &mut LowerContext, module: IrModule) -> DiagResult<LoweredM
         module_info,
         &mut module_name_scope,
         module_names,
+        &child_names,
         &mut newline_module,
         &mut f,
     )?;
 
+    // end of module
     swriteln!(f, "endmodule");
 
     let lowered_module = LoweredModule {
@@ -491,6 +501,31 @@ fn collect_signals_driven_by_instances(module: &IrModuleInfo) -> IndexSet<IrSign
     signals
 }
 
+fn reserve_module_child_names(
+    diags: &Diagnostics,
+    children: &[Spanned<IrModuleChild>],
+    module_name_scope: &mut LoweredNameScope,
+) -> DiagResult<Vec<LoweredName>> {
+    children
+        .iter()
+        .map(|child| {
+            let (base, force_index) = match &child.inner {
+                IrModuleChild::ModuleInternalInstance(instance) => match &instance.name {
+                    Some(name) => (name.as_str(), false),
+                    None => ("instance", true),
+                },
+                IrModuleChild::ModuleExternalInstance(instance) => match &instance.name {
+                    Some(name) => (name.as_str(), false),
+                    None => ("instance", true),
+                },
+                IrModuleChild::CombinatorialProcess(_) => ("comb", true),
+                IrModuleChild::ClockedProcess(_) => ("clocked", true),
+            };
+            module_name_scope.make_unique_str(diags, child.span, base, force_index)
+        })
+        .try_collect_vec()
+}
+
 fn lower_module_wires(
     diags: &Diagnostics,
     module_name_scope: &mut LoweredNameScope,
@@ -554,13 +589,14 @@ fn lower_module_statements(
     module_info: &IrModuleInfo,
     module_name_scope: &mut LoweredNameScope,
     module_name_map: ModuleNameMap,
+    child_names: &[LoweredName],
     newline_module: &mut NewlineGenerator,
     f: &mut String,
 ) -> DiagResult {
     let diags = ctx.diags;
 
     // TODO ensure that child labels are unique
-    for (child_index, child) in enumerate(&module_info.children) {
+    for (child, child_name) in zip_eq(&module_info.children, child_names) {
         newline_module.start_group_and_item(f);
 
         match &child.inner {
@@ -571,7 +607,7 @@ fn lower_module_statements(
                     module_info,
                     module_name_scope,
                     module_name_map,
-                    child_index,
+                    child_name,
                     child.span,
                     process,
                 )?;
@@ -583,13 +619,13 @@ fn lower_module_statements(
                     module_info,
                     module_name_scope,
                     module_name_map,
-                    child_index,
+                    child_name,
                     process,
                 )?;
             }
             IrModuleChild::ModuleInternalInstance(instance) => {
                 let &IrModuleInternalInstance {
-                    ref name,
+                    name: _,
                     module,
                     ref port_connections,
                 } = instance;
@@ -597,12 +633,7 @@ fn lower_module_statements(
                 let inner_module = ctx.module_map.get(&module).unwrap();
                 let inner_module_info = &ctx.modules[module];
 
-                swrite!(f, "{I}{} ", inner_module.name);
-                if let Some(name) = name {
-                    swrite!(f, "{}", LoweredName(name));
-                } else {
-                    swrite!(f, "instance_{child_index}");
-                }
+                swrite!(f, "{I}{} {child_name}", inner_module.name);
 
                 let connections = port_connections.iter().enumerate().map(|(port_index, connection)| {
                     let (&port, port_name) = inner_module.ports.get_index(port_index).unwrap();
@@ -614,13 +645,13 @@ fn lower_module_statements(
             }
             IrModuleChild::ModuleExternalInstance(instance) => {
                 let IrModuleExternalInstance {
-                    name,
+                    name: _,
                     module_name,
                     generic_args,
                     port_connections,
                 } = instance;
 
-                swrite!(f, "{I}{module_name}");
+                swrite!(f, "{I}{}", LoweredName(module_name));
 
                 if let Some(generic_args) = generic_args {
                     if generic_args.is_empty() {
@@ -636,11 +667,7 @@ fn lower_module_statements(
                     }
                 }
 
-                if let Some(name) = name {
-                    swrite!(f, " {}", LoweredName(name));
-                } else {
-                    swrite!(f, " instance_{child_index}");
-                }
+                swrite!(f, " {child_name}");
 
                 let connections = port_connections.iter().map(|(port_name, (port_ty, connection))| {
                     (Ok(LoweredName(port_name.as_ref())), port_ty, connection.inner)
@@ -704,7 +731,7 @@ fn lower_combinatorial_process(
     module_info: &IrModuleInfo,
     module_name_scope: &mut LoweredNameScope,
     module_name_map: ModuleNameMap,
-    child_index: usize,
+    child_name: &LoweredName,
     span: Span,
     process: &IrCombinatorialProcess,
 ) -> DiagResult {
@@ -753,7 +780,7 @@ fn lower_combinatorial_process(
     // combine and write to final string
     declare_temporaries(&mut f_decl, &mut f_init, indent, temporaries);
 
-    swriteln!(f_module, "{I}always @(*) begin: comb_{child_index}");
+    swriteln!(f_module, "{I}always @(*) begin: {child_name}");
     write_line_separated_strings(f_module, &[&f_decl, &f_init, &f_stmt]);
     swriteln!(f_module, "{I}end");
 
@@ -766,7 +793,7 @@ fn lower_clocked_process(
     module_info: &IrModuleInfo,
     module_name_scope: &LoweredNameScope,
     module_name_map: ModuleNameMap,
-    child_index: usize,
+    child_name: &LoweredName,
     process: &IrClockedProcess,
 ) -> DiagResult {
     let &IrClockedProcess {
@@ -895,22 +922,11 @@ fn lower_clocked_process(
     };
 
     // combine everything
-    match &async_reset {
-        Some((reset_edge, _)) => swriteln!(
-            f_module,
-            "{I}always @({} {}, {} {}) begin: clocked_{child_index}",
-            clock_edge.edge,
-            clock_edge.signal,
-            reset_edge.edge,
-            reset_edge.signal,
-        ),
-        None => swriteln!(
-            f_module,
-            "{I}always @({} {}) begin: clocked_{child_index}",
-            clock_edge.edge,
-            clock_edge.signal,
-        ),
+    swrite!(f_module, "{I}always @({} {}", clock_edge.edge, clock_edge.signal);
+    if let Some((reset_edge, _)) = &async_reset {
+        swriteln!(f_module, ", {} {}", reset_edge.edge, reset_edge.signal,)
     }
+    swrite!(f_module, ") begin: {child_name}");
 
     declare_temporaries(&mut f_decl, &mut f_init, Indent::new(2), temporaries);
     write_line_separated_strings(f_module, &[&f_decl, &f_init, &f_body]);
