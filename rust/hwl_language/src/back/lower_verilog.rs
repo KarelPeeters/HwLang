@@ -1238,12 +1238,26 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 let index_tmp =
                     self.new_temporary(stmt.span, VerilogType::new_from_range(diags, stmt.span, &range_inc)?)?;
 
-                // emit loop
+                // lower range
                 let start_eval = lower_int_constant(&range_inc, &range.start);
                 let end_eval = lower_int_constant(&range_inc, &range.end);
+
+                // use signed comparison if necessary
+                let range_can_be_neg = range.start.is_negative();
+                let cond = if range_can_be_neg {
+                    format!(
+                        "{} < {}",
+                        Evaluated::Temporary(index_tmp).as_signed(),
+                        end_eval.as_signed()
+                    )
+                } else {
+                    format!("{index_tmp} < {end_eval}")
+                };
+
+                // lower loop
                 swriteln!(
                     self.f,
-                    "{indent}for({index_tmp} = {start_eval}; {index_tmp} < {end_eval}; {index_tmp} = {index_tmp} + 1) begin"
+                    "{indent}for({index_tmp} = {start_eval}; {cond}; {index_tmp} = {index_tmp} + 1) begin"
                 );
                 swriteln!(self.f, "{indent}{I}{index} = {index_tmp};");
                 self.lower_block_indented(block)?;
