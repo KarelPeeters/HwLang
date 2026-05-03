@@ -148,25 +148,3 @@ def test_enum_empty():
     with pytest.raises(hwl.DiagnosticException, match="port type must be representable in hardware"):
         _ = compile_custom(src).resolve("top.top_empty")
     _ = compile_custom(src).resolve("top.top_non_empty")
-
-
-def test_enum_python(tmp_dir: Path):
-    src = """
-    enum Foo { Empty, Data(uint(8)) }
-    fn f(x: bool, y: uint(8)) -> Foo {
-        if (x) {
-            return Foo.Data(y);
-        } else {
-            return Foo.Empty;
-        }
-    }
-    """
-
-    c = compile_custom(src)
-    foo = c.resolve("top.Foo")
-    f = c.resolve("top.f")
-
-    # check enum construction, indirectly and directly
-    assert str(f(False, 0)) == "Foo.Empty"
-    assert str(f(True, 0)) == "Foo.Data(0)"
-    assert str(f(True, 1)) == "Foo.Data(1)"

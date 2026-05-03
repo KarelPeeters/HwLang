@@ -69,3 +69,64 @@ def test_call_type():
     uint = c.resolve("std.types.uint")
     assert str(uint) == "uint"
     assert str(uint(8)) == "int(0..256)"
+
+
+def test_interact_struct(tmp_dir: Path):
+    src = """
+    struct Pair { x: uint(8), y: bool }
+    fn f(x: uint(8), y: bool) -> Pair {
+        return Pair.new(x=x, y=y);
+    }
+    """
+
+    c = compile_custom(src)
+    pair = c.resolve("top.Pair")
+    f = c.resolve("top.f")
+
+    # check struct construction, indirectly and directly
+    assert str(f(4, False)) == "Pair.new(x=4, y=false)"
+    assert str(pair.new(x=4, y=False)) == "Pair.new(x=4, y=false)"
+
+    # check struct equality
+    a0 = f(4, False)
+    a1 = f(4, False)
+    b = f(5, False)
+    assert a0 == a0
+    assert a0 == a1
+    assert not (a0 == b)
+    assert not (a0 != a1)
+    assert a0 != b
+
+    # check comparing values python values works as expected
+    assert not (a0 == "test")
+    assert a0 != "test"
+
+    # check that we get normal python behavior for non-existing attributes
+    with pytest.raises(AttributeError):
+        _ = f(4, False).non_existing
+
+
+def test_interact_enum():
+    src = """
+    enum Foo { Empty, Data(uint(8)) }
+    fn f(x: bool, y: uint(8)) -> Foo {
+        if (x) {
+            return Foo.Data(y);
+        } else {
+            return Foo.Empty;
+        }
+    }
+    """
+
+    c = compile_custom(src)
+    foo = c.resolve("top.Foo")
+    f = c.resolve("top.f")
+
+    # check enum construction, indirectly and directly
+    assert str(f(False, 0)) == "Foo.Empty"
+    assert str(f(True, 0)) == "Foo.Data(0)"
+    assert str(f(True, 1)) == "Foo.Data(1)"
+
+    assert str(foo.Empty) == "Foo.Empty"
+    assert str(foo.Data(0)) == "Foo.Data(0)"
+    assert str(foo.Data(1)) == "Foo.Data(1)"
