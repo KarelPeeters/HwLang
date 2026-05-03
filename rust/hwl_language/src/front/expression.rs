@@ -16,7 +16,7 @@ use crate::front::implication::{BoolImplications, HardwareValueWithImplications,
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
-use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
+use crate::front::steps::{AssignmentStep, AssignmentStepCompile, AssignmentStepHardware, AssignmentSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile,
@@ -611,7 +611,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 };
 
                 let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
-                let steps = ArraySteps::new(vec![Spanned::new(span_brackets, index_step)]);
+                let steps = AssignmentSteps::new(vec![Spanned::new(span_brackets, index_step)]);
 
                 // apply steps to value
                 steps.apply_to_value(self.refs, &mut self.large, base)?
@@ -671,59 +671,11 @@ impl<'a> CompileItemContext<'a, '_> {
                     let index = parse_token_int_literal_decimal(source.span_str(index_span))
                         .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
 
-                    let err_not_tuple = |ty: &str| {
-                        DiagnosticError::new(
-                            "indexing into non-tuple type",
-                            index_span,
-                            "attempt to index into non-tuple type here",
-                        )
-                        .add_info(base.span, format!("base has type `{ty}`"))
-                        .report(diags)
-                    };
-                    let err_index_out_of_bounds = |len: usize| {
-                        DiagnosticError::new(
-                            "tuple index out of bounds",
-                            index_span,
-                            format!("index `{index}` is out of bounds"),
-                        )
-                        .add_info(base.span, format!("base is tuple with length `{len}`"))
-                        .report(diags)
-                    };
-
-                    // TODO use common step logic once that supports tuple indexing
-                    match base.inner {
-                        Value::Compound(MixedCompoundValue::Tuple(inner)) => {
-                            let index = index
-                                .as_usize_if_lt(inner.len())
-                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                            inner[index].clone()
-                        }
-                        Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner)))) => {
-                            let index = index
-                                .as_usize_if_lt(inner.len())
-                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                            Value::new_ty(inner[index].clone())
-                        }
-                        Value::Hardware(value) => match value.ty {
-                            HardwareType::Tuple(inner_tys) => {
-                                let index = index
-                                    .as_usize_if_lt(inner_tys.len())
-                                    .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
-
-                                let expr = IrExpressionLarge::TupleIndex {
-                                    base: value.expr,
-                                    index,
-                                };
-                                Value::Hardware(HardwareValue {
-                                    ty: inner_tys[index].clone(),
-                                    domain: value.domain,
-                                    expr: self.large.push_expr(expr),
-                                })
-                            }
-                            _ => return Err(err_not_tuple(&value.ty.value_string(elab))),
-                        },
-                        v => return Err(err_not_tuple(&v.ty().value_string(elab))),
-                    }
+                    let steps = AssignmentSteps::new(vec![Spanned::new(
+                        index_span,
+                        AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index)),
+                    )]);
+                    steps.apply_to_value(self.refs, &mut self.large, base)?
                 }
             },
             &ExpressionKind::Call(target, ref args) => {
@@ -1349,7 +1301,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         flow: &mut impl Flow,
         index: Expression,
-    ) -> DiagResult<ArrayStep> {
+    ) -> DiagResult<AssignmentStep> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1375,12 +1327,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len))?;
 
             match start {
-                MaybeCompile::Compile(start) => ArrayStep::Compile(ArrayStepCompile::ArraySlice {
+                MaybeCompile::Compile(start) => AssignmentStep::Compile(AssignmentStepCompile::ArraySlice {
                     start,
                     length: Some(len),
                 }),
                 MaybeCompile::Hardware(start) => {
-                    ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length: len })
+                    AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length: len })
                 }
             }
         } else {
@@ -1406,7 +1358,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             match index.inner {
                 Value::Simple(index) => match index {
-                    SimpleCompileValue::Int(index) => ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)),
+                    SimpleCompileValue::Int(index) => AssignmentStep::Compile(AssignmentStepCompile::ArrayIndex(index)),
                     _ => return Err(err_wrong_type()),
                 },
                 Value::Compound(index) => match index {
@@ -1436,10 +1388,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                 },
                             };
 
-                            ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length })
+                            AssignmentStep::Compile(AssignmentStepCompile::ArraySlice { start, length })
                         }
                         RangeValue::HardwareStartLength { start, length } => {
-                            ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length })
+                            AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length })
                         }
                     },
                     _ => return Err(err_wrong_type()),
@@ -1448,7 +1400,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     // TODO make this error message better, specifically refer to non-compile-time index
                     let reason = TypeContainsReason::ArrayIndex { span_index: index_span };
                     let index_int = check_type_is_int_hardware(diags, elab, reason, Spanned::new(index_span, index))?;
-                    ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index_int))
+                    AssignmentStep::Hardware(AssignmentStepHardware::ArrayIndex(index_int))
                 }
             }
         };
@@ -1607,15 +1559,9 @@ impl<'a> CompileItemContext<'a, '_> {
                 let index_step = Spanned::new(span_brackets, index_step);
 
                 // wrap result
-                let AssignmentTarget {
-                    base: base_inner,
-                    array_steps: mut inner_array_steps,
-                } = base.inner;
-                inner_array_steps.steps.push(index_step);
-                AssignmentTarget {
-                    base: base_inner,
-                    array_steps: inner_array_steps,
-                }
+                let mut target = base.inner;
+                target.steps.steps.push(index_step);
+                target
             }
             ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
@@ -1647,8 +1593,21 @@ impl<'a> CompileItemContext<'a, '_> {
                     let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
                     AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
                 }
-                DotIndexKind::Int { span: _ } => {
-                    return Err(diags.report_error_todo(expr.span, "assignment target dot int index"))?;
+                DotIndexKind::Int { span } => {
+                    // eval base
+                    let base = self.eval_expression_as_assign_target(scope, flow, base)?;
+
+                    // eval index
+                    let index = parse_token_int_literal_decimal(self.refs.fixed.source.span_str(span))
+                        .map_err(|_| diags.report_error_internal(span, "failed to parse int literal"))?;
+
+                    let index_step = AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index));
+                    let index_step = Spanned::new(span, index_step);
+
+                    // wrap result
+                    let mut target = base.inner;
+                    target.steps.steps.push(index_step);
+                    target
                 }
             },
             _ => return Err(build_err("other expression")),

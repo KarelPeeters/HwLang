@@ -131,6 +131,9 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
                     match step {
                         IrTargetStep::ArrayIndex(index) => inline_vars_expr(large, state, index),
                         IrTargetStep::ArraySlice { start, len: _ } => inline_vars_expr(large, state, start),
+                        IrTargetStep::TupleIndex(index) | IrTargetStep::StructField(index) => {
+                            let _: usize = *index;
+                        }
                     }
                 }
                 inline_vars_expr(large, state, source);

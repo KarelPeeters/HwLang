@@ -495,7 +495,10 @@ impl CompileItemContext<'_, '_> {
 
                         // eval target
                         let target = self.eval_expression_as_assign_target(scope, flow, target)?;
-                        let AssignmentTarget { base, array_steps } = target.inner;
+                        let AssignmentTarget {
+                            base,
+                            steps: array_steps,
+                        } = target.inner;
 
                         let signal = match base.inner {
                             SignalOrVariable::Signal(signal) => signal,

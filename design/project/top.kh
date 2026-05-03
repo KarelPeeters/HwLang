@@ -3,13 +3,13 @@ module top ports() {}
 struct Foo {
     x: uint,
     y: uint,
-
-    fn total(self) -> uint {
-        return self.x + self.y;
-    }
 }
 
 const {
-    val f = Foo.new(x=0, y=4);
-    print(f.total());
+    //val f = Foo.new(x=0, y=1);
+    //f.x = 4;
+    //print(f);
+    val f = (0, 1);
+    f.0 = 4;
+    print(f);
 }

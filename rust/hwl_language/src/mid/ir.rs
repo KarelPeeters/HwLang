@@ -280,6 +280,8 @@ impl IrAssignmentTarget {
 pub enum IrTargetStep {
     ArrayIndex(IrExpression),
     ArraySlice { start: IrExpression, len: BigUint },
+    TupleIndex(usize),
+    StructField(usize),
 }
 
 new_index_type!(pub IrExpressionLargeIndex);
@@ -545,6 +547,9 @@ impl IrAssignmentTarget {
             match step {
                 IrTargetStep::ArrayIndex(index) => index.visit_values_accessed(large, f),
                 IrTargetStep::ArraySlice { start, len: _ } => start.visit_values_accessed(large, f),
+                IrTargetStep::TupleIndex(index) | IrTargetStep::StructField(index) => {
+                    let _: usize = *index;
+                }
             }
         }
     }

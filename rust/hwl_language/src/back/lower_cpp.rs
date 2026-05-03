@@ -1014,6 +1014,12 @@ impl CodegenBlockContext<'_> {
                         Some((start, len))
                     }
                 }
+                &IrTargetStep::TupleIndex(index) => {
+                    todo!()
+                }
+                &IrTargetStep::StructField(field) => {
+                    todo!()
+                }
             };
         }
 

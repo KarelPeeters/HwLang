@@ -12,6 +12,8 @@ pub trait IndexMapExt<K, V> {
     fn insert_first(&mut self, key: K, value: V) -> &mut V;
 
     fn sort_by_key<T: Ord>(&mut self, f: impl FnMut(&K, &V) -> T);
+
+    fn get_index_owned(self, index: usize) -> Option<(K, V)>;
 }
 
 impl<K, V> IndexMapExt<K, V> for IndexMap<K, V>
@@ -27,6 +29,10 @@ where
 
     fn sort_by_key<T: Ord>(&mut self, mut f: impl FnMut(&K, &V) -> T) {
         self.sort_by(|k0, v0, k1, v1| f(k0, v0).cmp(&f(k1, v1)));
+    }
+
+    fn get_index_owned(mut self, index: usize) -> Option<(K, V)> {
+        self.swap_remove_index(index)
     }
 }
 
@@ -77,6 +83,11 @@ pub trait VecExt<T>: Sized {
         }
 
         drop(slf.drain(write..end));
+    }
+
+    fn get_owned(self, index: usize) -> T {
+        let mut slf = self.into_vec();
+        slf.swap_remove(index)
     }
 }
 

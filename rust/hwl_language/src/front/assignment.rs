@@ -7,7 +7,7 @@ use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Signal, SignalOrVariable};
-use crate::front::steps::ArraySteps;
+use crate::front::steps::AssignmentSteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
@@ -17,15 +17,14 @@ use crate::syntax::pos::{Span, Spanned};
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {
     pub base: Spanned<SignalOrVariable>,
-    // TODO add struct/tuple dot indices here
-    pub array_steps: ArraySteps,
+    pub steps: AssignmentSteps,
 }
 
 impl AssignmentTarget {
     pub fn simple(base: Spanned<SignalOrVariable>) -> Self {
         Self {
             base,
-            array_steps: ArraySteps::new(vec![]),
+            steps: AssignmentSteps::new(vec![]),
         }
     }
 }
@@ -53,7 +52,7 @@ impl CompileItemContext<'_, '_> {
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
         let AssignmentTarget {
             base: target_base,
-            array_steps: target_steps,
+            steps: target_steps,
         } = &target.inner;
 
         // compute source, by evaluating right but also left if needed
@@ -459,7 +458,7 @@ impl CompileItemContext<'_, '_> {
         condition_domains: impl Iterator<Item = Spanned<ValueDomain>>,
         op_span: Span,
         target_base_domain: Spanned<ValueDomain>,
-        steps: &ArraySteps,
+        steps: &AssignmentSteps,
         value_domain: Spanned<ValueDomain>,
     ) -> DiagResult {
         match block_kind {
