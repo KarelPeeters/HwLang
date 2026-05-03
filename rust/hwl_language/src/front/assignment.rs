@@ -216,13 +216,14 @@ impl CompileItemContext<'_, '_> {
                     && let Some(target_base_value) = flow.signal_eval_if_compile(target_base)?
                     && let Ok(target_steps) = target_steps.try_as_compile()
                 {
-                    let result_value_compile = target_steps.set_compile_value(
+                    let mut result_value = target_base_value.clone();
+                    target_steps.set_compile_value(
                         refs,
-                        Spanned::new(target_base.span, target_base_value.clone()),
+                        Spanned::new(target_base.span, &mut result_value),
                         op.span,
                         Spanned::new(source_value.span, source_value_compile),
                     )?;
-                    Some(ValueWithImplications::simple(Value::from(result_value_compile)))
+                    Some(ValueWithImplications::simple(Value::from(result_value)))
                 } else {
                     None
                 };
@@ -266,9 +267,10 @@ impl CompileItemContext<'_, '_> {
                         && let Ok(source_value_compile) = CompileValue::try_from(&source_value.inner)
                         && let Ok(target_steps_compile) = target_steps.try_as_compile()
                     {
-                        let result_value = target_steps_compile.set_compile_value(
+                        let mut result_value = target_base_value_compile.clone();
+                        target_steps_compile.set_compile_value(
                             refs,
-                            Spanned::new(target_base.span, target_base_value_compile),
+                            Spanned::new(target_base.span, &mut result_value),
                             op.span,
                             Spanned::new(source_value.span, source_value_compile),
                         )?;

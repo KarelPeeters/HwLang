@@ -425,18 +425,19 @@ impl ArraySteps<ArrayStep> {
 
 impl ArraySteps<&ArrayStepCompile> {
     /// Evaluate the operation `target[steps] = value`, where all operands are compile-time constants.
-    /// This does not mutate `target` in-place, it returns the new value after assignment.
     pub fn set_compile_value(
         &self,
         refs: CompileRefs,
-        target: Spanned<CompileValue>,
+        target: Spanned<&mut CompileValue>,
         assign_op_span: Span,
-        value: Spanned<CompileValue>,
-    ) -> DiagResult<CompileValue> {
-        let target = target.map_inner(SetCompileTarget::Scalar);
-        set_compile_value_impl(refs, target, &self.steps, assign_op_span, value)
+        source: Spanned<CompileValue>,
+    ) -> DiagResult {
+        let target_span = target.span;
+        let target = Spanned::new(target_span, SetCompileTarget::Scalar(target.inner));
+        set_compile_value_impl(refs, target, &self.steps, assign_op_span, source)
     }
 
+    /// Evaluate the expression `value[steps]`
     pub fn get_compile_value(
         &self,
         refs: CompileRefs,
@@ -463,100 +464,87 @@ impl ArraySteps<&ArrayStepCompile> {
     }
 }
 
-enum SetCompileTarget {
-    Scalar(CompileValue),
-    Slice {
-        array: Vec<CompileValue>,
-        start: usize,
-        len: usize,
-    },
+enum SetCompileTarget<'a> {
+    Scalar(&'a mut CompileValue),
+    Slice(&'a mut [CompileValue]),
 }
 
 fn set_compile_value_impl(
     refs: CompileRefs,
-    target: Spanned<SetCompileTarget>,
+    target: Spanned<SetCompileTarget<'_>>,
     steps: &[Spanned<&ArrayStepCompile>],
     assign_op_span: Span,
-    value: Spanned<CompileValue>,
-) -> DiagResult<CompileValue> {
+    source: Spanned<CompileValue>,
+) -> DiagResult {
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
-    // if done, actually assign the value and return
-    let (step, rest) = match steps.split_first() {
-        None => {
-            let result = match target.inner {
-                SetCompileTarget::Scalar(target) => {
-                    // scalar assignment target, just replace the entire value
-                    let _ = target;
-                    value.inner
-                }
-                SetCompileTarget::Slice {
-                    array: mut target_array,
-                    start: target_start,
-                    len: target_len,
-                } => {
-                    // slice assignment target, assign all elements in the selected subrange
-                    match value.inner {
-                        CompileValue::Simple(SimpleCompileValue::Array(value_inner)) => {
-                            if value_inner.len() != target_len {
-                                return Err(DiagnosticError::new(
-                                    "slice assignment length mismatch",
-                                    assign_op_span,
-                                    "length mismatch on this assignment",
-                                )
-                                .add_info(target.span, format!("target slice has length `{target_len}`"))
-                                .add_info(value.span, format!("source array has length `{}`", value_inner.len()))
-                                .report(diags));
-                            }
-                            let target_slice = &mut target_array[target_start..target_start + target_len];
-
-                            match Arc::try_unwrap(value_inner) {
-                                Ok(value_inner) => {
-                                    for (t, v) in zip_eq(target_slice, value_inner) {
-                                        *t = v;
-                                    }
-                                }
-                                Err(value_inner) => {
-                                    for (t, v) in zip_eq(target_slice, value_inner.as_ref()) {
-                                        *t = v.clone();
-                                    }
-                                }
-                            }
-
-                            CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array)))
-                        }
-                        _ => {
+    // if done just do the final assignment, otherwise get the next step
+    let Some((step, steps)) = steps.split_first() else {
+        match target.inner {
+            SetCompileTarget::Scalar(target) => {
+                // scalar assignment target, just replace the entire value
+                *target = source.inner;
+            }
+            SetCompileTarget::Slice(target_slice) => {
+                // slice assignment target, assign all elements in the selected subrange
+                let source_span = source.span;
+                match source.inner {
+                    CompileValue::Simple(SimpleCompileValue::Array(source)) => {
+                        if source.len() != target_slice.len() {
                             return Err(DiagnosticError::new(
-                                "expected array value for slice assignment",
+                                "slice assignment length mismatch",
                                 assign_op_span,
-                                "value assigned to slice here",
+                                "length mismatch on this assignment",
                             )
-                            .add_info(
-                                value.span,
-                                format!(
-                                    "non-array value with type `{}` here",
-                                    value.inner.ty().value_string(elab)
-                                ),
-                            )
-                            .add_info(target.span, "target is a slice assignment")
+                            .add_info(target.span, format!("target slice has length `{}`", target_slice.len()))
+                            .add_info(source_span, format!("source array has length `{}`", source.len()))
                             .report(diags));
                         }
+
+                        match Arc::try_unwrap(source) {
+                            Ok(source) => {
+                                for (t, v) in zip_eq(target_slice, source) {
+                                    *t = v;
+                                }
+                            }
+                            Err(source) => {
+                                for (t, v) in zip_eq(target_slice, source.as_ref()) {
+                                    *t = v.clone();
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(DiagnosticError::new(
+                            "expected array value for slice assignment",
+                            assign_op_span,
+                            "value assigned to slice here",
+                        )
+                        .add_info(
+                            source.span,
+                            format!(
+                                "non-array value with type `{}` here",
+                                source.inner.ty().value_string(elab)
+                            ),
+                        )
+                        .add_info(target.span, "target is a slice assignment")
+                        .report(diags));
                     }
                 }
-            };
-            return Ok(result);
+            }
         }
-        Some(pair) => pair,
+        return Ok(());
     };
 
     // check that the current target is an array
     // (for now all steps are array steps, so we can unwrap here)
-    let (mut target_array, target_start, target_len) = match target.inner {
+    let (target_array, target_len) = match target.inner {
         SetCompileTarget::Scalar(target_inner) => match target_inner {
             CompileValue::Simple(SimpleCompileValue::Array(target_inner)) => {
+                let target_inner = Arc::make_mut(target_inner);
                 let len = target_inner.len();
-                (Arc::unwrap_or_clone(target_inner), 0, len)
+                (target_inner.as_mut_slice(), len)
             }
             _ => {
                 return Err(DiagnosticError::new(
@@ -574,21 +562,18 @@ fn set_compile_value_impl(
                 .report(diags));
             }
         },
-        SetCompileTarget::Slice { array, start, len } => (array, start, len),
+        SetCompileTarget::Slice(array) => {
+            let len = array.len();
+            (array, len)
+        }
     };
     let target_len = Spanned::new(target.span, target_len);
 
-    let new_span = target.span.join(step.span);
-
-    match &step.inner {
+    let new_target = match &step.inner {
         ArrayStepCompile::ArrayIndex(index) => {
             let index = check_range_index_compile(diags, Spanned::new(step.span, index), target_len)?;
 
-            let new_target = SetCompileTarget::Scalar(target_array[target_start + index].clone());
-            let new_target = Spanned::new(new_span, new_target);
-            target_array[target_start + index] = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
-
-            Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(target_array))))
+            SetCompileTarget::Scalar(&mut target_array[index])
         }
         ArrayStepCompile::ArraySlice {
             start: slice_start,
@@ -604,17 +589,12 @@ fn set_compile_value_impl(
                 target_len,
             )?;
 
-            let new_target = SetCompileTarget::Slice {
-                array: target_array,
-                start: target_start + slice_start,
-                len: slice_len,
-            };
-            let new_target = Spanned::new(new_span, new_target);
-
-            let new_value = set_compile_value_impl(refs, new_target, rest, assign_op_span, value)?;
-            Ok(new_value)
+            SetCompileTarget::Slice(&mut target_array[slice_start..slice_start + slice_len])
         }
-    }
+    };
+
+    let new_target = Spanned::new(target.span.join(step.span), new_target);
+    set_compile_value_impl(refs, new_target, steps, assign_op_span, source)
 }
 
 pub fn check_range_index(
