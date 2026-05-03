@@ -125,7 +125,7 @@ def test_from_bits_rejected():
         }
     """
     c = compile_custom(src)
-    f: hwl.Function = c.resolve("top.f")
+    f = c.resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="only allowed for types where every bit pattern is valid"):
         f([False, False])
 
@@ -137,7 +137,7 @@ def test_from_bits_unsafe_compile():
         }
     """
     c = compile_custom(src)
-    f: hwl.Function = c.resolve("top.f")
+    f = c.resolve("top.f")
 
     assert f([False, False]) == 0
     assert f([True, False]) == 1
@@ -153,7 +153,7 @@ def test_size_bits():
     struct Pair(A: type, B: type) { a: A, b: B } 
     """
     c = compile_custom(src)
-    f: hwl.Function = c.resolve("top.f")
+    f = c.resolve("top.f")
 
     c_uint = c.resolve("std.types.uint")
     c_int = c.resolve("std.types.int")

@@ -49,6 +49,37 @@ def test_struct_generic_basics(tmp_dir: Path):
     e.eval_assert([5, False], (False, 5))
     e.eval_assert([0, True], (True, 0))
 
-# TODO test that we can actually get struct instances back from
-#   * compile-time functions
-#   * module port outputs/inputs
+
+def test_struct_python(tmp_dir: Path):
+    src = """
+    struct Pair { x: uint(8), y: bool }
+    fn f(x: uint(8), y: bool) -> Pair {
+        return Pair.new(x=x, y=y);
+    }
+    """
+
+    c = compile_custom(src)
+    pair = c.resolve("top.Pair")
+    f = c.resolve("top.f")
+
+    # check struct construction, indirectly and directly
+    assert str(f(4, False)) == "Pair.new(x=4, y=false)"
+    assert str(pair.new(x=4, y=False)) == "Pair.new(x=4, y=false)"
+
+    # check struct equality
+    a0 = f(4, False)
+    a1 = f(4, False)
+    b = f(5, False)
+    assert a0 == a0
+    assert a0 == a1
+    assert not (a0 == b)
+    assert not (a0 != a1)
+    assert a0 != b
+
+    # check comparing values python values works as expected
+    assert not (a0 == "test")
+    assert a0 != "test"
+
+    # check that we get normal python behavior for non-existing attributes
+    with pytest.raises(AttributeError):
+        _ = f(4, False).non_existing

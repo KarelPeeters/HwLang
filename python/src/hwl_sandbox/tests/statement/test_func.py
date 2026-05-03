@@ -13,7 +13,7 @@ def test_func_capture_const():
         return g;
     }
     """
-    f: hwl.Function = compile_custom(src).resolve("top.f")
+    f = compile_custom(src).resolve("top.f")
     assert f()() == 5
 
 
@@ -26,7 +26,7 @@ def test_func_capture_param():
         return g;
     }
     """
-    f: hwl.Function = compile_custom(src).resolve("top.f")
+    f = compile_custom(src).resolve("top.f")
     for x in [4, 8]:
         assert f(x)() == x
 
@@ -44,7 +44,7 @@ def test_func_capture_iter_var():
         return r;
     }
     """
-    f: hwl.Function = compile_custom(src).resolve("top.f")
+    f = compile_custom(src).resolve("top.f")
 
     n = 4
     r = f(n)

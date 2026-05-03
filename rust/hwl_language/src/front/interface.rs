@@ -46,10 +46,9 @@ impl ElaboratedInterfaceInfo {
     pub fn get_view(
         &self,
         diags: &Diagnostics,
-        source: &SourceDatabase,
-        index: Identifier,
+        index: Spanned<&str>,
     ) -> DiagResult<(usize, &ElaboratedInterfaceViewInfo)> {
-        match self.views.get_index_of(index.str(source)) {
+        match self.views.get_index_of(index.inner) {
             None => Err(DiagnosticError::new(
                 "dot index does not match any interface view",
                 index.span,

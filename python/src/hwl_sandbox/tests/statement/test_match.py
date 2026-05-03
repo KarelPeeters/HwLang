@@ -83,7 +83,7 @@ def test_match_fallthrough_compile():
     }
     """
     c = compile_custom(src)
-    f: hwl.Function = c.resolve("top.f")
+    f = c.resolve("top.f")
 
     assert f(0) == 0
     with pytest.raises(hwl.DiagnosticException, match="reached end without matching any branch"):

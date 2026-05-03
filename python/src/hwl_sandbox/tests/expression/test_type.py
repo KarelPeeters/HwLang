@@ -6,7 +6,7 @@ from hwl_sandbox.common.util import compile_custom
 
 def test_type_int_simple():
     src = "fn f(x: int(0..8)) {}"
-    f: hwl.Function = compile_custom(src).resolve("top.f")
+    f = compile_custom(src).resolve("top.f")
 
     f(0)
     f(7)
@@ -22,9 +22,9 @@ def test_type_int_multi():
     fn f_empty(x: int()) {}
     fn f_shuffled(x: int(20..30, 0..8)) {}
     """
-    f_basic: hwl.Function = compile_custom(src).resolve("top.f_basic")
-    f_empty: hwl.Function = compile_custom(src).resolve("top.f_empty")
-    f_shuffled: hwl.Function = compile_custom(src).resolve("top.f_shuffled")
+    f_basic = compile_custom(src).resolve("top.f_basic")
+    f_empty = compile_custom(src).resolve("top.f_empty")
+    f_shuffled = compile_custom(src).resolve("top.f_shuffled")
 
     for f in [f_basic, f_shuffled]:
         f(0)
@@ -44,7 +44,7 @@ def test_type_int_multi():
 
 def test_type_int_empty():
     src = "fn f(x: int(0..0)) {}"
-    f: hwl.Function = compile_custom(src).resolve("top.f")
+    f = compile_custom(src).resolve("top.f")
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         f(0)
 
@@ -58,24 +58,14 @@ def test_type_recursive_struct_generic():
         _ = s(int)
 
 
-def test_type_function():
-    src = """
-    fn f() -> Function {
-        return f;
-    }
-    """
-    f: hwl.Function = compile_custom(src).resolve("top.f")
-    assert isinstance(f(), hwl.Function)
-
-
 def test_type_array():
     src = """
     fn f(x: [_]bool) -> uint { return x.len; }
     fn g(x: [2]bool) -> uint { return x.len; }
     """
     c = compile_custom(src)
-    f: hwl.Function = c.resolve("top.f")
-    g: hwl.Function = c.resolve("top.g")
+    f = c.resolve("top.f")
+    g = c.resolve("top.g")
 
     assert f([]) == 0
     assert f([True]) == 1

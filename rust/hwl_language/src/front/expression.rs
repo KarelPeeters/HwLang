@@ -29,7 +29,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
-    ExpressionKind, GeneralIdentifier, Identifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
+    ExpressionKind, GeneralIdentifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::big_int::{AnyInt, BigInt, BigUint};
@@ -673,7 +673,10 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             &ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
-                    return self.eval_dot_index_id(scope, flow, expected_ty, expr.span, base, index);
+                    let base =
+                        self.eval_expression_with_implications_allow_interface_ref(scope, flow, &Type::Any, base)?;
+                    let index = index.spanned_str(refs.fixed.source);
+                    return self.eval_dot_index_id(flow, expected_ty, expr.span, base, index);
                 }
                 DotIndexKind::Int { span: index_span } => {
                     let base = self.eval_expression(scope, flow, &Type::Any, base)?;
@@ -969,14 +972,13 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
-    fn eval_dot_index_id(
+    pub fn eval_dot_index_id(
         &mut self,
-        scope: &Scope,
         flow: &mut impl Flow,
         expected_ty: &Type,
         expr_span: Span,
-        base: Expression,
-        index: Identifier,
+        base: Spanned<ValueWithImplications>,
+        index: Spanned<&str>,
     ) -> DiagResult<ValueWithImplications> {
         // TODO make sure users don't accidentally define fields/variants/functions with the same name
         // TODO add array.len, type.int_start, type.int_end, type.int_ranges
@@ -985,14 +987,11 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        let base = self.eval_expression_with_implications_allow_interface_ref(scope, flow, &Type::Any, base)?;
-        let index_str = index.spanned_str(refs.fixed.source);
-
         // interface fields
         if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base.inner {
             let rf = rf.get(self, flow, base.span)?;
             if let ReferenceInner::Interface { intf, elab: _ } = rf {
-                let signal = self.interface_get_signal(base.span, intf, index_str)?;
+                let signal = self.interface_get_signal(base.span, intf, index)?;
                 let flow = flow.require_hardware(expr_span, "signal read")?;
                 return flow.signal_eval(self, Spanned::new(expr_span, signal));
             }
@@ -1001,7 +1000,7 @@ impl<'a> CompileItemContext<'a, '_> {
         // interface views
         if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base.inner {
             let info = self.refs.shared.elaboration_arenas.interface_info(base_interface);
-            let (view_index, _) = info.get_view(diags, self.refs.fixed.source, index)?;
+            let (view_index, _) = info.get_view(diags, index)?;
 
             let interface_view = ElaboratedInterfaceView {
                 interface: base_interface,
@@ -1012,7 +1011,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // common type attributes
         if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
-            match index_str.inner {
+            match index.inner {
                 "size_bits" => {
                     let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
                     let width = ty_hw.size_bits(refs);
@@ -1062,7 +1061,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             // array type attributes
             if let Type::Array(ty_inner, ty_len) = ty {
-                match index_str.inner {
+                match index.inner {
                     "inner" => {
                         return Ok(Value::new_ty((**ty_inner).clone()));
                     }
@@ -1087,13 +1086,13 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // struct new, struct static members
         if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
-            if index_str.inner == "new" {
+            if index.inner == "new" {
                 let func = FunctionValue::StructNew(elab);
                 return Ok(Value::Simple(SimpleCompileValue::Function(func)));
             }
 
             let info = self.refs.shared.elaboration_arenas.struct_info(elab);
-            if let Some(value) = info.members_static.get(index_str.inner) {
+            if let Some(value) = info.members_static.get(index.inner) {
                 return Ok(Value::from(value.as_ref_ok()?.clone()));
             }
         }
@@ -1107,7 +1106,7 @@ impl<'a> CompileItemContext<'a, '_> {
             _ => None,
         };
         if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
-            && index_str.inner == "new"
+            && index.inner == "new"
         {
             let func = FunctionValue::StructNewInfer(unique);
             return Ok(Value::Simple(SimpleCompileValue::Function(func)));
@@ -1116,7 +1115,7 @@ impl<'a> CompileItemContext<'a, '_> {
         // enum variants
         let eval_enum = |elab| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            let variant_index = info.find_variant(diags, index_str)?;
+            let variant_index = info.find_variant(diags, index)?;
             let variant_info = &info.variants[variant_index];
 
             let result = match &variant_info.payload_ty {
@@ -1136,7 +1135,7 @@ impl<'a> CompileItemContext<'a, '_> {
         if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
             // enum members
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            if let Some(value) = info.members_static.get(index_str.inner) {
+            if let Some(value) = info.members_static.get(index.inner) {
                 return Ok(Value::from(value.as_ref_ok()?.clone()));
             }
 
@@ -1155,10 +1154,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     )
                 }
             } else {
-                let generic_variant = generic_info.find_variant(diags, index_str)?;
+                let generic_variant = generic_info.find_variant(diags, index)?;
                 if generic_variant.has_payload {
                     // delay type inference until payload construction/call time
-                    let func = FunctionValue::EnumNewInfer(unique, Arc::new(index_str.inner.to_owned()));
+                    let func = FunctionValue::EnumNewInfer(unique, Arc::new(index.inner.to_owned()));
                     Ok(Value::Simple(SimpleCompileValue::Function(func)))
                 } else {
                     // non-payload variant, we need to know the type now
@@ -1174,7 +1173,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
 
             // try method
-            if let Some(method) = info.methods_self.get(index_str.inner) {
+            if let Some(method) = info.methods_self.get(index.inner) {
                 let bound = BoundMethod {
                     self_type: base_ty,
                     self_value: Box::new(base.inner.into_value()),
@@ -1184,9 +1183,9 @@ impl<'a> CompileItemContext<'a, '_> {
             }
 
             // try field
-            let Some(field_index) = info.fields.get_index_of(index_str.inner) else {
+            let Some(field_index) = info.fields.get_index_of(index.inner) else {
                 let e = DiagnosticError::new(
-                    format!("struct member `{}` not found", index_str.inner),
+                    format!("struct member `{}` not found", index.inner),
                     index.span,
                     "attempt to access non-existing member here",
                 )
@@ -1232,7 +1231,7 @@ impl<'a> CompileItemContext<'a, '_> {
             let info = self.refs.shared.elaboration_arenas.enum_info(base_ty_enum);
 
             // try method
-            if let Some(method) = info.methods_self.get(index_str.inner) {
+            if let Some(method) = info.methods_self.get(index.inner) {
                 let bound = BoundMethod {
                     self_type: base_ty,
                     self_value: Box::new(base.inner.into_value()),
@@ -1244,7 +1243,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
         // array length
         if let Type::Array(_, value_len) = &base_ty
-            && index_str.inner == "len"
+            && index.inner == "len"
         {
             return if let Some(value_len) = value_len {
                 Ok(Value::new_int(BigInt::from(value_len)))
@@ -1257,7 +1256,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let diag = DiagnosticError::new(
             "invalid dot index expression",
             index.span,
-            format!("no attribute found with name `{}`", index_str.inner),
+            format!("no attribute found with name `{}`", index.inner),
         )
         .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
         .report(diags);

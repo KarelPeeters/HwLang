@@ -11,14 +11,12 @@ use hwl_language::front::compile::{
 };
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
-use hwl_language::front::function::FunctionValue;
+use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::types::Type as RustType;
-use hwl_language::front::value::{
-    CompileValue as RustCompileValue, NotCompile, SimpleCompileValue, Value as RustValue,
-};
+use hwl_language::front::value::{CompileValue as RustCompileValue, NotCompile, Value as RustValue};
 use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
@@ -33,11 +31,11 @@ use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
 use hwl_language::util::pool::ThreadPool;
-use hwl_language::util::range::{NonEmptyRange as RustNonEmptyRange, Range as RustRange};
+use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
-use pyo3::exceptions::{PyException, PyIOError, PyKeyError, PyValueError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
 use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
     Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyResult, Python, create_exception, intern, pyclass,
@@ -89,45 +87,21 @@ struct CapturePrintsContext {
 
 // TODO rework this, put all values into an inheritance hierarchy that matches CompileValue
 //   (and obviously support all values)
-#[pyclass]
+#[pyclass(subclass)]
 struct Value {
     compile: Py<Compile>,
     value: RustCompileValue,
 }
 
-#[pymethods]
-impl Value {
-    fn __repr__(&self, py: Python) -> String {
-        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
-        self.value.value_string(elab)
-    }
-}
-
-#[pyclass]
-struct Type {
-    compile: Py<Compile>,
-    ty: RustType,
-}
-
+// This intentionally does not inherit from Value,
+//   to avoid needing a compile reference and being unable to share ranges across compilation contexts.
 #[pyclass]
 struct Range {
     range: RustRange<BigInt>,
 }
 
-#[pyclass]
-struct NonEmptyRange {
-    range: RustNonEmptyRange<BigInt>,
-}
-
-#[pyclass]
-struct Function {
-    compile: Py<Compile>,
-    function_value: FunctionValue,
-}
-
-#[pyclass]
+#[pyclass(extends=Value)]
 struct Module {
-    compile: Py<Compile>,
     module: ElaboratedModule,
 }
 
@@ -220,9 +194,7 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CapturePrints>()?;
     m.add_class::<CapturePrintsContext>()?;
     m.add_class::<Value>()?;
-    m.add_class::<Type>()?;
     m.add_class::<Range>()?;
-    m.add_class::<Function>()?;
     m.add_class::<Module>()?;
     m.add_class::<ModuleVerilog>()?;
     m.add_class::<ModuleVerilated>()?;
@@ -407,7 +379,14 @@ impl Parsed {
 
 #[pymethods]
 impl Compile {
-    // TODO add variants that check the type, eg. resolve_function, resolve_module, ...
+    fn resolve_module(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<Module>> {
+        let result = Self::resolve(slf, py, path)?;
+        result
+            .bind(py)
+            .extract::<Py<Module>>()
+            .map_err(|_| ResolveException::new_err(format!("path `{path}` does not resolve to a module")))
+    }
+
     fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
         // TODO move this somewhere common, the commandline will also need this
         // unwrap self
@@ -599,7 +578,23 @@ impl CapturePrintsContext {
 }
 
 #[pymethods]
-impl Type {
+impl Value {
+    fn __repr__(&self, py: Python) -> String {
+        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
+        self.value.value_string(elab)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match compile_value_from_py(other) {
+            Ok(other) => self.value == other,
+            Err(_) => false,
+        }
+    }
+
+    fn __ne__(&self, other: &Bound<'_, PyAny>) -> bool {
+        !self.__eq__(other)
+    }
+
     #[pyo3(signature = (*args, **kwargs))]
     fn __call__(
         &self,
@@ -607,13 +602,145 @@ impl Type {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let target = RustValue::new_ty(self.ty.clone());
-        call_impl(py, &self.compile, &target, args, kwargs)
+        // borrow self
+        let compile_ref = &mut *self.compile.borrow_mut(py);
+        let print_handler = compile_ref.start_collect_prints();
+
+        let shared = &mut compile_ref.shared;
+        let parsed_ref = compile_ref.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let hierarchy = &source_ref.hierarchy;
+        let dummy_span = source_ref.dummy_span;
+
+        // convert target and args
+        let target = RustValue::from(self.value.clone());
+        let arg_key_buffer = GrowVec::new();
+        let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
+
+        // prepare context
+        let diags = Diagnostics::new();
+        let refs = CompileRefs {
+            fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
+                source,
+                hierarchy,
+                parsed,
+            },
+            shared,
+            diags: &diags,
+            print_handler: print_handler.handler(),
+            should_stop: &|| false,
+        };
+
+        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+        let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
+        let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
+
+        // call the function and run any elaboration that is needed
+        // TODO release GIL
+        let returned = item_ctx.eval_call(
+            &mut flow,
+            &RustType::Any,
+            dummy_span,
+            Spanned::new(dummy_span, &target),
+            Ok(args),
+        );
+        refs.run_compile_loop(compile_ref.pool.as_ref());
+
+        // extract return value
+        let returned = returned.and_then(|returned| {
+            RustCompileValue::try_from(&returned).map_err(|_: NotCompile| {
+                diags.report_error_internal(dummy_span, "compile-time call return non-compile value")
+            })
+        });
+        let returned = map_diag_error(py, &diags, source, returned)?;
+
+        // finish up
+        check_diags(py, source, &diags)?;
+        drop(source_ref);
+        drop(parsed_ref);
+        compile_ref.finish_collect_prints(py, print_handler);
+
+        compile_value_to_py(py, &self.compile, &returned)
     }
 
-    fn __str__(&self, py: Python) -> String {
-        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
-        self.ty.value_string(elab)
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<Py<PyAny>> {
+        // return normal attribute error for builtins, we especially don't want to mess with those
+        // TODO should we convert all errors to attribute errors here?
+        if attr.starts_with("__") && attr.ends_with("__") {
+            return Err(PyAttributeError::new_err(format!(
+                "`Value` object has no attribute `{attr}`"
+            )));
+        }
+
+        // TODO reduce code duplication with other thing that need the full compilation context
+        // unwrap self
+        let compile = &mut *self.compile.borrow_mut(py);
+        let shared = &compile.shared;
+
+        let parsed_ref = compile.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let hierarchy = &source_ref.hierarchy;
+        let dummy_span = source_ref.dummy_span;
+
+        // build context
+        let diags = Diagnostics::new();
+        let print_handler = compile.start_collect_prints();
+        let refs = CompileRefs {
+            fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
+                source,
+                hierarchy,
+                parsed,
+            },
+            shared,
+            diags: &diags,
+            print_handler: print_handler.handler(),
+            should_stop: &|| false,
+        };
+        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+
+        let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
+        let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
+
+        // evaluate dot index
+        // TODO release GIL
+        let result = item_ctx
+            .eval_dot_index_id(
+                &mut flow,
+                &RustType::Any,
+                dummy_span,
+                Spanned::new(dummy_span, ValueWithImplications::from(self.value.clone())),
+                Spanned::new(dummy_span, attr),
+            )
+            .and_then(|result| {
+                RustCompileValue::try_from(&result).map_err(|_: NotCompile| {
+                    diags.report_error_internal(dummy_span, "compile-time dot index return non-compile value")
+                })
+            });
+        refs.run_compile_loop(compile.pool.as_ref());
+
+        // handle result
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => {
+                drop(source_ref);
+                drop(parsed_ref);
+                compile.finish_collect_prints(py, print_handler);
+                return Err(PyAttributeError::new_err(format!(
+                    "`value` object has no attribute `{attr}`"
+                )));
+            }
+        };
+        drop(source_ref);
+        drop(parsed_ref);
+        compile.finish_collect_prints(py, print_handler);
+
+        compile_value_to_py(py, &self.compile, &result)
     }
 }
 
@@ -660,134 +787,10 @@ impl Range {
 }
 
 #[pymethods]
-impl NonEmptyRange {
-    #[new]
-    fn new(start: Option<num_bigint::BigInt>, end: Option<num_bigint::BigInt>) -> PyResult<NonEmptyRange> {
-        let start = start.map(BigInt::from_num_bigint);
-        let end = end.map(BigInt::from_num_bigint);
-
-        if let (Some(start), Some(end)) = (&start, &end) {
-            #[allow(clippy::nonminimal_bool)]
-            if !(start < end) {
-                return Err(PyValueError::new_err("NonEmptyRange requires `start < end`"));
-            }
-        }
-
-        let range = RustNonEmptyRange { start, end };
-        Ok(NonEmptyRange { range })
-    }
-
-    #[getter]
-    fn start(&self) -> Option<num_bigint::BigInt> {
-        self.range.start.as_ref().map(|b| b.clone().into_num_bigint())
-    }
-
-    #[getter]
-    fn end(&self) -> Option<num_bigint::BigInt> {
-        self.range.end.as_ref().map(|b| b.clone().into_num_bigint())
-    }
-
-    fn __str__(&self) -> String {
-        format!("NonEmptyRange({})", self.range)
-    }
-}
-
-#[pymethods]
-impl Function {
-    // TODO implement this on more/all values, not just functions and modules
-    //   (eg. struct/enum constructors, int type construction, ...)
-    #[pyo3(signature = (*args, **kwargs))]
-    fn __call__(
-        &self,
-        py: Python,
-        args: &Bound<'_, PyTuple>,
-        kwargs: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<Py<PyAny>> {
-        let target = RustValue::Simple(SimpleCompileValue::Function(self.function_value.clone()));
-        call_impl(py, &self.compile, &target, args, kwargs)
-    }
-}
-
-fn call_impl(
-    py: Python,
-    compile: &Py<Compile>,
-    target: &RustValue,
-    args: &Bound<'_, PyTuple>,
-    kwargs: Option<&Bound<'_, PyDict>>,
-) -> PyResult<Py<PyAny>> {
-    // TODO release GIL during evaluation
-    let diags = Diagnostics::new();
-
-    // TODO get rid of this nesting
-    let returned = {
-        // borrow self
-        let compile_ref = &mut *compile.borrow_mut(py);
-        let print_handler = compile_ref.start_collect_prints();
-
-        let shared = &mut compile_ref.shared;
-        let parsed_ref = compile_ref.parsed.borrow(py);
-        let parsed = &parsed_ref.parsed;
-        let source_ref = parsed_ref.source.borrow(py);
-        let source = &source_ref.source;
-        let hierarchy = &source_ref.hierarchy;
-        let dummy_span = source_ref.dummy_span;
-
-        // convert args
-        let arg_key_buffer = GrowVec::new();
-        let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
-
-        // prepare context
-        let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source,
-                hierarchy,
-                parsed,
-            },
-            shared,
-            diags: &diags,
-            print_handler: print_handler.handler(),
-            should_stop: &|| false,
-        };
-
-        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
-        let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
-        let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
-
-        // call the function and run any elaboration that is needed
-        let returned = item_ctx.eval_call(
-            &mut flow,
-            &RustType::Any,
-            dummy_span,
-            Spanned::new(dummy_span, target),
-            Ok(args),
-        );
-        refs.run_compile_loop(compile_ref.pool.as_ref());
-
-        // extract return value
-        let returned = returned.and_then(|returned| {
-            RustCompileValue::try_from(&returned).map_err(|_: NotCompile| {
-                diags.report_error_internal(dummy_span, "compile-time call return non-compile value")
-            })
-        });
-        let returned = map_diag_error(py, &diags, source, returned)?;
-
-        // finish up
-        check_diags(py, source, &diags)?;
-        drop(source_ref);
-        drop(parsed_ref);
-        compile_ref.finish_collect_prints(py, print_handler);
-
-        returned
-    };
-
-    compile_value_to_py(py, compile, &returned)
-}
-
-#[pymethods]
 impl Module {
-    fn as_verilog(&mut self, py: Python) -> PyResult<ModuleVerilog> {
-        let (_, ir_module, lowered) = self.lower_verilog_impl(py)?;
+    #[allow(clippy::wrong_self_convention)]
+    fn as_verilog(slf: Py<Self>, py: Python) -> PyResult<ModuleVerilog> {
+        let (_, ir_module, lowered) = Self::lower_verilog_impl(&slf, py)?;
         let verilog_name = lowered.module_to_lowered_name.get(&ir_module).unwrap();
 
         Ok(ModuleVerilog {
@@ -796,9 +799,10 @@ impl Module {
         })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     #[pyo3(signature=(build_dir,*,extra_verilog_files=None))]
     fn as_verilated(
-        &self,
+        slf: Py<Self>,
         py: Python,
         build_dir: PathBuf,
         extra_verilog_files: Option<Vec<PathBuf>>,
@@ -822,7 +826,7 @@ impl Module {
         }
 
         // lower
-        let (ir_database, ir_module, lowered_verilog) = self.lower_verilog_impl(py)?;
+        let (ir_database, ir_module, lowered_verilog) = Self::lower_verilog_impl(&slf, py)?;
         let lowered_verilator = lower_verilator(&ir_database.modules, ir_module, &lowered_verilog);
 
         let LoweredVerilog {
@@ -910,7 +914,7 @@ impl Module {
                 .map_err(|e| VerilationException::new_err(format!("lib loading failed: {e}")))?
         };
         Ok(ModuleVerilated {
-            compile: self.compile.clone_ref(py),
+            compile: slf.bind(py).as_super().borrow().compile.clone_ref(py),
             lib,
         })
     }
@@ -936,16 +940,18 @@ fn run_command(command: &mut Command, dir: &Path, name: &str) -> PyResult<()> {
 }
 
 impl Module {
-    fn lower_verilog_impl(&self, py: Python) -> PyResult<(IrDatabase, IrModule, LoweredVerilog)> {
+    fn lower_verilog_impl(slf: &Py<Self>, py: Python) -> PyResult<(IrDatabase, IrModule, LoweredVerilog)> {
         // borrow self
-        let compile = self.compile.borrow(py);
+        let module = slf.bind(py).borrow().module;
+        let slf = slf.bind(py).as_super().borrow();
+        let compile = slf.compile.borrow(py);
         let parsed_ref = compile.parsed.borrow(py);
         let source_ref = parsed_ref.source.borrow(py);
         let source = &source_ref.source;
         let dummy_span = source_ref.dummy_span;
 
         // get the module
-        let module = match self.module {
+        let module = match module {
             ElaboratedModule::Internal(module) => module,
             ElaboratedModule::External(_) => {
                 return Err(GenerateVerilogException::new_err(
@@ -1058,7 +1064,7 @@ impl VerilatedPorts {
             .ports_named()
             .get(name)
             .copied()
-            .ok_or_else(|| PyKeyError::new_err(format!("port {name} not found")))
+            .ok_or_else(|| PyAttributeError::new_err(format!("port {name} not found")))
     }
 }
 
@@ -1104,13 +1110,11 @@ impl VerilatedPort {
     }
 
     #[getter]
-    fn r#type(&self, py: Python) -> Type {
-        // TODO this should return the real original type,
-        //   more generally the entire verilator wrapper should be "real" type-based, instead of IrType-based
-        let ty = self.map_port_info(py, |info| info.ty.clone());
-        Type {
+    fn r#type(&self, py: Python) -> Value {
+        let ty = self.map_port_info(py, |info| info.ty.clone()).as_type_hw().as_type();
+        Value {
             compile: self.instance.borrow(py).module.borrow(py).compile.clone_ref(py),
-            ty: ty.as_type_hw().as_type(),
+            value: RustValue::new_ty(ty),
         }
     }
 

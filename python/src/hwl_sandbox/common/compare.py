@@ -14,7 +14,7 @@ class CompiledCompare:
 
     compile: hwl.Compile
 
-    eval_func: hwl.Function
+    eval_func: hwl.Value
     eval_mod: hwl.Module
     eval_mod_inst: hwl.VerilatedInstance
 
@@ -88,8 +88,8 @@ def compare_body(
         prefix: str = ""
 ) -> CompiledCompare:
     c = compare_codegen(ty_inputs, ty_res, body, prefix)
-    eval_func: hwl.Function = c.resolve("top.eval_func")
-    eval_mod: hwl.Module = c.resolve("top.eval_mod")
+    eval_func = c.resolve("top.eval_func")
+    eval_mod = c.resolve_module("top.eval_mod")
 
     print(eval_mod.as_verilog().source)
 

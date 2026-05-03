@@ -149,6 +149,24 @@ def test_enum_empty():
         _ = compile_custom(src).resolve("top.top_empty")
     _ = compile_custom(src).resolve("top.top_non_empty")
 
-# TODO test that we can actually get enum instances back from
-#   * compile-time functions
-#   * module port outputs/inputs
+
+def test_enum_python(tmp_dir: Path):
+    src = """
+    enum Foo { Empty, Data(uint(8)) }
+    fn f(x: bool, y: uint(8)) -> Foo {
+        if (x) {
+            return Foo.Data(y);
+        } else {
+            return Foo.Empty;
+        }
+    }
+    """
+
+    c = compile_custom(src)
+    foo = c.resolve("top.Foo")
+    f = c.resolve("top.f")
+
+    # check enum construction, indirectly and directly
+    assert str(f(False, 0)) == "Foo.Empty"
+    assert str(f(True, 0)) == "Foo.Data(0)"
+    assert str(f(True, 1)) == "Foo.Data(1)"

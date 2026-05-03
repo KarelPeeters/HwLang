@@ -1,8 +1,8 @@
-use crate::{Compile, Function, Module, Range, Type, Value};
+use crate::{Compile, Module, Range, Value};
 use hwl_language::front::function::EvaluatedArgs;
 use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::types::Type as RustType;
-use hwl_language::front::value::{CompileCompoundValue, CompileValue, SimpleCompileValue};
+use hwl_language::front::value::{CompileCompoundValue, CompileValue, SimpleCompileValue, Value as RustValue};
 use hwl_language::syntax::ast::Arg;
 use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigInt;
@@ -12,11 +12,10 @@ use hwl_language::util::range_multi::MultiRange;
 use itertools::Itertools;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyInt, PyList, PyTuple, PyTupleMethods, PyType};
-use pyo3::{Bound, IntoPyObjectExt, Py, PyAny, PyRef, PyResult, Python};
+use pyo3::{Bound, IntoPyObjectExt, Py, PyAny, PyClassInitializer, PyRef, PyResult, Python};
 use std::sync::Arc;
 
 pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue) -> PyResult<Py<PyAny>> {
-    // TODO get rid of this, actually expose all values to python
     let fallback = || {
         Value {
             compile: state.clone_ref(py),
@@ -27,11 +26,6 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
 
     match value {
         CompileValue::Simple(value) => match value {
-            SimpleCompileValue::Type(x) => Type {
-                compile: state.clone_ref(py),
-                ty: x.clone(),
-            }
-            .into_py_any(py),
             SimpleCompileValue::Bool(x) => x.into_py_any(py),
             SimpleCompileValue::Int(x) => x.clone().into_num_bigint().into_py_any(py),
             SimpleCompileValue::Array(x) => {
@@ -42,22 +36,18 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                 items.into_py_any(py)
             }
             &SimpleCompileValue::Module(m) => {
-                let m = Module {
+                let init = PyClassInitializer::from(Value {
                     compile: state.clone_ref(py),
-                    module: m,
-                };
-                m.into_py_any(py)
+                    value: RustValue::Simple(SimpleCompileValue::Module(m)),
+                })
+                .add_subclass(Module { module: m });
+                Py::new(py, init).map(Py::into_any)
             }
-            SimpleCompileValue::Function(f) => {
-                let f = Function {
-                    compile: state.clone_ref(py),
-                    function_value: f.clone(),
-                };
-                f.into_py_any(py)
-            }
-            SimpleCompileValue::Interface(_) => fallback(),
-            SimpleCompileValue::InterfaceView(_) => fallback(),
-            SimpleCompileValue::Reference(_) => fallback(),
+            SimpleCompileValue::Type(_)
+            | SimpleCompileValue::Function(_)
+            | SimpleCompileValue::Interface(_)
+            | SimpleCompileValue::InterfaceView(_)
+            | SimpleCompileValue::Reference(_) => fallback(),
         },
         CompileValue::Compound(value) => match value {
             CompileCompoundValue::String(x) => x.as_str().into_py_any(py),
@@ -69,14 +59,15 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                     .try_collect()?;
                 PyTuple::new(py, items)?.into_py_any(py)
             }
-            CompileCompoundValue::Struct(_) => fallback(),
-            CompileCompoundValue::Enum(_) => fallback(),
-            CompileCompoundValue::BoundMethod(_) => fallback(),
+            CompileCompoundValue::Struct(_) | CompileCompoundValue::Enum(_) | CompileCompoundValue::BoundMethod(_) => {
+                fallback()
+            }
         },
         CompileValue::Hardware(n) => n.unreachable(),
     }
 }
 
+// TODO assert that the value references the same Compile instance!
 pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     let py = value.py();
 
@@ -86,22 +77,12 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     if let Ok(value) = value.extract::<PyRef<Value>>() {
         return Ok(value.value.clone());
     }
-    if let Ok(value) = value.extract::<PyRef<Type>>() {
-        return Ok(CompileValue::new_ty(value.ty.clone()));
-    }
     if let Ok(value) = value.extract::<PyRef<Range>>() {
         return Ok(CompileValue::Compound(CompileCompoundValue::Range(value.range.clone())));
     }
     if let Ok(module) = value.extract::<PyRef<Module>>() {
         return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));
     }
-    if let Ok(value) = value.extract::<PyRef<Function>>() {
-        // TODO avoid clone?
-        return Ok(CompileValue::Simple(SimpleCompileValue::Function(
-            value.function_value.clone(),
-        )));
-    }
-
     // convert some python values with obvious equivalents
     if let Ok(value) = value.extract::<bool>() {
         return Ok(CompileValue::new_bool(value));
