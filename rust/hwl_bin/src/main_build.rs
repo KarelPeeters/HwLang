@@ -219,7 +219,6 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     let mut any_error = false;
     let start_output = Instant::now();
     for (path, output) in outputs {
-        println!("writing output len {} to {}", output.len(), path.to_string_lossy());
         match std::fs::write(&path, output).map_err(|e| e.with_path(path)) {
             Ok(()) => {}
             Err(e) => {
