@@ -20,6 +20,7 @@ pub enum TokenError {
     InvalidIntLiteral { span: Span },
     BlockCommentMissingEnd { start: Pos, eof: Pos },
     StringLiteralMissingEnd { start: Pos, eof: Pos },
+    StringLiteralInvalidEscape { str_start: Pos, span: Span },
 }
 
 pub fn tokenize(file: FileId, source: &str, emit_incomplete_token: bool) -> Result<Vec<Token>, TokenError> {
@@ -54,6 +55,9 @@ enum Mode {
 
 #[rustfmt::skip]
 macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
+
+#[rustfmt::skip]
+macro_rules! pattern_string_escape_chars { () => { '\\' | '"' | '{' | 'n' | 'r' | 't' | '0' }; }
 
 #[rustfmt::skip]
 macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
@@ -157,34 +161,53 @@ impl<'s> Tokenizer<'s> {
                 str_start,
                 subs: allow_subs,
             } => {
+                let err_missing_end = |p| TokenError::StringLiteralMissingEnd {
+                    start: str_start,
+                    eof: p,
+                };
+
                 let (ty, next_mode) = match self.peek() {
                     Some('"') => {
                         self.skip(1);
                         let (_, next_mode) = self.mode_stack.pop().unwrap();
                         (TokenType::StringEnd, next_mode)
                     }
-                    // TODO handle escapes (ie. {{)
                     Some('{') if allow_subs => {
                         self.skip(1);
                         (TokenType::StringSubStart, Mode::NormalInSubExpression { str_start })
                     }
                     Some(_) => {
-                        // TODO handle escapes (eg. \n, \u, {{, \", ...)
-                        self.skip_while(|c| !(c == '"' || (allow_subs && c == '{')));
-                        (
-                            TokenType::StringMiddle,
-                            Mode::StringMiddle {
-                                str_start,
-                                subs: allow_subs,
-                            },
-                        )
+                        loop {
+                            match self.peek() {
+                                Some('"') => break,
+                                Some('{') if allow_subs => break,
+                                Some('\\') => {
+                                    let escape_start = self.curr_pos();
+                                    self.skip(1);
+                                    match self.peek() {
+                                        Some(pattern_string_escape_chars!()) => {
+                                            self.skip(1);
+                                        }
+                                        Some(_) => {
+                                            self.skip(1);
+                                            let span = Span::new(self.file, escape_start.byte, self.curr_pos().byte);
+                                            return Err(TokenError::StringLiteralInvalidEscape { str_start, span });
+                                        }
+                                        None => return Err(err_missing_end(self.curr_pos())),
+                                    }
+                                }
+                                Some(_) => self.skip(1),
+                                None => return Err(err_missing_end(self.curr_pos())),
+                            }
+                        }
+
+                        let next_mode = Mode::StringMiddle {
+                            str_start,
+                            subs: allow_subs,
+                        };
+                        (TokenType::StringMiddle, next_mode)
                     }
-                    None => {
-                        return Err(TokenError::StringLiteralMissingEnd {
-                            start: str_start,
-                            eof: self.curr_pos(),
-                        });
-                    }
+                    None => return Err(err_missing_end(self.curr_pos())),
                 };
 
                 self.mode = next_mode;
@@ -439,13 +462,39 @@ impl<'s> Tokenizer<'s> {
 pub struct FailedTokenParse;
 
 pub fn parse_token_string_middle(raw: &str) -> Result<Cow<'_, str>, FailedTokenParse> {
-    // TODO skip allocation if not needed
-    // TODO handle more escape codes including \" (which needs tokenizer changes)
-    // TODO maybe we should _actually_ parse string literals during parsing,
-    //   instead of keeping them as spans and then only later fixing them?
-    //   Alternatively create some zero-cost wrapper type that guarantees correctness.
-    // TODO error for trailing \
-    Ok(Cow::Owned(raw.replace("\\n", "\n")))
+    let mut result = String::new();
+
+    let mut next_escaped = false;
+    for c in raw.chars() {
+        if next_escaped {
+            let actual = match c {
+                '\\' => '\\',
+                '"' => '"',
+                '{' => '{',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '0' => '\0',
+                _ => return Err(FailedTokenParse),
+            };
+            result.push(actual);
+            next_escaped = false;
+            continue;
+        }
+
+        if c == '\\' {
+            next_escaped = true;
+            continue;
+        }
+
+        result.push(c);
+    }
+
+    if next_escaped {
+        return Err(FailedTokenParse);
+    }
+
+    Ok(Cow::Owned(result))
 }
 
 pub fn parse_token_int_literal_binary(raw: &str) -> Result<BigUint, FailedTokenParse> {
@@ -743,6 +792,12 @@ impl TokenError {
                 DiagnosticError::new("string literal missing end", Span::empty_at(eof), "end of file reached")
                     .add_info(Span::empty_at(start), "string literal started here")
             }
+            TokenError::StringLiteralInvalidEscape { str_start: start, span } => DiagnosticError::new(
+                "string literal invalid escape sequence",
+                span,
+                "invalid escape sequence here",
+            )
+            .add_info(Span::empty_at(start), "string literal started here"),
         }
     }
 }
