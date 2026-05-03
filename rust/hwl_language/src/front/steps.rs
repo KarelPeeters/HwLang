@@ -1,13 +1,15 @@
 use crate::front::compile::CompileRefs;
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
-    CompileValue, HardwareInt, HardwareValue, MaybeCompile, NotCompile, SimpleCompileValue, Value, ValueCommon,
+    CompileCompoundValue, CompileValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile,
+    SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
@@ -15,25 +17,27 @@ use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct ArraySteps<S = ArrayStep> {
+pub struct AssignmentSteps<S = AssignmentStep> {
     pub steps: Vec<Spanned<S>>,
 }
 
-pub type ArrayStep = MaybeCompile<ArrayStepCompile, ArrayStepHardware>;
+pub type AssignmentStep = MaybeCompile<AssignmentStepCompile, AssignmentStepHardware>;
 
 #[derive(Debug, Clone)]
-pub enum ArrayStepCompile {
+pub enum AssignmentStepCompile {
     ArrayIndex(BigInt),
     ArraySlice { start: BigInt, length: Option<BigUint> },
+    TupleIndex(BigUint),
+    StructField(Arc<String>),
 }
 
 #[derive(Debug, Clone)]
-pub enum ArrayStepHardware {
+pub enum AssignmentStepHardware {
     ArrayIndex(HardwareInt),
     ArraySlice { start: HardwareInt, length: BigUint },
 }
 
-impl<S> ArraySteps<S> {
+impl<S> AssignmentSteps<S> {
     pub fn new(steps: Vec<Spanned<S>>) -> Self {
         Self { steps }
     }
@@ -47,10 +51,10 @@ impl<S> ArraySteps<S> {
 struct EncounteredAny;
 
 #[derive(Debug, Copy, Clone)]
-struct ArrayUnknownLength;
+struct EncounteredUnknown;
 
-impl ArraySteps<ArrayStep> {
-    pub fn try_as_compile(&self) -> Result<ArraySteps<&ArrayStepCompile>, NotCompile> {
+impl AssignmentSteps<AssignmentStep> {
+    pub fn try_as_compile(&self) -> Result<AssignmentSteps<&AssignmentStepCompile>, NotCompile> {
         let steps = self
             .steps
             .iter()
@@ -59,7 +63,7 @@ impl ArraySteps<ArrayStep> {
                 MaybeCompile::Hardware(_) => Err(NotCompile),
             })
             .try_collect_vec()?;
-        Ok(ArraySteps { steps })
+        Ok(AssignmentSteps { steps })
     }
 
     pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
@@ -77,7 +81,7 @@ impl ArraySteps<ArrayStep> {
 
         let (result_ty, steps) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type))?;
 
-        let steps = steps.map_err(|e: Either<EncounteredAny, ArrayUnknownLength>| {
+        let steps = steps.map_err(|e: Either<EncounteredAny, EncounteredUnknown>| {
             diags.report_error_internal(ty.span, format!("applying steps to hardware type failed: {e:?}"))
         })?;
 
@@ -94,10 +98,10 @@ impl ArraySteps<ArrayStep> {
     pub fn for_each_domain(&self, mut f: impl FnMut(Spanned<ValueDomain>)) {
         for step in &self.steps {
             let &d = match &step.inner {
-                ArrayStep::Compile(_) => &ValueDomain::CompileTime,
-                ArrayStep::Hardware(step) => match step {
-                    ArrayStepHardware::ArrayIndex(index) => &index.domain,
-                    ArrayStepHardware::ArraySlice { start, length: _ } => &start.domain,
+                AssignmentStep::Compile(_) => &ValueDomain::CompileTime,
+                AssignmentStep::Hardware(step) => match step {
+                    AssignmentStepHardware::ArrayIndex(index) => &index.domain,
+                    AssignmentStepHardware::ArraySlice { start, length: _ } => &start.domain,
                 },
             };
             f(Spanned::new(step.span, d));
@@ -110,8 +114,7 @@ impl ArraySteps<ArrayStep> {
     /// This function also checks index and slice ranges for validity,
     /// reporting proper diagnostics if they are out of bounds.
     ///
-    ///
-    /// If `pass_any` is true, applying any step to `Type::Any` will return `Type::Any` and `EncounteredAny`. This is
+    /// Applying any step to [Type::Any] will return [Type::Any] and [EncounteredAny]. This is
     /// useful to get the inferred type for assignments, once we encounter Any the result type is also Any.
     fn apply_to_type_impl(
         &self,
@@ -119,128 +122,148 @@ impl ArraySteps<ArrayStep> {
         ty: Spanned<Type>,
     ) -> DiagResult<(
         Type,
-        Result<Vec<IrTargetStep>, Either<EncounteredAny, ArrayUnknownLength>>,
+        Result<Vec<IrTargetStep>, Either<EncounteredAny, EncounteredUnknown>>,
     )> {
         let diags = refs.diags;
-        let ArraySteps { steps } = self;
+        let AssignmentSteps { steps } = self;
 
         let mut steps_ir = Ok(vec![]);
         let mut curr_ty = ty;
 
         for step in steps {
-            // for now we only have arrays steps, so we can always unwrap an array type
-            let (array_inner, array_len) = match &curr_ty.inner {
-                Type::Array(ty_inner, len) => (&**ty_inner, len),
-                Type::Any => return Ok((Type::Any, Err(Either::Left(EncounteredAny)))),
-                _ => return Err(err_expected_array(refs, curr_ty.as_ref(), step.span).report(diags)),
-            };
-            let array_len = Spanned::new(curr_ty.span, array_len.as_ref());
-
-            enum StepKind {
-                Single,
-                Slice(Option<BigUint>),
+            // stop once we encounter Type::Any
+            if matches!(curr_ty.inner, Type::Any) {
+                return Ok((Type::Any, Err(Either::Left(EncounteredAny))));
             }
 
-            let (step_ir, step_kind) = match &step.inner {
-                ArrayStep::Compile(step_inner) => match step_inner {
-                    ArrayStepCompile::ArrayIndex(index) => {
+            // map step to IR and get the next type
+            let step_span = step.span;
+            let check_type_is_array = |step_is_slice: bool| {
+                let (inner, len) = check_type_is_array(refs, curr_ty.as_ref(), step_span, step_is_slice)?;
+                let len = Spanned::new(curr_ty.span, len);
+                Ok((inner, len))
+            };
+
+            let (step_ir, next_ty) = match &step.inner {
+                AssignmentStep::Compile(step) => match step {
+                    AssignmentStepCompile::ArrayIndex(index) => {
+                        let (array_inner, array_len) = check_type_is_array(false)?;
                         check_range_index(
                             diags,
-                            Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(index.clone())),
+                            Spanned::new(step_span, &ClosedNonEmptyMultiRange::single(index.clone())),
                             array_len,
                         )?;
 
-                        match array_len.inner {
-                            None => (Err(ArrayUnknownLength), StepKind::Single),
-                            Some(_) => {
-                                let step_ir = IrTargetStep::ArrayIndex(IrExpression::Int(index.clone()));
-                                (Ok(step_ir), StepKind::Single)
+                        let step_ir = array_len
+                            .inner
+                            .map(|_| IrTargetStep::ArrayIndex(IrExpression::Int(index.clone())))
+                            .ok_or(EncounteredUnknown);
+
+                        (step_ir, array_inner.as_ref().clone())
+                    }
+                    AssignmentStepCompile::ArraySlice {
+                        start: slice_start,
+                        length: slice_length,
+                    } => {
+                        let (array_inner, array_len) = check_type_is_array(true)?;
+
+                        let slice_len = check_range_slice(
+                            diags,
+                            Spanned::new(step_span, &ClosedNonEmptyMultiRange::single(slice_start.clone())),
+                            slice_length
+                                .as_ref()
+                                .map(|slice_length| Spanned::new(step_span, slice_length)),
+                            array_len,
+                        )?;
+
+                        match slice_len {
+                            None => (Err(EncounteredUnknown), Type::Array(Arc::clone(array_inner), None)),
+                            Some(slice_len) => {
+                                let step_ir = IrTargetStep::ArraySlice {
+                                    start: IrExpression::Int(slice_start.clone()),
+                                    len: slice_len.clone(),
+                                };
+                                (Ok(step_ir), Type::Array(Arc::clone(array_inner), Some(slice_len)))
                             }
                         }
                     }
-                    ArrayStepCompile::ArraySlice {
-                        start,
-                        length: slice_len,
-                    } => {
-                        let slice_len = check_range_slice(
-                            diags,
-                            Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(start.clone())),
-                            slice_len.as_ref().map(|len| Spanned::new(step.span, len)),
-                            array_len,
-                        )?;
-
-                        let step_ir = match &slice_len {
-                            Some(slice_len) => {
-                                let step_ir = IrTargetStep::ArraySlice {
-                                    start: IrExpression::Int(start.clone()),
-                                    len: slice_len.clone(),
-                                };
-                                Ok(step_ir)
-                            }
-                            None => Err(ArrayUnknownLength),
+                    AssignmentStepCompile::TupleIndex(index) => {
+                        let fields = match &curr_ty.inner {
+                            Type::Tuple(fields) => fields,
+                            _ => return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span)),
                         };
 
-                        (step_ir, StepKind::Slice(slice_len))
+                        match fields {
+                            None => (Err(EncounteredUnknown), Type::Any),
+                            Some(fields) => {
+                                let index = check_tuple_index(diags, fields.len(), index, curr_ty.span, step_span)?;
+                                (Ok(IrTargetStep::TupleIndex(index)), fields[index].clone())
+                            }
+                        }
+                    }
+                    AssignmentStepCompile::StructField(field) => {
+                        let ty = match curr_ty.inner {
+                            Type::Struct(ty) => ty,
+                            _ => return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span)),
+                        };
+                        let ty_info = refs.shared.elaboration_arenas.struct_info(ty);
+
+                        let field_str = Spanned::new(step_span, field.as_str());
+                        let field_index = ty_info.field_index(diags, curr_ty.span, field_str)?;
+
+                        let field_ty = ty_info.fields[field_index].1.inner.clone();
+                        (Ok(IrTargetStep::StructField(field_index)), field_ty)
                     }
                 },
-                ArrayStep::Hardware(step_inner) => match step_inner {
-                    ArrayStepHardware::ArrayIndex(index) => {
-                        check_range_index(diags, Spanned::new(step.span, &index.ty), array_len)?;
+                AssignmentStep::Hardware(step) => match step {
+                    AssignmentStepHardware::ArrayIndex(index) => {
+                        let (array_inner, array_len) = check_type_is_array(false)?;
+                        check_range_index(diags, Spanned::new(step_span, &index.ty), array_len)?;
 
-                        match array_len.inner {
-                            None => (Err(ArrayUnknownLength), StepKind::Single),
-                            Some(_) => {
-                                let step_ir = IrTargetStep::ArrayIndex(index.expr.clone());
-                                (Ok(step_ir), StepKind::Single)
-                            }
-                        }
+                        let step_ir = array_len
+                            .inner
+                            .map(|_| IrTargetStep::ArrayIndex(index.expr.clone()))
+                            .ok_or(EncounteredUnknown);
+
+                        (step_ir, array_inner.as_ref().clone())
                     }
-                    ArrayStepHardware::ArraySlice {
-                        start,
+                    AssignmentStepHardware::ArraySlice {
+                        start: slice_start,
                         length: slice_len,
                     } => {
-                        let slice_len = check_range_slice(
+                        let (array_inner, array_len) = check_type_is_array(true)?;
+
+                        check_range_slice(
                             diags,
-                            Spanned::new(step.span, &start.ty),
-                            Some(Spanned::new(step.span, slice_len)),
+                            Spanned::new(step_span, &slice_start.ty),
+                            Some(Spanned::new(step_span, slice_len)),
                             array_len,
                         )?;
 
-                        let step_ir = match &slice_len {
-                            Some(slice_len) => {
-                                let step_ir = IrTargetStep::ArraySlice {
-                                    start: start.expr.clone(),
-                                    len: slice_len.clone(),
-                                };
-                                Ok(step_ir)
-                            }
-                            None => Err(ArrayUnknownLength),
+                        let step_ir = IrTargetStep::ArraySlice {
+                            start: slice_start.expr.clone(),
+                            len: slice_len.clone(),
                         };
-                        (step_ir, StepKind::Slice(slice_len))
+                        let next_ty = Type::Array(Arc::clone(array_inner), Some(slice_len.clone()));
+
+                        (Ok(step_ir), next_ty)
                     }
                 },
             };
 
-            if array_len.inner.is_some() {
-                match step_ir {
-                    Ok(step_ir) => {
-                        if let Ok(steps_ir) = &mut steps_ir {
-                            steps_ir.push(step_ir);
-                        }
-                    }
-                    Err(e) => {
-                        steps_ir = Err(e);
+            // append IR step
+            match step_ir {
+                Ok(step_ir) => {
+                    if let Ok(steps_ir) = &mut steps_ir {
+                        steps_ir.push(step_ir);
                     }
                 }
-            } else {
-                steps_ir = Err(ArrayUnknownLength);
+                Err(e) => {
+                    steps_ir = Err(e);
+                }
             }
 
-            let next_ty = match step_kind {
-                StepKind::Single => array_inner.clone(),
-                StepKind::Slice(slice_len) => Type::Array(Arc::new(array_inner.clone()), slice_len),
-            };
-
+            // move on to the next type
             curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
         }
 
@@ -257,173 +280,274 @@ impl ArraySteps<ArrayStep> {
         let diags = refs.diags;
         let elab = &refs.shared.elaboration_arenas;
 
-        let ArraySteps { steps } = self;
+        let AssignmentSteps { steps } = self;
 
-        let mut curr = value;
+        let mut curr_value = value;
 
         for step in steps {
-            let next_inner: Value = match (&step.inner, curr.inner) {
-                (ArrayStep::Compile(step_inner), Value::Simple(curr_inner)) => match curr_inner {
-                    SimpleCompileValue::Array(curr_inner) => {
-                        // index/slice into array
-                        let value_len = Spanned::new(curr.span, curr_inner.len());
-                        match step_inner {
-                            ArrayStepCompile::ArrayIndex(index) => {
-                                let index =
-                                    check_range_index_compile(diags, Spanned::new(step.span, index), value_len)?;
+            let curr_span = curr_value.span;
+            let step_span = step.span;
 
-                                let result = match Arc::try_unwrap(curr_inner) {
-                                    Ok(mut curr_inner) => curr_inner.swap_remove(index),
-                                    Err(curr_inner) => curr_inner[index].clone(),
-                                };
+            let next: Value = match &step.inner {
+                AssignmentStep::Compile(step) => match step {
+                    AssignmentStepCompile::ArrayIndex(index) => {
+                        let index_range = ClosedNonEmptyMultiRange::single(index.clone());
+                        let index_spanned = Spanned::new(step_span, &index_range);
 
-                                Value::from(result)
-                            }
-                            ArrayStepCompile::ArraySlice { start, length: len } => {
-                                let SliceInfo { start, len } = check_range_slice_compile(
+                        match curr_value.inner {
+                            Value::Simple(SimpleCompileValue::Array(curr_value)) => {
+                                let index = check_range_index_compile(
                                     diags,
-                                    Spanned::new(step.span, start),
-                                    len.as_ref().map(|len| Spanned::new(step.span, len)),
-                                    value_len,
+                                    Spanned::new(step_span, index),
+                                    Spanned::new(curr_span, curr_value.len()),
                                 )?;
 
-                                let result = match Arc::try_unwrap(curr_inner) {
-                                    Ok(mut curr_inner) => {
-                                        // TODO maybe re-use the existing allocation instead by draining before/after?
-                                        curr_inner.drain(start..start + len).collect()
-                                    }
-                                    Err(curr_inner) => curr_inner[start..start + len].to_vec(),
+                                match Arc::try_unwrap(curr_value) {
+                                    Ok(curr) => Value::from(curr.get_owned(index)),
+                                    Err(curr) => Value::from(curr[index].clone()),
+                                }
+                            }
+                            Value::Hardware(ref curr_value)
+                                if let HardwareType::Array(curr_inner, curr_len) = &curr_value.ty =>
+                            {
+                                check_range_index(diags, index_spanned, Spanned::new(curr_span, Some(curr_len)))?;
+
+                                let expr = IrExpressionLarge::ArrayIndex {
+                                    base: curr_value.expr.clone(),
+                                    index: IrExpression::Int(index.clone()),
+                                };
+                                Value::Hardware(HardwareValue {
+                                    ty: (**curr_inner).clone(),
+                                    domain: curr_value.domain,
+                                    expr: large.push_expr(expr),
+                                })
+                            }
+                            _ => {
+                                let err = err_expected_array(
+                                    refs,
+                                    curr_value.as_ref().map_inner(Value::ty).as_ref(),
+                                    step_span,
+                                    false,
+                                );
+                                return Err(err);
+                            }
+                        }
+                    }
+                    AssignmentStepCompile::ArraySlice {
+                        start: slice_start,
+                        length: slice_length,
+                    } => {
+                        let slice_length = slice_length
+                            .as_ref()
+                            .map(|slice_length| Spanned::new(step_span, slice_length));
+
+                        match curr_value.inner {
+                            Value::Simple(SimpleCompileValue::Array(curr_value)) => {
+                                let slice_start = Spanned::new(step_span, slice_start);
+                                let slice_range = check_range_slice_compile(
+                                    diags,
+                                    slice_start,
+                                    slice_length,
+                                    Spanned::new(curr_span, curr_value.len()),
+                                )?
+                                .as_range();
+
+                                let result = match Arc::try_unwrap(curr_value) {
+                                    Ok(curr_value) => curr_value.slice_owned(slice_range),
+                                    Err(curr_value) => curr_value[slice_range].to_vec(),
                                 };
 
                                 Value::Simple(SimpleCompileValue::Array(Arc::new(result)))
                             }
+                            Value::Hardware(ref curr_value)
+                                if let HardwareType::Array(array_inner, array_len) = &curr_value.ty =>
+                            {
+                                let slice_len = check_range_slice_known(
+                                    diags,
+                                    Spanned::new(step_span, &ClosedNonEmptyMultiRange::single(slice_start.clone())),
+                                    slice_length,
+                                    Spanned::new(curr_span, array_len),
+                                )?;
+
+                                let expr = IrExpressionLarge::ArraySlice {
+                                    base: curr_value.expr.clone(),
+                                    start: IrExpression::Int(slice_start.clone()),
+                                    len: slice_len.clone(),
+                                };
+                                Value::Hardware(HardwareValue {
+                                    ty: HardwareType::Array(Arc::clone(array_inner), slice_len),
+                                    domain: curr_value.domain,
+                                    expr: large.push_expr(expr),
+                                })
+                            }
+                            _ => {
+                                let curr_ty = curr_value.as_ref().map_inner(Value::ty);
+                                return Err(err_expected_array(refs, curr_ty.as_ref(), step_span, true));
+                            }
                         }
                     }
-                    _ => {
-                        return Err(
-                            err_expected_array(refs, Spanned::new(curr.span, &curr_inner.ty()), step.span)
-                                .report(diags),
-                        );
-                    }
-                },
-                (step_inner, curr_inner) => {
-                    // convert curr to hardware
-                    let ty = curr_inner.ty();
-                    let ty = ty.as_hardware_type(elab).map_err(|_| {
-                        DiagnosticError::new(
-                            "hardware array indexing target needs to have hardware type",
-                            curr.span,
-                            format!(
-                                "this array target needs to have a hardware type, has type `{}`",
-                                ty.value_string(elab)
-                            ),
-                        )
-                        .add_info(step.span, "for this hardware array access operation")
-                        .report(diags)
-                    })?;
-                    let curr_inner = curr_inner.as_hardware_value_unchecked(refs, large, curr.span, ty.clone())?;
-                    let (curr_array_inner_ty, curr_array_len) = match curr_inner.ty {
-                        HardwareType::Array(curr_array_inner_ty, curr_array_len) => {
-                            (curr_array_inner_ty, curr_array_len)
+                    AssignmentStepCompile::TupleIndex(index) => match curr_value.inner {
+                        Value::Simple(SimpleCompileValue::Type(Type::Tuple(fields))) => {
+                            let fields = fields.ok_or_else(|| {
+                                DiagnosticError::new(
+                                    "cannot index into tuple type with unknown field types",
+                                    step_span,
+                                    "trying to index here",
+                                )
+                                .add_info(
+                                    curr_span,
+                                    format!("target resolved to type `{}`", Type::Tuple(None).value_string(elab)),
+                                )
+                                .report(diags)
+                            })?;
+                            let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
+
+                            let result = match Arc::try_unwrap(fields) {
+                                Ok(fields) => fields.get_owned(index),
+                                Err(fields) => fields[index].clone(),
+                            };
+                            Value::new_ty(result)
+                        }
+                        Value::Compound(MixedCompoundValue::Tuple(fields)) => {
+                            let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
+                            fields.get_owned(index)
+                        }
+                        Value::Hardware(ref curr_value) if let HardwareType::Tuple(fields) = &curr_value.ty => {
+                            let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
+
+                            let expr = IrExpressionLarge::TupleIndex {
+                                base: curr_value.expr.clone(),
+                                index,
+                            };
+                            Value::Hardware(HardwareValue {
+                                ty: fields[index].clone(),
+                                domain: curr_value.domain,
+                                expr: large.push_expr(expr),
+                            })
                         }
                         _ => {
-                            return Err(
-                                err_expected_array(refs, Spanned::new(curr.span, &ty.as_type()), step.span)
-                                    .report(diags),
-                            );
+                            let curr_ty = curr_value.as_ref().map_inner(Value::ty);
+                            return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                         }
-                    };
-                    let curr_array_len = Spanned::new(curr.span, &curr_array_len);
+                    },
+                    AssignmentStepCompile::StructField(field_str) => {
+                        let field_str = Spanned::new(step_span, field_str.as_str());
 
-                    // convert step to hardware
-                    let (result_expr, step_domain, slice_len) = match step_inner {
-                        ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)) => {
-                            check_range_index(
-                                diags,
-                                Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(index.clone())),
-                                curr_array_len.map_inner(Some),
-                            )?;
-                            (
-                                IrExpressionLarge::ArrayIndex {
-                                    base: curr_inner.expr,
-                                    index: IrExpression::Int(index.clone()),
-                                },
-                                ValueDomain::CompileTime,
-                                None,
-                            )
-                        }
-                        ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length: len }) => {
-                            let len = check_range_slice_known(
-                                diags,
-                                Spanned::new(step.span, &ClosedNonEmptyMultiRange::single(start.clone())),
-                                len.as_ref().map(|len| Spanned::new(step.span, len)),
-                                curr_array_len,
-                            )?;
-                            (
-                                IrExpressionLarge::ArraySlice {
-                                    base: curr_inner.expr,
-                                    start: IrExpression::Int(start.clone()),
-                                    len: len.clone(),
-                                },
-                                ValueDomain::CompileTime,
-                                Some(len),
-                            )
-                        }
-                        ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index)) => {
-                            check_range_index(
-                                diags,
-                                Spanned::new(step.span, &index.ty),
-                                curr_array_len.map_inner(Some),
-                            )?;
-                            (
-                                IrExpressionLarge::ArrayIndex {
-                                    base: curr_inner.expr,
-                                    index: index.expr.clone(),
-                                },
-                                index.domain,
-                                None,
-                            )
-                        }
-                        ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length: len }) => {
-                            let len = check_range_slice_known(
-                                diags,
-                                Spanned::new(step.span, &start.ty),
-                                Some(Spanned::new(step.span, len)),
-                                curr_array_len,
-                            )?;
-                            (
-                                IrExpressionLarge::ArraySlice {
-                                    base: curr_inner.expr,
-                                    start: start.expr.clone(),
-                                    len: len.clone(),
-                                },
-                                start.domain,
-                                Some(len),
-                            )
-                        }
-                    };
+                        match curr_value.inner {
+                            Value::Compound(MixedCompoundValue::Struct(curr_value)) => {
+                                let ty_info = elab.struct_info(curr_value.ty);
+                                let field_index = ty_info.field_index(diags, curr_span, field_str)?;
 
-                    // build final value
-                    let next_ty = match slice_len {
-                        None => Arc::unwrap_or_clone(curr_array_inner_ty),
-                        Some(slice_len) => HardwareType::Array(curr_array_inner_ty.clone(), slice_len),
+                                curr_value.fields.get_owned(field_index)
+                            }
+                            Value::Hardware(ref curr_value) if let HardwareType::Struct(curr_ty) = &curr_value.ty => {
+                                let ty_info = elab.struct_info(curr_ty.inner());
+                                let field_index = ty_info.field_index(diags, curr_span, field_str)?;
+
+                                let field_type = ty_info.hw.as_ref().unwrap().fields[field_index].clone();
+
+                                let expr = IrExpressionLarge::StructField {
+                                    base: curr_value.expr.clone(),
+                                    field: field_index,
+                                };
+                                Value::Hardware(HardwareValue {
+                                    ty: field_type,
+                                    domain: curr_value.domain,
+                                    expr: large.push_expr(expr),
+                                })
+                            }
+                            _ => {
+                                let curr_ty = curr_value.as_ref().map_inner(Value::ty);
+                                return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span));
+                            }
+                        }
+                    }
+                },
+                AssignmentStep::Hardware(step) => {
+                    // check type
+                    let curr_ty = curr_value.inner.ty();
+                    let step_is_slice = match step {
+                        AssignmentStepHardware::ArrayIndex(_) => false,
+                        AssignmentStepHardware::ArraySlice { .. } => true,
                     };
-                    Value::Hardware(HardwareValue {
-                        ty: next_ty,
-                        domain: curr_inner.domain.join(step_domain),
-                        expr: large.push_expr(result_expr),
-                    })
+                    check_type_is_array(refs, Spanned::new(curr_value.span, &curr_ty), step_span, step_is_slice)?;
+
+                    // convert value to hardware
+                    let curr_ty = curr_ty.as_hardware_type(elab).map_err(|_| {
+                        DiagnosticError::new(
+                            "hardware array indexing target needs to have hardware type",
+                            curr_span,
+                            format!(
+                                "this array target needs to have a hardware type, has type `{}`",
+                                curr_ty.value_string(elab)
+                            ),
+                        )
+                        .add_info(step_span, "for this hardware array access operation")
+                        .report(diags)
+                    })?;
+
+                    let curr_value =
+                        curr_value
+                            .inner
+                            .as_hardware_value_unchecked(refs, large, curr_value.span, curr_ty.clone())?;
+                    let (array_inner, array_len) = match curr_value.ty {
+                        HardwareType::Array(array_inner, array_len) => (array_inner, array_len),
+                        _ => {
+                            let diag = diags.report_error_internal(step_span, "should still be array after conversion");
+                            return Err(diag);
+                        }
+                    };
+                    let array_len = Spanned::new(curr_span, &array_len);
+
+                    // apply step
+                    match step {
+                        AssignmentStepHardware::ArrayIndex(index) => {
+                            check_range_index(diags, Spanned::new(step_span, &index.ty), array_len.map_inner(Some))?;
+
+                            let expr = IrExpressionLarge::ArrayIndex {
+                                base: curr_value.expr,
+                                index: index.expr.clone(),
+                            };
+                            Value::Hardware(HardwareValue {
+                                ty: Arc::unwrap_or_clone(array_inner),
+                                domain: curr_value.domain.join(index.domain),
+                                expr: large.push_expr(expr),
+                            })
+                        }
+                        AssignmentStepHardware::ArraySlice {
+                            start: slice_start,
+                            length: slice_length,
+                        } => {
+                            check_range_slice(
+                                diags,
+                                Spanned::new(step_span, &slice_start.ty),
+                                Some(Spanned::new(step_span, slice_length)),
+                                array_len.map_inner(Some),
+                            )?;
+
+                            let expr = IrExpressionLarge::ArraySlice {
+                                base: curr_value.expr,
+                                start: slice_start.expr.clone(),
+                                len: slice_length.clone(),
+                            };
+                            Value::Hardware(HardwareValue {
+                                ty: HardwareType::Array(array_inner, slice_length.clone()),
+                                domain: curr_value.domain.join(slice_start.domain),
+                                expr: large.push_expr(expr),
+                            })
+                        }
+                    }
                 }
             };
 
-            curr = Spanned::new(curr.span.join(step.span), next_inner);
+            curr_value = Spanned::new(curr_value.span.join(step_span), next);
         }
 
-        Ok(curr.inner)
+        Ok(curr_value.inner)
     }
 }
 
-impl ArraySteps<&ArrayStepCompile> {
+impl AssignmentSteps<&AssignmentStepCompile> {
     /// Evaluate the operation `target[steps] = value`, where all operands are compile-time constants.
     pub fn set_compile_value(
         &self,
@@ -447,11 +571,11 @@ impl ArraySteps<&ArrayStepCompile> {
         let diags = refs.diags;
 
         // TODO avoid clones
-        let self_mapped = ArraySteps {
+        let self_mapped = AssignmentSteps {
             steps: self
                 .steps
                 .iter()
-                .map(|s| s.map_inner(|s| ArrayStep::Compile(s.clone())))
+                .map(|s| s.map_inner(|s| AssignmentStep::Compile(s.clone())))
                 .collect_vec(),
         };
         let value_span = value.span;
@@ -469,10 +593,22 @@ enum SetCompileTarget<'a> {
     Slice(&'a mut [CompileValue]),
 }
 
+impl SetCompileTarget<'_> {
+    pub fn ty(&self) -> Type {
+        match self {
+            SetCompileTarget::Scalar(v) => v.ty(),
+            SetCompileTarget::Slice(slice) => {
+                let v = SimpleCompileValue::Array(Arc::new(slice.to_vec()));
+                v.ty()
+            }
+        }
+    }
+}
+
 fn set_compile_value_impl(
     refs: CompileRefs,
     target: Spanned<SetCompileTarget<'_>>,
-    steps: &[Spanned<&ArrayStepCompile>],
+    steps: &[Spanned<&AssignmentStepCompile>],
     assign_op_span: Span,
     source: Spanned<CompileValue>,
 ) -> DiagResult {
@@ -537,64 +673,111 @@ fn set_compile_value_impl(
         return Ok(());
     };
 
-    // check that the current target is an array
-    // (for now all steps are array steps, so we can unwrap here)
-    let (target_array, target_len) = match target.inner {
-        SetCompileTarget::Scalar(target_inner) => match target_inner {
-            CompileValue::Simple(SimpleCompileValue::Array(target_inner)) => {
-                let target_inner = Arc::make_mut(target_inner);
-                let len = target_inner.len();
-                (target_inner.as_mut_slice(), len)
-            }
-            _ => {
-                return Err(DiagnosticError::new(
-                    "expected array value for array access",
-                    step.span,
-                    "this array access needs an array",
-                )
-                .add_info(
-                    target.span,
-                    format!(
-                        "non-array value with type `{}` here",
-                        target_inner.ty().value_string(elab)
-                    ),
-                )
-                .report(diags));
-            }
-        },
-        SetCompileTarget::Slice(array) => {
-            let len = array.len();
-            (array, len)
-        }
-    };
-    let target_len = Spanned::new(target.span, target_len);
-
+    let target_span = target.span;
     let new_target = match &step.inner {
-        ArrayStepCompile::ArrayIndex(index) => {
-            let index = check_range_index_compile(diags, Spanned::new(step.span, index), target_len)?;
+        AssignmentStepCompile::ArrayIndex(index) => {
+            let target_inner = check_target_is_array(refs, target, step.span, false)?;
 
-            SetCompileTarget::Scalar(&mut target_array[index])
+            let index = check_range_index_compile(
+                diags,
+                Spanned::new(step.span, index),
+                Spanned::new(target_span, target_inner.len()),
+            )?;
+
+            SetCompileTarget::Scalar(&mut target_inner[index])
         }
-        ArrayStepCompile::ArraySlice {
+        AssignmentStepCompile::ArraySlice {
             start: slice_start,
             length: slice_len,
         } => {
+            let target_inner = check_target_is_array(refs, target, step.span, true)?;
+
             let SliceInfo {
                 start: slice_start,
-                len: slice_len,
+                length: slice_len,
             } = check_range_slice_compile(
                 diags,
                 Spanned::new(step.span, slice_start),
                 slice_len.as_ref().map(|len| Spanned::new(step.span, len)),
-                target_len,
+                Spanned::new(target_span, target_inner.len()),
             )?;
 
-            SetCompileTarget::Slice(&mut target_array[slice_start..slice_start + slice_len])
+            SetCompileTarget::Slice(&mut target_inner[slice_start..][..slice_len])
+        }
+        AssignmentStepCompile::TupleIndex(index) => {
+            // check target is tuple
+            let target_inner = match target.inner {
+                SetCompileTarget::Scalar(target_inner) => match target_inner {
+                    CompileValue::Compound(CompileCompoundValue::Tuple(target_inner)) => target_inner,
+                    CompileValue::Hardware(never) => never.unreachable(),
+                    _ => {
+                        let curr_ty = Spanned::new(target_span, target_inner.ty());
+                        return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                    }
+                },
+                SetCompileTarget::Slice(_) => {
+                    let curr_ty = Spanned::new(target_span, target.inner.ty());
+                    return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                }
+            };
+
+            // check index in bounds
+            let index = check_tuple_index(diags, target_inner.len(), index, target_span, step.span)?;
+
+            // build new target
+            SetCompileTarget::Scalar(&mut target_inner[index])
+        }
+        AssignmentStepCompile::StructField(field) => {
+            // check target is struct
+            let target_inner = match target.inner {
+                SetCompileTarget::Scalar(target_inner) => match target_inner {
+                    CompileValue::Compound(CompileCompoundValue::Struct(target_inner)) => target_inner,
+                    CompileValue::Hardware(never) => never.unreachable(),
+                    _ => {
+                        let curr_ty = Spanned::new(target_span, target_inner.ty());
+                        return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                    }
+                },
+                SetCompileTarget::Slice(_) => {
+                    let curr_ty = Spanned::new(target_span, target.inner.ty());
+                    return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                }
+            };
+
+            // get field index
+            let ty_info = elab.struct_info(target_inner.ty);
+            let field_str = Spanned::new(step.span, field.as_str());
+            let field_index = ty_info.field_index(diags, target_span, field_str)?;
+
+            // build new target
+            SetCompileTarget::Scalar(&mut target_inner.fields[field_index])
         }
     };
 
-    let new_target = Spanned::new(target.span.join(step.span), new_target);
+    let new_target = Spanned::new(target_span.join(step.span), new_target);
     set_compile_value_impl(refs, new_target, steps, assign_op_span, source)
+}
+
+fn check_target_is_array<'a>(
+    refs: CompileRefs,
+    target: Spanned<SetCompileTarget<'a>>,
+    step_span: Span,
+    op_is_slice: bool,
+) -> DiagResult<&'a mut [CompileValue]> {
+    match target.inner {
+        SetCompileTarget::Scalar(target_inner) => match target_inner {
+            CompileValue::Simple(SimpleCompileValue::Array(target_inner)) => {
+                Ok(Arc::make_mut(target_inner).as_mut_slice())
+            }
+            _ => Err(err_expected_array(
+                refs,
+                Spanned::new(target.span, &target_inner.ty()),
+                step_span,
+                op_is_slice,
+            )),
+        },
+        SetCompileTarget::Slice(array) => Ok(array),
+    }
 }
 
 pub fn check_range_index(
@@ -659,12 +842,23 @@ pub fn check_range_slice(
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<Option<&BigUint>>,
 ) -> DiagResult<Option<BigUint>> {
-    if slice_start.inner.as_single().is_none() && slice_len.is_none() {
-        return Err(diags.report_error_internal(
-            slice_start.span,
-            "start with non-single range and no length doesn't make sense",
-        ));
+    #[derive(Copy, Clone)]
+    enum SliceLen<T, U> {
+        NoneButStartSingle(U),
+        Some(T),
     }
+    let slice_len = match slice_len {
+        Some(slice_len) => SliceLen::Some(slice_len),
+        None => match slice_start.inner.as_single() {
+            None => {
+                return Err(diags.report_error_internal(
+                    slice_start.span,
+                    "start with non-single range and no length doesn't make sense",
+                ));
+            }
+            Some(slice_start_single) => SliceLen::NoneButStartSingle(slice_start_single),
+        },
+    };
 
     let slice_str = || {
         let start = if let Some(slice_start_single) = slice_start.inner.as_single() {
@@ -674,8 +868,8 @@ pub fn check_range_slice(
         };
 
         match slice_len {
-            None => format!("{start}.."),
-            Some(slice_len) => format!("{}..+{}", start, slice_len.inner),
+            SliceLen::NoneButStartSingle(_) => format!("{start}.."),
+            SliceLen::Some(slice_len) => format!("{}..+{}", start, slice_len.inner),
         }
     };
 
@@ -700,32 +894,30 @@ pub fn check_range_slice(
         .report(diags));
     }
 
-    // check start + len if length is provided
-    //   if len is not provided, knowing that the start is valid is enough
-    if let Some(slice_len) = slice_len {
-        // if we don't know the array length, we can't check the slice end yet
-        if let Some(array_len_inner) = array_len.inner {
-            let slice_end_max = slice_start_end + BigInt::from(slice_len.inner.clone());
+    // check array length compared to slice length (if we have enough info)
+    match slice_len {
+        SliceLen::Some(slice_len) => {
+            if let Some(array_len_inner) = array_len.inner {
+                let slice_end_max = slice_start_end + BigInt::from(slice_len.inner.clone());
 
-            #[allow(clippy::nonminimal_bool)]
-            if !(slice_end_max - 1 <= BigInt::from(array_len_inner)) {
-                return Err(DiagnosticError::new(
-                    "array slice end out of bounds",
-                    slice_len.span,
-                    format!("slice end of `{}` is out of bounds", slice_str()),
-                )
-                .add_info(array_len.span, info_array_length(Some(array_len_inner)))
-                .report(diags));
+                #[allow(clippy::nonminimal_bool)]
+                if !(slice_end_max - 1 <= BigInt::from(array_len_inner)) {
+                    return Err(DiagnosticError::new(
+                        "array slice end out of bounds",
+                        slice_len.span,
+                        format!("slice end of `{}` is out of bounds", slice_str()),
+                    )
+                    .add_info(array_len.span, info_array_length(Some(array_len_inner)))
+                    .report(diags));
+                }
             }
+
             Ok(Some(slice_len.inner.clone()))
-        } else {
-            Ok(None)
         }
-    } else {
-        Ok(array_len.inner.map(|array_len| {
-            let slice_start = BigUint::try_from(slice_start.inner.as_single().unwrap()).unwrap();
+        SliceLen::NoneButStartSingle(slice_start) => Ok(array_len.inner.map(|array_len| {
+            let slice_start = BigUint::try_from(slice_start).unwrap();
             BigUint::try_from(array_len - slice_start).unwrap()
-        }))
+        })),
     }
 }
 
@@ -736,9 +928,17 @@ fn info_array_length(array_len: Option<&BigUint>) -> String {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct SliceInfo {
     pub start: usize,
-    pub len: usize,
+    pub length: usize,
+}
+
+impl SliceInfo {
+    fn as_range(self) -> std::ops::Range<usize> {
+        let SliceInfo { start, length } = self;
+        start..start + length
+    }
 }
 
 pub fn check_range_slice_compile(
@@ -758,14 +958,46 @@ pub fn check_range_slice_compile(
     let len = slice_len
         .map(|len| usize::try_from(len.inner).unwrap())
         .unwrap_or(array_len.inner - start);
-    Ok(SliceInfo { start, len })
+    Ok(SliceInfo { start, length: len })
 }
 
-pub fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagnosticError {
+fn check_tuple_index(
+    diags: &Diagnostics,
+    tuple_len: usize,
+    index: &BigUint,
+    base_span: Span,
+    step_span: Span,
+) -> DiagResult<usize> {
+    index.as_usize_if_lt(tuple_len).ok_or_else(|| {
+        DiagnosticError::new(
+            "tuple index out of bounds",
+            step_span,
+            format!("index `{index}` is out of bounds"),
+        )
+        .add_info(base_span, format!("base is tuple with length `{}`", tuple_len))
+        .report(diags)
+    })
+}
+
+fn check_type_is_array<'t>(
+    refs: CompileRefs,
+    ty: Spanned<&'t Type>,
+    step_span: Span,
+    step_is_slice: bool,
+) -> DiagResult<(&'t Arc<Type>, Option<&'t BigUint>)> {
+    match &ty.inner {
+        Type::Array(ty_inner, len) => Ok((ty_inner, len.as_ref())),
+        _ => Err(err_expected_array(refs, ty, step_span, step_is_slice)),
+    }
+}
+
+fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span, step_is_slice: bool) -> DiagError {
+    let op_name = if step_is_slice { "slice" } else { "index" };
+
     DiagnosticError::new(
-        "array indexing on non-array type",
+        format!("cannot {op_name} non-array type"),
         step_span,
-        "array indexing operation here",
+        format!("array {op_name} here"),
     )
     .add_info(
         ty.span,
@@ -774,4 +1006,29 @@ pub fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span
             ty.inner.value_string(&refs.shared.elaboration_arenas)
         ),
     )
+    .report(refs.diags)
+}
+
+pub fn err_expected_tuple(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagError {
+    DiagnosticError::new("cannot tuple index non-tuple type", step_span, "tuple index here")
+        .add_info(
+            ty.span,
+            format!(
+                "on non-tuple value with type `{}` here",
+                ty.inner.value_string(&refs.shared.elaboration_arenas)
+            ),
+        )
+        .report(refs.diags)
+}
+
+pub fn err_expected_struct(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagError {
+    DiagnosticError::new("cannot struct index non-struct type", step_span, "struct index here")
+        .add_info(
+            ty.span,
+            format!(
+                "on non-struct value with type `{}` here",
+                ty.inner.value_string(&refs.shared.elaboration_arenas)
+            ),
+        )
+        .report(refs.diags)
 }

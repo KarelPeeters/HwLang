@@ -430,7 +430,7 @@ impl CompileItemContext<'_, '_> {
 
                     if expected_info.unique == func_unique {
                         let variant_index =
-                            expected_info.find_variant(diags, Spanned::new(span_target, variant_str))?;
+                            expected_info.variant_index(diags, Spanned::new(span_target, variant_str))?;
                         self.call_enum_new(span_call, expected_elab, variant_index, &args)
                     } else {
                         Err(error_unique_mismatch(

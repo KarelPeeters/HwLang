@@ -1955,6 +1955,22 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     IrType::Array(Box::new(element_ty), length.clone())
                 }
+                &IrTargetStep::TupleIndex(index) => {
+                    let curr_ty = curr_ty.unwrap_tuple();
+                    let start_bits = curr_ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
+
+                    add_offset(Evaluated::String(start_bits.to_string()), &BigUint::ONE);
+
+                    curr_ty.get_owned(index)
+                }
+                &IrTargetStep::StructField(field) => {
+                    let curr_ty = curr_ty.unwrap_struct();
+                    let start_bits = curr_ty.field_offset(field);
+
+                    add_offset(Evaluated::String(start_bits.to_string()), &BigUint::ONE);
+
+                    curr_ty.fields.get_index_owned(field).unwrap().1
+                }
             };
         }
 

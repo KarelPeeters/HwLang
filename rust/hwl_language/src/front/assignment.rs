@@ -7,7 +7,7 @@ use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Signal, SignalOrVariable};
-use crate::front::steps::ArraySteps;
+use crate::front::steps::AssignmentSteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
@@ -17,15 +17,14 @@ use crate::syntax::pos::{Span, Spanned};
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {
     pub base: Spanned<SignalOrVariable>,
-    // TODO add struct/tuple dot indices here
-    pub array_steps: ArraySteps,
+    pub steps: AssignmentSteps,
 }
 
 impl AssignmentTarget {
     pub fn simple(base: Spanned<SignalOrVariable>) -> Self {
         Self {
             base,
-            array_steps: ArraySteps::new(vec![]),
+            steps: AssignmentSteps::new(vec![]),
         }
     }
 }
@@ -53,7 +52,7 @@ impl CompileItemContext<'_, '_> {
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
         let AssignmentTarget {
             base: target_base,
-            array_steps: target_steps,
+            steps: target_steps,
         } = &target.inner;
 
         // compute source, by evaluating right but also left if needed
@@ -178,7 +177,7 @@ impl CompileItemContext<'_, '_> {
                 let (target_ty, target_steps_ir) =
                     target_steps.apply_to_hardware_type(refs, target_base_ty.as_ref())?;
                 let reason = TypeContainsReason::Assignment {
-                    span_target: target_base.span,
+                    span_target: target.span,
                     span_target_ty: target_base_ty.span,
                 };
                 check_type_contains_value(diags, elab, reason, &target_ty.as_type(), source_value.as_ref())?;
@@ -249,7 +248,7 @@ impl CompileItemContext<'_, '_> {
                 if let Some(target_base_ty) = &target_base_ty {
                     let source_expected_ty = target_steps.apply_to_expected_type(refs, target_base_ty.clone())?;
                     let reason = TypeContainsReason::Assignment {
-                        span_target: target_base.span,
+                        span_target: target.span,
                         span_target_ty: target_base_ty.span,
                     };
                     check_type_contains_value(diags, elab, reason, &source_expected_ty, source_value.as_ref())?;
@@ -321,7 +320,7 @@ impl CompileItemContext<'_, '_> {
 
                         // convert source value to hardware
                         let reason = TypeContainsReason::Assignment {
-                            span_target: target_base.span,
+                            span_target: target.span,
                             span_target_ty: target_base_ty.span,
                         };
                         check_type_contains_value(diags, elab, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
@@ -459,7 +458,7 @@ impl CompileItemContext<'_, '_> {
         condition_domains: impl Iterator<Item = Spanned<ValueDomain>>,
         op_span: Span,
         target_base_domain: Spanned<ValueDomain>,
-        steps: &ArraySteps,
+        steps: &AssignmentSteps,
         value_domain: Spanned<ValueDomain>,
     ) -> DiagResult {
         match block_kind {

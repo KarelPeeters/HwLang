@@ -157,6 +157,8 @@ def test_array_slice_errors(tmp_dir: Path):
 
     # extra cursed cases
     with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        f([1, 2, 3], hwl.Range(4, None))
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(5, None))
     with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
         f([1, 2, 3], hwl.Range(None, -1))

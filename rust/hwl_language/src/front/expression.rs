@@ -16,7 +16,7 @@ use crate::front::implication::{BoolImplications, HardwareValueWithImplications,
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
-use crate::front::steps::{ArrayStep, ArrayStepCompile, ArrayStepHardware, ArraySteps};
+use crate::front::steps::{AssignmentStep, AssignmentStepCompile, AssignmentStepHardware, AssignmentSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile,
@@ -610,10 +610,9 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 };
 
-                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
-                let steps = ArraySteps::new(vec![Spanned::new(span_brackets, index_step)]);
-
-                // apply steps to value
+                // delegate to common steps processing
+                let step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let steps = AssignmentSteps::new(vec![Spanned::new(span_brackets, step)]);
                 steps.apply_to_value(self.refs, &mut self.large, base)?
             }
             &ExpressionKind::ArrayType {
@@ -671,59 +670,10 @@ impl<'a> CompileItemContext<'a, '_> {
                     let index = parse_token_int_literal_decimal(source.span_str(index_span))
                         .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
 
-                    let err_not_tuple = |ty: &str| {
-                        DiagnosticError::new(
-                            "indexing into non-tuple type",
-                            index_span,
-                            "attempt to index into non-tuple type here",
-                        )
-                        .add_info(base.span, format!("base has type `{ty}`"))
-                        .report(diags)
-                    };
-                    let err_index_out_of_bounds = |len: usize| {
-                        DiagnosticError::new(
-                            "tuple index out of bounds",
-                            index_span,
-                            format!("index `{index}` is out of bounds"),
-                        )
-                        .add_info(base.span, format!("base is tuple with length `{len}`"))
-                        .report(diags)
-                    };
-
-                    // TODO use common step logic once that supports tuple indexing
-                    match base.inner {
-                        Value::Compound(MixedCompoundValue::Tuple(inner)) => {
-                            let index = index
-                                .as_usize_if_lt(inner.len())
-                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                            inner[index].clone()
-                        }
-                        Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner)))) => {
-                            let index = index
-                                .as_usize_if_lt(inner.len())
-                                .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
-                            Value::new_ty(inner[index].clone())
-                        }
-                        Value::Hardware(value) => match value.ty {
-                            HardwareType::Tuple(inner_tys) => {
-                                let index = index
-                                    .as_usize_if_lt(inner_tys.len())
-                                    .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
-
-                                let expr = IrExpressionLarge::TupleIndex {
-                                    base: value.expr,
-                                    index,
-                                };
-                                Value::Hardware(HardwareValue {
-                                    ty: inner_tys[index].clone(),
-                                    domain: value.domain,
-                                    expr: self.large.push_expr(expr),
-                                })
-                            }
-                            _ => return Err(err_not_tuple(&value.ty.value_string(elab))),
-                        },
-                        v => return Err(err_not_tuple(&v.ty().value_string(elab))),
-                    }
+                    // delegate to common steps processing
+                    let step = AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index));
+                    let steps = AssignmentSteps::new(vec![Spanned::new(index_span, step)]);
+                    steps.apply_to_value(self.refs, &mut self.large, base)?
                 }
             },
             &ExpressionKind::Call(target, ref args) => {
@@ -1102,7 +1052,7 @@ impl<'a> CompileItemContext<'a, '_> {
         // enum variants
         let eval_enum = |elab| {
             let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            let variant_index = info.find_variant(diags, index)?;
+            let variant_index = info.variant_index(diags, index)?;
             let variant_info = &info.variants[variant_index];
 
             let result = match &variant_info.payload_ty {
@@ -1170,47 +1120,11 @@ impl<'a> CompileItemContext<'a, '_> {
             }
 
             // try field
-            let Some(field_index) = info.fields.get_index_of(index.inner) else {
-                let e = DiagnosticError::new(
-                    format!("struct member `{}` not found", index.inner),
-                    index.span,
-                    "attempt to access non-existing member here",
-                )
-                .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
-                .add_info(info.span_body, "struct body declared here")
-                .report(diags);
-                return Err(e);
-            };
-
-            let result = match base.inner {
-                Value::Simple(_) => return Err(diags.report_error_internal(expr_span, "expected struct value")),
-                Value::Compound(base_eval) => match base_eval {
-                    MixedCompoundValue::Struct(base_eval) => base_eval.fields[field_index].clone(),
-                    _ => return Err(diags.report_error_internal(expr_span, "expected struct compile value")),
-                },
-                Value::Hardware(base_eval) => {
-                    let base_eval = base_eval.value;
-                    match base_eval.ty {
-                        HardwareType::Struct(elab) => {
-                            let elab_info = self.refs.shared.elaboration_arenas.struct_info(elab.inner());
-                            let field_types = &elab_info.hw.as_ref().unwrap().fields;
-
-                            let expr = IrExpressionLarge::StructField {
-                                base: base_eval.expr,
-                                field: field_index,
-                            };
-                            Value::Hardware(HardwareValue {
-                                ty: field_types[field_index].clone(),
-                                domain: base_eval.domain,
-                                expr: self.large.push_expr(expr),
-                            })
-                        }
-                        _ => return Err(diags.report_error_internal(expr_span, "expected struct hardware value")),
-                    }
-                }
-            };
-
-            return Ok(Value::simple(result));
+            let step = AssignmentStep::Compile(AssignmentStepCompile::StructField(Arc::new(index.inner.to_owned())));
+            let steps = AssignmentSteps::new(vec![Spanned::new(index.span, step)]);
+            return steps
+                .apply_to_value(refs, &mut self.large, base.map_inner(ValueWithImplications::into_value))
+                .map(Value::simple);
         }
 
         // enum methods
@@ -1349,7 +1263,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         flow: &mut impl Flow,
         index: Expression,
-    ) -> DiagResult<ArrayStep> {
+    ) -> DiagResult<AssignmentStep> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1375,12 +1289,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len))?;
 
             match start {
-                MaybeCompile::Compile(start) => ArrayStep::Compile(ArrayStepCompile::ArraySlice {
+                MaybeCompile::Compile(start) => AssignmentStep::Compile(AssignmentStepCompile::ArraySlice {
                     start,
                     length: Some(len),
                 }),
                 MaybeCompile::Hardware(start) => {
-                    ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length: len })
+                    AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length: len })
                 }
             }
         } else {
@@ -1406,7 +1320,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
             match index.inner {
                 Value::Simple(index) => match index {
-                    SimpleCompileValue::Int(index) => ArrayStep::Compile(ArrayStepCompile::ArrayIndex(index)),
+                    SimpleCompileValue::Int(index) => AssignmentStep::Compile(AssignmentStepCompile::ArrayIndex(index)),
                     _ => return Err(err_wrong_type()),
                 },
                 Value::Compound(index) => match index {
@@ -1436,10 +1350,10 @@ impl<'a> CompileItemContext<'a, '_> {
                                 },
                             };
 
-                            ArrayStep::Compile(ArrayStepCompile::ArraySlice { start, length })
+                            AssignmentStep::Compile(AssignmentStepCompile::ArraySlice { start, length })
                         }
                         RangeValue::HardwareStartLength { start, length } => {
-                            ArrayStep::Hardware(ArrayStepHardware::ArraySlice { start, length })
+                            AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length })
                         }
                     },
                     _ => return Err(err_wrong_type()),
@@ -1448,7 +1362,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     // TODO make this error message better, specifically refer to non-compile-time index
                     let reason = TypeContainsReason::ArrayIndex { span_index: index_span };
                     let index_int = check_type_is_int_hardware(diags, elab, reason, Spanned::new(index_span, index))?;
-                    ArrayStep::Hardware(ArrayStepHardware::ArrayIndex(index_int))
+                    AssignmentStep::Hardware(AssignmentStepHardware::ArrayIndex(index_int))
                 }
             }
         };
@@ -1540,7 +1454,6 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    // TODO move typechecks here, immediately returning expected type if any
     pub fn eval_expression_as_assign_target(
         &mut self,
         scope: &Scope,
@@ -1549,25 +1462,13 @@ impl<'a> CompileItemContext<'a, '_> {
     ) -> DiagResult<Spanned<AssignmentTarget>> {
         let diags = self.refs.diags;
 
-        // TODO include definition site (at least for named values)
-        let build_err =
-            |actual: &str| diags.report_error_simple("expected assignment target", expr.span, format!("got {actual}"));
-
         let result = match *self.refs.get_expr_inner(expr) {
             ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                match self.eval_scoped_as_named(scope, id)?.inner {
-                    NamedOrValue::Value(_) => return Err(build_err("value")),
-                    NamedOrValue::Named(s) => match s {
-                        NamedValue::Variable(v) => AssignmentTarget::simple(Spanned::new(expr.span, v.into())),
-                        NamedValue::Signal(signal) => AssignmentTarget::simple(Spanned::new(expr.span, signal.into())),
-                        NamedValue::Interface(_) => {
-                            return Err(build_err("interface instance"));
-                        }
-                    },
-                }
+                let named = self.eval_scoped_as_named(scope, id)?.inner;
+                self.eval_named_as_assign_target(expr.span, named)?
             }
             ExpressionKind::Deref(span_op, inner) => {
                 let deref = self.eval_deref_operator(scope, flow, expr.span, span_op, inner);
@@ -1607,57 +1508,117 @@ impl<'a> CompileItemContext<'a, '_> {
                 let index_step = Spanned::new(span_brackets, index_step);
 
                 // wrap result
-                let AssignmentTarget {
-                    base: base_inner,
-                    array_steps: mut inner_array_steps,
-                } = base.inner;
-                inner_array_steps.steps.push(index_step);
-                AssignmentTarget {
-                    base: base_inner,
-                    array_steps: inner_array_steps,
-                }
+                let mut target = base.inner;
+                target.steps.steps.push(index_step);
+                target
             }
             ExpressionKind::DotIndex(base, index) => match index {
                 DotIndexKind::Id(index) => {
-                    let index_str = index.str(self.refs.fixed.source);
-
-                    let err_todo_non_intf =
-                        || diags.report_error_todo(base.span, "assignment target dot index on non-interface");
-
-                    let intf = match *self.refs.get_expr_inner(base) {
+                    // evaluate base
+                    // there are two possible cases here:
+                    // * interface -> signal indexing
+                    // * existing assignment target -> field indexing
+                    let base_span = base.span;
+                    let base: Either<Interface, AssignmentTarget> = match *self.refs.get_expr_inner(base) {
                         ExpressionKind::Id(base) => {
                             let base = self.eval_general_id(scope, flow, base)?;
                             let base = base.as_ref().map_inner(ArcOrRef::as_ref);
 
-                            match self.eval_scoped_as_named(scope, base)?.inner {
-                                NamedOrValue::Named(NamedValue::Interface(intf)) => intf,
-                                _ => return Err(err_todo_non_intf()),
+                            let base = self.eval_scoped_as_named(scope, base)?;
+
+                            if let NamedOrValue::Named(NamedValue::Interface(intf)) = base.inner {
+                                Either::Left(intf)
+                            } else {
+                                let base = self.eval_named_as_assign_target(expr.span, base.inner)?;
+                                Either::Right(base)
                             }
                         }
                         ExpressionKind::Deref(span_op, inner) => {
-                            let inner = self.eval_deref_operator(scope, flow, expr.span, span_op, inner)?;
-                            match inner {
-                                Either::Left(_) => return Err(err_todo_non_intf()),
-                                Either::Right(intf) => intf,
+                            match self.eval_deref_operator(scope, flow, expr.span, span_op, inner)? {
+                                Either::Left(base) => {
+                                    Either::Right(AssignmentTarget::simple(Spanned::new(expr.span, base)))
+                                }
+                                Either::Right(intf) => Either::Left(intf),
                             }
                         }
-                        _ => return Err(err_todo_non_intf()),
+                        _ => {
+                            let base = self.eval_expression_as_assign_target(scope, flow, base)?;
+                            Either::Right(base.inner)
+                        }
                     };
 
-                    let signal = self.interface_get_signal(base.span, intf, Spanned::new(index.span, index_str))?;
-                    AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
+                    // evaluate index
+                    let index_str = index.spanned_str(self.refs.fixed.source);
+
+                    // apply indexing operation
+                    match base {
+                        Either::Left(base_intf) => {
+                            let signal = self.interface_get_signal(base_span, base_intf, index_str)?;
+                            AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
+                        }
+                        Either::Right(base_target) => {
+                            let field_step = AssignmentStep::Compile(AssignmentStepCompile::StructField(Arc::new(
+                                index_str.inner.to_owned(),
+                            )));
+                            let field_step = Spanned::new(index_str.span, field_step);
+
+                            let mut target = base_target;
+                            target.steps.steps.push(field_step);
+                            target
+                        }
+                    }
                 }
-                DotIndexKind::Int { span: _ } => {
-                    return Err(diags.report_error_todo(expr.span, "assignment target dot int index"))?;
+                DotIndexKind::Int { span } => {
+                    // eval base
+                    let base = self.eval_expression_as_assign_target(scope, flow, base)?;
+
+                    // eval index
+                    let index = parse_token_int_literal_decimal(self.refs.fixed.source.span_str(span))
+                        .map_err(|_| diags.report_error_internal(span, "failed to parse int literal"))?;
+
+                    let index_step = AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index));
+                    let index_step = Spanned::new(span, index_step);
+
+                    // wrap result
+                    let mut target = base.inner;
+                    target.steps.steps.push(index_step);
+                    target
                 }
             },
-            _ => return Err(build_err("other expression")),
+            _ => {
+                let err = error_expected_assignment_target(diags, expr.span, "other expression", None);
+                return Err(err);
+            }
         };
 
         Ok(Spanned {
             span: expr.span,
             inner: result,
         })
+    }
+
+    pub fn eval_named_as_assign_target(
+        &mut self,
+        expr_span: Span,
+        named: NamedOrValue,
+    ) -> DiagResult<AssignmentTarget> {
+        let diags = self.refs.diags;
+
+        match named {
+            NamedOrValue::Value(_) => Err(error_expected_assignment_target(diags, expr_span, "value", None)),
+            NamedOrValue::Named(s) => match s {
+                NamedValue::Variable(v) => Ok(AssignmentTarget::simple(Spanned::new(expr_span, v.into()))),
+                NamedValue::Signal(signal) => Ok(AssignmentTarget::simple(Spanned::new(expr_span, signal.into()))),
+                NamedValue::Interface(intf) => {
+                    let span_decl = match intf {
+                        Interface::Port(intf) => self.port_interfaces[intf].id.span,
+                        Interface::Wire(intf) => self.wire_interfaces[intf].id.span(),
+                    };
+                    let err = error_expected_assignment_target(diags, expr_span, "interface instance", Some(span_decl));
+                    Err(err)
+                }
+            },
+        }
     }
 
     fn eval_deref_operator(
@@ -2998,4 +2959,17 @@ fn error_cannot_eval_interface_as(
     .add_footer_hint("to access individual signals, use dot indexing: `<intf>.<signal>`")
     .add_footer_hint("to get a reference to the whole interface, use `ref <intf>`")
     .report(diags)
+}
+
+fn error_expected_assignment_target(
+    diags: &Diagnostics,
+    span: Span,
+    actual: &str,
+    span_def: Option<Span>,
+) -> DiagError {
+    let mut diag = DiagnosticError::new("expected assignment target", span, format!("got {actual}"));
+    if let Some(span_def) = span_def {
+        diag = diag.add_info(span_def, format!("{actual} declared here"));
+    }
+    diag.report(diags)
 }

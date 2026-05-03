@@ -1014,6 +1014,16 @@ impl CodegenBlockContext<'_> {
                         Some((start, len))
                     }
                 }
+                &IrTargetStep::TupleIndex(index) => {
+                    assert!(last_slice.is_none());
+                    target_str = format!("std::get<{index}>({target_str})");
+                    None
+                }
+                &IrTargetStep::StructField(field) => {
+                    assert!(last_slice.is_none());
+                    target_str = format!("std::get<{field}>({target_str})");
+                    None
+                }
             };
         }
 

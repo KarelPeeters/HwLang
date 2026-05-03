@@ -319,8 +319,23 @@ impl GenericEnumInfo {
     }
 }
 
+impl ElaboratedStructInfo {
+    pub fn field_index(&self, diags: &Diagnostics, base_span: Span, field: Spanned<&str>) -> DiagResult<usize> {
+        self.fields.get_index_of(field.inner).ok_or_else(|| {
+            DiagnosticError::new(
+                format!("struct member `{}` not found", field.inner),
+                field.span,
+                "attempt to access non-existing member here",
+            )
+            .add_info(base_span, format!("base has type `{}`", self.value_str()))
+            .add_info(self.span_body, "struct body declared here")
+            .report(diags)
+        })
+    }
+}
+
 impl ElaboratedEnumInfo {
-    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
+    pub fn variant_index(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
         self.variants.get_index_of(variant.inner).ok_or_else(|| {
             DiagnosticError::new(
                 format!("enum variant `{}` not found", variant.inner),

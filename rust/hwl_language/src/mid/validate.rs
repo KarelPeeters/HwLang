@@ -10,6 +10,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::IndexSet;
 use itertools::zip_eq;
@@ -271,6 +272,14 @@ fn assignment_target_ty<'a>(
             IrTargetStep::ArraySlice { start: _, len: length } => {
                 let (inner_ty, _) = curr_ty.unwrap_array();
                 IrType::Array(Box::new(inner_ty), length.clone())
+            }
+            &IrTargetStep::TupleIndex(index) => {
+                let tys = curr_ty.unwrap_tuple();
+                tys.get_owned(index)
+            }
+            &IrTargetStep::StructField(field) => {
+                let ty = curr_ty.unwrap_struct();
+                ty.fields.get_index_owned(field).unwrap().1
             }
         };
     }

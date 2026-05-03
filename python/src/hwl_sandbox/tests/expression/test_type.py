@@ -79,3 +79,24 @@ def test_type_array():
         assert g([True]) == 1
     with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
         assert g([0, 1]) == 3
+
+
+def test_type_tuple_index():
+    src = """
+    fn f() -> type {
+        type T = Tuple(bool, uint);
+        val v: T.1 = 4;
+        return T.0;
+    }
+    fn g() -> type {
+        type T = Tuple;
+        return T.0;
+    }
+    """
+
+    f = compile_custom(src).resolve("top.f")
+    g = compile_custom(src).resolve("top.g")
+
+    assert f() == bool
+    with pytest.raises(hwl.DiagnosticException, match="cannot index into tuple type with unknown field types"):
+        g()

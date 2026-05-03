@@ -304,7 +304,7 @@ impl CompileItemContext<'_, '_> {
                     let enum_info = self.refs.shared.elaboration_arenas.enum_info(target_ty);
 
                     let variant_str = variant.spanned_str(self.refs.fixed.source);
-                    let variant_index = enum_info.find_variant(diags, variant_str)?;
+                    let variant_index = enum_info.variant_index(diags, variant_str)?;
                     let variant_info = &enum_info.variants[variant_index];
                     let variant_name = &variant_info.debug_info_name;
 

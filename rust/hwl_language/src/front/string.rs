@@ -1,7 +1,7 @@
 use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
-use crate::front::item::{ElaboratedInterfaceView, ElaborationArenas};
+use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo, ElaborationArenas};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
@@ -568,12 +568,8 @@ impl Type {
                 f
             }
             // TODO include import path for debug names?
-            Type::Struct(ty) => {
-                format!("<struct {}>", elab.struct_info(*ty).debug_info_name)
-            }
-            Type::Enum(ty) => {
-                format!("<enum {}>", elab.enum_info(*ty).debug_info_name)
-            }
+            &Type::Struct(ty) => elab.struct_info(ty).value_str(),
+            &Type::Enum(ty) => elab.enum_info(ty).value_str(),
             Type::Range => "Range".to_string(),
             Type::Function => "Function".to_string(),
             Type::Module => "Module".to_string(),
@@ -586,6 +582,18 @@ impl Type {
                 format!("RefInterface({})", elab.interface_info(*intf).debug_info_name)
             }
         }
+    }
+}
+
+impl ElaboratedStructInfo {
+    pub fn value_str(&self) -> String {
+        format!("<struct {}>", self.debug_info_name)
+    }
+}
+
+impl ElaboratedEnumInfo {
+    pub fn value_str(&self) -> String {
+        format!("<enum {}>", self.debug_info_name)
     }
 }
 
