@@ -9,8 +9,9 @@ use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::range_multi::MultiRange;
+use hwl_util::constants::HWL_LANGUAGE_NAME_SHORT;
 use itertools::Itertools;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::types::{PyAnyMethods, PyBool, PyDict, PyInt, PyList, PyTuple, PyTupleMethods, PyType};
 use pyo3::{Bound, IntoPyObjectExt, Py, PyAny, PyClassInitializer, PyRef, PyResult, Python};
 use std::sync::Arc;
@@ -67,22 +68,24 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
     }
 }
 
-// TODO assert that the value references the same Compile instance!
-pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
+pub fn compile_value_from_py(value: &Bound<PyAny>, expected_compile: Option<&Py<Compile>>) -> PyResult<CompileValue> {
     let py = value.py();
 
     // TODO should we use downcast or extract here?
     //   https://pyo3.rs/v0.22.3/performance#extract-versus-downcast
     // unwrap our own python wrappers
     if let Ok(value) = value.extract::<PyRef<Value>>() {
+        check_same_compile_context(expected_compile, &value.compile, py)?;
         return Ok(value.value.clone());
     }
     if let Ok(value) = value.extract::<PyRef<Range>>() {
         return Ok(CompileValue::Compound(CompileCompoundValue::Range(value.range.clone())));
     }
     if let Ok(module) = value.extract::<PyRef<Module>>() {
+        check_same_compile_context(expected_compile, &module.as_super().compile, py)?;
         return Ok(CompileValue::Simple(SimpleCompileValue::Module(module.module)));
     }
+
     // convert some python values with obvious equivalents
     if let Ok(value) = value.extract::<bool>() {
         return Ok(CompileValue::new_bool(value));
@@ -94,11 +97,17 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
         return Ok(CompileValue::Compound(CompileCompoundValue::String(Arc::new(value))));
     }
     if let Ok(value) = value.downcast::<PyTuple>() {
-        let items: Vec<_> = value.iter().map(|v| compile_value_from_py(&v)).try_collect()?;
+        let items: Vec<_> = value
+            .iter()
+            .map(|v| compile_value_from_py(&v, expected_compile))
+            .try_collect()?;
         return Ok(CompileValue::Compound(CompileCompoundValue::Tuple(items)));
     }
     if let Ok(value) = value.downcast::<PyList>() {
-        let items: Vec<_> = value.into_iter().map(|v| compile_value_from_py(&v)).try_collect()?;
+        let items: Vec<_> = value
+            .into_iter()
+            .map(|v| compile_value_from_py(&v, expected_compile))
+            .try_collect()?;
         return Ok(CompileValue::Simple(SimpleCompileValue::Array(Arc::new(items))));
     }
 
@@ -116,12 +125,25 @@ pub fn compile_value_from_py(value: &Bound<PyAny>) -> PyResult<CompileValue> {
     }
 
     Err(PyException::new_err(format!(
-        "cannot convert value of type `{}` to compile-time value",
-        value.get_type()
+        "cannot convert value of type `{}` to {} value",
+        value.get_type(),
+        HWL_LANGUAGE_NAME_SHORT,
     )))
 }
 
+fn check_same_compile_context(expected: Option<&Py<Compile>>, actual: &Py<Compile>, py: Python) -> PyResult<()> {
+    if let Some(expected_compile) = expected {
+        if !actual.bind(py).is(expected_compile.bind(py)) {
+            return Err(PyValueError::new_err(
+                "cannot mix values from different Compile instances",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn convert_python_args_and_kwargs_to_args<'k>(
+    compile: &Py<Compile>,
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
@@ -129,19 +151,21 @@ pub fn convert_python_args_and_kwargs_to_args<'k>(
 ) -> PyResult<EvaluatedArgs<'k>> {
     let mut args_inner = vec![];
     for value in args {
+        let value = compile_value_from_py(&value, Some(compile))?;
         args_inner.push(Arg {
             span: dummy_span,
             name: None,
-            value: Spanned::new(dummy_span, ValueWithImplications::from(compile_value_from_py(&value)?)),
+            value: Spanned::new(dummy_span, ValueWithImplications::from(value)),
         });
     }
     if let Some(kwargs) = kwargs {
         for (name, value) in kwargs {
             let name = key_buffer.push(name.extract::<String>()?);
+            let value = compile_value_from_py(&value, Some(compile))?;
             args_inner.push(Arg {
                 span: dummy_span,
                 name: Some(Spanned::new(dummy_span, name.as_str())),
-                value: Spanned::new(dummy_span, ValueWithImplications::from(compile_value_from_py(&value)?)),
+                value: Spanned::new(dummy_span, ValueWithImplications::from(value)),
             });
         }
     }

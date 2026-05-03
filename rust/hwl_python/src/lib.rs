@@ -585,7 +585,7 @@ impl Value {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match compile_value_from_py(other) {
+        match compile_value_from_py(other, Some(&self.compile)) {
             Ok(other) => self.value == other,
             Err(_) => false,
         }
@@ -617,7 +617,7 @@ impl Value {
         // convert target and args
         let target = RustValue::from(self.value.clone());
         let arg_key_buffer = GrowVec::new();
-        let args = convert_python_args_and_kwargs_to_args(args, kwargs, dummy_span, &arg_key_buffer)?;
+        let args = convert_python_args_and_kwargs_to_args(&self.compile, args, kwargs, dummy_span, &arg_key_buffer)?;
 
         // prepare context
         let diags = Diagnostics::new();
@@ -1084,7 +1084,8 @@ impl VerilatedPort {
     #[setter]
     fn set_value(&mut self, value: &Bound<PyAny>) -> PyResult<()> {
         let py = value.py();
-        let value = compile_value_from_py(value)?;
+        let compile = self.instance.borrow(py).module.borrow(py).compile.clone_ref(py);
+        let value = compile_value_from_py(value, Some(&compile))?;
 
         let mut instance = self.instance.borrow_mut(py);
         let instance = instance.deref_mut();

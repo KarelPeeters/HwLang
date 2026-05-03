@@ -33,6 +33,16 @@ def test_interact_types():
         f(int, False)
 
 
+def test_reject_cross_compile_values():
+    c0 = compile_custom("struct Foo {}")
+    t = c0.resolve("top.Foo")
+    c1 = compile_custom("fn f(T: type) -> uint { return T.size_bits; }")
+    f = c1.resolve("top.f")
+
+    with pytest.raises(ValueError, match="cannot mix values from different Compile instances"):
+        f(t)
+
+
 def test_compile_manifest():
     manifest_path = Path(__file__).parent / "project/hwl.toml"
     s = hwl.Source.new_from_manifest_path(str(manifest_path))
