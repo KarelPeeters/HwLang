@@ -8,7 +8,6 @@ from hwl_sandbox.common.util import compile_custom
 
 
 def test_enum_construction_and_match(tmp_dir: Path):
-    # TODO why is the parser error so weird if we forget the val token?
     prefix = "enum ABC(T: type) { A, B, C(T), D(T) }"
     body = """
     var abc;
