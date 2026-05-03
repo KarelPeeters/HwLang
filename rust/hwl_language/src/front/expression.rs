@@ -41,6 +41,9 @@ use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
+use crate::syntax::token::{
+    parse_token_int_literal_binary, parse_token_int_literal_decimal, parse_token_int_literal_hexadecimal,
+};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
@@ -284,28 +287,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 return self.eval_scoped_as_value(scope, flow, ScopeKey::Slf(expr.span), allow_interface_ref);
             }
             ExpressionKind::IntLiteral(pattern) => {
-                // TODO is there a way to move this parsing into the tokenizer? at least move this code there,
-                //   the risk of divergence is huge
-                let value = match *pattern {
-                    IntLiteral::Binary { span } => {
-                        let raw = source.span_str(span);
-                        let clean = raw[2..].replace('_', "");
-                        BigUint::from_str_radix(&clean, 2)
-                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
-                    }
-                    IntLiteral::Decimal { span } => {
-                        let raw = source.span_str(span);
-                        let clean = raw.replace('_', "");
-                        BigUint::from_str_radix(&clean, 10)
-                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
-                    }
-                    IntLiteral::Hexadecimal { span } => {
-                        let raw = source.span_str(span);
-                        let s_hex = raw[2..].replace('_', "");
-                        BigUint::from_str_radix(&s_hex, 16)
-                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?
-                    }
+                let parsed = match *pattern {
+                    IntLiteral::Binary { span } => parse_token_int_literal_binary(source.span_str(span)),
+                    IntLiteral::Decimal { span } => parse_token_int_literal_decimal(source.span_str(span)),
+                    IntLiteral::Hexadecimal { span } => parse_token_int_literal_hexadecimal(source.span_str(span)),
                 };
+                let value = parsed.map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
                 Value::new_int(BigInt::from(value))
             }
             &ExpressionKind::BoolLiteral(literal) => Value::new_bool(literal),
@@ -680,10 +667,10 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 DotIndexKind::Int { span: index_span } => {
                     let base = self.eval_expression(scope, flow, &Type::Any, base)?;
-                    let index = source.span_str(index_span);
 
-                    let index_int = BigUint::from_str_radix(index, 10)
+                    let index = parse_token_int_literal_decimal(source.span_str(index_span))
                         .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
+
                     let err_not_tuple = |ty: &str| {
                         DiagnosticError::new(
                             "indexing into non-tuple type",
@@ -697,7 +684,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         DiagnosticError::new(
                             "tuple index out of bounds",
                             index_span,
-                            format!("index `{index_int}` is out of bounds"),
+                            format!("index `{index}` is out of bounds"),
                         )
                         .add_info(base.span, format!("base is tuple with length `{len}`"))
                         .report(diags)
@@ -706,20 +693,20 @@ impl<'a> CompileItemContext<'a, '_> {
                     // TODO use common step logic once that supports tuple indexing
                     match base.inner {
                         Value::Compound(MixedCompoundValue::Tuple(inner)) => {
-                            let index = index_int
+                            let index = index
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
                             inner[index].clone()
                         }
                         Value::Simple(SimpleCompileValue::Type(Type::Tuple(Some(inner)))) => {
-                            let index = index_int
+                            let index = index
                                 .as_usize_if_lt(inner.len())
                                 .ok_or_else(|| err_index_out_of_bounds(inner.len()))?;
                             Value::new_ty(inner[index].clone())
                         }
                         Value::Hardware(value) => match value.ty {
                             HardwareType::Tuple(inner_tys) => {
-                                let index = index_int
+                                let index = index
                                     .as_usize_if_lt(inner_tys.len())
                                     .ok_or_else(|| err_index_out_of_bounds(inner_tys.len()))?;
 

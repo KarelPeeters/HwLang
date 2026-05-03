@@ -119,8 +119,11 @@ impl BigUint {
     }
 
     pub fn from_str_radix(s: &str, radix: u32) -> Result<BigUint, num_bigint::ParseBigIntError> {
-        let big = num_bigint::BigUint::from_str_radix(s, radix)?;
-        Ok(BigUint::new(Storage::from_maybe_big(big.into())))
+        let storage = match IStorage::from_str_radix(s, radix) {
+            Ok(result) => Storage::Small(result),
+            Err(_) => Storage::from_maybe_big(num_bigint::BigUint::from_str_radix(s, radix)?.into()),
+        };
+        Ok(BigUint::new(storage))
     }
 
     pub fn set_bit(self, index: u64, value: bool) -> BigUint {

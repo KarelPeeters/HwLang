@@ -15,10 +15,11 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
-use crate::syntax::token::apply_string_literal_escapes;
+use crate::syntax::token::parse_token_string_middle;
 use crate::util::regex::RegexDfa;
 use indexmap::IndexMap;
 use itertools::Either;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 
@@ -1431,7 +1432,10 @@ fn eval_general_id<'s>(
                     for piece in pieces {
                         match piece {
                             &StringPiece::Literal(literal_span) => {
-                                let literal = apply_string_literal_escapes(source.span_str(literal_span));
+                                // this should never fail, but reporting an error here or panicking would be bad,
+                                //   so just ignore the error if any
+                                let literal = parse_token_string_middle(source.span_str(literal_span))
+                                    .unwrap_or(Cow::Borrowed("?"));
                                 pattern.push_str(&regex::escape(literal.as_ref()));
                             }
                             StringPiece::Substitute(_expr) => {

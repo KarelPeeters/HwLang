@@ -1,6 +1,7 @@
 use crate::front::diagnostic::DiagnosticError;
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
+use crate::util::big_int::BigUint;
 use crate::util::iter::IterExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -434,13 +435,37 @@ impl<'s> Tokenizer<'s> {
     }
 }
 
-pub fn apply_string_literal_escapes(raw: &str) -> Cow<'_, str> {
+#[derive(Debug, Copy, Clone)]
+pub struct FailedTokenParse;
+
+pub fn parse_token_string_middle(raw: &str) -> Result<Cow<'_, str>, FailedTokenParse> {
     // TODO skip allocation if not needed
     // TODO handle more escape codes including \" (which needs tokenizer changes)
     // TODO maybe we should _actually_ parse string literals during parsing,
     //   instead of keeping them as spans and then only later fixing them?
     //   Alternatively create some zero-cost wrapper type that guarantees correctness.
-    Cow::Owned(raw.replace("\\n", "\n"))
+    // TODO error for trailing \
+    Ok(Cow::Owned(raw.replace("\\n", "\n")))
+}
+
+pub fn parse_token_int_literal_binary(raw: &str) -> Result<BigUint, FailedTokenParse> {
+    parse_token_int_literal_any(raw, "0b", 2)
+}
+
+pub fn parse_token_int_literal_decimal(raw: &str) -> Result<BigUint, FailedTokenParse> {
+    parse_token_int_literal_any(raw, "", 10)
+}
+
+pub fn parse_token_int_literal_hexadecimal(raw: &str) -> Result<BigUint, FailedTokenParse> {
+    parse_token_int_literal_any(raw, "0x", 16)
+}
+
+// TODO avoid allocations
+fn parse_token_int_literal_any(raw: &str, prefix: &str, radix: u32) -> Result<BigUint, FailedTokenParse> {
+    raw.strip_prefix(prefix).ok_or(FailedTokenParse).and_then(|body| {
+        let clean = body.replace('_', "");
+        BigUint::from_str_radix(&clean, radix).map_err(|_| FailedTokenParse)
+    })
 }
 
 fn str_is_single_token(s: &str, ty: TokenType) -> bool {
@@ -456,7 +481,7 @@ pub fn str_is_valid_identifier(s: &str) -> bool {
 }
 
 pub fn str_is_whitespace_or_empty(s: &str) -> bool {
-    s.chars().all(|c| matches!(c, pattern_whitespace!()))
+    s.chars().all(char_is_whitespace)
 }
 
 pub fn char_is_whitespace(c: char) -> bool {

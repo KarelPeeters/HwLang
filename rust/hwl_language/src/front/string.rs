@@ -14,7 +14,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::token::apply_string_literal_escapes;
+use crate::syntax::token::parse_token_string_middle;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
@@ -169,7 +169,9 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         pieces: &[StringPiece<Span, Expression>],
     ) -> DiagResult<Value> {
+        let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
+
         let mut builder = StringBuilder::new();
 
         let mut any_err = Ok(());
@@ -177,7 +179,8 @@ impl CompileItemContext<'_, '_> {
             match piece {
                 StringPiece::Literal(piece_span) => {
                     let raw = self.refs.fixed.source.span_str(piece_span);
-                    let escaped = apply_string_literal_escapes(raw);
+                    let escaped = parse_token_string_middle(raw)
+                        .map_err(|_| diags.report_error_internal(piece_span, "failed to parse string token"))?;
 
                     if !escaped.is_empty() {
                         builder.push_str(escaped);
