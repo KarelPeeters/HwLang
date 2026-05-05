@@ -933,7 +933,7 @@ fn lower_clocked_process(
     if let Some((reset_edge, _)) = &async_reset {
         swriteln!(f_module, ", {} {}", reset_edge.edge, reset_edge.signal,)
     }
-    swrite!(f_module, ") begin: {child_name}");
+    swriteln!(f_module, ") begin: {child_name}");
 
     declare_temporaries(&mut f_decl, &mut f_init, Indent::new(2), temporaries);
     write_line_separated_strings(f_module, &[&f_decl, &f_init, &f_body]);
