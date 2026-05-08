@@ -767,10 +767,6 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
     <inner_ty:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
         if allow_array_type == "true"
         => ExpressionKind::ArrayType { span_brackets: ctx.span(start_brackets, end_brackets), lengths, inner_ty },
-    // array index
-    <base:SpannedPushArena<ExprLevelArrayImpl<allow_block, "false", "false">>>
-    <start_brackets:@L> "[" <indices:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
-        => ExpressionKind::ArrayIndex { span_brackets: ctx.span(start_brackets, end_brackets), base, indices },
 
     // array literal
     "[" <Separated<ArrayLiteralElement,",">> "]"
@@ -786,14 +782,25 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
         => ExpressionKind::TupleLiteral(<>),
     "(" ")" => ExpressionKind::TupleLiteral(vec![]),
 
-    ExprLevelCall<allow_block>,
+    ExprLevelPostfix<allow_block>,
 }
 
-ExprLevelCall<allow_block>: ExpressionKind = {
-    // normal call
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "(" <args:ExtraList<Arg>> ")"
+ExprLevelPostfix<allow_block>: ExpressionKind = {
+    // call
+    <target:SpannedPushArena<ExprLevelPostfix<allow_block>>> "(" <args:ExtraList<Arg>> ")"
         => ExpressionKind::Call(target, args),
+    // array index
+    <base:SpannedPushArena<ExprLevelPostfix<allow_block>>>
+        <start_brackets:@L> "[" <indices:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
+        => ExpressionKind::ArrayIndex { span_brackets: ctx.span(start_brackets, end_brackets), base, indices },
+    // dot index
+    <target:SpannedPushArena<ExprLevelPostfix<allow_block>>> "." <index:DotIndexKind>
+        => ExpressionKind::DotIndex(target, index),
 
+    ExprLevelPostfixBase<allow_block>,
+}
+
+ExprLevelPostfixBase<allow_block>: ExpressionKind = {
     // builtins
     <span_keyword:Span<"__builtin">> "(" <args:Spanned<Separated<Expr,",">>> ")" =>
         ExpressionKind::Builtin { span_keyword, args },
@@ -804,13 +811,6 @@ ExprLevelCall<allow_block>: ExpressionKind = {
     <op:Span<"deref">> "(" <inner:SpannedPushArena<ExprLevelPower>> ","? ")" =>
         ExpressionKind::Deref(op, inner),
 
-    ExprLevelDot<allow_block>,
-}
-
-// TODO issue when trying to chain this with array indices, eg. a[0].b fails to parse
-ExprLevelDot<allow_block>: ExpressionKind = {
-    <target:SpannedPushArena<ExprLevelCall<allow_block>>> "." <index:DotIndexKind>
-        => ExpressionKind::DotIndex(target, index),
     ExprLevelAtomic<allow_block>,
 }
 
