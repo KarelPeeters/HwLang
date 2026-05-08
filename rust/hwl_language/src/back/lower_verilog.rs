@@ -931,7 +931,7 @@ fn lower_clocked_process(
     // combine everything
     swrite!(f_module, "{I}always @({} {}", clock_edge.edge, clock_edge.signal);
     if let Some((reset_edge, _)) = &async_reset {
-        swriteln!(f_module, ", {} {}", reset_edge.edge, reset_edge.signal,)
+        swrite!(f_module, ", {} {}", reset_edge.edge, reset_edge.signal,)
     }
     swriteln!(f_module, ") begin: {child_name}");
 

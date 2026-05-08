@@ -284,6 +284,36 @@ impl CompileRefs<'_, '_> {
 
         any_driver_err?;
 
+        // fill in debug domains for wires
+        for wire_info in ctx.wires.values() {
+            match wire_info {
+                WireInfo::Single(wire_info) => {
+                    if let Ok(Some(typed)) = &wire_info.typed {
+                        let domain_str = if let Ok(Some(domain)) = &wire_info.domain {
+                            domain.inner.diagnostic_string(&ctx)
+                        } else {
+                            "unknown".to_string()
+                        };
+
+                        ctx_body.ir_wires[typed.ir].debug_info_domain = domain_str;
+                    }
+                }
+                WireInfo::Interface(_) => {
+                    // handled during interface loop
+                }
+            }
+        }
+        for intf_info in ctx.wire_interfaces.values() {
+            let domain_str = if let Ok(Some(domain)) = intf_info.domain {
+                domain.inner.diagnostic_string(&ctx)
+            } else {
+                "unknown".to_string()
+            };
+            for &wire_ir in &intf_info.ir_wires {
+                ctx_body.ir_wires[wire_ir].debug_info_domain = domain_str.clone();
+            }
+        }
+
         // finish building the ir module
         let debug_info_location = match self.fixed.hierarchy.file_steps(def_id.span().file) {
             None => "unknown".to_string(),
