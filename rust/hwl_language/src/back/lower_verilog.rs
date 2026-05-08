@@ -1988,7 +1988,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
     /// This can be used to get a named expression, or to force truncation or type casts.
     fn new_temporary_assign(&mut self, span: Span, ty: VerilogType, value: impl Display) -> DiagResult<Temporary<'n>> {
         let tmp = self.new_temporary(span, ty)?;
-        swriteln!(self.f, "{tmp} = {value};");
+
+        let indent = self.indent;
+        swriteln!(self.f, "{indent}{tmp} = {value};");
+
         Ok(tmp)
     }
 
