@@ -18,6 +18,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.95.0
 
 jobs:
   rust-fmt:
@@ -25,6 +26,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
       - name: cargo fmt
         run: cd rust && cargo fmt --all -- --check
 
@@ -33,6 +38,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
       - name: cargo clippy
         run: cd rust && cargo clippy --all-features
 
@@ -41,6 +50,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: cargo build
         run: cd rust && cargo build --all-features
       - name: cargo test
@@ -52,6 +64,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -72,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 20.17.0
