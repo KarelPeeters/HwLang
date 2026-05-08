@@ -22,7 +22,7 @@ use crate::mid::cleanup::cleanup_module;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrStatement, IrWire, IrWireInfo,
+    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrSignalOrVariable, IrStatement, IrWire, IrWireInfo,
 };
 use crate::new_index_type;
 use crate::syntax::ast::{
@@ -35,7 +35,7 @@ use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleIn
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
-use crate::util::data::IndexMapExt;
+use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
@@ -1581,9 +1581,8 @@ impl BodyContext {
                             .transpose()?;
 
                         // build extra wire and process if necessary
-                        // TODO rework this, because of flow reworks this never triggers any more
-                        let connection_signal_ir = if ir_block.statements.is_empty()
-                            && let IrExpression::Signal(connection_signal) = connection_value_ir_raw.inner
+                        let connection_signal_ir = if let Some(connection_signal) =
+                            try_extract_simple_port_input_signal(&ir_block, &connection_value_ir_raw.inner)
                         {
                             connection_signal
                         } else {
@@ -1890,4 +1889,33 @@ impl BodyContext {
     fn report_driver(&mut self, signal: Signal, kind: DriverKind, span: Span) {
         self.drivers.entry(signal).or_default().push((kind, span))
     }
+}
+
+fn try_extract_simple_port_input_signal(block: &IrBlock, expr: &IrExpression) -> Option<IrSignal> {
+    let IrBlock { statements } = block;
+
+    // expr signal, block empty
+    if let &IrExpression::Signal(signal) = expr
+        && statements.is_empty()
+    {
+        return Some(signal);
+    }
+
+    // expr variable, block only contains assignment of signal to that variable
+    if let &IrExpression::Variable(var_expr) = expr
+        && let Some(stmt) = statements.single_ref()
+        && let IrStatement::Assign(
+            IrAssignmentTarget {
+                base: IrSignalOrVariable::Variable(var_assign),
+                ref steps,
+            },
+            IrExpression::Signal(signal),
+        ) = stmt.inner
+        && steps.is_empty()
+        && var_assign == var_expr
+    {
+        return Some(signal);
+    }
+
+    None
 }

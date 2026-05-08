@@ -315,3 +315,23 @@ def test_module_inner_decls_can_access_outer():
     """
     foo = compile_custom(src).resolve("top.foo")
     print(foo(N=4).as_verilog().source)
+
+
+def test_input_port_no_process():
+    # Check that just connecting ports through does not create additional processes (and delta cycles!)
+    src = """
+    module top ports(x: in async uint(8), y: out async uint(8)) {
+        instance child ports(x, y);
+    }
+    module child ports(x: in async uint(8), y: out async uint(8)) {
+        comb {
+            y = x;
+        }
+    }
+    """
+    top = compile_custom(src).resolve("top.top")
+    verilog: str = top.as_verilog().source
+    print(verilog)
+
+    # we expect exactly one process, in child, no additional process in top
+    assert verilog.count("always @(") == 1
