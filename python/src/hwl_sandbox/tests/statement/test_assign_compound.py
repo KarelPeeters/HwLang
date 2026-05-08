@@ -95,7 +95,3 @@ def test_tuple_assign_index_cond(tmp_dir: Path):
                         res_y = a3
 
                     e.eval_assert([a0, a1, a2, a3], (res_x, res_y))
-
-# TODO test mix of index/slice/tuple/struct
-# TODO test +=
-# TODO move existing array assign tests here
