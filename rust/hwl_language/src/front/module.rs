@@ -315,16 +315,16 @@ impl CompileRefs<'_, '_> {
         }
 
         // finish building the ir module
-        let debug_info_location = match self.fixed.hierarchy.file_steps(def_id.span().file) {
+        let debug_info_def_file = match self.fixed.hierarchy.file_steps(def_id.span().file) {
             None => "unknown".to_string(),
-            Some(steps) => steps.join(","),
+            Some(steps) => steps.join("."),
         };
         let mut module_ir = IrModuleInfo {
             ports: ctx_body.ir_ports,
             wires: ctx_body.ir_wires,
             large: ctx.large,
             children: ctx_body.children,
-            debug_info_location,
+            debug_info_def_file,
             debug_info_id: def_id.spanned_string(self.fixed.source),
             debug_info_generic_args: debug_info_params,
         };

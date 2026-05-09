@@ -60,7 +60,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         wires,
         large: _,
         children,
-        debug_info_location: _,
+        debug_info_def_file: _,
         debug_info_id: _,
         debug_info_generic_args: _,
     } = module_info;
