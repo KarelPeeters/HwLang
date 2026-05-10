@@ -165,3 +165,30 @@ def test_wire_driver_multi_expr_child():
     """
     with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
+
+
+def test_write_to_signal_in_wire_expr():
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        wire w = {
+            y = false;
+            x
+        };
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="assigning to signals is only allowed in processes"):
+        _ = compile_custom(src).resolve("top.top")
+
+
+def test_write_to_signal_in_port_expr():
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        instance child ports(x={
+            y = false;
+            x
+        });
+    }
+    module child ports(x: in async bool) {}
+    """
+    with pytest.raises(hwl.DiagnosticException, match="assigning to signals is only allowed in processes"):
+        _ = compile_custom(src).resolve("top.top")
