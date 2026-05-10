@@ -3,7 +3,7 @@ use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnosti
 use crate::front::domain::ValueDomain;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, HardwareInt, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile,
+    CompileCompoundValue, CompileValue, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile,
     SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
@@ -25,16 +25,16 @@ pub type AssignmentStep = MaybeCompile<AssignmentStepCompile, AssignmentStepHard
 
 #[derive(Debug, Clone)]
 pub enum AssignmentStepCompile {
-    ArrayIndex(BigInt),
-    ArraySlice { start: BigInt, length: Option<BigUint> },
+    ArrayIndex(BigUint),
+    ArraySlice { start: BigUint, length: Option<BigUint> },
     TupleIndex(BigUint),
     StructField(Arc<String>),
 }
 
 #[derive(Debug, Clone)]
 pub enum AssignmentStepHardware {
-    ArrayIndex(HardwareInt),
-    ArraySlice { start: HardwareInt, length: BigUint },
+    ArrayIndex(HardwareUInt),
+    ArraySlice { start: HardwareUInt, length: BigUint },
 }
 
 impl<S> AssignmentSteps<S> {
@@ -156,7 +156,7 @@ impl AssignmentSteps<AssignmentStep> {
 
                         let step_ir = array_len
                             .inner
-                            .map(|_| IrTargetStep::ArrayIndex(IrExpression::Int(index.clone())))
+                            .map(|_| IrTargetStep::ArrayIndex(IrExpression::Int(index.into())))
                             .ok_or(EncounteredUnknown);
 
                         (step_ir, array_inner.as_ref().clone())
@@ -180,7 +180,7 @@ impl AssignmentSteps<AssignmentStep> {
                             None => (Err(EncounteredUnknown), Type::Array(Arc::clone(array_inner), None)),
                             Some(slice_len) => {
                                 let step_ir = IrTargetStep::ArraySlice {
-                                    start: IrExpression::Int(slice_start.clone()),
+                                    start: IrExpression::Int(slice_start.into()),
                                     len: slice_len.clone(),
                                 };
                                 (Ok(step_ir), Type::Array(Arc::clone(array_inner), Some(slice_len)))
@@ -314,7 +314,7 @@ impl AssignmentSteps<AssignmentStep> {
 
                                 let expr = IrExpressionLarge::ArrayIndex {
                                     base: curr_value.expr.clone(),
-                                    index: IrExpression::Int(index.clone()),
+                                    index: IrExpression::Int(index.into()),
                                 };
                                 Value::Hardware(HardwareValue {
                                     ty: (**curr_inner).clone(),
@@ -371,7 +371,7 @@ impl AssignmentSteps<AssignmentStep> {
 
                                 let expr = IrExpressionLarge::ArraySlice {
                                     base: curr_value.expr.clone(),
-                                    start: IrExpression::Int(slice_start.clone()),
+                                    start: IrExpression::Int(slice_start.into()),
                                     len: slice_len.clone(),
                                 };
                                 Value::Hardware(HardwareValue {
@@ -782,19 +782,15 @@ fn check_target_is_array<'a>(
 
 pub fn check_range_index(
     diags: &Diagnostics,
-    index: Spanned<&ClosedNonEmptyMultiRange<BigInt>>,
+    index: Spanned<&ClosedNonEmptyMultiRange<BigUint>>,
     array_len: Spanned<Option<&BigUint>>,
 ) -> DiagResult {
     let ClosedNonEmptyRange {
-        start: index_start,
+        start: _,
         end: index_end,
     } = index.inner.enclosing_range();
 
-    if &BigInt::ZERO <= index_start
-        && array_len
-            .inner
-            .is_none_or(|array_len| index_end <= &BigInt::from(array_len.clone()))
-    {
+    if array_len.inner.is_none_or(|array_len| index_end <= array_len) {
         Ok(())
     } else {
         let index_str = if let Some(index) = index.inner.as_single() {
@@ -815,7 +811,7 @@ pub fn check_range_index(
 
 pub fn check_range_index_compile(
     diags: &Diagnostics,
-    index: Spanned<&BigInt>,
+    index: Spanned<&BigUint>,
     array_len: Spanned<usize>,
 ) -> DiagResult<usize> {
     let index_range = index.cloned().map_inner(ClosedNonEmptyMultiRange::single);
@@ -829,7 +825,7 @@ pub fn check_range_index_compile(
 
 pub fn check_range_slice_known(
     diags: &Diagnostics,
-    slice_start: Spanned<&ClosedNonEmptyMultiRange<BigInt>>,
+    slice_start: Spanned<&ClosedNonEmptyMultiRange<BigUint>>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<&BigUint>,
 ) -> DiagResult<BigUint> {
@@ -838,7 +834,7 @@ pub fn check_range_slice_known(
 
 pub fn check_range_slice(
     diags: &Diagnostics,
-    slice_start: Spanned<&ClosedNonEmptyMultiRange<BigInt>>,
+    slice_start: Spanned<&ClosedNonEmptyMultiRange<BigUint>>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<Option<&BigUint>>,
 ) -> DiagResult<Option<BigUint>> {
@@ -874,16 +870,14 @@ pub fn check_range_slice(
     };
 
     // check start
-    // TODO check start and end at once and report a single unified diagnostic
     let ClosedNonEmptyRange {
-        start: slice_start_start,
+        start: _,
         end: slice_start_end,
     } = slice_start.inner.enclosing_range();
 
-    if !(&BigInt::ZERO <= slice_start_start
-        && array_len
-            .inner
-            .is_none_or(|array_len| slice_start_end - 1 <= BigInt::from(array_len.clone())))
+    if array_len
+        .inner
+        .is_some_and(|array_len| slice_start_end - 1 > BigInt::from(array_len.clone()))
     {
         return Err(DiagnosticError::new(
             "array slice start out of bounds",
@@ -914,10 +908,9 @@ pub fn check_range_slice(
 
             Ok(Some(slice_len.inner.clone()))
         }
-        SliceLen::NoneButStartSingle(slice_start) => Ok(array_len.inner.map(|array_len| {
-            let slice_start = BigUint::try_from(slice_start).unwrap();
-            BigUint::try_from(array_len - slice_start).unwrap()
-        })),
+        SliceLen::NoneButStartSingle(slice_start) => Ok(array_len
+            .inner
+            .map(|array_len| BigUint::try_from(array_len - slice_start).unwrap())),
     }
 }
 
@@ -943,7 +936,7 @@ impl SliceInfo {
 
 pub fn check_range_slice_compile(
     diags: &Diagnostics,
-    slice_start: Spanned<&BigInt>,
+    slice_start: Spanned<&BigUint>,
     slice_len: Option<Spanned<&BigUint>>,
     array_len: Spanned<usize>,
 ) -> DiagResult<SliceInfo> {

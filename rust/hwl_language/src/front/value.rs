@@ -860,6 +860,19 @@ impl From<HardwareUInt> for HardwareInt {
         value.map_type(|range| range.map(BigInt::from))
     }
 }
+impl TryFrom<HardwareInt> for HardwareUInt {
+    type Error = HardwareInt;
+
+    fn try_from(value: HardwareInt) -> Result<Self, Self::Error> {
+        if value.ty.enclosing_range().start.is_negative() {
+            Err(value)
+        } else {
+            let HardwareInt { ty, domain, expr } = value;
+            let ty = ty.map(|x| BigUint::try_from(x).expect("already checked start"));
+            Ok(HardwareUInt { ty, domain, expr })
+        }
+    }
+}
 
 impl<C, H: Into<HardwareValue>> From<MaybeCompile<BigInt, H>> for Value<SimpleCompileValue, C, HardwareValue> {
     fn from(value: MaybeCompile<BigInt, H>) -> Self {

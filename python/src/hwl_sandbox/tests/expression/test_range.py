@@ -48,7 +48,7 @@ def check_range_compile(a: Optional[int], ty_range: str, b: Optional[int], valid
     if valid:
         f()
     else:
-        with pytest.raises(hwl.DiagnosticException, match="range requires"):
+        with pytest.raises(hwl.DiagnosticException, match="invalid range"):
             f()
 
 
@@ -67,5 +67,5 @@ def check_range_hardware(ty_a: Optional[str], ty_range: str, ty_b: Optional[str]
     if valid:
         _ = c.resolve("top.foo")
     else:
-        with pytest.raises(hwl.DiagnosticException, match="range requires"):
+        with pytest.raises(hwl.DiagnosticException, match="invalid range"):
             _ = c.resolve("top.foo")

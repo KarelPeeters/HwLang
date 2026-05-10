@@ -1,8 +1,7 @@
 use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{
     TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool,
-    check_type_is_int, check_type_is_int_hardware, check_type_is_string_compile, check_type_is_uint,
-    check_type_is_uint_compile,
+    check_type_is_int, check_type_is_string_compile, check_type_is_uint, check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
@@ -19,7 +18,7 @@ use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable}
 use crate::front::steps::{AssignmentStep, AssignmentStepCompile, AssignmentStepHardware, AssignmentSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareValue, MaybeCompile,
+    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile,
     MixedCompoundValue, NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value,
     ValueCommon,
 };
@@ -334,7 +333,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_range, None);
                                 let diag = DiagnosticError::new(
-                                    "range requires that start <= end",
+                                    "invalid range, requires start <= end",
                                     op_span,
                                     "range constructed here",
                                 )
@@ -373,7 +372,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_inc_range, None);
                                 let diag = DiagnosticError::new(
-                                    "inclusive range requires that start <= end_inc + 1",
+                                    "invalid range: requires start <= end_inc + 1",
                                     op_span,
                                     "inclusive range constructed here",
                                 )
@@ -1267,103 +1266,116 @@ impl<'a> CompileItemContext<'a, '_> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
-        // special case range with length, it can have a hardware start index
-        // TODO cleanup, this special case is probably no longer necessary
-        let step = if let &ExpressionKind::RangeLiteral(RangeLiteral::Length {
-            op_span,
-            start,
-            length: len,
-        }) = self.refs.get_expr_inner(index)
-        {
-            let reason = TypeContainsReason::Operator(op_span);
-            let start = self
-                .eval_expression(scope, flow, &Type::Any, start)
-                .and_then(|start| check_type_is_int(diags, elab, reason, start))?;
+        let index = self.eval_expression(scope, flow, &Type::Any, index)?;
+        let index_span = index.span;
 
-            let ty_uint = Type::Int(MultiRange::from(Range {
-                start: Some(BigInt::ZERO),
-                end: None,
-            }));
-            let len = self
-                .eval_expression_as_compile(scope, flow, &ty_uint, len, Spanned::new(index.span, "range length"))
-                .and_then(|len| check_type_is_uint_compile(diags, elab, reason, len))?;
+        let index_ty = index.inner.ty();
+        let err_wrong_type = || {
+            diags.report_error_simple(
+                "array index must be integer or range",
+                index.span,
+                format!("got type `{}`", index_ty.value_string(elab)),
+            )
+        };
+        let err_hardware_not_len = || {
+            DiagnosticError::new(
+                "hardware slicing only supports `start+..length` ranges",
+                index.span,
+                "got non-length slice",
+            )
+            .report(diags)
+        };
 
-            match start {
-                MaybeCompile::Compile(start) => AssignmentStep::Compile(AssignmentStepCompile::ArraySlice {
-                    start,
-                    length: Some(len),
-                }),
-                MaybeCompile::Hardware(start) => {
-                    AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length: len })
+        let step = match index.inner {
+            Value::Simple(index) => match index {
+                SimpleCompileValue::Int(index) => {
+                    // check non-negative
+                    let index = BigUint::try_from(index).map_err(|index| {
+                        diags.report_error_simple(
+                            "array index out of bounds",
+                            index_span,
+                            format!("array index cannot be negative, got {index}"),
+                        )
+                    })?;
+
+                    AssignmentStep::Compile(AssignmentStepCompile::ArrayIndex(index))
                 }
-            }
-        } else {
-            let index = self.eval_expression(scope, flow, &Type::Any, index)?;
-            let index_span = index.span;
+                _ => return Err(err_wrong_type()),
+            },
+            Value::Compound(index) => match index {
+                MixedCompoundValue::Range(range) => match range {
+                    RangeValue::Normal(Range { start, end }) => {
+                        let start = match start {
+                            None => BigUint::ZERO,
+                            Some(start) => match start {
+                                MaybeCompile::Compile(start) => {
+                                    // check non-negative
+                                    BigUint::try_from(&start).map_err(|_| {
+                                        diags.report_error_simple(
+                                            "array slice start out of bounds",
+                                            index_span,
+                                            format!("slice start cannot be negative, got {start}"),
+                                        )
+                                    })?
+                                }
+                                MaybeCompile::Hardware(_) => return Err(err_hardware_not_len()),
+                            },
+                        };
 
-            let index_ty = index.inner.ty();
-            let err_wrong_type = || {
-                diags.report_error_simple(
-                    "array index must be integer or range",
-                    index.span,
-                    format!("got type `{}`", index_ty.value_string(elab)),
-                )
-            };
-            let err_hardware_not_len = || {
-                DiagnosticError::new(
-                    "hardware slicing only supports `start+..length` ranges",
-                    index.span,
-                    "got non-length slice",
-                )
-                .report(diags)
-            };
+                        let length = match end {
+                            None => None,
+                            Some(end) => match end {
+                                MaybeCompile::Compile(end) => {
+                                    let length = &end - &start;
+                                    let length = BigUint::try_from(length).map_err(|_| {
+                                        diags.report_error_simple(
+                                            "array slice end out of bounds",
+                                            index_span,
+                                            format!("slice end (got {end}) must be >= start (got {start})"),
+                                        )
+                                    })?;
+                                    Some(length)
+                                }
+                                MaybeCompile::Hardware(_) => return Err(err_hardware_not_len()),
+                            },
+                        };
 
-            match index.inner {
-                Value::Simple(index) => match index {
-                    SimpleCompileValue::Int(index) => AssignmentStep::Compile(AssignmentStepCompile::ArrayIndex(index)),
-                    _ => return Err(err_wrong_type()),
+                        AssignmentStep::Compile(AssignmentStepCompile::ArraySlice { start, length })
+                    }
+                    RangeValue::HardwareStartLength { start, length } => {
+                        let start = HardwareUInt::try_from(start).map_err(|start| {
+                            diags.report_error_simple(
+                                "array slice start out of bounds",
+                                index_span,
+                                format!("array slice start cannot be negative, got range {}", start.ty),
+                            )
+                        })?;
+                        AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length })
+                    }
                 },
-                Value::Compound(index) => match index {
-                    MixedCompoundValue::Range(range) => match range {
-                        RangeValue::Normal(Range { start, end }) => {
-                            let start = match start {
-                                None => BigInt::ZERO,
-                                Some(start) => match start {
-                                    MaybeCompile::Compile(start) => start,
-                                    MaybeCompile::Hardware(_) => return Err(err_hardware_not_len()),
-                                },
-                            };
-
-                            let length = match end {
-                                None => None,
-                                Some(end) => match end {
-                                    MaybeCompile::Compile(end) => {
-                                        Some(BigUint::try_from(&end - &start).map_err(|_| {
-                                            diags.report_error_simple(
-                                                "array slice end out of bounds",
-                                                index_span,
-                                                format!("slice end cannot be negative, got {end}"),
-                                            )
-                                        })?)
-                                    }
-                                    MaybeCompile::Hardware(_) => return Err(err_hardware_not_len()),
-                                },
-                            };
-
-                            AssignmentStep::Compile(AssignmentStepCompile::ArraySlice { start, length })
-                        }
-                        RangeValue::HardwareStartLength { start, length } => {
-                            AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length })
-                        }
-                    },
+                _ => return Err(err_wrong_type()),
+            },
+            Value::Hardware(index) => {
+                // check int
+                let index_ty = match index.ty {
+                    HardwareType::Int(ty) => ty,
                     _ => return Err(err_wrong_type()),
-                },
-                Value::Hardware(index) => {
-                    // TODO make this error message better, specifically refer to non-compile-time index
-                    let reason = TypeContainsReason::ArrayIndex { span_index: index_span };
-                    let index_int = check_type_is_int_hardware(diags, elab, reason, Spanned::new(index_span, index))?;
-                    AssignmentStep::Hardware(AssignmentStepHardware::ArrayIndex(index_int))
-                }
+                };
+                let index = HardwareInt {
+                    ty: index_ty,
+                    domain: index.domain,
+                    expr: index.expr,
+                };
+
+                // check non-negative
+                let index = HardwareUInt::try_from(index).map_err(|index| {
+                    diags.report_error_simple(
+                        "array index out of bounds",
+                        index_span,
+                        format!("array index cannot be negative, got range {}", index.ty),
+                    )
+                })?;
+                AssignmentStep::Hardware(AssignmentStepHardware::ArrayIndex(index))
             }
         };
 

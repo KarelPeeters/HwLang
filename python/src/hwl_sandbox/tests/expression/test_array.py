@@ -187,6 +187,32 @@ def test_array_slice_int_hw(tmp_dir: Path, slice_len: int):
             e.eval_assert([v, i], v[i:i + slice_len])
 
 
+def test_array_index_hw_error():
+    src = "module top ports(a: in async [4]bool, x: in async int(0..4)) { comb { a[x]; } }"
+    _ = compile_custom(src).resolve("top.top")
+
+    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+        src = "module top ports(a: in async [4]bool, x: in async int(0..5)) { comb { a[x]; } }"
+        _ = compile_custom(src).resolve("top.top")
+
+    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+        src = "module top ports(a: in async [4]bool, x: in async int(-1..4)) { comb { a[x]; } }"
+        _ = compile_custom(src).resolve("top.top")
+
+
+def test_array_slice_hw_error():
+    src = "module top ports(a: in async [4]bool, x: in async int(0..3)) { comb { a[x+..1]; } }"
+    _ = compile_custom(src).resolve("top.top")
+
+    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+        src = "module top ports(a: in async [4]bool, x: in async int(0..5)) { comb { a[x+..1]; } }"
+        _ = compile_custom(src).resolve("top.top")
+
+    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+        src = "module top ports(a: in async [4]bool, x: in async int(-1..3)) { comb { a[x+..1]; } }"
+        _ = compile_custom(src).resolve("top.top")
+
+
 def test_array_assign_bool(tmp_dir: Path):
     body = """
     var v: [3]bool = a0;
