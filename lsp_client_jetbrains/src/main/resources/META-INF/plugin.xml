@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>com.karelpeeters.hwlang.lsp.jetbrains</id>
+    <name>HWLang LSP</name>
+    <vendor url="https://github.com/KarelPeeters/HwLang">Karel Peeters</vendor>
+
+    <description>
+        <![CDATA[
+        JetBrains IDE integration for the HWLang language server.
+        ]]>
+    </description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.ultimate</depends>
+    <depends>com.intellij.modules.lsp</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+                name="HWLang"
+                implementationClass="com.karelpeeters.hwlang.jetbrains.HwlangFileType"
+                fieldName="INSTANCE"
+                language="HWLang"
+                extensions="kh"/>
+        <projectConfigurable
+                id="hwlang.lsp"
+                displayName="HWLang LSP"
+                parentId="tools"
+                instance="com.karelpeeters.hwlang.jetbrains.HwlangLspConfigurable"/>
+        <notificationGroup
+                id="HWLang LSP"
+                displayType="BALLOON"
+                isLogByDefault="true"/>
+        <platform.lsp.serverSupportProvider
+                implementation="com.karelpeeters.hwlang.jetbrains.HwlangLspServerSupportProvider"/>
+    </extensions>
+</idea-plugin>
+

@@ -215,7 +215,9 @@ TODO document:
         * hwl_python: python module that uses PyO3 to provide python bindings to the compiler
         * hwm_wasm: wasm module that uses wasm_bindgen to provide web bindings
     * There's also the `hwl_util` crate that contains some common utilities.
-* There's a VS Code plugin to act as the LSP client at `lsp_client/`, written in Typescript.
+* There are editor plugins to act as LSP clients:
+    * a VS Code plugin at `lsp_client/`, written in Typescript
+    * a JetBrains plugin at `lsp_client_jetbrains/`, written in Kotlin
 * The frontend of the webdemo is a NodeJS node project also using Typescript, located in `web_demo/`.
 
 ## Related projects
