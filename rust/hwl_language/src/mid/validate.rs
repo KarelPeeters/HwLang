@@ -105,30 +105,23 @@ impl IrModuleInfo {
                     for ((_, port_info), connection) in zip_eq(&child_module_info.ports, port_connections) {
                         let IrPortInfo {
                             name: _,
-                            direction,
-                            ref ty,
+                            direction: port_dir,
+                            ty: ref port_ty,
                             debug_span: _,
                             debug_info_ty: _,
                             debug_info_domain: _,
                         } = *port_info;
 
-                        let conn_ty = match connection.inner {
-                            IrPortConnection::Input(expr) => {
-                                check_dir_match(diags, connection.span, PortDirection::Input, direction)?;
-                                let inner_expr = IrExpression::Signal(expr);
-                                inner_expr.validate(diags, self, no_variables, connection.span)?;
-                                inner_expr.ty(self, no_variables)
-                            }
-                            IrPortConnection::Output(expr) => {
-                                check_dir_match(diags, connection.span, PortDirection::Output, direction)?;
-                                match expr {
-                                    Some(IrSignal::Wire(wire)) => self.wires[wire].ty.clone(),
-                                    Some(IrSignal::Port(port)) => self.ports[port].ty.clone(),
-                                    None => continue,
-                                }
-                            }
+                        let (conn_sig, conn_dir) = match connection.inner {
+                            IrPortConnection::Input(signal) => (Some(signal), PortDirection::Input),
+                            IrPortConnection::Output(signal) => (signal, PortDirection::Output),
                         };
-                        check_type_match(diags, connection.span, ty, &conn_ty)?;
+
+                        check_dir_match(diags, connection.span, port_dir, conn_dir)?;
+                        if let Some(conn_sig) = conn_sig {
+                            conn_sig.validate(self);
+                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(self))?;
+                        }
                     }
                 }
                 IrModuleChild::ModuleExternalInstance(instance) => {
@@ -148,24 +141,15 @@ impl IrModuleInfo {
                     let _ = generic_args;
 
                     // check port connections
+                    // just trust directions, the IR does not separately store them
                     for (port_ty, connection) in port_connections.values() {
-                        let conn_ty = match connection.inner {
-                            IrPortConnection::Input(expr) => {
-                                let inner_expr = IrExpression::Signal(expr);
-                                inner_expr.validate(diags, self, no_variables, connection.span)?;
-
-                                let conn_ty = inner_expr.ty(self, no_variables);
-                                Some(conn_ty)
-                            }
-                            IrPortConnection::Output(expr) => match expr {
-                                Some(IrSignal::Wire(wire)) => Some(self.wires[wire].ty.clone()),
-                                Some(IrSignal::Port(port)) => Some(self.ports[port].ty.clone()),
-                                None => None,
-                            },
+                        let conn_sig = match connection.inner {
+                            IrPortConnection::Input(signal) => Some(signal),
+                            IrPortConnection::Output(signal) => signal,
                         };
-
-                        if let Some(conn_ty) = conn_ty {
-                            check_type_match(diags, connection.span, port_ty, &conn_ty)?;
+                        if let Some(conn_sig) = conn_sig {
+                            conn_sig.validate(self);
+                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(self))?;
                         }
                     }
                 }
@@ -261,7 +245,7 @@ fn assignment_target_ty<'a>(
 ) -> IrType {
     let IrAssignmentTarget { base, steps } = target;
 
-    let mut curr_ty = base.as_expression().ty(module, variables);
+    let mut curr_ty = base.ty(module, variables).clone();
 
     for step in steps {
         curr_ty = match step {
@@ -309,15 +293,7 @@ impl IrExpression {
             // always valid
             IrExpression::Bool(_) | IrExpression::Int(_) => {}
 
-            // assert that signal/var exists in this context
-            &IrExpression::Signal(sig) => match sig {
-                IrSignal::Port(port) => {
-                    let _ = module.ports[port];
-                }
-                IrSignal::Wire(wire) => {
-                    let _ = module.wires[wire];
-                }
-            },
+            &IrExpression::Signal(sig) => sig.validate(module),
             &IrExpression::Variable(var) => {
                 let _ = variables[var];
             }
@@ -485,6 +461,20 @@ impl IrExpression {
         }
 
         Ok(())
+    }
+}
+
+impl IrSignal {
+    pub fn validate(self, module: &IrModuleInfo) {
+        // assert that signal/var exists in this context
+        match self {
+            IrSignal::Port(port) => {
+                let _ = module.ports[port];
+            }
+            IrSignal::Wire(wire) => {
+                let _ = module.wires[wire];
+            }
+        }
     }
 }
 

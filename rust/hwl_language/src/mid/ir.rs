@@ -562,10 +562,7 @@ impl IrExpression {
             IrExpression::Bool(_) => IrType::Bool,
             IrExpression::Int(v) => IrType::Int(ClosedNonEmptyRange::single(v.clone())),
 
-            &IrExpression::Signal(signal) => match signal {
-                IrSignal::Port(port) => module.ports[port].ty.clone(),
-                IrSignal::Wire(wire) => module.wires[wire].ty.clone(),
-            },
+            &IrExpression::Signal(signal) => signal.ty(module).clone(),
             &IrExpression::Variable(var) => variables[var].ty.clone(),
 
             &IrExpression::Large(expr) => {
@@ -846,6 +843,15 @@ impl IrExpression {
     }
 }
 
+impl IrSignal {
+    pub fn ty(self, module: &IrModuleInfo) -> &IrType {
+        match self {
+            IrSignal::Port(port) => &module.ports[port].ty,
+            IrSignal::Wire(wire) => &module.wires[wire].ty,
+        }
+    }
+}
+
 impl Polarized<IrSignal> {
     pub fn as_expression(self, large: &mut IrLargeArena) -> IrExpression {
         let Polarized { inverted, signal } = self;
@@ -859,6 +865,13 @@ impl Polarized<IrSignal> {
 }
 
 impl IrSignalOrVariable {
+    pub fn ty<'a>(self, module: &'a IrModuleInfo, variables: &'a IrVariables) -> &'a IrType {
+        match self {
+            IrSignalOrVariable::Signal(signal) => signal.ty(module),
+            IrSignalOrVariable::Variable(var) => &variables[var].ty,
+        }
+    }
+
     pub fn as_expression(self) -> IrExpression {
         match self {
             IrSignalOrVariable::Signal(s) => IrExpression::Signal(s),

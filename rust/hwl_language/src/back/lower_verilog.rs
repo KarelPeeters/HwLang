@@ -1875,8 +1875,8 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let &IrAssignmentTarget { base, ref steps } = target;
 
         // evaluate indexing steps
-        let base_ty = base.as_expression().ty(self.module, self.variables);
-        let steps = self.build_target_steps(span, base_ty, steps)?;
+        let base_ty = base.ty(self.module, self.variables);
+        let steps = self.build_target_steps(span, base_ty.clone(), steps)?;
 
         // actually do the assignment(s)
         let mut append_assign = |target: &LoweredName, assign_op: &str| {
