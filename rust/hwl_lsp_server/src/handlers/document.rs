@@ -11,6 +11,7 @@ use lsp_types::{
     FileChangeType, FileEvent, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     VersionedTextDocumentIdentifier,
 };
+use std::io::ErrorKind;
 
 impl NotificationHandler<DidOpenTextDocument> for ServerState {
     fn handle_notification(&mut self, params: DidOpenTextDocumentParams) -> RequestResult<()> {
@@ -91,15 +92,30 @@ impl NotificationHandler<DidChangeWatchedFiles> for ServerState {
             match typ {
                 FileChangeType::CREATED | FileChangeType::CHANGED => {
                     let path = uri_to_path(&uri)?;
-                    let content = match std::fs::read(&path) {
-                        Ok(c) => c,
-                        Err(e) => return Err(RequestError::Vfs(VfsError::Io(e.with_path(path)))),
-                    };
-                    self.vfs.create_or_update(path, content);
+                    match std::fs::read(&path) {
+                        Ok(content) => {
+                            self.vfs.create_or_update(path, content);
+                        }
+                        Err(e) => {
+                            match e.kind() {
+                                ErrorKind::IsADirectory => {
+                                    // ignore, this is apparently allowed but we don't track folders
+                                }
+                                ErrorKind::NotFound => {
+                                    // race condition, this file has been deleted by now
+                                    self.vfs.delete_if_exists(&path);
+                                }
+                                _ => {
+                                    // other error, could be important
+                                    return Err(RequestError::Vfs(VfsError::Io(e.with_path(path))));
+                                }
+                            }
+                        }
+                    }
                 }
                 FileChangeType::DELETED => {
                     let path = uri_to_path(&uri)?;
-                    self.vfs.delete(&path)?;
+                    self.vfs.delete_if_exists(&path);
                 }
                 _ => {
                     return Err(RequestError::Invalid(format!(

@@ -59,11 +59,19 @@ impl Vfs {
     }
 
     pub fn delete(&mut self, path: &Path) -> Result<(), VfsError> {
+        if self.delete_if_exists(path) {
+            Ok(())
+        } else {
+            Err(VfsError::DoesNotExist(path.to_owned()))
+        }
+    }
+
+    pub fn delete_if_exists(&mut self, path: &Path) -> bool {
         match self.files.swap_remove(path) {
-            None => Err(VfsError::DoesNotExist(path.to_owned())),
+            None => false,
             Some(_) => {
                 self.update_changed(path);
-                Ok(())
+                true
             }
         }
     }
