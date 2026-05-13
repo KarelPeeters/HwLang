@@ -238,3 +238,11 @@ impl<T> DerefMut for NonEmptyVec<T> {
         &mut self.inner
     }
 }
+
+/// Visit all keys that exist in either map, only once.
+pub fn chain_keys<'k, K: Eq + Hash, V, W>(
+    left: &'k IndexMap<K, V>,
+    right: &'k IndexMap<K, W>,
+) -> impl Iterator<Item = &'k K> {
+    left.keys().chain(right.keys().filter(|&k| !left.contains_key(k)))
+}

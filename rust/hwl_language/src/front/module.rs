@@ -1,6 +1,6 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::NamedOrValue;
@@ -249,6 +249,7 @@ impl CompileRefs<'_, '_> {
                 }
             };
 
+            // TODO remove all of this, this has been moved to IR
             if let Some(drivers) = drivers {
                 // error: multiple drivers
                 // let mut diag = DiagnosticError::new(
@@ -272,12 +273,12 @@ impl CompileRefs<'_, '_> {
                 // TODO stop checking drivers in frontend?
             } else {
                 // warning: no drivers
-                DiagnosticWarning::new(
-                    format!("{kind_str} `{diag_str}` has no driver"),
-                    decl_span,
-                    "declared here",
-                )
-                .report(diags);
+                // DiagnosticWarning::new(
+                //     format!("{kind_str} `{diag_str}` has no driver"),
+                //     decl_span,
+                //     "declared here",
+                // )
+                // .report(diags);
             }
         }
         if !drivers.is_empty() {

@@ -3,6 +3,7 @@ use crate::mid::ir::{
     IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
     IrStringSubstitution, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrVariable, IrVariables, ValueAccess,
 };
+use crate::util::data::chain_keys;
 use indexmap::{IndexMap, IndexSet};
 use itertools::chain;
 
@@ -277,10 +278,7 @@ impl VarState<'_> {
         map_1: IndexMap<IrVariable, VarInfo>,
     ) {
         let VarState { parent: _, map } = self;
-
-        let changed_vars = chain!(map_0.keys(), map_1.keys().filter(|&k| !map_0.contains_key(k)));
-
-        for &var in changed_vars {
+        for &var in chain_keys(&map_0, &map_1) {
             let version = next_version.next();
             map.insert(var, VarInfo { version, copy_of: None });
         }

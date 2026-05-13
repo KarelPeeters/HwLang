@@ -1,54 +1,136 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
     IrModuleChild, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStructType, IrTargetStepScalar,
     IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
 };
-use indexmap::IndexMap;
-use itertools::Itertools;
-use std::iter::chain;
+use crate::util::Never;
+use crate::util::data::chain_keys;
+use indexmap::{IndexMap, IndexSet};
+use itertools::{Itertools, chain, enumerate};
+use std::fmt::Debug;
+use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
 pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
-    for child in &module.children {
-        match &child.inner {
-            IrModuleChild::ClockedProcess(_) => {
-                // TODO careful about drivers, also take resets into account
-                // TODO expand to allow only covering subsets of signals
-            }
-            IrModuleChild::CombinatorialProcess(proc) => {
-                compute_combinatorial_process_drivers(diags, module, proc)?;
-            }
+    let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<usize>>> = IndexMap::new();
+
+    for (child_index, child) in enumerate(&module.children) {
+        let child_masks = match &child.inner {
+            IrModuleChild::ClockedProcess(proc) => compute_clocked_process_drivers(module, proc)?,
+            IrModuleChild::CombinatorialProcess(proc) => compute_combinatorial_process_drivers(diags, module, proc)?,
             IrModuleChild::ModuleInternalInstance(_) => {
-                // TODO
+                todo!()
             }
             IrModuleChild::ModuleExternalInstance(_) => {
-                // TODO
+                todo!()
             }
+        };
+
+        for (signal, child_mask) in child_masks {
+            let combined_drive = combined_drivers
+                .entry(signal)
+                .or_insert_with(|| IrMask::new(signal.ty(module), vec![]));
+            IrMask::zip2_for_each(combined_drive, &child_mask, &mut |combined, &curr_drives| {
+                if curr_drives {
+                    combined.push(child_index);
+                }
+            })
         }
     }
 
-    Ok(())
+    // TODO improve error messages
+    let mut any_err = Ok(());
+
+    let all_signals = chain(
+        module.ports.keys().map(IrSignal::Port),
+        module.wires.keys().map(IrSignal::Wire),
+    );
+
+    for signal in all_signals {
+        let mut any_driven = false;
+        let mut any_undriven = false;
+        let mut overlapping_children = IndexSet::new();
+
+        if let Some(mask) = combined_drivers.get(&signal) {
+            let _ = mask.for_each_leaf::<Never>(|v| {
+                match v.len() {
+                    0 => {
+                        any_undriven = true;
+                    }
+                    1 => {
+                        any_driven = true;
+                    }
+                    _ => {
+                        any_driven = true;
+                        overlapping_children.extend(v.iter().copied())
+                    }
+                }
+                ControlFlow::Continue(())
+            });
+        }
+
+        let (signal_kind, signal_name) = match signal {
+            IrSignal::Port(port) => ("port", module.ports[port].name.as_str()),
+            IrSignal::Wire(wire) => (
+                "wire",
+                module.wires[wire]
+                    .debug_info_id
+                    .inner
+                    .as_ref()
+                    .map_or("_", String::as_str),
+            ),
+        };
+
+        // report multiple drivers
+        if !overlapping_children.is_empty() {
+            let mut diag = DiagnosticError::new(
+                format!("{signal_kind} `{signal_name}` has multiple overlapping drivers"),
+                signal.span(module),
+                "{signal_kind} defined here",
+            );
+            for child in overlapping_children {
+                diag = diag.add_info(module.children[child].span, "driven here");
+            }
+            any_err = Err(diag.report(diags));
+        }
+
+        // report (partially) undriven
+        if any_undriven {
+            let title_suffix = if !any_driven {
+                "has no driver"
+            } else {
+                "is not fully driven"
+            };
+            DiagnosticWarning::new(
+                format!("{signal_kind} `{signal_name}` {title_suffix}"),
+                signal.span(module),
+                "signal defined here",
+            )
+            .report(diags);
+        }
+    }
+
+    any_err
 }
 
 // TODO optimize for large arrays
 #[derive(Debug, Clone)]
-pub enum IrMask {
-    Scalar(bool),
-    Compound(Vec<IrMask>),
+pub enum IrMask<T> {
+    Scalar(T),
+    Compound(Vec<IrMask<T>>),
 }
 
 #[derive(Debug)]
 pub struct Drivers<'p> {
     parent: Option<&'p Drivers<'p>>,
-    map: IndexMap<IrSignal, IrMask>,
+    map: IndexMap<IrSignal, IrMask<bool>>,
 }
 
 fn compute_clocked_process_drivers(
-    diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrClockedProcess,
-) -> DiagResult<IndexMap<IrSignal, IrMask>> {
+) -> DiagResult<IndexMap<IrSignal, IrMask<bool>>> {
     let IrClockedProcess {
         registers,
         variables: _,
@@ -68,7 +150,7 @@ fn compute_combinatorial_process_drivers(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrCombinatorialProcess,
-) -> DiagResult<IndexMap<IrSignal, IrMask>> {
+) -> DiagResult<IndexMap<IrSignal, IrMask<bool>>> {
     let IrCombinatorialProcess { variables, block } = proc;
 
     let mut drivers = Drivers::root();
@@ -145,10 +227,9 @@ fn compute_combinatorial_block_drivers(
                 let else_map = else_drivers.map;
 
                 // merge
-                let signals = chain(then_map.keys(), else_map.keys().filter(|&k| !then_map.contains_key(k)));
-                for &signal in signals {
+                for &signal in chain_keys(&then_map, &else_map) {
                     let mut any_err = false;
-                    IrMask::for_each_scalar_3(
+                    IrMask::zip3_maybe_for_each(
                         drivers.curr(module, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
@@ -159,8 +240,8 @@ fn compute_combinatorial_block_drivers(
                             }
 
                             // check that children match
-                            let then_value = then_value.unwrap_or(false);
-                            let else_value = else_value.unwrap_or(false);
+                            let then_value = then_value.copied().unwrap_or(false);
+                            let else_value = else_value.copied().unwrap_or(false);
                             any_err |= then_value != else_value;
                         },
                     );
@@ -212,7 +293,7 @@ impl Drivers<'_> {
         }
     }
 
-    fn curr(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask {
+    fn curr(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask<bool> {
         self.map.entry(signal).or_insert_with(|| {
             let mut curr = self.parent;
             loop {
@@ -234,8 +315,11 @@ impl Drivers<'_> {
 }
 
 // TODO rework this
-impl IrMask {
-    fn new(ty: &IrType, init: bool) -> IrMask {
+impl<T> IrMask<T> {
+    fn new(ty: &IrType, init: T) -> IrMask<T>
+    where
+        T: Clone,
+    {
         match ty {
             IrType::Bool | IrType::Int(_) | IrType::Enum(_) => IrMask::Scalar(init),
             IrType::Array(ty_inner, len) => {
@@ -247,7 +331,7 @@ impl IrMask {
             IrType::Tuple(ty_fields) => IrMask::Compound(
                 ty_fields
                     .iter()
-                    .map(|ty_field| IrMask::new(ty_field, init))
+                    .map(|ty_field| IrMask::new(ty_field, init.clone()))
                     .collect_vec(),
             ),
             IrType::Struct(ty_info) => {
@@ -259,27 +343,90 @@ impl IrMask {
                 IrMask::Compound(
                     fields
                         .values()
-                        .map(|ty_field| IrMask::new(ty_field, init))
+                        .map(|ty_field| IrMask::new(ty_field, init.clone()))
                         .collect_vec(),
                 )
             }
         }
     }
 
-    fn fill(&mut self, value: bool) {
+    fn fill(&mut self, value: T)
+    where
+        T: Clone,
+    {
         match self {
             IrMask::Scalar(slf) => *slf = value,
-            IrMask::Compound(values) => values.iter_mut().for_each(|v| v.fill(value)),
+            IrMask::Compound(values) => values.iter_mut().for_each(|v| v.fill(value.clone())),
         }
     }
 
-    fn all(&self) -> bool {
-        match self {
-            &IrMask::Scalar(slf) => slf,
-            IrMask::Compound(values) => values.iter().all(IrMask::all),
+    fn for_each_leaf<B>(&self, mut f: impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
+        fn for_each_leaf_impl<T, B>(slf: &IrMask<T>, f: &mut impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
+            match slf {
+                IrMask::Scalar(slf) => f(slf),
+                IrMask::Compound(values) => values.iter().try_for_each(|m| for_each_leaf_impl(m, f)),
+            }
+        }
+        for_each_leaf_impl(self, &mut f)
+    }
+
+    fn any(&self, mut f: impl FnMut(&T) -> bool) -> bool {
+        self.for_each_leaf(|v| {
+            if f(v) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .is_break()
+    }
+
+    fn all(&self, mut f: impl FnMut(&T) -> bool) -> bool {
+        !self.any(|v| !f(v))
+    }
+
+    fn zip2_for_each<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U)) {
+        match a {
+            IrMask::Scalar(a) => {
+                let b = unwrap_match!(b, IrMask::Scalar(b) => b);
+                f(a, b)
+            }
+            IrMask::Compound(a) => {
+                let b = unwrap_match!(b, IrMask::Compound(b) => b);
+                for i in 0..a.len() {
+                    Self::zip2_for_each(&mut a[i], &b[i], f);
+                }
+            }
         }
     }
 
+    fn zip3_maybe_for_each<U: Debug, V: Debug>(
+        a: &mut IrMask<T>,
+        b: Option<&IrMask<U>>,
+        c: Option<&IrMask<V>>,
+        f: &mut impl FnMut(&mut T, Option<&U>, Option<&V>),
+    ) {
+        match a {
+            IrMask::Scalar(a) => {
+                let b = b.map(|b| unwrap_match!(b, IrMask::Scalar(b) => b));
+                let c = c.map(|c| unwrap_match!(c, IrMask::Scalar(c) => c));
+                f(a, b, c)
+            }
+            IrMask::Compound(a) => {
+                let b = b.map(|b| unwrap_match!(b, IrMask::Compound(b) => b));
+                let c = c.map(|c| unwrap_match!(c, IrMask::Compound(c) => c));
+
+                for i in 0..a.len() {
+                    let b = b.map(|b| &b[i]);
+                    let c = c.map(|c| &c[i]);
+                    Self::zip3_maybe_for_each(&mut a[i], b, c, f);
+                }
+            }
+        }
+    }
+}
+
+impl IrMask<bool> {
     fn set_steps(
         &mut self,
         module: &IrModuleInfo,
@@ -323,7 +470,7 @@ impl IrMask {
                             let index_range = start_range.start..start_range.end + len;
 
                             // check no partially written elements in range
-                            let fully_driven = slf[index_range].iter().all(IrMask::all);
+                            let fully_driven = slf[index_range].iter().all(|m| m.all(|&b| b));
                             if !fully_driven {
                                 return Err(UndrivenConditionalDrive);
                             }
@@ -375,7 +522,7 @@ impl IrMask {
         step_slice: Option<&IrTargetStepSlice>,
     ) -> bool {
         let mut all = true;
-        self.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, &mut |m| all &= m.all());
+        self.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, &mut |m| all &= m.all(|&b| b));
         all
     }
 
@@ -385,7 +532,7 @@ impl IrMask {
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&IrMask),
+        f: &mut impl FnMut(&IrMask<bool>),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
@@ -418,31 +565,6 @@ impl IrMask {
             }
             IrTargetStepScalar::TupleIndex(_) => todo!(),
             IrTargetStepScalar::StructField(_) => todo!(),
-        }
-    }
-
-    fn for_each_scalar_3(
-        a: &mut IrMask,
-        b: Option<&IrMask>,
-        c: Option<&IrMask>,
-        f: &mut impl FnMut(&mut bool, Option<bool>, Option<bool>),
-    ) {
-        match a {
-            IrMask::Scalar(a) => {
-                let b = b.map(|b| unwrap_match!(b, &IrMask::Scalar(b) => b));
-                let c = c.map(|c| unwrap_match!(c, &IrMask::Scalar(c) => c));
-                f(a, b, c)
-            }
-            IrMask::Compound(a) => {
-                let b = b.map(|b| unwrap_match!(b, IrMask::Compound(b) => b));
-                let c = c.map(|c| unwrap_match!(c, IrMask::Compound(c) => c));
-
-                for i in 0..a.len() {
-                    let b = b.map(|b| &b[i]);
-                    let c = c.map(|c| &c[i]);
-                    Self::for_each_scalar_3(&mut a[i], b, c, f);
-                }
-            }
         }
     }
 }
