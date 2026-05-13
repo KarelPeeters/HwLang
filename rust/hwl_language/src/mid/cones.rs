@@ -4,6 +4,7 @@ use crate::mid::ir::{
     IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable, IrStatement, IrStructType,
     IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
 };
+use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
 use crate::util::Never;
 use crate::util::data::chain_keys;
@@ -76,12 +77,19 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
     }
     any_err?;
 
-    let all_signals = chain(
-        module.ports.keys().map(IrSignal::Port),
+    let all_signals_which_need_drivers = chain(
+        module
+            .ports
+            .iter()
+            .filter(|(_, info)| match info.direction {
+                PortDirection::Input => false,
+                PortDirection::Output => true,
+            })
+            .map(|(p, _)| IrSignal::Port(p)),
         module.wires.keys().map(IrSignal::Wire),
     );
 
-    for signal in all_signals {
+    for signal in all_signals_which_need_drivers {
         let mut any_driven = false;
         let mut any_undriven = false;
         let mut overlapping_drivers = IndexSet::new();
@@ -102,6 +110,8 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
                 }
                 ControlFlow::Continue(())
             });
+        } else {
+            any_undriven = true;
         }
 
         let (signal_kind, signal_name) = match signal {
@@ -273,6 +283,9 @@ fn compute_combinatorial_block_drivers(
                             let then_value = then_value.copied().unwrap_or(false);
                             let else_value = else_value.copied().unwrap_or(false);
                             any_err |= then_value != else_value;
+
+                            // store union, assume driven to avoid future false positives
+                            *parent |= then_value | else_value;
                         },
                     );
                     if any_err {

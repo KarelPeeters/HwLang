@@ -64,6 +64,9 @@ def test_comb_dyn_index_partial():
             }
             w[i] = false;
         }
+        comb {
+            w[2..] = [false] * 2;
+        }
     }
     """
     top = compile_custom(src).resolve("top.top")
