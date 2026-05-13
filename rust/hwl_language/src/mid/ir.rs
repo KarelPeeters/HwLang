@@ -886,6 +886,13 @@ impl IrSignal {
             IrSignal::Wire(wire) => &module.wires[wire].ty,
         }
     }
+
+    pub fn span(self, module: &IrModuleInfo) -> Span {
+        match self {
+            IrSignal::Port(port) => module.ports[port].debug_span,
+            IrSignal::Wire(wire) => module.wires[wire].debug_info_id.span,
+        }
+    }
 }
 
 impl Polarized<IrSignal> {

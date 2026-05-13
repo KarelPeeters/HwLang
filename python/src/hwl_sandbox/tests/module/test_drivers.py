@@ -192,3 +192,4 @@ def test_write_to_signal_in_port_expr():
     """
     with pytest.raises(hwl.DiagnosticException, match="assigning to signals is only allowed in processes"):
         _ = compile_custom(src).resolve("top.top")
+

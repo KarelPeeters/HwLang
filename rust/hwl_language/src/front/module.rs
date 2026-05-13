@@ -19,6 +19,7 @@ use crate::front::signal::{
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
+use crate::mid::cones::compute_module_drivers;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
@@ -187,10 +188,11 @@ impl CompileRefs<'_, '_> {
         } = &self.fixed.parsed[ast_ref];
 
         self.check_should_stop(def_id.span())?;
+        let diags = self.diags;
 
         // rebuild scopes
         let mut ctx = CompileItemContext::new_restore(self, None, Some(elab), ports, port_interfaces);
-        let flow_root = FlowRoot::restore(self.diags, flow_root);
+        let flow_root = FlowRoot::restore(diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
         let scope_ports = Scope::restore_from_content(ScopeParent::Frozen(scope_params), scope_ports);
 
@@ -249,23 +251,25 @@ impl CompileRefs<'_, '_> {
 
             if let Some(drivers) = drivers {
                 // error: multiple drivers
-                let mut diag = DiagnosticError::new(
-                    format!("{kind_str} `{diag_str}` has multiple drivers"),
-                    decl_span,
-                    format!("{kind_str} declared here"),
-                );
+                // let mut diag = DiagnosticError::new(
+                //     format!("{kind_str} `{diag_str}` has multiple drivers"),
+                //     decl_span,
+                //     format!("{kind_str} declared here"),
+                // );
+                //
+                // for (kind, span) in drivers {
+                //     let kind_str = match kind {
+                //         DriverKind::WireDeclaration => "wire declaration expression",
+                //         DriverKind::CombinatorialProcess => "combinatorial process",
+                //         DriverKind::ClockedProcessRegister => "clocked process register",
+                //         DriverKind::InstanceOutputPort => "instance output port",
+                //     };
+                //     diag = diag.add_info(span, format!("driven by {kind_str} here"));
+                // }
+                //
+                // any_driver_err = Err(diag.report(self.diags));
 
-                for (kind, span) in drivers {
-                    let kind_str = match kind {
-                        DriverKind::WireDeclaration => "wire declaration expression",
-                        DriverKind::CombinatorialProcess => "combinatorial process",
-                        DriverKind::ClockedProcessRegister => "clocked process register",
-                        DriverKind::InstanceOutputPort => "instance output port",
-                    };
-                    diag = diag.add_info(span, format!("driven by {kind_str} here"));
-                }
-
-                any_driver_err = Err(diag.report(self.diags));
+                // TODO stop checking drivers in frontend?
             } else {
                 // warning: no drivers
                 DiagnosticWarning::new(
@@ -273,13 +277,11 @@ impl CompileRefs<'_, '_> {
                     decl_span,
                     "declared here",
                 )
-                .report(self.diags);
+                .report(diags);
             }
         }
         if !drivers.is_empty() {
-            return Err(self
-                .diags
-                .report_error_internal(def_span, "leftover drivers after checking all signals"));
+            return Err(diags.report_error_internal(def_span, "leftover drivers after checking all signals"));
         }
 
         any_driver_err?;
@@ -333,6 +335,9 @@ impl CompileRefs<'_, '_> {
         if self.fixed.settings.do_ir_cleanup {
             cleanup_module(&mut module_ir);
         }
+
+        // TODO
+        compute_module_drivers(diags, &module_ir)?;
 
         Ok(module_ir)
     }

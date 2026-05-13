@@ -1,15 +1,30 @@
-module top ports() {}
-
-struct Foo {
-    x: uint,
-    y: uint,
-
-    fn total(self) -> uint {
-        return self.x + self.y;
+module top ports(
+    i: in async int(0..2),
+    b: in async bool,
+) {
+    wire w: async bool;
+/*
+    comb {
+        w[0] = false;
     }
-}
+    comb {
+        w[1] = false;
+    }
+    comb {
+        w[2..] = [true, false];
+    }
+*/
+    comb {
+        // w = true;
+        if (b) {
+            w = false;
+        }
+    }
 
-const {
-    val f = Foo.new(x=0, y=4);
-    print(f.total());
+/*
+    wire w: async [4]bool;
+    comb {
+        w[i] = false;
+    }
+*/
 }
