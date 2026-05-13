@@ -1,46 +1,80 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
-    IrModuleChild, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStructType, IrTargetStepScalar,
-    IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
+    IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable, IrStatement, IrStructType,
+    IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
 };
+use crate::syntax::pos::Span;
 use crate::util::Never;
 use crate::util::data::chain_keys;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Itertools, chain, enumerate};
+use itertools::{Itertools, chain};
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
 pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
-    let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<usize>>> = IndexMap::new();
+    let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<Span>>> = IndexMap::new();
 
-    for (child_index, child) in enumerate(&module.children) {
-        let child_masks = match &child.inner {
-            IrModuleChild::ClockedProcess(proc) => compute_clocked_process_drivers(module, proc)?,
-            IrModuleChild::CombinatorialProcess(proc) => compute_combinatorial_process_drivers(diags, module, proc)?,
-            IrModuleChild::ModuleInternalInstance(_) => {
-                todo!()
+    let mut report_signal_drive = |signal: IrSignal, mask: IrMask<bool>, span: Span| {
+        let combined_drive = combined_drivers
+            .entry(signal)
+            .or_insert_with(|| IrMask::new(signal.ty(module), vec![]));
+        IrMask::zip2_for_each(combined_drive, &mask, &mut |combined, &curr_drives| {
+            if curr_drives {
+                combined.push(span);
             }
-            IrModuleChild::ModuleExternalInstance(_) => {
-                todo!()
-            }
-        };
+        })
+    };
 
-        for (signal, child_mask) in child_masks {
-            let combined_drive = combined_drivers
-                .entry(signal)
-                .or_insert_with(|| IrMask::new(signal.ty(module), vec![]));
-            IrMask::zip2_for_each(combined_drive, &child_mask, &mut |combined, &curr_drives| {
-                if curr_drives {
-                    combined.push(child_index);
+    let mut any_err = Ok(());
+    for child in &module.children {
+        match &child.inner {
+            IrModuleChild::ClockedProcess(proc) => {
+                let drivers = compute_clocked_process_drivers(module, proc);
+                for (signal, mask) in drivers {
+                    report_signal_drive(signal, mask, child.span);
                 }
-            })
+            }
+            IrModuleChild::CombinatorialProcess(proc) => {
+                let drivers = match compute_combinatorial_process_drivers(diags, module, proc) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        any_err = Err(e);
+                        continue;
+                    }
+                };
+                for (signal, mask) in drivers {
+                    report_signal_drive(signal, mask, child.span);
+                }
+            }
+            IrModuleChild::ModuleInternalInstance(inst) => {
+                for conn in &inst.port_connections {
+                    match conn.inner {
+                        IrPortConnection::Input(_) => {}
+                        IrPortConnection::Output(signal) => {
+                            if let Some(signal) = signal {
+                                report_signal_drive(signal, IrMask::new(signal.ty(module), true), conn.span);
+                            }
+                        }
+                    }
+                }
+            }
+            IrModuleChild::ModuleExternalInstance(inst) => {
+                for (_, (_, conn)) in &inst.port_connections {
+                    match conn.inner {
+                        IrPortConnection::Input(_) => {}
+                        IrPortConnection::Output(signal) => {
+                            if let Some(signal) = signal {
+                                report_signal_drive(signal, IrMask::new(signal.ty(module), true), conn.span);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-
-    // TODO improve error messages
-    let mut any_err = Ok(());
+    any_err?;
 
     let all_signals = chain(
         module.ports.keys().map(IrSignal::Port),
@@ -50,7 +84,7 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
     for signal in all_signals {
         let mut any_driven = false;
         let mut any_undriven = false;
-        let mut overlapping_children = IndexSet::new();
+        let mut overlapping_drivers = IndexSet::new();
 
         if let Some(mask) = combined_drivers.get(&signal) {
             let _ = mask.for_each_leaf::<Never>(|v| {
@@ -63,7 +97,7 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
                     }
                     _ => {
                         any_driven = true;
-                        overlapping_children.extend(v.iter().copied())
+                        overlapping_drivers.extend(v.iter().copied())
                     }
                 }
                 ControlFlow::Continue(())
@@ -83,14 +117,14 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
         };
 
         // report multiple drivers
-        if !overlapping_children.is_empty() {
+        if !overlapping_drivers.is_empty() {
             let mut diag = DiagnosticError::new(
                 format!("{signal_kind} `{signal_name}` has multiple overlapping drivers"),
                 signal.span(module),
                 "{signal_kind} defined here",
             );
-            for child in overlapping_children {
-                diag = diag.add_info(module.children[child].span, "driven here");
+            for drive_span in overlapping_drivers {
+                diag = diag.add_info(drive_span, "driven here");
             }
             any_err = Err(diag.report(diags));
         }
@@ -127,10 +161,7 @@ pub struct Drivers<'p> {
     map: IndexMap<IrSignal, IrMask<bool>>,
 }
 
-fn compute_clocked_process_drivers(
-    module: &IrModuleInfo,
-    proc: &IrClockedProcess,
-) -> DiagResult<IndexMap<IrSignal, IrMask<bool>>> {
+fn compute_clocked_process_drivers(module: &IrModuleInfo, proc: &IrClockedProcess) -> IndexMap<IrSignal, IrMask<bool>> {
     let IrClockedProcess {
         registers,
         variables: _,
@@ -139,11 +170,10 @@ fn compute_clocked_process_drivers(
         clock_block: _,
     } = proc;
 
-    let drivers = registers
+    registers
         .iter()
         .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
-        .collect();
-    Ok(drivers)
+        .collect()
 }
 
 fn compute_combinatorial_process_drivers(
