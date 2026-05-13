@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement, IrModuleChild,
-    IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStructType, IrTargetStepScalar, IrTargetStepSlice,
-    IrTargetSteps, IrType, IrVariables,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
+    IrModuleChild, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStructType, IrTargetStepScalar,
+    IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
 };
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -17,7 +17,7 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
                 // TODO expand to allow only covering subsets of signals
             }
             IrModuleChild::CombinatorialProcess(proc) => {
-                compute_combinatorial_process_cones(diags, module, proc)?;
+                compute_combinatorial_process_drivers(diags, module, proc)?;
             }
             IrModuleChild::ModuleInternalInstance(_) => {
                 // TODO
@@ -33,34 +33,52 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
 
 // TODO optimize for large arrays
 #[derive(Debug, Clone)]
-pub enum Mask {
+pub enum IrMask {
     Scalar(bool),
-    Compound(Vec<Mask>),
+    Compound(Vec<IrMask>),
 }
 
 #[derive(Debug)]
 pub struct Drivers<'p> {
     parent: Option<&'p Drivers<'p>>,
-    map: IndexMap<IrSignal, Mask>,
+    map: IndexMap<IrSignal, IrMask>,
 }
 
-fn compute_combinatorial_process_cones(
+fn compute_clocked_process_drivers(
+    diags: &Diagnostics,
+    module: &IrModuleInfo,
+    proc: &IrClockedProcess,
+) -> DiagResult<IndexMap<IrSignal, IrMask>> {
+    let IrClockedProcess {
+        registers,
+        variables: _,
+        async_reset: _,
+        clock_signal: _,
+        clock_block: _,
+    } = proc;
+
+    let drivers = registers
+        .iter()
+        .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
+        .collect();
+    Ok(drivers)
+}
+
+fn compute_combinatorial_process_drivers(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrCombinatorialProcess,
-) -> DiagResult {
+) -> DiagResult<IndexMap<IrSignal, IrMask>> {
     let IrCombinatorialProcess { variables, block } = proc;
 
     let mut drivers = Drivers::root();
-    compute_combinatorial_block_cones(diags, module, variables, block, &mut drivers)?;
-
-    println!("{:#?}", drivers);
-    Ok(())
+    compute_combinatorial_block_drivers(diags, module, variables, block, &mut drivers)?;
+    Ok(drivers.map)
 }
 
 struct UndrivenConditionalDrive;
 
-fn compute_combinatorial_block_cones(
+fn compute_combinatorial_block_drivers(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     vars: &IrVariables,
@@ -105,7 +123,7 @@ fn compute_combinatorial_block_cones(
                 }
             }
             IrStatement::Block(stmt_inner) => {
-                compute_combinatorial_block_cones(diags, module, vars, stmt_inner, drivers)?;
+                compute_combinatorial_block_drivers(diags, module, vars, stmt_inner, drivers)?;
             }
             IrStatement::If(stmt_inner) => {
                 let IrIfStatement {
@@ -116,13 +134,13 @@ fn compute_combinatorial_block_cones(
 
                 // visit then
                 let mut then_drivers = drivers.new_child();
-                compute_combinatorial_block_cones(diags, module, vars, then_block, &mut then_drivers)?;
+                compute_combinatorial_block_drivers(diags, module, vars, then_block, &mut then_drivers)?;
                 let then_map = then_drivers.map;
 
                 // visit else
                 let mut else_drivers = drivers.new_child();
                 if let Some(else_block) = else_block {
-                    compute_combinatorial_block_cones(diags, module, vars, else_block, &mut else_drivers)?;
+                    compute_combinatorial_block_drivers(diags, module, vars, else_block, &mut else_drivers)?;
                 }
                 let else_map = else_drivers.map;
 
@@ -130,7 +148,7 @@ fn compute_combinatorial_block_cones(
                 let signals = chain(then_map.keys(), else_map.keys().filter(|&k| !then_map.contains_key(k)));
                 for &signal in signals {
                     let mut any_err = false;
-                    Mask::for_each_scalar_3(
+                    IrMask::for_each_scalar_3(
                         drivers.curr(module, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
@@ -167,10 +185,12 @@ fn compute_combinatorial_block_cones(
                 } else {
                     // this is pessimistic, but safe:
                     //   we do not use the fact that the index variable is known in each iteration
-                    compute_combinatorial_block_cones(diags, module, vars, block, drivers)?;
+                    compute_combinatorial_block_drivers(diags, module, vars, block, drivers)?;
                 }
             }
-            IrStatement::Print(_) | IrStatement::AssertFailed => {}
+            IrStatement::Print(_) | IrStatement::AssertFailed => {
+                // cannot drive anything
+            }
         }
     }
 
@@ -192,13 +212,13 @@ impl Drivers<'_> {
         }
     }
 
-    fn curr(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut Mask {
+    fn curr(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask {
         self.map.entry(signal).or_insert_with(|| {
             let mut curr = self.parent;
             loop {
                 curr = match curr {
                     None => {
-                        break Mask::empty(signal.ty(module));
+                        break IrMask::new(signal.ty(module), false);
                     }
                     Some(curr) => {
                         if let Some(d) = curr.map.get(&signal) {
@@ -214,39 +234,49 @@ impl Drivers<'_> {
 }
 
 // TODO rework this
-impl Mask {
-    fn empty(ty: &IrType) -> Mask {
+impl IrMask {
+    fn new(ty: &IrType, init: bool) -> IrMask {
         match ty {
-            IrType::Bool | IrType::Int(_) | IrType::Enum(_) => Mask::Scalar(false),
+            IrType::Bool | IrType::Int(_) | IrType::Enum(_) => IrMask::Scalar(init),
             IrType::Array(ty_inner, len) => {
                 let len = usize::try_from(len).unwrap_or_else(|_| todo!());
 
-                let mask_inner = Mask::empty(ty_inner);
-                Mask::Compound(vec![mask_inner; len])
+                let mask_inner = IrMask::new(ty_inner, init);
+                IrMask::Compound(vec![mask_inner; len])
             }
-            IrType::Tuple(ty_fields) => Mask::Compound(ty_fields.iter().map(Mask::empty).collect_vec()),
+            IrType::Tuple(ty_fields) => IrMask::Compound(
+                ty_fields
+                    .iter()
+                    .map(|ty_field| IrMask::new(ty_field, init))
+                    .collect_vec(),
+            ),
             IrType::Struct(ty_info) => {
                 let IrStructType {
                     ty: _,
                     debug_info_name: _,
                     fields,
                 } = ty_info;
-                Mask::Compound(fields.values().map(Mask::empty).collect_vec())
+                IrMask::Compound(
+                    fields
+                        .values()
+                        .map(|ty_field| IrMask::new(ty_field, init))
+                        .collect_vec(),
+                )
             }
         }
     }
 
     fn fill(&mut self, value: bool) {
         match self {
-            Mask::Scalar(slf) => *slf = value,
-            Mask::Compound(values) => values.iter_mut().for_each(|v| v.fill(value)),
+            IrMask::Scalar(slf) => *slf = value,
+            IrMask::Compound(values) => values.iter_mut().for_each(|v| v.fill(value)),
         }
     }
 
     fn all(&self) -> bool {
         match self {
-            &Mask::Scalar(slf) => slf,
-            Mask::Compound(values) => values.iter().all(Mask::all),
+            &IrMask::Scalar(slf) => slf,
+            IrMask::Compound(values) => values.iter().all(IrMask::all),
         }
     }
 
@@ -281,7 +311,7 @@ impl Mask {
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
 
-                    let slf = unwrap_match!(self, Mask::Compound(slf) => slf);
+                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
 
                     match unwrap_int(module, vars, start) {
@@ -293,7 +323,7 @@ impl Mask {
                             let index_range = start_range.start..start_range.end + len;
 
                             // check no partially written elements in range
-                            let fully_driven = slf[index_range].iter().all(Mask::all);
+                            let fully_driven = slf[index_range].iter().all(IrMask::all);
                             if !fully_driven {
                                 return Err(UndrivenConditionalDrive);
                             }
@@ -310,7 +340,7 @@ impl Mask {
 
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
-                let slf = unwrap_match!(self, Mask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
 
                 match unwrap_int(module, vars, index) {
                     IntKind::Single(index) => {
@@ -355,7 +385,7 @@ impl Mask {
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&Mask),
+        f: &mut impl FnMut(&IrMask),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
@@ -365,7 +395,7 @@ impl Mask {
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
 
-                    let slf = unwrap_match!(self, Mask::Compound(slf) => slf);
+                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
 
                     let start_range = unwrap_int_unified(module, vars, start);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
@@ -379,7 +409,7 @@ impl Mask {
 
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
-                let slf = unwrap_match!(self, Mask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
 
                 let index_range = unwrap_int_unified(module, vars, index);
                 slf[index_range]
@@ -392,20 +422,20 @@ impl Mask {
     }
 
     fn for_each_scalar_3(
-        a: &mut Mask,
-        b: Option<&Mask>,
-        c: Option<&Mask>,
+        a: &mut IrMask,
+        b: Option<&IrMask>,
+        c: Option<&IrMask>,
         f: &mut impl FnMut(&mut bool, Option<bool>, Option<bool>),
     ) {
         match a {
-            Mask::Scalar(a) => {
-                let b = b.map(|b| unwrap_match!(b, &Mask::Scalar(b) => b));
-                let c = c.map(|c| unwrap_match!(c, &Mask::Scalar(c) => c));
+            IrMask::Scalar(a) => {
+                let b = b.map(|b| unwrap_match!(b, &IrMask::Scalar(b) => b));
+                let c = c.map(|c| unwrap_match!(c, &IrMask::Scalar(c) => c));
                 f(a, b, c)
             }
-            Mask::Compound(a) => {
-                let b = b.map(|b| unwrap_match!(b, Mask::Compound(b) => b));
-                let c = c.map(|c| unwrap_match!(c, Mask::Compound(c) => c));
+            IrMask::Compound(a) => {
+                let b = b.map(|b| unwrap_match!(b, IrMask::Compound(b) => b));
+                let c = c.map(|c| unwrap_match!(c, IrMask::Compound(c) => c));
 
                 for i in 0..a.len() {
                     let b = b.map(|b| &b[i]);

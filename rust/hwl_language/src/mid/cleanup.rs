@@ -22,6 +22,7 @@ pub fn cleanup_module(ir: &mut IrModuleInfo) {
         match &mut child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
+                    registers: _,
                     variables,
                     async_reset,
                     clock_signal: _,

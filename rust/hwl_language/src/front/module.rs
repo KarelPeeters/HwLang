@@ -39,8 +39,8 @@ use crate::util::big_int::BigInt;
 use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
-use indexmap::IndexMap;
 use indexmap::map::Entry;
+use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, chain, enumerate, zip_eq};
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -1143,7 +1143,9 @@ impl BodyContext {
         let (ir_vars, ir_block) = flow.finish();
 
         // report drivers
+        let mut registers_ir = IndexSet::new();
         for (&signal, info) in &registers {
+            registers_ir.insert(info.ir);
             self.report_driver(signal, DriverKind::ClockedProcessRegister, info.span);
         }
 
@@ -1240,6 +1242,7 @@ impl BodyContext {
         // record process
         let clock_ir = Spanned::new(clock.span, ctx.domain_signal_to_ir(clock)?);
         let process = IrClockedProcess {
+            registers: registers_ir,
             variables: ir_vars,
             async_reset,
             clock_signal: clock_ir,

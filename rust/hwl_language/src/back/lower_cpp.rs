@@ -127,6 +127,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
+                    registers: _,
                     variables,
                     clock_signal,
                     clock_block,

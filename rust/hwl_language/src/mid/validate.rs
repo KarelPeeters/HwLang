@@ -3,8 +3,9 @@ use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrEnumType,
     IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance,
-    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString,
-    IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
+    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement,
+    IrString, IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType,
+    IrVariables,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
@@ -42,6 +43,7 @@ impl IrModuleInfo {
             match &child.inner {
                 IrModuleChild::ClockedProcess(process) => {
                     let IrClockedProcess {
+                        registers,
                         variables,
                         clock_signal,
                         clock_block,
@@ -52,16 +54,7 @@ impl IrModuleInfo {
                         signal: clock_signal_inner,
                     } = clock_signal.inner;
 
-                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
-                    clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
-                    check_type_match(
-                        diags,
-                        clock_signal.span,
-                        &IrType::Bool,
-                        &clock_signal_inner_expr.ty(self, no_variables),
-                    )?;
-                    clock_block.validate(diags, self, variables)?;
-
+                    // reset
                     if let Some(async_reset) = async_reset {
                         let IrAsyncResetInfo {
                             signal: reset_signal,
@@ -80,9 +73,14 @@ impl IrModuleInfo {
                             &reset_signal_inner_expr.ty(self, no_variables),
                         )?;
 
-                        // TODO check drivers, ie. only driven and reset in one process
                         for reset in resets {
                             let &(reg, ref value) = &reset.inner;
+
+                            if !registers.contains(&reg) {
+                                return Err(
+                                    diags.report_error_internal(reset.span, "trying to reset non-driven signal")
+                                );
+                            }
 
                             let empty_variables = IrVariables::new();
                             let reg_ty = IrExpression::Signal(reg).ty(self, &empty_variables);
@@ -90,9 +88,20 @@ impl IrModuleInfo {
                             check_type_match(diags, reset.span, &reg_ty, &value.ty(self, &empty_variables))?
                         }
                     }
+
+                    // clock
+                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
+                    clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
+                    check_type_match(
+                        diags,
+                        clock_signal.span,
+                        &IrType::Bool,
+                        &clock_signal_inner_expr.ty(self, no_variables),
+                    )?;
+                    clock_block.validate(diags, self, Some(registers), variables)?;
                 }
                 IrModuleChild::CombinatorialProcess(process) => {
-                    process.block.validate(diags, self, &process.variables)?;
+                    process.block.validate(diags, self, None, &process.variables)?;
                 }
                 IrModuleChild::ModuleInternalInstance(instance) => {
                     let &IrModuleInternalInstance {
@@ -161,10 +170,33 @@ impl IrModuleInfo {
 }
 
 impl IrBlock {
-    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, variables: &IrVariables) -> DiagResult {
+    pub fn validate(
+        &self,
+        diags: &Diagnostics,
+        module: &IrModuleInfo,
+        can_drive: Option<&IndexSet<IrSignal>>,
+        variables: &IrVariables,
+    ) -> DiagResult {
         for stmt in &self.statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
+                    // check target allowed
+                    match target.base {
+                        IrSignalOrVariable::Signal(signal) => {
+                            if let Some(can_drive) = can_drive {
+                                if !can_drive.contains(&signal) {
+                                    return Err(
+                                        diags.report_error_internal(stmt.span, "assigning to non-driven signal")
+                                    );
+                                }
+                            }
+                        }
+                        IrSignalOrVariable::Variable(var) => {
+                            let _ = variables[var];
+                        }
+                    }
+
+                    // check target and expr types
                     let target_ty = assignment_target_ty(module, variables, target);
 
                     expr.validate(diags, module, variables, stmt.span)?;
@@ -173,7 +205,7 @@ impl IrBlock {
                     check_type_match(diags, stmt.span, &target_ty, &expr_ty)?;
                 }
                 IrStatement::Block(block) => {
-                    block.validate(diags, module, variables)?;
+                    block.validate(diags, module, can_drive, variables)?;
                 }
                 IrStatement::If(if_stmt) => {
                     let IrIfStatement {
@@ -185,10 +217,10 @@ impl IrBlock {
                     condition.validate(diags, module, variables, stmt.span)?;
                     check_type_is_bool(diags, stmt.span, &condition.ty(module, variables))?;
 
-                    then_block.validate(diags, module, variables)?;
+                    then_block.validate(diags, module, can_drive, variables)?;
 
                     if let Some(else_block) = else_block {
-                        else_block.validate(diags, module, variables)?;
+                        else_block.validate(diags, module, can_drive, variables)?;
                     }
                 }
                 IrStatement::For(for_stmt) => {
@@ -207,7 +239,7 @@ impl IrBlock {
                         return Err(diags.report_error_internal(stmt.span, msg));
                     }
 
-                    block.validate(diags, module, variables)?;
+                    block.validate(diags, module, can_drive, variables)?;
                 }
                 IrStatement::Print(pieces) => validate_string(diags, module, variables, stmt.span, pieces)?,
                 IrStatement::AssertFailed => {}

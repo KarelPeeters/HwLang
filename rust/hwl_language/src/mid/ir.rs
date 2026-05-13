@@ -160,6 +160,8 @@ pub enum IrModuleChild {
 
 #[derive(Debug, Clone)]
 pub struct IrClockedProcess {
+    // TODO support partial registers
+    pub registers: IndexSet<IrSignal>,
     pub variables: IrVariables,
     pub async_reset: Option<IrAsyncResetInfo>,
     pub clock_signal: Spanned<Polarized<IrSignal>>,

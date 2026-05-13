@@ -798,6 +798,7 @@ fn lower_clocked_process(
     process: &IrClockedProcess,
 ) -> DiagResult {
     let &IrClockedProcess {
+        registers: _,
         ref variables,
         clock_signal,
         ref clock_block,
