@@ -4,7 +4,7 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrEnumType,
     IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance,
     IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString,
-    IrStringSubstitution, IrStructType, IrTargetStep, IrType, IrVariables,
+    IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
@@ -244,28 +244,34 @@ fn assignment_target_ty<'a>(
     target: &IrAssignmentTarget,
 ) -> IrType {
     let IrAssignmentTarget { base, steps } = target;
+    let IrTargetSteps {
+        steps_scalar,
+        step_slice,
+    } = steps;
 
     let mut curr_ty = base.ty(module, variables).clone();
 
-    for step in steps {
+    for step in steps_scalar {
         curr_ty = match step {
-            IrTargetStep::ArrayIndex(_index) => {
+            IrTargetStepScalar::ArrayIndex(_index) => {
                 let (inner_ty, _len) = curr_ty.unwrap_array();
                 inner_ty
             }
-            IrTargetStep::ArraySlice { start: _, len: length } => {
-                let (inner_ty, _) = curr_ty.unwrap_array();
-                IrType::Array(Box::new(inner_ty), length.clone())
-            }
-            &IrTargetStep::TupleIndex(index) => {
+            &IrTargetStepScalar::TupleIndex(index) => {
                 let tys = curr_ty.unwrap_tuple();
                 tys.get_owned(index)
             }
-            &IrTargetStep::StructField(field) => {
+            &IrTargetStepScalar::StructField(field) => {
                 let ty = curr_ty.unwrap_struct();
                 ty.fields.get_index_owned(field).unwrap().1
             }
         };
+    }
+
+    if let Some(step_slice) = step_slice {
+        let IrTargetStepSlice { start: _, len } = step_slice;
+        let (inner_ty, _) = curr_ty.unwrap_array();
+        curr_ty = IrType::Array(Box::new(inner_ty), len.clone());
     }
 
     curr_ty

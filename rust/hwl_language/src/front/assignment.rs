@@ -175,7 +175,7 @@ impl CompileItemContext<'_, '_> {
                 let (target_base_ty, target_base_ir) = target_base_signal.expect_ty_and_ir(self, target_base.span)?;
                 let target_base_ty = target_base_ty.cloned();
                 let (target_ty, target_steps_ir) =
-                    target_steps.apply_to_hardware_type(refs, target_base_ty.as_ref())?;
+                    target_steps.apply_to_hardware_type(refs, &mut self.large, target_base_ty.as_ref())?;
                 let reason = TypeContainsReason::Assignment {
                     span_target: target.span,
                     span_target_ty: target_base_ty.span,
@@ -315,8 +315,11 @@ impl CompileItemContext<'_, '_> {
                         )?;
 
                         // decide the source value type
-                        let (source_ty_hw, target_steps_ir) = target_steps
-                            .apply_to_hardware_type(refs, Spanned::new(target_base.span, &target_base_ty_hw))?;
+                        let (source_ty_hw, target_steps_ir) = target_steps.apply_to_hardware_type(
+                            refs,
+                            &mut self.large,
+                            Spanned::new(target_base.span, &target_base_ty_hw),
+                        )?;
 
                         // convert source value to hardware
                         let reason = TypeContainsReason::Assignment {

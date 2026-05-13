@@ -267,21 +267,48 @@ pub struct IrForStatement {
 #[derive(Debug, Clone)]
 pub struct IrAssignmentTarget {
     pub base: IrSignalOrVariable,
-    pub steps: Vec<IrTargetStep>,
+    pub steps: IrTargetSteps,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrTargetSteps {
+    pub steps_scalar: Vec<IrTargetStepScalar>,
+    pub step_slice: Option<IrTargetStepSlice>,
+}
+
+#[derive(Debug, Clone)]
+pub enum IrTargetStepScalar {
+    ArrayIndex(IrExpression),
+    TupleIndex(usize),
+    StructField(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct IrTargetStepSlice {
+    pub start: IrExpression,
+    pub len: BigUint,
 }
 
 impl IrAssignmentTarget {
     pub fn simple(base: IrSignalOrVariable) -> Self {
-        IrAssignmentTarget { base, steps: vec![] }
+        IrAssignmentTarget {
+            base,
+            steps: IrTargetSteps::empty(),
+        }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum IrTargetStep {
-    ArrayIndex(IrExpression),
-    ArraySlice { start: IrExpression, len: BigUint },
-    TupleIndex(usize),
-    StructField(usize),
+impl IrTargetSteps {
+    pub fn empty() -> Self {
+        IrTargetSteps {
+            steps_scalar: vec![],
+            step_slice: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps_scalar.is_empty() && self.step_slice.is_none()
+    }
 }
 
 new_index_type!(pub IrExpressionLargeIndex);
@@ -541,16 +568,25 @@ pub fn visit_values_accessed_string(
 impl IrAssignmentTarget {
     pub fn visit_values_accessed(&self, large: &IrLargeArena, f: &mut impl FnMut(IrSignalOrVariable, ValueAccess)) {
         let &IrAssignmentTarget { base, ref steps } = self;
+        let IrTargetSteps {
+            steps_scalar,
+            step_slice,
+        } = steps;
 
         f(base, ValueAccess::Write);
-        for step in steps {
+        for step in steps_scalar {
             match step {
-                IrTargetStep::ArrayIndex(index) => index.visit_values_accessed(large, f),
-                IrTargetStep::ArraySlice { start, len: _ } => start.visit_values_accessed(large, f),
-                IrTargetStep::TupleIndex(index) | IrTargetStep::StructField(index) => {
-                    let _: usize = *index;
+                IrTargetStepScalar::ArrayIndex(index) => index.visit_values_accessed(large, f),
+                &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                    let _: usize = index;
                 }
             }
+        }
+        if let Some(slice) = step_slice {
+            let IrTargetStepSlice { start, len } = slice;
+
+            start.visit_values_accessed(large, f);
+            let _: &BigUint = len;
         }
     }
 }

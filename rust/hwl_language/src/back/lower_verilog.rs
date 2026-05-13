@@ -7,8 +7,8 @@ use crate::mid::ir::{
     IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance,
     IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal,
-    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStep, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, ValueAccess,
+    IrSignalOrVariable, IrStatement, IrString, IrStringSubstitution, IrTargetStepScalar, IrTargetStepSlice,
+    IrTargetSteps, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire, IrWireInfo, ValueAccess,
 };
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -1907,7 +1907,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         Ok(())
     }
 
-    fn build_target_steps(&mut self, span: Span, base_ty: IrType, steps: &[IrTargetStep]) -> DiagResult<String> {
+    fn build_target_steps(&mut self, span: Span, base_ty: IrType, steps: &IrTargetSteps) -> DiagResult<String> {
         // if there are no steps, skip entirely
         if steps.is_empty() {
             return Ok(String::new());
@@ -1931,12 +1931,18 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         };
 
         // handle steps
+        // TODO use extra range knowledge index/start type ranges give us to generate less hardware
+        let IrTargetSteps {
+            steps_scalar,
+            step_slice,
+        } = steps;
+
         let bit_range = bit_index_range(&base_ty.size_bits());
         let mut curr_ty = base_ty;
 
-        for step in steps {
+        for step in steps_scalar {
             curr_ty = match step {
-                IrTargetStep::ArrayIndex(index) => {
+                IrTargetStepScalar::ArrayIndex(index) => {
                     let (element_ty, _) = curr_ty.unwrap_array();
                     let element_size_bits = element_ty.size_bits();
 
@@ -1945,17 +1951,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     element_ty
                 }
-                IrTargetStep::ArraySlice { start, len: length } => {
-                    // TODO expose the extra knowledge this length gives us about the target range to verilog?
-                    let (element_ty, _) = curr_ty.unwrap_array();
-                    let element_size_bits = element_ty.size_bits();
-
-                    let start = self.lower_expression_int_expanded(span, &bit_range, start)?;
-                    add_offset(start, &element_size_bits);
-
-                    IrType::Array(Box::new(element_ty), length.clone())
-                }
-                &IrTargetStep::TupleIndex(index) => {
+                &IrTargetStepScalar::TupleIndex(index) => {
                     let curr_ty = curr_ty.unwrap_tuple();
                     let start_bits = curr_ty[..index].iter().map(IrType::size_bits).sum::<BigUint>();
 
@@ -1963,7 +1959,7 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
 
                     curr_ty.get_owned(index)
                 }
-                &IrTargetStep::StructField(field) => {
+                &IrTargetStepScalar::StructField(field) => {
                     let curr_ty = curr_ty.unwrap_struct();
                     let start_bits = curr_ty.field_offset(field);
 
@@ -1972,6 +1968,18 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                     curr_ty.fields.get_index_owned(field).unwrap().1
                 }
             };
+        }
+
+        if let Some(step_slice) = step_slice {
+            let IrTargetStepSlice { start, len } = step_slice;
+
+            let (element_ty, _) = curr_ty.unwrap_array();
+            let element_size_bits = element_ty.size_bits();
+
+            let start = self.lower_expression_int_expanded(span, &bit_range, start)?;
+            add_offset(start, &element_size_bits);
+
+            curr_ty = IrType::Array(Box::new(element_ty), len.clone());
         }
 
         // correctly slice the final bit length

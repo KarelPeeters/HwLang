@@ -1,7 +1,7 @@
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
     IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
-    IrStringSubstitution, IrTargetStep, IrVariable, IrVariables, ValueAccess,
+    IrStringSubstitution, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrVariable, IrVariables, ValueAccess,
 };
 use indexmap::{IndexMap, IndexSet};
 use itertools::chain;
@@ -126,16 +126,25 @@ fn inline_vars_block(large: &mut IrLargeArena, state: &mut VarState, next_versio
     for stmt in statements {
         match &mut stmt.inner {
             IrStatement::Assign(IrAssignmentTarget { base, steps }, source) => {
-                // visit expressions
-                for step in steps.iter_mut() {
+                // visit expressions in steps
+                let IrTargetSteps {
+                    steps_scalar,
+                    step_slice,
+                } = steps;
+                for step in steps_scalar {
                     match step {
-                        IrTargetStep::ArrayIndex(index) => inline_vars_expr(large, state, index),
-                        IrTargetStep::ArraySlice { start, len: _ } => inline_vars_expr(large, state, start),
-                        IrTargetStep::TupleIndex(index) | IrTargetStep::StructField(index) => {
+                        IrTargetStepScalar::ArrayIndex(index) => inline_vars_expr(large, state, index),
+                        IrTargetStepScalar::TupleIndex(index) | IrTargetStepScalar::StructField(index) => {
                             let _: usize = *index;
                         }
                     }
                 }
+                if let Some(step_slice) = step_slice {
+                    let IrTargetStepSlice { start, len: _ } = step_slice;
+                    inline_vars_expr(large, state, start);
+                }
+
+                // visit source expression
                 inline_vars_expr(large, state, source);
 
                 // record assignment

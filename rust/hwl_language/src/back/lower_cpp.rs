@@ -6,8 +6,8 @@ use crate::mid::ir::{
     IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance,
     IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
-    IrStringSubstitution, IrStructType, IrTargetStep, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
-    IrWireInfo,
+    IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariable,
+    IrVariableInfo, IrVariables, IrWire, IrWireInfo,
 };
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
@@ -990,56 +990,37 @@ impl CodegenBlockContext<'_> {
         };
 
         // evaluate steps
-        let mut last_slice: Option<(Evaluated, &BigUint)> = None;
-        for step in steps {
-            last_slice = match step {
-                IrTargetStep::ArrayIndex(index) => {
+        let IrTargetSteps {
+            steps_scalar,
+            step_slice,
+        } = steps;
+        for step in steps_scalar {
+            match step {
+                IrTargetStepScalar::ArrayIndex(index) => {
                     let index = self.eval(indent, span, index, stage_read)?;
-
-                    swrite!(target_str, "[");
-                    if let Some((last_slice_start, _)) = &last_slice {
-                        swrite!(target_str, "{last_slice_start} + ");
-                    }
-                    swrite!(target_str, "{index}]");
-
-                    None
+                    swrite!(target_str, "[{index}]");
                 }
-                IrTargetStep::ArraySlice { start, len } => {
-                    let start = self.eval(indent, span, start, stage_read)?;
-
-                    if let Some((last_slice_start, _)) = &last_slice {
-                        let total_start = format!("{last_slice_start} + {start}");
-                        Some((Evaluated::Inline(total_start), len))
-                    } else {
-                        Some((start, len))
-                    }
-                }
-                &IrTargetStep::TupleIndex(index) => {
-                    assert!(last_slice.is_none());
+                &IrTargetStepScalar::TupleIndex(index) => {
                     target_str = format!("std::get<{index}>({target_str})");
-                    None
                 }
-                &IrTargetStep::StructField(field) => {
-                    assert!(last_slice.is_none());
+                &IrTargetStepScalar::StructField(field) => {
                     target_str = format!("std::get<{field}>({target_str})");
-                    None
                 }
             };
         }
 
-        // build assignment
-        match last_slice {
-            None => {
-                let target_prefix = if target_is_ptr { "*" } else { "" };
-                swriteln!(self.f, "{indent}{target_prefix}{target_str} = {value};");
-            }
-            Some((slice_start, slice_len)) => {
-                let target_dot = if target_is_ptr { "->" } else { "." };
-                swriteln!(
-                    self.f,
-                    "{indent}std::copy_n({value}.begin(), {slice_len}, {target_str}{target_dot}begin() + {slice_start});"
-                );
-            }
+        if let Some(step_slice) = step_slice {
+            let IrTargetStepSlice { start, len } = step_slice;
+            let start = self.eval(indent, span, start, stage_read)?;
+
+            let target_dot = if target_is_ptr { "->" } else { "." };
+            swriteln!(
+                self.f,
+                "{indent}std::copy_n({value}.begin(), {len}, {target_str}{target_dot}begin() + {start});"
+            );
+        } else {
+            let target_prefix = if target_is_ptr { "*" } else { "" };
+            swriteln!(self.f, "{indent}{target_prefix}{target_str} = {value};");
         }
 
         Ok(())

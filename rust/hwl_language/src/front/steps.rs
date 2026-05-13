@@ -6,7 +6,8 @@ use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile,
     SimpleCompileValue, Value, ValueCommon,
 };
-use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetStep};
+use crate::mid::builder::{IrTargetStepBuild, IrTargetStepBuildSlice, IrTargetStepsBuilder};
+use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetSteps};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
@@ -67,19 +68,22 @@ impl AssignmentSteps<AssignmentStep> {
     }
 
     pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
-        let (ty, _) = self.apply_to_type_impl(refs, ty)?;
+        // we don't care about the resulting steps, so we don't need a real arena
+        let mut dummy_large = IrLargeArena::new();
+        let (ty, _) = self.apply_to_type_impl(refs, &mut dummy_large, ty)?;
         Ok(ty)
     }
 
     pub fn apply_to_hardware_type(
         &self,
         refs: CompileRefs,
+        large: &mut IrLargeArena,
         ty: Spanned<&HardwareType>,
-    ) -> DiagResult<(HardwareType, Vec<IrTargetStep>)> {
+    ) -> DiagResult<(HardwareType, IrTargetSteps)> {
         let diags = refs.diags;
         let elab = &refs.shared.elaboration_arenas;
 
-        let (result_ty, steps) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type))?;
+        let (result_ty, steps) = self.apply_to_type_impl(refs, large, ty.map_inner(HardwareType::as_type))?;
 
         let steps = steps.map_err(|e: Either<EncounteredAny, EncounteredUnknown>| {
             diags.report_error_internal(ty.span, format!("applying steps to hardware type failed: {e:?}"))
@@ -119,15 +123,13 @@ impl AssignmentSteps<AssignmentStep> {
     fn apply_to_type_impl(
         &self,
         refs: CompileRefs,
+        large: &mut IrLargeArena,
         ty: Spanned<Type>,
-    ) -> DiagResult<(
-        Type,
-        Result<Vec<IrTargetStep>, Either<EncounteredAny, EncounteredUnknown>>,
-    )> {
+    ) -> DiagResult<(Type, Result<IrTargetSteps, Either<EncounteredAny, EncounteredUnknown>>)> {
         let diags = refs.diags;
         let AssignmentSteps { steps } = self;
 
-        let mut steps_ir = Ok(vec![]);
+        let mut steps_builder = Ok(IrTargetStepsBuilder::new());
         let mut curr_ty = ty;
 
         for step in steps {
@@ -156,7 +158,10 @@ impl AssignmentSteps<AssignmentStep> {
 
                         let step_ir = array_len
                             .inner
-                            .map(|_| IrTargetStep::ArrayIndex(IrExpression::Int(index.into())))
+                            .map(|_| IrTargetStepBuild::ArrayIndex {
+                                index: IrExpression::Int(index.into()),
+                                index_range: ClosedNonEmptyRange::single(index.clone()),
+                            })
                             .ok_or(EncounteredUnknown);
 
                         (step_ir, array_inner.as_ref().clone())
@@ -179,11 +184,13 @@ impl AssignmentSteps<AssignmentStep> {
                         match slice_len {
                             None => (Err(EncounteredUnknown), Type::Array(Arc::clone(array_inner), None)),
                             Some(slice_len) => {
-                                let step_ir = IrTargetStep::ArraySlice {
+                                let step_ir = IrTargetStepBuild::ArraySlice(IrTargetStepBuildSlice {
                                     start: IrExpression::Int(slice_start.into()),
+                                    start_range: ClosedNonEmptyRange::single(slice_start.clone()),
                                     len: slice_len.clone(),
-                                };
-                                (Ok(step_ir), Type::Array(Arc::clone(array_inner), Some(slice_len)))
+                                });
+                                let next_ty = Type::Array(Arc::clone(array_inner), Some(slice_len));
+                                (Ok(step_ir), next_ty)
                             }
                         }
                     }
@@ -197,7 +204,7 @@ impl AssignmentSteps<AssignmentStep> {
                             None => (Err(EncounteredUnknown), Type::Any),
                             Some(fields) => {
                                 let index = check_tuple_index(diags, fields.len(), index, curr_ty.span, step_span)?;
-                                (Ok(IrTargetStep::TupleIndex(index)), fields[index].clone())
+                                (Ok(IrTargetStepBuild::TupleIndex(index)), fields[index].clone())
                             }
                         }
                     }
@@ -211,8 +218,9 @@ impl AssignmentSteps<AssignmentStep> {
                         let field_str = Spanned::new(step_span, field.as_str());
                         let field_index = ty_info.field_index(diags, curr_ty.span, field_str)?;
 
+                        let step_ir = IrTargetStepBuild::StructField(field_index);
                         let field_ty = ty_info.fields[field_index].1.inner.clone();
-                        (Ok(IrTargetStep::StructField(field_index)), field_ty)
+                        (Ok(step_ir), field_ty)
                     }
                 },
                 AssignmentStep::Hardware(step) => match step {
@@ -222,7 +230,10 @@ impl AssignmentSteps<AssignmentStep> {
 
                         let step_ir = array_len
                             .inner
-                            .map(|_| IrTargetStep::ArrayIndex(index.expr.clone()))
+                            .map(|_| IrTargetStepBuild::ArrayIndex {
+                                index: index.expr.clone(),
+                                index_range: index.ty.enclosing_range().cloned(),
+                            })
                             .ok_or(EncounteredUnknown);
 
                         (step_ir, array_inner.as_ref().clone())
@@ -232,7 +243,6 @@ impl AssignmentSteps<AssignmentStep> {
                         length: slice_len,
                     } => {
                         let (array_inner, array_len) = check_type_is_array(true)?;
-
                         check_range_slice(
                             diags,
                             Spanned::new(step_span, &slice_start.ty),
@@ -240,10 +250,13 @@ impl AssignmentSteps<AssignmentStep> {
                             array_len,
                         )?;
 
-                        let step_ir = IrTargetStep::ArraySlice {
+                        let step_ir = IrTargetStepBuildSlice {
                             start: slice_start.expr.clone(),
+                            start_range: slice_start.ty.enclosing_range().cloned(),
                             len: slice_len.clone(),
                         };
+                        let step_ir = IrTargetStepBuild::ArraySlice(step_ir);
+
                         let next_ty = Type::Array(Arc::clone(array_inner), Some(slice_len.clone()));
 
                         (Ok(step_ir), next_ty)
@@ -254,12 +267,14 @@ impl AssignmentSteps<AssignmentStep> {
             // append IR step
             match step_ir {
                 Ok(step_ir) => {
-                    if let Ok(steps_ir) = &mut steps_ir {
-                        steps_ir.push(step_ir);
+                    if let Ok(steps_builder) = &mut steps_builder {
+                        steps_builder
+                            .push(large, step_ir)
+                            .map_err(|_| diags.report_error_internal(step_span, "invalid step sequence"))?;
                     }
                 }
                 Err(e) => {
-                    steps_ir = Err(e);
+                    steps_builder = Err(e);
                 }
             }
 
@@ -267,7 +282,7 @@ impl AssignmentSteps<AssignmentStep> {
             curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
         }
 
-        let steps_ir = steps_ir.map_err(Either::Right);
+        let steps_ir = steps_builder.map(IrTargetStepsBuilder::finish).map_err(Either::Right);
         Ok((curr_ty.inner, steps_ir))
     }
 
