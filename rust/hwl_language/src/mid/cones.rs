@@ -77,7 +77,7 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
     }
     any_err?;
 
-    let all_signals_which_need_drivers = chain(
+    let signals_that_need_drivers = chain(
         module
             .ports
             .iter()
@@ -89,7 +89,7 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
         module.wires.keys().map(IrSignal::Wire),
     );
 
-    for signal in all_signals_which_need_drivers {
+    for signal in signals_that_need_drivers {
         let mut any_driven = false;
         let mut any_undriven = false;
         let mut overlapping_drivers = IndexSet::new();

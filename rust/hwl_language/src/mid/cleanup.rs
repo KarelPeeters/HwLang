@@ -5,7 +5,6 @@ use crate::mid::ir::{
 };
 use crate::util::data::chain_keys;
 use indexmap::{IndexMap, IndexSet};
-use itertools::chain;
 
 // TODO also remove signal->var copies
 pub fn cleanup_module(ir: &mut IrModuleInfo) {
