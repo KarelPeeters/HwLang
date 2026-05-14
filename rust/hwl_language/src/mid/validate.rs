@@ -197,7 +197,7 @@ impl IrBlock {
                     }
 
                     // check target and expr types
-                    let target_ty = assignment_target_ty(module, variables, target);
+                    let target_ty = check_target(diags, module, variables, stmt.span, target)?;
 
                     expr.validate(diags, module, variables, stmt.span)?;
                     let expr_ty = expr.ty(module, variables);
@@ -270,11 +270,13 @@ fn validate_string(
     Ok(())
 }
 
-fn assignment_target_ty<'a>(
+fn check_target<'a>(
+    diags: &'a Diagnostics,
     module: &'a IrModuleInfo,
     variables: &'a IrVariables,
+    span: Span,
     target: &IrAssignmentTarget,
-) -> IrType {
+) -> DiagResult<IrType> {
     let IrAssignmentTarget { base, steps } = target;
     let IrTargetSteps {
         steps_scalar,
@@ -285,28 +287,57 @@ fn assignment_target_ty<'a>(
 
     for step in steps_scalar {
         curr_ty = match step {
-            IrTargetStepScalar::ArrayIndex(_index) => {
-                let (inner_ty, _len) = curr_ty.unwrap_array();
-                inner_ty
+            IrTargetStepScalar::ArrayIndex(index) => {
+                let (ty_inner, ty_len) = check_type_is_array(diags, span, curr_ty)?;
+                let index_ty = index.ty(module, variables);
+                let index_ty = check_type_is_int(diags, span, &index_ty)?;
+
+                let valid_range = ClosedRange {
+                    start: BigInt::ZERO,
+                    end: BigInt::from(ty_len),
+                };
+                if !valid_range.contains_range(index_ty.as_ref()) {
+                    return Err(diags.report_error_internal(span, "IR target ArrayIndex out of bounds"));
+                }
+
+                ty_inner
             }
             &IrTargetStepScalar::TupleIndex(index) => {
-                let tys = curr_ty.unwrap_tuple();
-                tys.get_owned(index)
+                let ty_fields = check_type_is_tuple(diags, span, curr_ty)?;
+                if index >= ty_fields.len() {
+                    return Err(diags.report_error_internal(span, "IR target TupleIndex out of bounds"));
+                }
+                ty_fields.get_owned(index)
             }
             &IrTargetStepScalar::StructField(field) => {
-                let ty = curr_ty.unwrap_struct();
-                ty.fields.get_index_owned(field).unwrap().1
+                let ty_info = check_type_is_struct(diags, span, curr_ty)?;
+                if field >= ty_info.fields.len() {
+                    return Err(diags.report_error_internal(span, "IR target StructField out of bounds"));
+                }
+                ty_info.fields.get_index_owned(field).unwrap().1
             }
         };
     }
 
     if let Some(step_slice) = step_slice {
-        let IrTargetStepSlice { start: _, len } = step_slice;
-        let (inner_ty, _) = curr_ty.unwrap_array();
-        curr_ty = IrType::Array(Box::new(inner_ty), len.clone());
+        let IrTargetStepSlice { start, len } = step_slice;
+
+        let (ty_inner, ty_len) = check_type_is_array(diags, span, curr_ty)?;
+        let start_ty = start.ty(module, variables);
+        let start_ty = check_type_is_int(diags, span, &start_ty)?;
+
+        let valid_range = ClosedRange {
+            start: BigInt::ZERO,
+            end: ty_len - len + 1,
+        };
+        if !valid_range.contains_range(start_ty.as_ref()) {
+            return Err(diags.report_error_internal(span, "IR target StepSlice out of bounds"));
+        }
+
+        curr_ty = IrType::Array(Box::new(ty_inner), len.clone());
     }
 
-    curr_ty
+    Ok(curr_ty)
 }
 
 impl IrExpression {
@@ -370,8 +401,8 @@ impl IrExpression {
                             }
                             IrArrayLiteralElement::Spread(value) => {
                                 let value_ty = value.ty(module, variables);
-                                let (value_inner_ty, value_len) = check_type_is_array(diags, span, &value_ty)?;
-                                check_type_match(diags, span, inner_ty, value_inner_ty)?;
+                                let (value_inner_ty, value_len) = check_type_is_array(diags, span, value_ty)?;
+                                check_type_match(diags, span, inner_ty, &value_inner_ty)?;
                                 actual_len += value_len;
                             }
                         }
@@ -406,7 +437,7 @@ impl IrExpression {
                 }
                 IrExpressionLarge::ArrayIndex { base, index } => {
                     let base_ty = base.ty(module, variables);
-                    let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
+                    let (_, base_len) = check_type_is_array(diags, span, base_ty)?;
 
                     let index_ty = index.ty(module, variables);
                     let index_range = check_type_is_int(diags, span, &index_ty)?;
@@ -421,7 +452,7 @@ impl IrExpression {
                 }
                 IrExpressionLarge::ArraySlice { base, start, len } => {
                     let base_ty = base.ty(module, variables);
-                    let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
+                    let (_, base_len) = check_type_is_array(diags, span, base_ty)?;
 
                     let start_ty = start.ty(module, variables);
                     let start_range = check_type_is_int(diags, span, &start_ty)?;
@@ -436,15 +467,15 @@ impl IrExpression {
                 }
                 &IrExpressionLarge::TupleIndex { ref base, index } => {
                     let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_tuple(diags, span, &base_ty)?;
+                    let base_ty = check_type_is_tuple(diags, span, base_ty)?;
 
                     if index >= base_ty.len() {
-                        return Err(diags.report_error_internal(span, "IR TupleIndex index out of bounds"));
+                        return Err(diags.report_error_internal(span, "IR TupleIndex out of bounds"));
                     }
                 }
                 &IrExpressionLarge::StructField { ref base, field } => {
                     let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_struct(diags, span, &base_ty)?;
+                    let base_ty = check_type_is_struct(diags, span, base_ty)?;
 
                     if field >= base_ty.fields.len() {
                         return Err(diags.report_error_internal(span, "IR StructField out of bounds"));
@@ -452,11 +483,11 @@ impl IrExpression {
                 }
                 IrExpressionLarge::EnumTag { base } => {
                     let base_ty = base.ty(module, variables);
-                    let _ = check_type_is_enum(diags, span, &base_ty)?;
+                    let _ = check_type_is_enum(diags, span, base_ty)?;
                 }
                 &IrExpressionLarge::EnumPayload { ref base, variant } => {
                     let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_enum(diags, span, &base_ty)?;
+                    let base_ty = check_type_is_enum(diags, span, base_ty)?;
 
                     if variant >= base_ty.variants.len() {
                         return Err(diags.report_error_internal(span, "IR EnumPayload invalid variant"));
@@ -542,13 +573,9 @@ fn check_type_is_bool(diags: &Diagnostics, span: Span, actual: &IrType) -> DiagR
     check_type_match(diags, span, &IrType::Bool, actual)
 }
 
-fn check_type_is_array<'t>(
-    diags: &Diagnostics,
-    span: Span,
-    actual: &'t IrType,
-) -> DiagResult<(&'t IrType, &'t BigUint)> {
+fn check_type_is_array(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<(IrType, BigUint)> {
     match actual {
-        IrType::Array(inner, len) => Ok((inner, len)),
+        IrType::Array(inner, len) => Ok((*inner, len)),
         _ => {
             let msg = format!("IR type mismatch: expected array, got {actual:?}");
             Err(diags.report_error_internal(span, msg))
@@ -556,7 +583,7 @@ fn check_type_is_array<'t>(
     }
 }
 
-fn check_type_is_tuple<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t [IrType]> {
+fn check_type_is_tuple(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<Vec<IrType>> {
     match actual {
         IrType::Tuple(elements) => Ok(elements),
         _ => {
@@ -566,7 +593,7 @@ fn check_type_is_tuple<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) 
     }
 }
 
-fn check_type_is_struct<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t IrStructType> {
+fn check_type_is_struct(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<IrStructType> {
     match actual {
         IrType::Struct(ty) => Ok(ty),
         _ => {
@@ -576,7 +603,7 @@ fn check_type_is_struct<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType)
     }
 }
 
-fn check_type_is_enum<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t IrEnumType> {
+fn check_type_is_enum(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<IrEnumType> {
     match actual {
         IrType::Enum(ty) => Ok(ty),
         _ => {
