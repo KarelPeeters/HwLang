@@ -1,20 +1,26 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
-    IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable, IrStatement, IrStructType,
-    IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
+    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
+    IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
+    IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice,
+    IrTargetSteps, IrType, IrVariables,
 };
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
 use crate::util::Never;
 use crate::util::data::chain_keys;
+use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Itertools, chain};
+use itertools::{Either, Itertools, rev};
 use std::fmt::Debug;
+use std::iter::chain;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
-pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
+// TODO actually record info
+// TODO check for cycles somewhere, maybe even here
+// TODO record instance cones
+pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
     let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<Span>>> = IndexMap::new();
 
     let mut report_signal_drive = |signal: IrSignal, mask: IrMask<bool>, span: Span| {
@@ -32,20 +38,20 @@ pub fn compute_module_drivers(diags: &Diagnostics, module: &IrModuleInfo) -> Dia
     for child in &module.children {
         match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
-                let drivers = compute_clocked_process_drivers(module, proc);
-                for (signal, mask) in drivers {
+                let cones = compute_clocked_process_cones(module, proc);
+                for (signal, mask) in cones.drives {
                     report_signal_drive(signal, mask, child.span);
                 }
             }
             IrModuleChild::CombinatorialProcess(proc) => {
-                let drivers = match compute_combinatorial_process_drivers(diags, module, proc) {
+                let cones = match compute_combinatorial_process_cones(diags, module, proc) {
                     Ok(d) => d,
                     Err(e) => {
                         any_err = Err(e);
                         continue;
                     }
                 };
-                for (signal, mask) in drivers {
+                for (signal, mask) in cones.drives {
                     report_signal_drive(signal, mask, child.span);
                 }
             }
@@ -171,7 +177,7 @@ pub struct Drivers<'p> {
     map: IndexMap<IrSignal, IrMask<bool>>,
 }
 
-fn compute_clocked_process_drivers(module: &IrModuleInfo, proc: &IrClockedProcess) -> IndexMap<IrSignal, IrMask<bool>> {
+fn compute_clocked_process_cones(module: &IrModuleInfo, proc: &IrClockedProcess) -> Cones {
     let IrClockedProcess {
         registers,
         variables: _,
@@ -180,40 +186,76 @@ fn compute_clocked_process_drivers(module: &IrModuleInfo, proc: &IrClockedProces
         clock_block: _,
     } = proc;
 
-    registers
-        .iter()
-        .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
-        .collect()
+    // TODO actually compute cones
+    //   note: supress read before write errors when visiting blocks, we actually don't care about driving at all
+    // registers
+    //     .iter()
+    //     .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
+    //     .collect();
+
+    todo!()
 }
 
-fn compute_combinatorial_process_drivers(
+#[derive(Debug)]
+pub struct Cones {
+    // Reads only count if they read values that have not yet been written yet.
+    reads: IndexMap<IrSignal, IrMask<bool>>,
+    drives: IndexMap<IrSignal, IrMask<bool>>,
+}
+
+fn compute_combinatorial_process_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrCombinatorialProcess,
-) -> DiagResult<IndexMap<IrSignal, IrMask<bool>>> {
+) -> DiagResult<Cones> {
     let IrCombinatorialProcess { variables, block } = proc;
 
     let mut drivers = Drivers::root();
-    compute_combinatorial_block_drivers(diags, module, variables, block, &mut drivers)?;
-    Ok(drivers.map)
+    let mut read = IndexMap::new();
+    compute_combinatorial_block_cones(diags, module, variables, block, &mut drivers, &mut read)?;
+
+    Ok(Cones {
+        reads: read,
+        drives: drivers.map,
+    })
 }
 
 struct UndrivenConditionalDrive;
 
-fn compute_combinatorial_block_drivers(
+fn compute_combinatorial_block_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     vars: &IrVariables,
     block: &IrBlock,
     drivers: &mut Drivers,
+    reads: &mut IndexMap<IrSignal, IrMask<bool>>,
 ) -> DiagResult {
     let IrBlock { statements } = block;
     for stmt in statements {
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let _ = source;
-
                 let IrAssignmentTarget { base, steps } = target;
+                let IrTargetSteps {
+                    steps_scalar,
+                    step_slice,
+                } = steps;
+
+                // record reads
+                for step in steps_scalar {
+                    match step {
+                        IrTargetStepScalar::ArrayIndex(index) => {
+                            record_expression_reads(module, vars, drivers, reads, index)
+                        }
+                        &IrTargetStepScalar::TupleIndex(_) | &IrTargetStepScalar::StructField(_) => {}
+                    }
+                }
+                if let Some(step_slice) = step_slice {
+                    let IrTargetStepSlice { start, len: _ } = step_slice;
+                    record_expression_reads(module, vars, drivers, reads, start);
+                }
+                record_expression_reads(module, vars, drivers, reads, source);
+
+                // record writes
                 let base = match base {
                     IrSignalOrVariable::Signal(base) => *base,
                     IrSignalOrVariable::Variable(_) => {
@@ -222,8 +264,8 @@ fn compute_combinatorial_block_drivers(
                     }
                 };
 
-                let curr = drivers.curr(module, base);
-                match curr.set_steps(module, vars, steps) {
+                let curr = drivers.curr_mut(module, base);
+                match curr.write_steps(module, vars, steps) {
                     Ok(()) => {}
                     Err(UndrivenConditionalDrive) => {
                         // TODO continue on after whitelisting this signal (in this branch) to report multiple errors at once?
@@ -245,24 +287,27 @@ fn compute_combinatorial_block_drivers(
                 }
             }
             IrStatement::Block(stmt_inner) => {
-                compute_combinatorial_block_drivers(diags, module, vars, stmt_inner, drivers)?;
+                compute_combinatorial_block_cones(diags, module, vars, stmt_inner, drivers, reads)?;
             }
             IrStatement::If(stmt_inner) => {
                 let IrIfStatement {
-                    condition: _,
+                    condition,
                     then_block,
                     else_block,
                 } = stmt_inner;
 
+                // record reads
+                record_expression_reads(module, vars, drivers, reads, condition);
+
                 // visit then
                 let mut then_drivers = drivers.new_child();
-                compute_combinatorial_block_drivers(diags, module, vars, then_block, &mut then_drivers)?;
+                compute_combinatorial_block_cones(diags, module, vars, then_block, &mut then_drivers, reads)?;
                 let then_map = then_drivers.map;
 
                 // visit else
                 let mut else_drivers = drivers.new_child();
                 if let Some(else_block) = else_block {
-                    compute_combinatorial_block_drivers(diags, module, vars, else_block, &mut else_drivers)?;
+                    compute_combinatorial_block_cones(diags, module, vars, else_block, &mut else_drivers, reads)?;
                 }
                 let else_map = else_drivers.map;
 
@@ -270,7 +315,7 @@ fn compute_combinatorial_block_drivers(
                 for &signal in chain_keys(&then_map, &else_map) {
                     let mut any_err = false;
                     IrMask::zip3_maybe_for_each(
-                        drivers.curr(module, signal),
+                        drivers.curr_mut(module, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
                         &mut |parent, then_value, else_value| {
@@ -305,20 +350,193 @@ fn compute_combinatorial_block_drivers(
             IrStatement::For(stmt_inner) => {
                 let IrForStatement { index: _, range, block } = stmt_inner;
                 if range.is_empty() {
-                    // block will never execute, so it also can't drive anything
+                    // block will never execute, so it also can't drive or read anything
                 } else {
                     // this is pessimistic, but safe:
-                    //   we do not use the fact that the index variable is known in each iteration
-                    compute_combinatorial_block_drivers(diags, module, vars, block, drivers)?;
+                    //   we do not use the fact that the index variable is known in each iteration,
+                    //   which considers both reads and writes to potentially access too much
+                    compute_combinatorial_block_cones(diags, module, vars, block, drivers, reads)?;
                 }
             }
-            IrStatement::Print(_) | IrStatement::AssertFailed => {
-                // cannot drive anything
+            IrStatement::Print(pieces) => {
+                // record reads
+                for piece in pieces {
+                    match piece {
+                        IrStringPiece::Literal(_) => {}
+                        IrStringPiece::Substitute(sub) => match sub {
+                            IrStringSubstitution::Integer(expr, _radix) => {
+                                record_expression_reads(module, vars, drivers, reads, expr);
+                            }
+                        },
+                    }
+                }
+
+                // does not drive anything
+            }
+            IrStatement::AssertFailed => {
+                // does not read or drive anything
             }
         }
     }
 
     Ok(())
+}
+
+fn record_expression_reads(
+    module: &IrModuleInfo,
+    vars: &IrVariables,
+    drivers: &Drivers,
+    reads: &mut IndexMap<IrSignal, IrMask<bool>>,
+    expr: &IrExpression,
+) {
+    let steps = ReadSteps {
+        steps_scalar_rev: vec![],
+        step_slice: None,
+    };
+    record_expression_reads_impl(module, vars, drivers, reads, expr, steps);
+}
+
+struct ReadSteps {
+    steps_scalar_rev: Vec<IrTargetStepScalar>,
+    step_slice: Option<IrTargetStepSlice>,
+}
+
+fn record_expression_reads_impl(
+    module: &IrModuleInfo,
+    vars: &IrVariables,
+    drivers: &Drivers,
+    reads: &mut IndexMap<IrSignal, IrMask<bool>>,
+    expr: &IrExpression,
+    mut steps: ReadSteps,
+) {
+    match expr {
+        // constants, no reads
+        IrExpression::Bool(_) | IrExpression::Int(_) => {}
+        // we only care about signal reads
+        IrExpression::Variable(_) => {}
+
+        &IrExpression::Large(expr_large) => match &module.large[expr_large] {
+            // just read operands
+            IrExpressionLarge::Undefined(_)
+            | IrExpressionLarge::BoolNot(_)
+            | IrExpressionLarge::BoolBinary(_, _, _)
+            | IrExpressionLarge::IntArithmetic(_, _, _, _)
+            | IrExpressionLarge::IntCompare(_, _, _)
+            | IrExpressionLarge::TupleLiteral(_)
+            | IrExpressionLarge::ArrayLiteral(_, _, _)
+            | IrExpressionLarge::StructLiteral(_, _)
+            | IrExpressionLarge::EnumLiteral(_, _, _)
+            | IrExpressionLarge::EnumTag { .. }
+            | IrExpressionLarge::EnumPayload { .. }
+            | IrExpressionLarge::ToBits(_, _)
+            | IrExpressionLarge::FromBits(_, _)
+            | IrExpressionLarge::ExpandIntRange(_, _)
+            | IrExpressionLarge::ConstrainIntRange(_, _) => {
+                expr.for_each_operand(&module.large, &mut |operand| {
+                    record_expression_reads(module, vars, drivers, reads, operand)
+                });
+            }
+
+            // participate in step collection
+            IrExpressionLarge::ArrayIndex { base, index } => {
+                let step = IrTargetStepScalar::ArrayIndex(index.clone());
+                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
+                record_expression_reads(module, vars, drivers, reads, index);
+            }
+            IrExpressionLarge::ArraySlice { base, start, len } => {
+                let step = IrTargetStepSlice {
+                    start: start.clone(),
+                    len: len.clone(),
+                };
+                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Right(step));
+                record_expression_reads(module, vars, drivers, reads, start);
+            }
+            IrExpressionLarge::TupleIndex { base, index } => {
+                let step = IrTargetStepScalar::TupleIndex(*index);
+                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
+            }
+            IrExpressionLarge::StructField { base, field } => {
+                let step = IrTargetStepScalar::StructField(*field);
+                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
+            }
+        },
+
+        // finish step collection and record actual reads
+        &IrExpression::Signal(signal) => {
+            let ReadSteps {
+                steps_scalar_rev,
+                step_slice,
+            } = steps;
+            let mut steps_scalar = steps_scalar_rev;
+            steps_scalar.reverse();
+
+            let signal_reads = reads
+                .entry(signal)
+                .or_insert_with(|| IrMask::new(signal.ty(module), false));
+            let signal_driven = drivers.curr(signal);
+
+            // TODO this is cursed, build proper zip iterators, including simple "constant" iterators that can be mixed?
+            let mut pieces_driven = signal_driven.map(|signal_driven| {
+                let mut pieces_driven = vec![];
+                signal_driven.for_each_possible_leaf_after_steps(
+                    module,
+                    vars,
+                    &steps_scalar,
+                    step_slice.as_ref(),
+                    &mut |m| pieces_driven.push(m),
+                );
+                pieces_driven.into_iter()
+            });
+
+            signal_reads.for_each_possible_leaf_after_steps_mut(
+                module,
+                vars,
+                &steps_scalar,
+                step_slice.as_ref(),
+                &mut |piece_read| {
+                    if let Some(pieces_driven) = &mut pieces_driven {
+                        // only count reads from pieces that have not yet been driven
+                        let piece_driven = pieces_driven.next().unwrap();
+                        IrMask::zip2_for_each(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
+                            *scalar_read |= !scalar_driven;
+                        })
+                    } else {
+                        // not driven at all, count as read
+                        piece_read.fill(true);
+                    }
+                },
+            );
+
+            assert!(pieces_driven.is_none_or(|it| it.is_empty()));
+        }
+    }
+}
+
+fn record_expression_reads_base(
+    module: &IrModuleInfo,
+    vars: &IrVariables,
+    drivers: &Drivers,
+    reads: &mut IndexMap<IrSignal, IrMask<bool>>,
+    base: &IrExpression,
+    mut steps: ReadSteps,
+    step: Either<IrTargetStepScalar, IrTargetStepSlice>,
+) {
+    if steps.step_slice.is_some() {
+        // TODO support fusion, like we did for writes by enforcing it in the IR?
+        // fallback to fully reading the base
+        record_expression_reads(module, vars, drivers, reads, base)
+    } else {
+        // continue collecting steps
+        match step {
+            Either::Left(step) => {
+                steps.steps_scalar_rev.push(step);
+            }
+            Either::Right(step) => {
+                steps.step_slice = Some(step);
+            }
+        }
+        record_expression_reads_impl(module, vars, drivers, reads, base, steps);
+    }
 }
 
 impl Drivers<'_> {
@@ -336,7 +554,20 @@ impl Drivers<'_> {
         }
     }
 
-    fn curr(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask<bool> {
+    fn curr(&self, signal: IrSignal) -> Option<&IrMask<bool>> {
+        let mut curr = self;
+        loop {
+            if let Some(mask) = curr.map.get(&signal) {
+                return Some(mask);
+            }
+            curr = match curr.parent {
+                None => return None,
+                Some(parent) => parent,
+            };
+        }
+    }
+
+    fn curr_mut(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask<bool> {
         self.map.entry(signal).or_insert_with(|| {
             let mut curr = self.parent;
             loop {
@@ -357,7 +588,8 @@ impl Drivers<'_> {
     }
 }
 
-// TODO rework this
+// TODO rework/refactor this to be more elegant
+// TODO move to separate module
 impl<T> IrMask<T> {
     fn new(ty: &IrType, init: T) -> IrMask<T>
     where
@@ -470,7 +702,7 @@ impl<T> IrMask<T> {
 }
 
 impl IrMask<bool> {
-    fn set_steps(
+    fn write_steps(
         &mut self,
         module: &IrModuleInfo,
         vars: &IrVariables,
@@ -480,13 +712,10 @@ impl IrMask<bool> {
             steps_scalar,
             step_slice,
         } = steps;
-        self.set_steps_impl(module, vars, steps_scalar, step_slice.as_ref())
+        self.write_steps_impl(module, vars, steps_scalar, step_slice.as_ref())
     }
 
-    // TODO proper error handling
-    // TODO should we check for single-element ranges or only accept constants?
-    //   (careful: backends should emit simple enough code that downstream tools agree)
-    fn set_steps_impl(
+    fn write_steps_impl(
         &mut self,
         module: &IrModuleInfo,
         vars: &IrVariables,
@@ -534,7 +763,7 @@ impl IrMask<bool> {
 
                 match unwrap_int(module, vars, index) {
                     IntKind::Single(index) => {
-                        slf[index].set_steps_impl(module, vars, steps_scalar, step_slice)?;
+                        slf[index].write_steps_impl(module, vars, steps_scalar, step_slice)?;
                     }
                     IntKind::Range(index_range) => {
                         // check no partially written elements in range
@@ -569,13 +798,55 @@ impl IrMask<bool> {
         all
     }
 
-    fn for_each_possible_leaf_after_steps(
-        &self,
+    fn for_each_possible_leaf_after_steps_mut(
+        &mut self,
         module: &IrModuleInfo,
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&IrMask<bool>),
+        f: &mut impl FnMut(&mut IrMask<bool>),
+    ) {
+        let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
+            match step_slice {
+                None => {
+                    f(self);
+                }
+                Some(step_slice) => {
+                    let IrTargetStepSlice { start, len } = step_slice;
+
+                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+
+                    let start_range = unwrap_int_unified(module, vars, start);
+                    let len = usize::try_from(len).unwrap_or_else(|_| todo!());
+
+                    let full_range = start_range.start..start_range.end + len;
+                    slf[full_range].iter_mut().for_each(f);
+                }
+            }
+            return;
+        };
+
+        match step_curr {
+            IrTargetStepScalar::ArrayIndex(index) => {
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+
+                let index_range = unwrap_int_unified(module, vars, index);
+                slf[index_range]
+                    .iter_mut()
+                    .for_each(|x| x.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f))
+            }
+            IrTargetStepScalar::TupleIndex(_) => todo!(),
+            IrTargetStepScalar::StructField(_) => todo!(),
+        }
+    }
+
+    fn for_each_possible_leaf_after_steps<'a>(
+        &'a self,
+        module: &IrModuleInfo,
+        vars: &IrVariables,
+        steps_scalar: &[IrTargetStepScalar],
+        step_slice: Option<&IrTargetStepSlice>,
+        f: &mut impl FnMut(&'a IrMask<bool>),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {

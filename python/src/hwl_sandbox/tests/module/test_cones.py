@@ -93,3 +93,46 @@ def test_comb_dyn_slice():
     top(c=True)
     with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
         top(c=False)
+
+
+def test_comb_write_after_read():
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        wire w: async bool;
+        comb {
+            y = w;
+            w = x; 
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
+        compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_write_after_read_non_overlapping():
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        wire w: async [2]bool;
+        comb {
+            y = w[0];
+            w[1] = x; 
+        }
+        comb {
+            w[0] = x;
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_read_after_write():
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        wire w: async bool;
+        comb {
+            w = x;
+            y = w; 
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")

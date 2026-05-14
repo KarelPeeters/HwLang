@@ -19,7 +19,7 @@ use crate::front::signal::{
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
-use crate::mid::cones::compute_module_drivers;
+use crate::mid::cones::compute_module_cones;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
@@ -279,7 +279,7 @@ impl CompileRefs<'_, '_> {
         }
 
         // TODO
-        compute_module_drivers(diags, &module_ir)?;
+        compute_module_cones(diags, &module_ir)?;
 
         Ok(module_ir)
     }
