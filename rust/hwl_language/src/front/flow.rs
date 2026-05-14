@@ -136,7 +136,6 @@ pub struct FlowHardwareRoot<'p> {
 pub enum HardwareProcessKind<'e> {
     CombinatorialProcessBody {
         span_keyword: Span,
-        signals_driven: &'e mut IndexMap<Signal, Span>,
     },
     ClockedProcessBody {
         span_keyword: Span,

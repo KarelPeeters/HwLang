@@ -246,7 +246,7 @@ impl WireInfo {
     }
 
     pub fn typed_maybe<'s>(
-        &'s mut self,
+        &'s self,
         refs: CompileRefs<'_, 's>,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
     ) -> DiagResult<Option<WireInfoTyped<&'s HardwareType>>> {

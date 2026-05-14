@@ -392,15 +392,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let block_kind = match flow.process_kind() {
-            HardwareProcessKind::CombinatorialProcessBody {
-                span_keyword: _,
-                signals_driven,
-            } => {
-                signals_driven
-                    .entry(target_base_signal.inner)
-                    .or_insert(target_base_signal.span);
-                BlockKind::Combinatorial
-            }
+            HardwareProcessKind::CombinatorialProcessBody { span_keyword: _ } => BlockKind::Combinatorial,
             HardwareProcessKind::ClockedProcessBody {
                 span_keyword: _,
                 domain,
