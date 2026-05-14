@@ -18,5 +18,8 @@ cache-keys = [
     { file = "../**/*.toml" },
     { file = "../**/*.rs" },
     { file = "../**/*.kh" },
-    { file = "../**/*.lalrpop" }
+    { file = "../**/*.lalrpop" },
+    { file = "../**/*.pyi" },
+    { file = "../hwl_language/src/back/verilog_keywords.txt" },
+    { file = "../hwl_language/src/back/verilator_template.cpp" },
 ]
