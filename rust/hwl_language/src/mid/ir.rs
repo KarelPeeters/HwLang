@@ -21,6 +21,8 @@ use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
+use std::fmt::Display;
+use std::iter::chain;
 use std::sync::Arc;
 use std::vec;
 use unwrap_match::unwrap_match;
@@ -120,6 +122,27 @@ pub struct IrModuleInfo {
     pub debug_info_def_file: String,
     pub debug_info_id: Spanned<Option<String>>,
     pub debug_info_generic_args: Option<Vec<(String, String)>>,
+}
+
+impl IrModuleInfo {
+    pub fn all_signals(&self) -> impl Iterator<Item = IrSignal> {
+        let ports = self.ports.keys().map(IrSignal::Port);
+        let wires = self.wires.keys().map(IrSignal::Wire);
+        chain(ports, wires)
+    }
+
+    pub fn all_signals_except_inputs(&self) -> impl Iterator<Item = IrSignal> {
+        let ports = self
+            .ports
+            .iter()
+            .filter(|(_, p)| match p.direction {
+                PortDirection::Input => false,
+                PortDirection::Output => true,
+            })
+            .map(|(p, _)| IrSignal::Port(p));
+        let wires = self.wires.keys().map(IrSignal::Wire);
+        chain(ports, wires)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -893,6 +916,24 @@ impl IrSignal {
         match self {
             IrSignal::Port(port) => module.ports[port].debug_span,
             IrSignal::Wire(wire) => module.wires[wire].debug_info_id.span,
+        }
+    }
+
+    pub fn debug_info_kind(self) -> &'static str {
+        match self {
+            IrSignal::Port(_) => "port",
+            IrSignal::Wire(_) => "wire",
+        }
+    }
+
+    pub fn debug_info_name(self, module: &IrModuleInfo) -> &str {
+        match self {
+            IrSignal::Port(port) => module.ports[port].name.as_str(),
+            IrSignal::Wire(wire) => module.wires[wire]
+                .debug_info_id
+                .inner
+                .as_ref()
+                .map_or("_", String::as_str),
         }
     }
 }

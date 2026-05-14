@@ -105,7 +105,7 @@ def test_comb_write_after_read():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
+    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
         compile_custom(src).resolve_module("top.top")
 
 

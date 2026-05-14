@@ -11,7 +11,7 @@ use crate::util::Never;
 use crate::util::data::chain_keys;
 use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, Itertools, rev};
+use itertools::{Either, Itertools};
 use std::fmt::Debug;
 use std::iter::chain;
 use std::ops::ControlFlow;
@@ -27,7 +27,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
         let combined_drive = combined_drivers
             .entry(signal)
             .or_insert_with(|| IrMask::new(signal.ty(module), vec![]));
-        IrMask::zip2_for_each(combined_drive, &mask, &mut |combined, &curr_drives| {
+        IrMask::zip2_for_each_mut(combined_drive, &mask, &mut |combined, &curr_drives| {
             if curr_drives {
                 combined.push(span);
             }
@@ -38,7 +38,13 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
     for child in &module.children {
         match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
-                let cones = compute_clocked_process_cones(module, proc);
+                let cones = match compute_clocked_process_cones(diags, module, proc) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        any_err = Err(e);
+                        continue;
+                    }
+                };
                 for (signal, mask) in cones.drives {
                     report_signal_drive(signal, mask, child.span);
                 }
@@ -51,6 +57,16 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                         continue;
                     }
                 };
+
+                // check self-loops
+                match check_combinatorial_self_loops(diags, module, child.span, &cones) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        any_err = Err(e);
+                        continue;
+                    }
+                }
+
                 for (signal, mask) in cones.drives {
                     report_signal_drive(signal, mask, child.span);
                 }
@@ -83,19 +99,8 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
     }
     any_err?;
 
-    let signals_that_need_drivers = chain(
-        module
-            .ports
-            .iter()
-            .filter(|(_, info)| match info.direction {
-                PortDirection::Input => false,
-                PortDirection::Output => true,
-            })
-            .map(|(p, _)| IrSignal::Port(p)),
-        module.wires.keys().map(IrSignal::Wire),
-    );
-
-    for signal in signals_that_need_drivers {
+    for signal in module.all_signals_except_inputs() {
+        // track driver status
         let mut any_driven = false;
         let mut any_undriven = false;
         let mut overlapping_drivers = IndexSet::new();
@@ -120,19 +125,11 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
             any_undriven = true;
         }
 
-        let (signal_kind, signal_name) = match signal {
-            IrSignal::Port(port) => ("port", module.ports[port].name.as_str()),
-            IrSignal::Wire(wire) => (
-                "wire",
-                module.wires[wire]
-                    .debug_info_id
-                    .inner
-                    .as_ref()
-                    .map_or("_", String::as_str),
-            ),
-        };
+        // get some debug info
+        let signal_kind = signal.debug_info_kind();
+        let signal_name = signal.debug_info_name(module);
 
-        // report multiple drivers
+        // maybe report multiple drivers
         if !overlapping_drivers.is_empty() {
             let mut diag = DiagnosticError::new(
                 format!("{signal_kind} `{signal_name}` has multiple overlapping drivers"),
@@ -145,7 +142,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
             any_err = Err(diag.report(diags));
         }
 
-        // report (partially) undriven
+        // maybe report (partially) undriven
         if any_undriven {
             let title_suffix = if !any_driven {
                 "has no driver"
@@ -164,6 +161,50 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
     any_err
 }
 
+fn check_combinatorial_self_loops(
+    diags: &Diagnostics,
+    module: &IrModuleInfo,
+    proc_span: Span,
+    cones: &Cones,
+) -> DiagResult {
+    // find any signals with self loops
+    let mut loop_signals = IndexSet::new();
+
+    for (&signal, read) in &cones.reads {
+        let Some(write) = cones.drives.get(&signal) else {
+            continue;
+        };
+
+        let mut any_overlap = false;
+        IrMask::zip2_for_each(read, write, &mut |r, w| any_overlap |= *r & *w);
+
+        if any_overlap {
+            loop_signals.insert(signal);
+        }
+    }
+
+    // report error if necessary
+    if !loop_signals.is_empty() {
+        let mut diag = DiagnosticError::new("combinatorial self-loop", proc_span, "for this combinatorial process");
+
+        // visit signals in module declaration order instead of whatever order we collected them in
+        for signal in module.all_signals() {
+            let signal_kind = signal.debug_info_kind();
+            let signal_name = signal.debug_info_name(module);
+
+            if loop_signals.contains(&signal) {
+                diag = diag.add_info(signal.span(module), format!("for {signal_kind} `{signal_name}`"));
+            }
+        }
+
+        return Err(diag
+            .add_footer_hint("This does not create valid combinatorial logic.")
+            .report(diags));
+    }
+
+    Ok(())
+}
+
 // TODO optimize for large arrays
 #[derive(Debug, Clone)]
 pub enum IrMask<T> {
@@ -172,28 +213,39 @@ pub enum IrMask<T> {
 }
 
 #[derive(Debug)]
-pub struct Drivers<'p> {
-    parent: Option<&'p Drivers<'p>>,
+pub struct Drives<'p> {
+    parent: Option<&'p Drives<'p>>,
     map: IndexMap<IrSignal, IrMask<bool>>,
 }
 
-fn compute_clocked_process_cones(module: &IrModuleInfo, proc: &IrClockedProcess) -> Cones {
+fn compute_clocked_process_cones(
+    diags: &Diagnostics,
+    module: &IrModuleInfo,
+    proc: &IrClockedProcess,
+) -> DiagResult<Cones> {
     let IrClockedProcess {
         registers,
-        variables: _,
+        variables,
         async_reset: _,
         clock_signal: _,
-        clock_block: _,
+        clock_block,
     } = proc;
 
-    // TODO actually compute cones
-    //   note: supress read before write errors when visiting blocks, we actually don't care about driving at all
-    // registers
-    //     .iter()
-    //     .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
-    //     .collect();
+    let reads = {
+        // we only need to temporarily track drives to avoid false-positive reads
+        let mut reads = IndexMap::new();
+        let mut drives = Drives::root();
+        compute_block_cones(diags, module, variables, clock_block, &mut reads, &mut drives)?;
+        reads
+    };
 
-    todo!()
+    // the actual drives are just all the registers assigned to this process
+    let drives = registers
+        .iter()
+        .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
+        .collect();
+
+    Ok(Cones { reads, drives })
 }
 
 #[derive(Debug)]
@@ -210,25 +262,25 @@ fn compute_combinatorial_process_cones(
 ) -> DiagResult<Cones> {
     let IrCombinatorialProcess { variables, block } = proc;
 
-    let mut drivers = Drivers::root();
-    let mut read = IndexMap::new();
-    compute_combinatorial_block_cones(diags, module, variables, block, &mut drivers, &mut read)?;
+    let mut reads = IndexMap::new();
+    let mut drives = Drives::root();
+    compute_block_cones(diags, module, variables, block, &mut reads, &mut drives)?;
 
     Ok(Cones {
-        reads: read,
-        drives: drivers.map,
+        reads,
+        drives: drives.map,
     })
 }
 
 struct UndrivenConditionalDrive;
 
-fn compute_combinatorial_block_cones(
+fn compute_block_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     vars: &IrVariables,
     block: &IrBlock,
-    drivers: &mut Drivers,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
+    drives: &mut Drives,
 ) -> DiagResult {
     let IrBlock { statements } = block;
     for stmt in statements {
@@ -244,16 +296,16 @@ fn compute_combinatorial_block_cones(
                 for step in steps_scalar {
                     match step {
                         IrTargetStepScalar::ArrayIndex(index) => {
-                            record_expression_reads(module, vars, drivers, reads, index)
+                            record_expression_reads(module, vars, drives, reads, index)
                         }
                         &IrTargetStepScalar::TupleIndex(_) | &IrTargetStepScalar::StructField(_) => {}
                     }
                 }
                 if let Some(step_slice) = step_slice {
                     let IrTargetStepSlice { start, len: _ } = step_slice;
-                    record_expression_reads(module, vars, drivers, reads, start);
+                    record_expression_reads(module, vars, drives, reads, start);
                 }
-                record_expression_reads(module, vars, drivers, reads, source);
+                record_expression_reads(module, vars, drives, reads, source);
 
                 // record writes
                 let base = match base {
@@ -264,7 +316,7 @@ fn compute_combinatorial_block_cones(
                     }
                 };
 
-                let curr = drivers.curr_mut(module, base);
+                let curr = drives.curr_mut(module, base);
                 match curr.write_steps(module, vars, steps) {
                     Ok(()) => {}
                     Err(UndrivenConditionalDrive) => {
@@ -287,7 +339,7 @@ fn compute_combinatorial_block_cones(
                 }
             }
             IrStatement::Block(stmt_inner) => {
-                compute_combinatorial_block_cones(diags, module, vars, stmt_inner, drivers, reads)?;
+                compute_block_cones(diags, module, vars, stmt_inner, reads, drives)?;
             }
             IrStatement::If(stmt_inner) => {
                 let IrIfStatement {
@@ -297,17 +349,17 @@ fn compute_combinatorial_block_cones(
                 } = stmt_inner;
 
                 // record reads
-                record_expression_reads(module, vars, drivers, reads, condition);
+                record_expression_reads(module, vars, drives, reads, condition);
 
                 // visit then
-                let mut then_drivers = drivers.new_child();
-                compute_combinatorial_block_cones(diags, module, vars, then_block, &mut then_drivers, reads)?;
+                let mut then_drivers = drives.new_child();
+                compute_block_cones(diags, module, vars, then_block, reads, &mut then_drivers)?;
                 let then_map = then_drivers.map;
 
                 // visit else
-                let mut else_drivers = drivers.new_child();
+                let mut else_drivers = drives.new_child();
                 if let Some(else_block) = else_block {
-                    compute_combinatorial_block_cones(diags, module, vars, else_block, &mut else_drivers, reads)?;
+                    compute_block_cones(diags, module, vars, else_block, reads, &mut else_drivers)?;
                 }
                 let else_map = else_drivers.map;
 
@@ -315,7 +367,7 @@ fn compute_combinatorial_block_cones(
                 for &signal in chain_keys(&then_map, &else_map) {
                     let mut any_err = false;
                     IrMask::zip3_maybe_for_each(
-                        drivers.curr_mut(module, signal),
+                        drives.curr_mut(module, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
                         &mut |parent, then_value, else_value| {
@@ -355,7 +407,7 @@ fn compute_combinatorial_block_cones(
                     // this is pessimistic, but safe:
                     //   we do not use the fact that the index variable is known in each iteration,
                     //   which considers both reads and writes to potentially access too much
-                    compute_combinatorial_block_cones(diags, module, vars, block, drivers, reads)?;
+                    compute_block_cones(diags, module, vars, block, reads, drives)?;
                 }
             }
             IrStatement::Print(pieces) => {
@@ -365,7 +417,7 @@ fn compute_combinatorial_block_cones(
                         IrStringPiece::Literal(_) => {}
                         IrStringPiece::Substitute(sub) => match sub {
                             IrStringSubstitution::Integer(expr, _radix) => {
-                                record_expression_reads(module, vars, drivers, reads, expr);
+                                record_expression_reads(module, vars, drives, reads, expr);
                             }
                         },
                     }
@@ -385,7 +437,7 @@ fn compute_combinatorial_block_cones(
 fn record_expression_reads(
     module: &IrModuleInfo,
     vars: &IrVariables,
-    drivers: &Drivers,
+    drivers: &Drives,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     expr: &IrExpression,
 ) {
@@ -404,7 +456,7 @@ struct ReadSteps {
 fn record_expression_reads_impl(
     module: &IrModuleInfo,
     vars: &IrVariables,
-    drivers: &Drivers,
+    drivers: &Drives,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     expr: &IrExpression,
     mut steps: ReadSteps,
@@ -497,7 +549,7 @@ fn record_expression_reads_impl(
                     if let Some(pieces_driven) = &mut pieces_driven {
                         // only count reads from pieces that have not yet been driven
                         let piece_driven = pieces_driven.next().unwrap();
-                        IrMask::zip2_for_each(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
+                        IrMask::zip2_for_each_mut(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
                             *scalar_read |= !scalar_driven;
                         })
                     } else {
@@ -515,7 +567,7 @@ fn record_expression_reads_impl(
 fn record_expression_reads_base(
     module: &IrModuleInfo,
     vars: &IrVariables,
-    drivers: &Drivers,
+    drivers: &Drives,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     base: &IrExpression,
     mut steps: ReadSteps,
@@ -539,16 +591,16 @@ fn record_expression_reads_base(
     }
 }
 
-impl Drivers<'_> {
-    fn root() -> Drivers<'static> {
-        Drivers {
+impl Drives<'_> {
+    fn root() -> Drives<'static> {
+        Drives {
             parent: None,
             map: IndexMap::new(),
         }
     }
 
-    fn new_child(&self) -> Drivers<'_> {
-        Drivers {
+    fn new_child(&self) -> Drives<'_> {
+        Drives {
             parent: Some(self),
             map: IndexMap::new(),
         }
@@ -660,7 +712,7 @@ impl<T> IrMask<T> {
         !self.any(|v| !f(v))
     }
 
-    fn zip2_for_each<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U)) {
+    fn zip2_for_each<U: Debug>(a: &IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&T, &U)) {
         match a {
             IrMask::Scalar(a) => {
                 let b = unwrap_match!(b, IrMask::Scalar(b) => b);
@@ -669,7 +721,22 @@ impl<T> IrMask<T> {
             IrMask::Compound(a) => {
                 let b = unwrap_match!(b, IrMask::Compound(b) => b);
                 for i in 0..a.len() {
-                    Self::zip2_for_each(&mut a[i], &b[i], f);
+                    Self::zip2_for_each(&a[i], &b[i], f);
+                }
+            }
+        }
+    }
+
+    fn zip2_for_each_mut<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U)) {
+        match a {
+            IrMask::Scalar(a) => {
+                let b = unwrap_match!(b, IrMask::Scalar(b) => b);
+                f(a, b)
+            }
+            IrMask::Compound(a) => {
+                let b = unwrap_match!(b, IrMask::Compound(b) => b);
+                for i in 0..a.len() {
+                    Self::zip2_for_each_mut(&mut a[i], &b[i], f);
                 }
             }
         }
