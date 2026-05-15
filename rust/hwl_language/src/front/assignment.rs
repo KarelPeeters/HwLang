@@ -50,9 +50,9 @@ impl CompileItemContext<'_, '_> {
 
         // evaluate target
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
-        let AssignmentTarget {
+        let &AssignmentTarget {
             base: target_base,
-            steps: target_steps,
+            steps: ref target_steps,
         } = &target;
 
         // compute source, by evaluating right but also left if needed
@@ -80,19 +80,8 @@ impl CompileItemContext<'_, '_> {
                 self.eval_expression_with_implications(scope, flow, right_expected_ty, right_expr)?
             }
             Some(op_inner) => {
-                // evaluate left
-                let left_base_value = match target_base.inner {
-                    SignalOrVariable::Signal(signal) => {
-                        flow.signal_eval(self, Spanned::new(target_base.span, signal))?
-                    }
-                    SignalOrVariable::Variable(var) => {
-                        flow.var_eval(refs, &mut self.large, Spanned::new(target_base.span, var))?
-                    }
-                };
-
-                // apply steps to left
-                let left_value =
-                    target_steps.apply_to_value(self, &Type::Any, Spanned::new(target_base.span, left_base_value))?;
+                // evaluate left, including steps
+                let left_value = flow.signal_or_var_eval(self, target_base, target_steps)?;
                 let left_value = Spanned::new(target_expr.span, left_value);
 
                 // evaluate right

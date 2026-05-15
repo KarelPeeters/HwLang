@@ -84,18 +84,7 @@ impl LrValue {
             LrValue::LeftTarget(v) => {
                 // eval base
                 let AssignmentTarget { base, steps } = v;
-                let base_eval = match base.inner {
-                    SignalOrVariable::Signal(sig) => {
-                        // TODO only count this as a partial signal eval, taking steps into account
-                        flow.signal_eval(ctx, Spanned::new(base.span, sig))?
-                    }
-                    SignalOrVariable::Variable(var) => {
-                        flow.var_eval(refs, &mut ctx.large, Spanned::new(base.span, var))?
-                    }
-                };
-
-                // apply steps
-                steps.apply_to_value(ctx, expected_ty, Spanned::new(base.span, base_eval))
+                flow.signal_or_var_eval(ctx, base, &steps)
             }
             LrValue::LeftInterface(intf) => {
                 let e = DiagnosticError::new("cannot evaluate interface as value", span, "evaluating interface here")
