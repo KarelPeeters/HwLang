@@ -457,7 +457,7 @@ fn record_expression_reads_impl(
     drivers: &Drives,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     expr: &IrExpression,
-    mut steps: ReadSteps,
+    steps: ReadSteps,
 ) {
     match expr {
         // constants, no reads
@@ -610,10 +610,7 @@ impl Drives<'_> {
             if let Some(mask) = curr.map.get(&signal) {
                 return Some(mask);
             }
-            curr = match curr.parent {
-                None => return None,
-                Some(parent) => parent,
-            };
+            curr = curr.parent?;
         }
     }
 
@@ -844,8 +841,10 @@ impl IrMask<bool> {
                     }
                 }
             }
-            IrTargetStepScalar::TupleIndex(_) => todo!(),
-            IrTargetStepScalar::StructField(_) => todo!(),
+            &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                slf[index].write_steps_impl(module, vars, steps_scalar, step_slice)?;
+            }
         }
 
         Ok(())
@@ -900,8 +899,10 @@ impl IrMask<bool> {
                     .iter_mut()
                     .for_each(|x| x.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f))
             }
-            IrTargetStepScalar::TupleIndex(_) => todo!(),
-            IrTargetStepScalar::StructField(_) => todo!(),
+            &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                slf[index].for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f)
+            }
         }
     }
 
@@ -942,8 +943,10 @@ impl IrMask<bool> {
                     .iter()
                     .for_each(|x| x.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f))
             }
-            IrTargetStepScalar::TupleIndex(_) => todo!(),
-            IrTargetStepScalar::StructField(_) => todo!(),
+            &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                slf[index].for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f)
+            }
         }
     }
 }
