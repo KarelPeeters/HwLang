@@ -91,7 +91,8 @@ impl CompileItemContext<'_, '_> {
                 };
 
                 // apply steps to left
-                let left_value = target_steps.apply_to_value(self, Spanned::new(target_base.span, left_base_value))?;
+                let left_value =
+                    target_steps.apply_to_value(self, &Type::Any, Spanned::new(target_base.span, left_base_value))?;
                 let left_value = Spanned::new(target_expr.span, left_value);
 
                 // evaluate right

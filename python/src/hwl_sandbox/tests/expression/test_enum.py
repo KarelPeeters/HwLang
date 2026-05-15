@@ -83,12 +83,19 @@ def test_enum_infer_no_payload():
         Some(T),
     }
     fn f() {
+        val v: Foo(bool) = Foo.None;
+    }
+    fn g() {
         val v: Foo(bool) = Foo.None(false);
     }
     """
-    f = compile_custom(src).resolve("top.f")
+    c = compile_custom(src)
+    f = c.resolve("top.f")
+    g = c.resolve("top.g")
+
+    f()
     with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
-        f()
+        g()
 
 
 def test_enum_infer_non_existing():

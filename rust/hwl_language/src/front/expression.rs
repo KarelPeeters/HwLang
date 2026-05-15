@@ -95,7 +95,7 @@ impl LrValue {
                 };
 
                 // apply steps
-                steps.apply_to_value(ctx, Spanned::new(base.span, base_eval))
+                steps.apply_to_value(ctx, expected_ty, Spanned::new(base.span, base_eval))
             }
             LrValue::LeftInterface(intf) => {
                 let e = DiagnosticError::new("cannot evaluate interface as value", span, "evaluating interface here")
@@ -726,7 +726,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                     LrValue::Right(base) => {
                         let steps = TargetSteps::single(step);
-                        let result = steps.apply_to_value(self, Spanned::new(base_span, base))?;
+                        let result = steps.apply_to_value(self, expected_ty, Spanned::new(base_span, base))?;
                         LrValue::Right(result)
                     }
                 }
@@ -775,7 +775,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                     LrValue::Right(base) => {
                         let steps = TargetSteps::new(vec![index_to_step(index)]);
-                        LrValue::Right(steps.apply_to_value(self, Spanned::new(base_span, base))?)
+                        LrValue::Right(steps.apply_to_value(self, expected_ty, Spanned::new(base_span, base))?)
                     }
                 }
             }

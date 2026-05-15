@@ -306,6 +306,7 @@ impl TargetSteps<TargetStep> {
     pub fn apply_to_value(
         &self,
         ctx: &mut CompileItemContext,
+        expected_ty: &Type,
         value: Spanned<ValueWithImplications>,
     ) -> DiagResult<ValueWithImplications> {
         let refs = ctx.refs;
@@ -314,7 +315,9 @@ impl TargetSteps<TargetStep> {
 
         let TargetSteps { steps } = self;
 
+        let mut curr_expected_ty = expected_ty;
         let mut curr_value = value;
+
         for step in steps {
             let curr_span = curr_value.span;
             let step_span = step.span;
@@ -465,10 +468,9 @@ impl TargetSteps<TargetStep> {
                         }
                     },
                     TargetStepCompile::DotIndexId(field_str) => {
-                        // TODO expected type?
                         let expr_span = curr_span.join(step_span);
                         let field_str = Spanned::new(step_span, field_str.as_str());
-                        eval_dot_index_id(ctx, &Type::Any, expr_span, curr_value, field_str)?
+                        eval_dot_index_id(ctx, curr_expected_ty, expr_span, curr_value, field_str)?
                     }
                 },
                 TargetStep::Hardware(step) => {
@@ -552,6 +554,8 @@ impl TargetSteps<TargetStep> {
                 }
             };
 
+            // we lose expected type info after any step
+            curr_expected_ty = &Type::Any;
             curr_value = Spanned::new(curr_span.join(step_span), next_value);
         }
 
@@ -592,7 +596,7 @@ impl TargetSteps<&TargetStepCompile> {
         };
 
         let base_span = base.span;
-        let result = self_mapped.apply_to_value(ctx, base.map_inner(Value::from))?;
+        let result = self_mapped.apply_to_value(ctx, &Type::Type, base.map_inner(Value::from))?;
 
         CompileValue::try_from(&result).map_err(|_: NotCompile| {
             let msg = "applying compile-time steps to compile-time value should result in compile-time value again, got hardware";
