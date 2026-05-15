@@ -801,7 +801,7 @@ impl IrMask<bool> {
                             slice.iter_mut().for_each(|v| v.fill(true));
                         }
                         IntKind::Range(start_range) => {
-                            let index_range = start_range.start..start_range.end + len;
+                            let index_range = start_range.start..start_range.end + len - 1;
 
                             // check no partially written elements in range
                             let fully_driven = slf[index_range].iter().all(|m| m.all(|&b| b));
@@ -883,7 +883,7 @@ impl IrMask<bool> {
                     let start_range = unwrap_int_unified(module, vars, start);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
 
-                    let full_range = start_range.start..start_range.end + len;
+                    let full_range = start_range.start..start_range.end + len - 1;
                     slf[full_range].iter_mut().for_each(f);
                 }
             }
@@ -927,7 +927,7 @@ impl IrMask<bool> {
                     let start_range = unwrap_int_unified(module, vars, start);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
 
-                    let full_range = start_range.start..start_range.end + len;
+                    let full_range = start_range.start..start_range.end + len - 1;
                     slf[full_range].iter().for_each(f);
                 }
             }

@@ -78,7 +78,7 @@ def test_comb_dyn_index_partial():
 
 def test_comb_dyn_slice():
     src = """
-    module top(c: bool) ports(i: in async int(0..2)) {
+    module top(c: bool) ports(i: in async int(0..3)) {
         wire w: async [4]bool;
         comb {
             if (c) {
