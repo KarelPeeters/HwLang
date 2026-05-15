@@ -3,7 +3,7 @@ use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext,
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
-use crate::front::expression::NamedOrValue;
+use crate::front::expression::{LrValue, NamedOrValue};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{
     Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent, HardwareProcessKind,
@@ -17,7 +17,7 @@ use crate::front::signal::{
     WireInfoSingle, WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
+use crate::front::value::{CompileValue, MaybeUndefined, SimpleCompileValue, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
 use crate::mid::cones::compute_module_cones;
 use crate::mid::ir::{
@@ -1561,7 +1561,7 @@ impl BodyContext {
                                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
                                 let named = ctx.eval_scoped_as_named(scope, id)?;
 
-                                let (signal_ir, signal_domain, signal_ty) = match named.inner {
+                                let (signal_ir, signal_domain, signal_ty) = match named {
                                     NamedOrValue::Named(NamedValue::Signal(signal)) => match signal {
                                         Signal::Port(port) => {
                                             let port_info = &ctx.ports[port];
@@ -1648,48 +1648,38 @@ impl BodyContext {
 
                 // eval expr
                 let mut flow_connection = flow_parent.new_child_isolated();
-                let value = ctx.eval_expression_with_implications_allow_interface_ref(
-                    scope,
-                    &mut flow_connection,
-                    &Type::Any,
-                    value,
-                )?;
+                let value_eval = ctx.eval_expression_as_lr(scope, &mut flow_connection, &Type::Any, value)?;
 
                 // expect interface
-                let build_err_not_interface = || {
-                    DiagnosticError::new("expected interface value", value.span, "got non-interface value")
-                        .add_info(connector_id.span, "port defined as interface here")
-                        .report(diags)
+                let value_eval = match value_eval {
+                    LrValue::LeftInterface(intf) => intf,
+                    LrValue::LeftTarget(_) | LrValue::Right(_) => {
+                        let e = DiagnosticError::new("expected interface value", value.span, "got non-interface value")
+                            .add_info(connector_id.span, "port defined as interface here")
+                            .report(diags);
+                        return Err(e);
+                    }
                 };
 
-                let (value_interface, value_domain, value_signals) = match value.inner {
-                    Value::Simple(SimpleCompileValue::Reference(reference)) => {
-                        match reference.get(ctx, &flow_connection, value.span)? {
-                            ReferenceInner::Interface { intf, elab: _ } => {
-                                match intf {
-                                    Interface::Port(port_interface) => {
-                                        let info = &ctx.port_interfaces[port_interface];
-                                        let port_interface = info.view.map_inner(|v| v.interface);
-                                        let port_domain = info.domain.map_inner(|d| {
-                                            ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))
-                                        });
-                                        let port_signals = PortOrWire::Port(&info.ports);
-                                        (port_interface, port_domain, port_signals)
-                                    }
-                                    Interface::Wire(wire_interface) => {
-                                        let info = &mut ctx.wire_interfaces[wire_interface];
-                                        let wire_domain = info.suggest_domain(connector_domain)?;
-                                        // reborrow immutably
-                                        let info = &ctx.wire_interfaces[wire_interface];
-                                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
-                                        (info.interface, wire_domain, wire_signals)
-                                    }
-                                }
-                            }
-                            _ => return Err(build_err_not_interface()),
-                        }
+                // get interface details
+                let (value_interface, value_domain, value_signals) = match value_eval {
+                    Interface::Port(port_interface) => {
+                        let info = &ctx.port_interfaces[port_interface];
+                        let port_interface = info.view.map_inner(|v| v.interface);
+                        let port_domain = info
+                            .domain
+                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port))));
+                        let port_signals = PortOrWire::Port(&info.ports);
+                        (port_interface, port_domain, port_signals)
                     }
-                    _ => return Err(build_err_not_interface()),
+                    Interface::Wire(wire_interface) => {
+                        let info = &mut ctx.wire_interfaces[wire_interface];
+                        let wire_domain = info.suggest_domain(connector_domain)?;
+                        // reborrow immutably
+                        let info = &ctx.wire_interfaces[wire_interface];
+                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
+                        (info.interface, wire_domain, wire_signals)
+                    }
                 };
 
                 // check interface match (including generics)

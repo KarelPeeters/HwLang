@@ -21,7 +21,6 @@ use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
-use std::fmt::Display;
 use std::iter::chain;
 use std::sync::Arc;
 use std::vec;

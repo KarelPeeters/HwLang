@@ -5,7 +5,6 @@ use crate::mid::ir::{
     IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice,
     IrTargetSteps, IrType, IrVariables,
 };
-use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Span;
 use crate::util::Never;
 use crate::util::data::chain_keys;
@@ -13,7 +12,6 @@ use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools};
 use std::fmt::Debug;
-use std::iter::chain;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 

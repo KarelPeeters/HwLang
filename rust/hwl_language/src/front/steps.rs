@@ -1,14 +1,22 @@
-use crate::front::compile::CompileRefs;
+use crate::front::check::check_hardware_type_for_bit_operation;
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
+use crate::front::function::{
+    FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_cannot_infer_generic_params,
+    error_unique_mismatch,
+};
+use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
+use crate::front::item::{ElaboratedInterfaceView, FunctionItemBody};
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue, NotCompile,
-    SimpleCompileValue, Value, ValueCommon,
+    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareUInt, HardwareValue, MaybeCompile,
+    MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::builder::{IrTargetStepBuild, IrTargetStepBuildSlice, IrTargetStepsBuilder};
 use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetSteps};
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
@@ -18,29 +26,38 @@ use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct AssignmentSteps<S = AssignmentStep> {
+pub struct TargetSteps<S = TargetStep> {
     pub steps: Vec<Spanned<S>>,
 }
 
-pub type AssignmentStep = MaybeCompile<AssignmentStepCompile, AssignmentStepHardware>;
+pub type TargetStep = MaybeCompile<TargetStepCompile, TargetStepHardware>;
 
 #[derive(Debug, Clone)]
-pub enum AssignmentStepCompile {
+pub enum TargetStepCompile {
     ArrayIndex(BigUint),
     ArraySlice { start: BigUint, length: Option<BigUint> },
-    TupleIndex(BigUint),
-    StructField(Arc<String>),
+    DotIndexInt(BigUint),
+    // TODO allow non-owned string here
+    DotIndexId(Arc<String>),
 }
 
 #[derive(Debug, Clone)]
-pub enum AssignmentStepHardware {
+pub enum TargetStepHardware {
     ArrayIndex(HardwareUInt),
     ArraySlice { start: HardwareUInt, length: BigUint },
 }
 
-impl<S> AssignmentSteps<S> {
+impl<S> TargetSteps<S> {
     pub fn new(steps: Vec<Spanned<S>>) -> Self {
         Self { steps }
+    }
+
+    pub fn single(step: Spanned<S>) -> Self {
+        Self::new(vec![step])
+    }
+
+    pub fn push(&mut self, step: Spanned<S>) {
+        self.steps.push(step);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,8 +71,8 @@ struct EncounteredAny;
 #[derive(Debug, Copy, Clone)]
 struct EncounteredUnknown;
 
-impl AssignmentSteps<AssignmentStep> {
-    pub fn try_as_compile(&self) -> Result<AssignmentSteps<&AssignmentStepCompile>, NotCompile> {
+impl TargetSteps<TargetStep> {
+    pub fn try_as_compile(&self) -> Result<TargetSteps<&TargetStepCompile>, NotCompile> {
         let steps = self
             .steps
             .iter()
@@ -64,7 +81,7 @@ impl AssignmentSteps<AssignmentStep> {
                 MaybeCompile::Hardware(_) => Err(NotCompile),
             })
             .try_collect_vec()?;
-        Ok(AssignmentSteps { steps })
+        Ok(TargetSteps { steps })
     }
 
     pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
@@ -102,10 +119,10 @@ impl AssignmentSteps<AssignmentStep> {
     pub fn for_each_domain(&self, mut f: impl FnMut(Spanned<ValueDomain>)) {
         for step in &self.steps {
             let &d = match &step.inner {
-                AssignmentStep::Compile(_) => &ValueDomain::CompileTime,
-                AssignmentStep::Hardware(step) => match step {
-                    AssignmentStepHardware::ArrayIndex(index) => &index.domain,
-                    AssignmentStepHardware::ArraySlice { start, length: _ } => &start.domain,
+                TargetStep::Compile(_) => &ValueDomain::CompileTime,
+                TargetStep::Hardware(step) => match step {
+                    TargetStepHardware::ArrayIndex(index) => &index.domain,
+                    TargetStepHardware::ArraySlice { start, length: _ } => &start.domain,
                 },
             };
             f(Spanned::new(step.span, d));
@@ -127,7 +144,7 @@ impl AssignmentSteps<AssignmentStep> {
         ty: Spanned<Type>,
     ) -> DiagResult<(Type, Result<IrTargetSteps, Either<EncounteredAny, EncounteredUnknown>>)> {
         let diags = refs.diags;
-        let AssignmentSteps { steps } = self;
+        let TargetSteps { steps } = self;
 
         let mut steps_builder = Ok(IrTargetStepsBuilder::new());
         let mut curr_ty = ty;
@@ -147,8 +164,8 @@ impl AssignmentSteps<AssignmentStep> {
             };
 
             let (step_ir, next_ty) = match &step.inner {
-                AssignmentStep::Compile(step) => match step {
-                    AssignmentStepCompile::ArrayIndex(index) => {
+                TargetStep::Compile(step) => match step {
+                    TargetStepCompile::ArrayIndex(index) => {
                         let (array_inner, array_len) = check_type_is_array(false)?;
                         check_range_index(
                             diags,
@@ -166,7 +183,7 @@ impl AssignmentSteps<AssignmentStep> {
 
                         (step_ir, array_inner.as_ref().clone())
                     }
-                    AssignmentStepCompile::ArraySlice {
+                    TargetStepCompile::ArraySlice {
                         start: slice_start,
                         length: slice_length,
                     } => {
@@ -194,7 +211,7 @@ impl AssignmentSteps<AssignmentStep> {
                             }
                         }
                     }
-                    AssignmentStepCompile::TupleIndex(index) => {
+                    TargetStepCompile::DotIndexInt(index) => {
                         let fields = match &curr_ty.inner {
                             Type::Tuple(fields) => fields,
                             _ => return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span)),
@@ -208,7 +225,7 @@ impl AssignmentSteps<AssignmentStep> {
                             }
                         }
                     }
-                    AssignmentStepCompile::StructField(field) => {
+                    TargetStepCompile::DotIndexId(field) => {
                         let ty = match curr_ty.inner {
                             Type::Struct(ty) => ty,
                             _ => return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span)),
@@ -223,8 +240,8 @@ impl AssignmentSteps<AssignmentStep> {
                         (Ok(step_ir), field_ty)
                     }
                 },
-                AssignmentStep::Hardware(step) => match step {
-                    AssignmentStepHardware::ArrayIndex(index) => {
+                TargetStep::Hardware(step) => match step {
+                    TargetStepHardware::ArrayIndex(index) => {
                         let (array_inner, array_len) = check_type_is_array(false)?;
                         check_range_index(diags, Spanned::new(step_span, &index.ty), array_len)?;
 
@@ -238,7 +255,7 @@ impl AssignmentSteps<AssignmentStep> {
 
                         (step_ir, array_inner.as_ref().clone())
                     }
-                    AssignmentStepHardware::ArraySlice {
+                    TargetStepHardware::ArraySlice {
                         start: slice_start,
                         length: slice_len,
                     } => {
@@ -288,24 +305,23 @@ impl AssignmentSteps<AssignmentStep> {
 
     pub fn apply_to_value(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
-        value: Spanned<Value>,
-    ) -> DiagResult<Value> {
+        ctx: &mut CompileItemContext,
+        value: Spanned<ValueWithImplications>,
+    ) -> DiagResult<ValueWithImplications> {
+        let refs = ctx.refs;
         let diags = refs.diags;
         let elab = &refs.shared.elaboration_arenas;
 
-        let AssignmentSteps { steps } = self;
+        let TargetSteps { steps } = self;
 
         let mut curr_value = value;
-
         for step in steps {
             let curr_span = curr_value.span;
             let step_span = step.span;
 
-            let next: Value = match &step.inner {
-                AssignmentStep::Compile(step) => match step {
-                    AssignmentStepCompile::ArrayIndex(index) => {
+            let next_value: ValueWithImplications = match &step.inner {
+                TargetStep::Compile(step) => match step {
+                    TargetStepCompile::ArrayIndex(index) => {
                         let index_range = ClosedNonEmptyMultiRange::single(index.clone());
                         let index_spanned = Spanned::new(step_span, &index_range);
 
@@ -323,19 +339,20 @@ impl AssignmentSteps<AssignmentStep> {
                                 }
                             }
                             Value::Hardware(ref curr_value)
-                                if let HardwareType::Array(curr_inner, curr_len) = &curr_value.ty =>
+                                if let HardwareType::Array(curr_inner, curr_len) = &curr_value.value.ty =>
                             {
                                 check_range_index(diags, index_spanned, Spanned::new(curr_span, Some(curr_len)))?;
 
-                                let expr = IrExpressionLarge::ArrayIndex {
-                                    base: curr_value.expr.clone(),
+                                let result = IrExpressionLarge::ArrayIndex {
+                                    base: curr_value.value.expr.clone(),
                                     index: IrExpression::Int(index.into()),
                                 };
-                                Value::Hardware(HardwareValue {
+                                let result = HardwareValue {
                                     ty: (**curr_inner).clone(),
-                                    domain: curr_value.domain,
-                                    expr: large.push_expr(expr),
-                                })
+                                    domain: curr_value.value.domain,
+                                    expr: ctx.large.push_expr(result),
+                                };
+                                Value::Hardware(HardwareValueWithImplications::simple(result))
                             }
                             _ => {
                                 let err = err_expected_array(
@@ -348,7 +365,7 @@ impl AssignmentSteps<AssignmentStep> {
                             }
                         }
                     }
-                    AssignmentStepCompile::ArraySlice {
+                    TargetStepCompile::ArraySlice {
                         start: slice_start,
                         length: slice_length,
                     } => {
@@ -375,7 +392,7 @@ impl AssignmentSteps<AssignmentStep> {
                                 Value::Simple(SimpleCompileValue::Array(Arc::new(result)))
                             }
                             Value::Hardware(ref curr_value)
-                                if let HardwareType::Array(array_inner, array_len) = &curr_value.ty =>
+                                if let HardwareType::Array(array_inner, array_len) = &curr_value.value.ty =>
                             {
                                 let slice_len = check_range_slice_known(
                                     diags,
@@ -384,16 +401,17 @@ impl AssignmentSteps<AssignmentStep> {
                                     Spanned::new(curr_span, array_len),
                                 )?;
 
-                                let expr = IrExpressionLarge::ArraySlice {
-                                    base: curr_value.expr.clone(),
+                                let result = IrExpressionLarge::ArraySlice {
+                                    base: curr_value.value.expr.clone(),
                                     start: IrExpression::Int(slice_start.into()),
                                     len: slice_len.clone(),
                                 };
-                                Value::Hardware(HardwareValue {
+                                let result = HardwareValue {
                                     ty: HardwareType::Array(Arc::clone(array_inner), slice_len),
-                                    domain: curr_value.domain,
-                                    expr: large.push_expr(expr),
-                                })
+                                    domain: curr_value.value.domain,
+                                    expr: ctx.large.push_expr(result),
+                                };
+                                Value::Hardware(HardwareValueWithImplications::simple(result))
                             }
                             _ => {
                                 let curr_ty = curr_value.as_ref().map_inner(Value::ty);
@@ -401,7 +419,7 @@ impl AssignmentSteps<AssignmentStep> {
                             }
                         }
                     }
-                    AssignmentStepCompile::TupleIndex(index) => match curr_value.inner {
+                    TargetStepCompile::DotIndexInt(index) => match curr_value.inner {
                         Value::Simple(SimpleCompileValue::Type(Type::Tuple(fields))) => {
                             let fields = fields.ok_or_else(|| {
                                 DiagnosticError::new(
@@ -425,67 +443,42 @@ impl AssignmentSteps<AssignmentStep> {
                         }
                         Value::Compound(MixedCompoundValue::Tuple(fields)) => {
                             let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
-                            fields.get_owned(index)
+                            ValueWithImplications::simple(fields.get_owned(index))
                         }
-                        Value::Hardware(ref curr_value) if let HardwareType::Tuple(fields) = &curr_value.ty => {
+                        Value::Hardware(ref curr_value) if let HardwareType::Tuple(fields) = &curr_value.value.ty => {
                             let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
 
-                            let expr = IrExpressionLarge::TupleIndex {
-                                base: curr_value.expr.clone(),
+                            let result = IrExpressionLarge::TupleIndex {
+                                base: curr_value.value.expr.clone(),
                                 index,
                             };
-                            Value::Hardware(HardwareValue {
+                            let result = HardwareValue {
                                 ty: fields[index].clone(),
-                                domain: curr_value.domain,
-                                expr: large.push_expr(expr),
-                            })
+                                domain: curr_value.value.domain,
+                                expr: ctx.large.push_expr(result),
+                            };
+                            Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
                         _ => {
                             let curr_ty = curr_value.as_ref().map_inner(Value::ty);
                             return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                         }
                     },
-                    AssignmentStepCompile::StructField(field_str) => {
+                    TargetStepCompile::DotIndexId(field_str) => {
+                        // TODO expected type?
+                        let expr_span = curr_span.join(step_span);
                         let field_str = Spanned::new(step_span, field_str.as_str());
-
-                        match curr_value.inner {
-                            Value::Compound(MixedCompoundValue::Struct(curr_value)) => {
-                                let ty_info = elab.struct_info(curr_value.ty);
-                                let field_index = ty_info.field_index(diags, curr_span, field_str)?;
-
-                                curr_value.fields.get_owned(field_index)
-                            }
-                            Value::Hardware(ref curr_value) if let HardwareType::Struct(curr_ty) = &curr_value.ty => {
-                                let ty_info = elab.struct_info(curr_ty.inner());
-                                let field_index = ty_info.field_index(diags, curr_span, field_str)?;
-
-                                let field_type = ty_info.hw.as_ref().unwrap().fields[field_index].clone();
-
-                                let expr = IrExpressionLarge::StructField {
-                                    base: curr_value.expr.clone(),
-                                    field: field_index,
-                                };
-                                Value::Hardware(HardwareValue {
-                                    ty: field_type,
-                                    domain: curr_value.domain,
-                                    expr: large.push_expr(expr),
-                                })
-                            }
-                            _ => {
-                                let curr_ty = curr_value.as_ref().map_inner(Value::ty);
-                                return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span));
-                            }
-                        }
+                        eval_dot_index_id(ctx, &Type::Any, expr_span, curr_value, field_str)?
                     }
                 },
-                AssignmentStep::Hardware(step) => {
+                TargetStep::Hardware(step) => {
                     // check type
                     let curr_ty = curr_value.inner.ty();
                     let step_is_slice = match step {
-                        AssignmentStepHardware::ArrayIndex(_) => false,
-                        AssignmentStepHardware::ArraySlice { .. } => true,
+                        TargetStepHardware::ArrayIndex(_) => false,
+                        TargetStepHardware::ArraySlice { .. } => true,
                     };
-                    check_type_is_array(refs, Spanned::new(curr_value.span, &curr_ty), step_span, step_is_slice)?;
+                    check_type_is_array(refs, Spanned::new(curr_span, &curr_ty), step_span, step_is_slice)?;
 
                     // convert value to hardware
                     let curr_ty = curr_ty.as_hardware_type(elab).map_err(|_| {
@@ -501,10 +494,12 @@ impl AssignmentSteps<AssignmentStep> {
                         .report(diags)
                     })?;
 
-                    let curr_value =
-                        curr_value
-                            .inner
-                            .as_hardware_value_unchecked(refs, large, curr_value.span, curr_ty.clone())?;
+                    let curr_value = curr_value.inner.as_hardware_value_unchecked(
+                        refs,
+                        &mut ctx.large,
+                        curr_span,
+                        curr_ty.clone(),
+                    )?;
                     let (array_inner, array_len) = match curr_value.ty {
                         HardwareType::Array(array_inner, array_len) => (array_inner, array_len),
                         _ => {
@@ -516,20 +511,21 @@ impl AssignmentSteps<AssignmentStep> {
 
                     // apply step
                     match step {
-                        AssignmentStepHardware::ArrayIndex(index) => {
+                        TargetStepHardware::ArrayIndex(index) => {
                             check_range_index(diags, Spanned::new(step_span, &index.ty), array_len.map_inner(Some))?;
 
-                            let expr = IrExpressionLarge::ArrayIndex {
+                            let result = IrExpressionLarge::ArrayIndex {
                                 base: curr_value.expr,
                                 index: index.expr.clone(),
                             };
-                            Value::Hardware(HardwareValue {
+                            let result = HardwareValue {
                                 ty: Arc::unwrap_or_clone(array_inner),
                                 domain: curr_value.domain.join(index.domain),
-                                expr: large.push_expr(expr),
-                            })
+                                expr: ctx.large.push_expr(result),
+                            };
+                            Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
-                        AssignmentStepHardware::ArraySlice {
+                        TargetStepHardware::ArraySlice {
                             start: slice_start,
                             length: slice_length,
                         } => {
@@ -540,29 +536,30 @@ impl AssignmentSteps<AssignmentStep> {
                                 array_len.map_inner(Some),
                             )?;
 
-                            let expr = IrExpressionLarge::ArraySlice {
+                            let result = IrExpressionLarge::ArraySlice {
                                 base: curr_value.expr,
                                 start: slice_start.expr.clone(),
                                 len: slice_length.clone(),
                             };
-                            Value::Hardware(HardwareValue {
+                            let result = HardwareValue {
                                 ty: HardwareType::Array(array_inner, slice_length.clone()),
                                 domain: curr_value.domain.join(slice_start.domain),
-                                expr: large.push_expr(expr),
-                            })
+                                expr: ctx.large.push_expr(result),
+                            };
+                            Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
                     }
                 }
             };
 
-            curr_value = Spanned::new(curr_value.span.join(step_span), next);
+            curr_value = Spanned::new(curr_span.join(step_span), next_value);
         }
 
         Ok(curr_value.inner)
     }
 }
 
-impl AssignmentSteps<&AssignmentStepCompile> {
+impl TargetSteps<&TargetStepCompile> {
     /// Evaluate the operation `target[steps] = value`, where all operands are compile-time constants.
     pub fn set_compile_value(
         &self,
@@ -577,30 +574,293 @@ impl AssignmentSteps<&AssignmentStepCompile> {
     }
 
     /// Evaluate the expression `value[steps]`
-    pub fn get_compile_value(
+    pub fn apply_to_compile_value(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
-        value: Spanned<CompileValue>,
+        ctx: &mut CompileItemContext,
+        base: Spanned<CompileValue>,
     ) -> DiagResult<CompileValue> {
+        let refs = ctx.refs;
         let diags = refs.diags;
 
         // TODO avoid clones
-        let self_mapped = AssignmentSteps {
+        let self_mapped = TargetSteps {
             steps: self
                 .steps
                 .iter()
-                .map(|s| s.map_inner(|s| AssignmentStep::Compile(s.clone())))
+                .map(|s| s.map_inner(|s| TargetStep::Compile(s.clone())))
                 .collect_vec(),
         };
-        let value_span = value.span;
 
-        let result = self_mapped.apply_to_value(refs, large, value.map_inner(Value::from))?;
+        let base_span = base.span;
+        let result = self_mapped.apply_to_value(ctx, base.map_inner(Value::from))?;
 
         CompileValue::try_from(&result).map_err(|_: NotCompile| {
-            diags.report_error_internal(value_span, "applying compile-time steps to compile-time value should result in compile-time value again, got hardware")
+            let msg = "applying compile-time steps to compile-time value should result in compile-time value again, got hardware";
+            diags.report_error_internal(base_span, msg)
         })
     }
+}
+
+pub const POSSIBLE_BUILTIN_TYPE_MEMBERS: &[&str] = &["size_bits", "to_bits", "from_bits", "from_bits_unsafe", "new"];
+
+fn eval_dot_index_id(
+    ctx: &mut CompileItemContext,
+    expected_ty: &Type,
+    expr_span: Span,
+    base: Spanned<ValueWithImplications>,
+    index: Spanned<&str>,
+) -> DiagResult<ValueWithImplications> {
+    // TODO add array.len, type.int_start, type.int_end, type.int_ranges, type.tuple_items, type.struct_fields?
+    let refs = ctx.refs;
+    let diags = refs.diags;
+    let elab = &refs.shared.elaboration_arenas;
+
+    // interface views
+    if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base.inner {
+        let info = ctx.refs.shared.elaboration_arenas.interface_info(base_interface);
+        let (view_index, _) = info.get_view(diags, index)?;
+
+        let interface_view = ElaboratedInterfaceView {
+            interface: base_interface,
+            view_index,
+        };
+        return Ok(Value::Simple(SimpleCompileValue::InterfaceView(interface_view)));
+    }
+
+    // common type attributes
+    if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
+        match index.inner {
+            "size_bits" => {
+                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let width = ty_hw.size_bits(refs);
+                return Ok(Value::new_int(width.into()));
+            }
+            "to_bits" => {
+                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let func = FunctionBits {
+                    ty_hw,
+                    kind: FunctionBitsKind::ToBits,
+                };
+                return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
+            }
+            "from_bits" => {
+                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+
+                if !ty_hw.every_bit_pattern_is_valid(refs) {
+                    let diag = DiagnosticError::new(
+                        "from_bits is only allowed for types where every bit pattern is valid",
+                        base.span,
+                        format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
+                    )
+                    .add_footer_hint("consider using a target type where every bit pattern is valid")
+                    .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe` instead")
+                    .report(diags);
+                    return Err(diag);
+                }
+
+                let func = FunctionBits {
+                    ty_hw,
+                    kind: FunctionBitsKind::FromBits { is_unsafe: false },
+                };
+                return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
+            }
+            "from_bits_unsafe" => {
+                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let func = FunctionBits {
+                    ty_hw,
+                    kind: FunctionBitsKind::FromBits { is_unsafe: true },
+                };
+                return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
+            }
+            _ => {}
+        }
+
+        // array type attributes
+        if let Type::Array(ty_inner, ty_len) = ty {
+            match index.inner {
+                "inner" => {
+                    return Ok(Value::new_ty((**ty_inner).clone()));
+                }
+                "len" => {
+                    return if let Some(ty_len) = ty_len {
+                        Ok(Value::new_int(BigInt::from(ty_len)))
+                    } else {
+                        let diag = DiagnosticError::new(
+                            "cannot get length of array type with unknown length",
+                            index.span,
+                            "trying to get length here",
+                        )
+                        .add_info(base.span, format!("array type is `{}`", ty.value_string(elab)))
+                        .report(diags);
+                        Err(diag)
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // struct new, struct static members
+    if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
+        if index.inner == "new" {
+            let func = FunctionValue::StructNew(elab);
+            return Ok(Value::Simple(SimpleCompileValue::Function(func)));
+        }
+
+        let info = refs.shared.elaboration_arenas.struct_info(elab);
+        if let Some(value) = info.members_static.get(index.inner) {
+            return Ok(Value::from(value.as_ref_ok()?.clone()));
+        }
+    }
+
+    // struct new for not yet inferred struct types
+    let base_item_function = match &base.inner {
+        Value::Simple(SimpleCompileValue::Function(FunctionValue::User(func))) => match &func.body.inner {
+            FunctionBody::ItemBody(body) => Some(body),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
+        && index.inner == "new"
+    {
+        let func = FunctionValue::StructNewInfer(unique);
+        return Ok(Value::Simple(SimpleCompileValue::Function(func)));
+    }
+
+    // enum variants
+    let eval_enum = |elab| {
+        let info = refs.shared.elaboration_arenas.enum_info(elab);
+        let variant_index = info.variant_index(diags, index)?;
+        let variant_info = &info.variants[variant_index];
+
+        let result = match &variant_info.payload_ty {
+            None => Value::Compound(MixedCompoundValue::Enum(EnumValue {
+                ty: elab,
+                variant: variant_index,
+                payload: None,
+            })),
+            Some(_) => Value::Simple(SimpleCompileValue::Function(FunctionValue::EnumNew(
+                elab,
+                variant_index,
+            ))),
+        };
+        Ok(result)
+    };
+
+    if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
+        // enum members
+        let info = refs.shared.elaboration_arenas.enum_info(elab);
+        if let Some(value) = info.members_static.get(index.inner) {
+            return Ok(Value::from(value.as_ref_ok()?.clone()));
+        }
+
+        // enum variants
+        return eval_enum(elab);
+    }
+    if let Some(&FunctionItemBody::Enum(unique, ref generic_info)) = base_item_function {
+        return if let &Type::Enum(expected) = expected_ty {
+            let expected_info = refs.shared.elaboration_arenas.enum_info(expected);
+            if expected_info.unique == unique {
+                eval_enum(expected)
+            } else {
+                Err(
+                    error_unique_mismatch("enum", base.span, expected_info.unique.id().span(), unique.id().span())
+                        .report(diags),
+                )
+            }
+        } else {
+            let generic_variant = generic_info.find_variant(diags, index)?;
+            if generic_variant.has_payload {
+                // delay type inference until payload construction/call time
+                let func = FunctionValue::EnumNewInfer(unique, Arc::new(index.inner.to_owned()));
+                Ok(Value::Simple(SimpleCompileValue::Function(func)))
+            } else {
+                // non-payload variant, we need to know the type now
+                let err = error_cannot_infer_generic_params("enum", base.span, expr_span, unique.id().span());
+                return Err(err.report(diags));
+            }
+        };
+    }
+
+    // struct fields and methods
+    let base_ty = base.inner.ty();
+    if let Type::Struct(base_ty_struct) = base_ty {
+        let info = refs.shared.elaboration_arenas.struct_info(base_ty_struct);
+
+        // try method
+        if let Some(method) = info.methods_self.get(index.inner) {
+            let bound = BoundMethod {
+                self_type: base_ty,
+                self_value: Box::new(base.inner.into_value()),
+                method: Arc::clone(method),
+            };
+            return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
+        }
+
+        // try field
+        let field_index = info.field_index(diags, base.span, index)?;
+        let result = match base.inner {
+            ValueWithImplications::Compound(MixedCompoundValue::Struct(base_inner)) => {
+                base_inner.fields.get_owned(field_index)
+            }
+            ValueWithImplications::Hardware(base_inner) => {
+                let info_hw = info.hw.as_ref_ok().map_err(|_| {
+                    diags.report_error_internal(expr_span, "hardware value with non-hardware struct type")
+                })?;
+
+                let result = IrExpressionLarge::StructField {
+                    base: base_inner.value.expr,
+                    field: field_index,
+                };
+                let result = HardwareValue {
+                    ty: info_hw.fields[field_index].clone(),
+                    domain: base_inner.value.domain,
+                    expr: ctx.large.push_expr(result),
+                };
+
+                Value::Hardware(result)
+            }
+            _ => return Err(diags.report_error_internal(expr_span, "struct type but not a struct value")),
+        };
+        return Ok(ValueWithImplications::simple(result));
+    }
+
+    // enum methods
+    if let Type::Enum(base_ty_enum) = base_ty {
+        let info = refs.shared.elaboration_arenas.enum_info(base_ty_enum);
+
+        // try method
+        if let Some(method) = info.methods_self.get(index.inner) {
+            let bound = BoundMethod {
+                self_type: base_ty,
+                self_value: Box::new(base.inner.into_value()),
+                method: Arc::clone(method),
+            };
+            return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
+        }
+    }
+
+    // array length
+    if let Type::Array(_, value_len) = &base_ty
+        && index.inner == "len"
+    {
+        return if let Some(value_len) = value_len {
+            Ok(Value::new_int(BigInt::from(value_len)))
+        } else {
+            Err(diags.report_error_internal(expr_span, "value has type with unknown array length"))
+        };
+    }
+
+    // fallthrough into error
+    let diag = DiagnosticError::new(
+        "invalid dot index expression",
+        index.span,
+        format!("no attribute found with name `{}`", index.inner),
+    )
+    .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
+    .report(diags);
+    Err(diag)
 }
 
 enum SetCompileTarget<'a> {
@@ -623,7 +883,7 @@ impl SetCompileTarget<'_> {
 fn set_compile_value_impl(
     refs: CompileRefs,
     target: Spanned<SetCompileTarget<'_>>,
-    steps: &[Spanned<&AssignmentStepCompile>],
+    steps: &[Spanned<&TargetStepCompile>],
     assign_op_span: Span,
     source: Spanned<CompileValue>,
 ) -> DiagResult {
@@ -690,7 +950,7 @@ fn set_compile_value_impl(
 
     let target_span = target.span;
     let new_target = match &step.inner {
-        AssignmentStepCompile::ArrayIndex(index) => {
+        TargetStepCompile::ArrayIndex(index) => {
             let target_inner = check_target_is_array(refs, target, step.span, false)?;
 
             let index = check_range_index_compile(
@@ -701,7 +961,7 @@ fn set_compile_value_impl(
 
             SetCompileTarget::Scalar(&mut target_inner[index])
         }
-        AssignmentStepCompile::ArraySlice {
+        TargetStepCompile::ArraySlice {
             start: slice_start,
             length: slice_len,
         } => {
@@ -719,7 +979,7 @@ fn set_compile_value_impl(
 
             SetCompileTarget::Slice(&mut target_inner[slice_start..][..slice_len])
         }
-        AssignmentStepCompile::TupleIndex(index) => {
+        TargetStepCompile::DotIndexInt(index) => {
             // check target is tuple
             let target_inner = match target.inner {
                 SetCompileTarget::Scalar(target_inner) => match target_inner {
@@ -742,7 +1002,7 @@ fn set_compile_value_impl(
             // build new target
             SetCompileTarget::Scalar(&mut target_inner[index])
         }
-        AssignmentStepCompile::StructField(field) => {
+        TargetStepCompile::DotIndexId(field) => {
             // check target is struct
             let target_inner = match target.inner {
                 SetCompileTarget::Scalar(target_inner) => match target_inner {
