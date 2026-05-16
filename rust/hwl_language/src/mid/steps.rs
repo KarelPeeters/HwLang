@@ -4,6 +4,7 @@ use crate::mid::ir::{
 };
 use crate::util::big_int::BigUint;
 use crate::util::data::{IndexMapExt, VecExt};
+use derive_more::From;
 
 #[derive(Debug, Clone)]
 pub struct IrTargetSteps {
@@ -11,7 +12,7 @@ pub struct IrTargetSteps {
     pub step_slice: Option<IrTargetStepSlice>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, From)]
 pub enum IrTargetStep {
     Scalar(IrTargetStepScalar),
     Slice(IrTargetStepSlice),
@@ -44,12 +45,12 @@ impl IrTargetSteps {
         }
     }
 
-    pub fn single(step: IrTargetStep) -> Self {
+    pub fn single(step: impl Into<IrTargetStep>) -> Self {
         let mut result = IrTargetSteps {
             steps_scalar: vec![],
             step_slice: None,
         };
-        match step {
+        match step.into() {
             IrTargetStep::Scalar(step) => {
                 result.steps_scalar.push(step);
             }

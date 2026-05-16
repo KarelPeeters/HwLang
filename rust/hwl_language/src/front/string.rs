@@ -12,7 +12,7 @@ use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
     IrLargeArena, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariable, IrVariableInfo,
 };
-use crate::mid::steps::{IrTargetStep, IrTargetStepScalar, IrTargetSteps};
+use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::parse_token_string_middle;
@@ -313,7 +313,7 @@ fn print_hardware_sub(
                 let step = IrTargetStepScalar::ArrayIndex(index);
                 let element_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                    steps: IrTargetSteps::single(step),
                 });
                 HardwareValue {
                     ty: ty_inner.as_ref().clone(),
@@ -386,7 +386,7 @@ fn print_hardware_sub(
                 let step = IrTargetStepScalar::TupleIndex(index);
                 let element_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                    steps: IrTargetSteps::single(step),
                 });
                 let element_value = HardwareValue {
                     ty: ty.clone(),
@@ -413,7 +413,7 @@ fn print_hardware_sub(
                 let step = IrTargetStepScalar::StructField(field_index);
                 let field_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                    steps: IrTargetSteps::single(step),
                 });
                 let field_value = HardwareValue {
                     ty: field_ty.clone(),

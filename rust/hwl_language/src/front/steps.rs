@@ -381,7 +381,7 @@ impl TargetSteps<TargetStep> {
                                 let step = IrTargetStepScalar::ArrayIndex(IrExpression::Int(index.into()));
                                 let result = IrExpressionLarge::Steps {
                                     base: curr_value.value.expr.clone(),
-                                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                                    steps: IrTargetSteps::single(step),
                                 };
                                 let result = HardwareValue {
                                     ty: (**curr_inner).clone(),
@@ -443,7 +443,7 @@ impl TargetSteps<TargetStep> {
                                 };
                                 let result = IrExpressionLarge::Steps {
                                     base: curr_value.value.expr.clone(),
-                                    steps: IrTargetSteps::single(IrTargetStep::Slice(step)),
+                                    steps: IrTargetSteps::single(step),
                                 };
 
                                 let result = HardwareValue {
@@ -491,7 +491,7 @@ impl TargetSteps<TargetStep> {
                             let step = IrTargetStepScalar::TupleIndex(index);
                             let result = IrExpressionLarge::Steps {
                                 base: curr_value.value.expr.clone(),
-                                steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                                steps: IrTargetSteps::single(step),
                             };
                             let result = HardwareValue {
                                 ty: fields[index].clone(),
@@ -557,7 +557,7 @@ impl TargetSteps<TargetStep> {
                             let step = IrTargetStepScalar::ArrayIndex(index.expr.clone());
                             let result = IrExpressionLarge::Steps {
                                 base: curr_value.expr,
-                                steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                                steps: IrTargetSteps::single(step),
                             };
                             let result = HardwareValue {
                                 ty: Arc::unwrap_or_clone(array_inner),
@@ -583,7 +583,7 @@ impl TargetSteps<TargetStep> {
                             };
                             let result = IrExpressionLarge::Steps {
                                 base: curr_value.expr,
-                                steps: IrTargetSteps::single(IrTargetStep::Slice(step)),
+                                steps: IrTargetSteps::single(step),
                             };
                             let result = HardwareValue {
                                 ty: HardwareType::Array(array_inner, slice_length.clone()),
@@ -858,7 +858,7 @@ fn eval_dot_index_id(
                 let step = IrTargetStepScalar::StructField(field_index);
                 let result = IrExpressionLarge::Steps {
                     base: base_inner.value.expr,
-                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                    steps: IrTargetSteps::single(step),
                 };
                 let result = HardwareValue {
                     ty: info_hw.fields[field_index].clone(),

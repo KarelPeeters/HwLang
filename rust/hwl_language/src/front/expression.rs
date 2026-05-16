@@ -36,7 +36,7 @@ use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
-use crate::mid::steps::{IrTargetStep, IrTargetStepScalar, IrTargetSteps};
+use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::token::{
     parse_token_int_literal_binary, parse_token_int_literal_decimal, parse_token_int_literal_hexadecimal,
 };
@@ -1746,7 +1746,7 @@ impl Iterator for ForIterator {
                     let step = IrTargetStepScalar::ArrayIndex(index_expr);
                     let element_expr = IrExpressionLarge::Steps {
                         base: base_expr.clone(),
-                        steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
+                        steps: IrTargetSteps::single(step),
                     };
                     Some(Value::Hardware(HardwareValue {
                         ty: (*ty_inner).clone(),
