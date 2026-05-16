@@ -961,13 +961,13 @@ impl IrMask<bool> {
         all
     }
 
-    fn for_each_possible_leaf_after_steps_mut(
-        &mut self,
+    fn for_each_possible_leaf_after_steps_mut<'a>(
+        &'a mut self,
         module: &IrModuleInfo,
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&mut IrMask<bool>),
+        f: &mut impl FnMut(&'a mut IrMask<bool>),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
