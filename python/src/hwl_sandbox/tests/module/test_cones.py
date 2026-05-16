@@ -76,6 +76,43 @@ def test_comb_dyn_index_partial():
         top(c=False)
 
 
+def test_comb_dyn_index_tuple_field_after_field_default():
+    src = """
+    module top ports(i: in async int(0..4)) {
+        wire w: async [4]Tuple(bool, bool);
+        comb {
+            for (j in 0..4) {
+                w[j].0 = false;
+            }
+            w[i].0 = true;
+            for (j in 0..4) {
+                w[j].1 = false;
+            }
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_dyn_index_tuple_field_before_field_default():
+    src = """
+    module top ports(i: in async int(0..4)) {
+        wire w: async [4]Tuple(bool, bool);
+        comb {
+            for (j in 0..4) {
+                w[j].1 = false;
+            }
+            w[i].0 = true;
+            for (j in 0..4) {
+                w[j].0 = false;
+            }
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
+        compile_custom(src).resolve_module("top.top")
+
+
 def test_comb_dyn_slice():
     src = """
     module top(c: bool) ports(i: in async int(0..3)) {
@@ -93,6 +130,32 @@ def test_comb_dyn_slice():
     top(c=True)
     with pytest.raises(hwl.DiagnosticException, match="dynamic array slice assignment to not yet driven signal"):
         top(c=False)
+
+
+def test_comb_dyn_empty_slice_before_default():
+    src = """
+    module top ports(i: in async int(0..5)) {
+        wire w: async [4]bool;
+        comb {
+            w[i+..0] = [];
+            w = [false] * 4;
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_dyn_empty_slice_does_not_drive():
+    src = """
+    module top ports(i: in async int(0..5)) {
+        wire w: async [4]bool;
+        comb {
+            w[i+..0] = [];
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has no driver"):
+        compile_custom(src).resolve_module("top.top")
 
 
 def test_comb_write_after_read():
@@ -125,6 +188,38 @@ def test_comb_write_after_read_non_overlapping():
     compile_custom(src).resolve_module("top.top")
 
 
+def test_comb_multi_process_partial_drivers_non_overlapping():
+    src = """
+    module top ports(x: in async bool) {
+        wire w: async [2]bool;
+        comb {
+            w[0] = x;
+        }
+        comb {
+            w[1] = x;
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_multi_process_partial_drivers_overlapping():
+    src = """
+    module top ports(x: in async bool) {
+        wire w: async [2]bool;
+        comb {
+            w[0] = x;
+        }
+        comb {
+            w[0] = x;
+            w[1] = x;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+        compile_custom(src).resolve_module("top.top")
+
+
 def test_comb_read_after_write():
     src = """
     module top ports(x: in async bool, y: out async bool) {
@@ -136,6 +231,76 @@ def test_comb_read_after_write():
     }
     """
     compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_dynamic_read_after_all_possible_writes():
+    src = """
+    module top ports(x: in async bool, y: out async bool, i: in async int(0..2)) {
+        wire w: async [2]bool;
+        comb {
+            w[0] = x;
+            w[1] = x;
+            y = w[i];
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_dynamic_read_before_some_possible_write():
+    src = """
+    module top ports(x: in async bool, y: out async bool, i: in async int(0..2)) {
+        wire w: async [2]bool;
+        comb {
+            w[0] = x;
+            y = w[i];
+            w[1] = x;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+        compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_slice_then_index_read_after_write():
+    src = """
+    module top ports(i: in async int(0..3), y: out async bool) {
+        wire w: async [4]bool;
+        comb {
+            w = [false] * 4;
+            y = (w[i+..2])[0];
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_slice_then_index_read_before_write():
+    src = """
+    module top ports(i: in async int(0..3), y: out async bool) {
+        wire w: async [4]bool;
+        comb {
+            y = (w[i+..2])[0];
+            w = [false] * 4;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+        compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_read_slice_then_index():
+    src = """
+    module top ports(i: in async int(0..3), y: out async bool) {
+        wire w: async [4]bool;
+        comb {
+            y = w[i+..2][0];
+            w = [false] * 4;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+        compile_custom(src).resolve_module("top.top")
 
 
 def test_comb_multi_step_cone():

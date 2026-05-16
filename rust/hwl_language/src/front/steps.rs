@@ -13,8 +13,8 @@ use crate::front::value::{
     BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareUInt, HardwareValue, MaybeCompile,
     MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
-use crate::mid::builder::{IrTargetStepBuild, IrTargetStepBuildSlice, IrTargetStepsBuilder};
-use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrTargetSteps};
+use crate::mid::ir::{IrExpression, IrExpressionLarge, IrLargeArena, IrSignals, IrVariables};
+use crate::mid::steps::{InvalidScalarAfterSlice, IrTargetStep, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
@@ -71,6 +71,33 @@ struct EncounteredAny;
 #[derive(Debug, Copy, Clone)]
 struct EncounteredUnknown;
 
+trait IrStepsBuilder {
+    fn push(&mut self, step: IrTargetStep) -> Result<(), InvalidScalarAfterSlice>;
+}
+
+struct IrTargetStepsBuilder<'a> {
+    large: &'a mut IrLargeArena,
+    signals: &'a IrSignals,
+    variables: &'a IrVariables,
+
+    steps: IrTargetSteps,
+}
+
+impl IrStepsBuilder for IrTargetStepsBuilder<'_> {
+    fn push(&mut self, step: IrTargetStep) -> Result<(), InvalidScalarAfterSlice> {
+        self.steps.push(self.large, self.signals, self.variables, step)
+    }
+}
+
+struct IgnoreBuilder;
+
+impl IrStepsBuilder for IgnoreBuilder {
+    fn push(&mut self, step: IrTargetStep) -> Result<(), InvalidScalarAfterSlice> {
+        let _ = step;
+        Ok(())
+    }
+}
+
 impl TargetSteps<TargetStep> {
     pub fn try_as_compile(&self) -> Result<TargetSteps<&TargetStepCompile>, NotCompile> {
         let steps = self
@@ -85,9 +112,7 @@ impl TargetSteps<TargetStep> {
     }
 
     pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
-        // we don't care about the resulting steps, so we don't need a real arena
-        let mut dummy_large = IrLargeArena::new();
-        let (ty, _) = self.apply_to_type_impl(refs, &mut dummy_large, ty)?;
+        let (ty, _) = self.apply_to_type_impl(refs, ty, IgnoreBuilder)?;
         Ok(ty)
     }
 
@@ -95,23 +120,35 @@ impl TargetSteps<TargetStep> {
         &self,
         refs: CompileRefs,
         large: &mut IrLargeArena,
+        signals: &IrSignals,
+        variables: &IrVariables,
         ty: Spanned<&HardwareType>,
     ) -> DiagResult<(HardwareType, IrTargetSteps)> {
         let diags = refs.diags;
         let elab = &refs.shared.elaboration_arenas;
 
-        let (result_ty, steps) = self.apply_to_type_impl(refs, large, ty.map_inner(HardwareType::as_type))?;
+        // call common utility
+        let builder = IrTargetStepsBuilder {
+            large,
+            signals,
+            variables,
+            steps: IrTargetSteps::new(),
+        };
+        let (result_ty, builder) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type), builder)?;
 
-        let steps = steps.map_err(|e: Either<EncounteredAny, EncounteredUnknown>| {
-            diags.report_error_internal(ty.span, format!("applying steps to hardware type failed: {e:?}"))
-        })?;
-
+        // map type back
         let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
             diags.report_error_internal(
                 ty.span,
                 "applying access steps to hardware type should result in hardware type again",
             )
         })?;
+
+        // extract steps
+        let builder = builder.map_err(|e: Either<EncounteredAny, EncounteredUnknown>| {
+            diags.report_error_internal(ty.span, format!("applying steps to hardware type failed: {e:?}"))
+        })?;
+        let steps = builder.steps;
 
         Ok((result_ty_hw, steps))
     }
@@ -137,16 +174,16 @@ impl TargetSteps<TargetStep> {
     ///
     /// Applying any step to [Type::Any] will return [Type::Any] and [EncounteredAny]. This is
     /// useful to get the inferred type for assignments, once we encounter Any the result type is also Any.
-    fn apply_to_type_impl(
+    fn apply_to_type_impl<B: IrStepsBuilder>(
         &self,
         refs: CompileRefs,
-        large: &mut IrLargeArena,
         ty: Spanned<Type>,
-    ) -> DiagResult<(Type, Result<IrTargetSteps, Either<EncounteredAny, EncounteredUnknown>>)> {
+        builder: B,
+    ) -> DiagResult<(Type, Result<B, Either<EncounteredAny, EncounteredUnknown>>)> {
         let diags = refs.diags;
         let TargetSteps { steps } = self;
 
-        let mut steps_builder = Ok(IrTargetStepsBuilder::new());
+        let mut steps_builder = Ok(builder);
         let mut curr_ty = ty;
 
         for step in steps {
@@ -175,9 +212,8 @@ impl TargetSteps<TargetStep> {
 
                         let step_ir = array_len
                             .inner
-                            .map(|_| IrTargetStepBuild::ArrayIndex {
-                                index: IrExpression::Int(index.into()),
-                                index_range: ClosedNonEmptyRange::single(index.clone()),
+                            .map(|_| {
+                                IrTargetStep::Scalar(IrTargetStepScalar::ArrayIndex(IrExpression::Int(index.into())))
                             })
                             .ok_or(EncounteredUnknown);
 
@@ -201,9 +237,8 @@ impl TargetSteps<TargetStep> {
                         match slice_len {
                             None => (Err(EncounteredUnknown), Type::Array(Arc::clone(array_inner), None)),
                             Some(slice_len) => {
-                                let step_ir = IrTargetStepBuild::ArraySlice(IrTargetStepBuildSlice {
+                                let step_ir = IrTargetStep::Slice(IrTargetStepSlice {
                                     start: IrExpression::Int(slice_start.into()),
-                                    start_range: ClosedNonEmptyRange::single(slice_start.clone()),
                                     len: slice_len.clone(),
                                 });
                                 let next_ty = Type::Array(Arc::clone(array_inner), Some(slice_len));
@@ -221,7 +256,8 @@ impl TargetSteps<TargetStep> {
                             None => (Err(EncounteredUnknown), Type::Any),
                             Some(fields) => {
                                 let index = check_tuple_index(diags, fields.len(), index, curr_ty.span, step_span)?;
-                                (Ok(IrTargetStepBuild::TupleIndex(index)), fields[index].clone())
+                                let step_ir = IrTargetStep::Scalar(IrTargetStepScalar::TupleIndex(index));
+                                (Ok(step_ir), fields[index].clone())
                             }
                         }
                     }
@@ -235,7 +271,7 @@ impl TargetSteps<TargetStep> {
                         let field_str = Spanned::new(step_span, field.as_str());
                         let field_index = ty_info.field_index(diags, curr_ty.span, field_str)?;
 
-                        let step_ir = IrTargetStepBuild::StructField(field_index);
+                        let step_ir = IrTargetStep::Scalar(IrTargetStepScalar::StructField(field_index));
                         let field_ty = ty_info.fields[field_index].1.inner.clone();
                         (Ok(step_ir), field_ty)
                     }
@@ -247,10 +283,7 @@ impl TargetSteps<TargetStep> {
 
                         let step_ir = array_len
                             .inner
-                            .map(|_| IrTargetStepBuild::ArrayIndex {
-                                index: index.expr.clone(),
-                                index_range: index.ty.enclosing_range().cloned(),
-                            })
+                            .map(|_| IrTargetStep::Scalar(IrTargetStepScalar::ArrayIndex(index.expr.clone())))
                             .ok_or(EncounteredUnknown);
 
                         (step_ir, array_inner.as_ref().clone())
@@ -267,12 +300,10 @@ impl TargetSteps<TargetStep> {
                             array_len,
                         )?;
 
-                        let step_ir = IrTargetStepBuildSlice {
+                        let step_ir = IrTargetStep::Slice(IrTargetStepSlice {
                             start: slice_start.expr.clone(),
-                            start_range: slice_start.ty.enclosing_range().cloned(),
                             len: slice_len.clone(),
-                        };
-                        let step_ir = IrTargetStepBuild::ArraySlice(step_ir);
+                        });
 
                         let next_ty = Type::Array(Arc::clone(array_inner), Some(slice_len.clone()));
 
@@ -286,7 +317,7 @@ impl TargetSteps<TargetStep> {
                 Ok(step_ir) => {
                     if let Ok(steps_builder) = &mut steps_builder {
                         steps_builder
-                            .push(large, step_ir)
+                            .push(step_ir)
                             .map_err(|_| diags.report_error_internal(step_span, "invalid step sequence"))?;
                     }
                 }
@@ -299,7 +330,7 @@ impl TargetSteps<TargetStep> {
             curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
         }
 
-        let steps_ir = steps_builder.map(IrTargetStepsBuilder::finish).map_err(Either::Right);
+        let steps_ir = steps_builder.map_err(Either::Right);
         Ok((curr_ty.inner, steps_ir))
     }
 
@@ -318,6 +349,7 @@ impl TargetSteps<TargetStep> {
         let mut curr_expected_ty = expected_ty;
         let mut curr_value = value;
 
+        // TODO fuse IR steps?
         for step in steps {
             let curr_span = curr_value.span;
             let step_span = step.span;
@@ -346,9 +378,10 @@ impl TargetSteps<TargetStep> {
                             {
                                 check_range_index(diags, index_spanned, Spanned::new(curr_span, Some(curr_len)))?;
 
-                                let result = IrExpressionLarge::ArrayIndex {
+                                let step = IrTargetStepScalar::ArrayIndex(IrExpression::Int(index.into()));
+                                let result = IrExpressionLarge::Steps {
                                     base: curr_value.value.expr.clone(),
-                                    index: IrExpression::Int(index.into()),
+                                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                                 };
                                 let result = HardwareValue {
                                     ty: (**curr_inner).clone(),
@@ -404,11 +437,15 @@ impl TargetSteps<TargetStep> {
                                     Spanned::new(curr_span, array_len),
                                 )?;
 
-                                let result = IrExpressionLarge::ArraySlice {
-                                    base: curr_value.value.expr.clone(),
+                                let step = IrTargetStepSlice {
                                     start: IrExpression::Int(slice_start.into()),
                                     len: slice_len.clone(),
                                 };
+                                let result = IrExpressionLarge::Steps {
+                                    base: curr_value.value.expr.clone(),
+                                    steps: IrTargetSteps::single(IrTargetStep::Slice(step)),
+                                };
+
                                 let result = HardwareValue {
                                     ty: HardwareType::Array(Arc::clone(array_inner), slice_len),
                                     domain: curr_value.value.domain,
@@ -451,9 +488,10 @@ impl TargetSteps<TargetStep> {
                         Value::Hardware(ref curr_value) if let HardwareType::Tuple(fields) = &curr_value.value.ty => {
                             let index = check_tuple_index(diags, fields.len(), index, curr_span, step_span)?;
 
-                            let result = IrExpressionLarge::TupleIndex {
+                            let step = IrTargetStepScalar::TupleIndex(index);
+                            let result = IrExpressionLarge::Steps {
                                 base: curr_value.value.expr.clone(),
-                                index,
+                                steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                             };
                             let result = HardwareValue {
                                 ty: fields[index].clone(),
@@ -516,9 +554,10 @@ impl TargetSteps<TargetStep> {
                         TargetStepHardware::ArrayIndex(index) => {
                             check_range_index(diags, Spanned::new(step_span, &index.ty), array_len.map_inner(Some))?;
 
-                            let result = IrExpressionLarge::ArrayIndex {
+                            let step = IrTargetStepScalar::ArrayIndex(index.expr.clone());
+                            let result = IrExpressionLarge::Steps {
                                 base: curr_value.expr,
-                                index: index.expr.clone(),
+                                steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                             };
                             let result = HardwareValue {
                                 ty: Arc::unwrap_or_clone(array_inner),
@@ -538,10 +577,13 @@ impl TargetSteps<TargetStep> {
                                 array_len.map_inner(Some),
                             )?;
 
-                            let result = IrExpressionLarge::ArraySlice {
-                                base: curr_value.expr,
+                            let step = IrTargetStepSlice {
                                 start: slice_start.expr.clone(),
                                 len: slice_length.clone(),
+                            };
+                            let result = IrExpressionLarge::Steps {
+                                base: curr_value.expr,
+                                steps: IrTargetSteps::single(IrTargetStep::Slice(step)),
                             };
                             let result = HardwareValue {
                                 ty: HardwareType::Array(array_inner, slice_length.clone()),
@@ -813,9 +855,10 @@ fn eval_dot_index_id(
                     diags.report_error_internal(expr_span, "hardware value with non-hardware struct type")
                 })?;
 
-                let result = IrExpressionLarge::StructField {
+                let step = IrTargetStepScalar::StructField(field_index);
+                let result = IrExpressionLarge::Steps {
                     base: base_inner.value.expr,
-                    field: field_index,
+                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                 };
                 let result = HardwareValue {
                     ty: info_hw.fields[field_index].clone(),

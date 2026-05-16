@@ -10,6 +10,7 @@
 use crate::front::item::{ElaboratedEnum, ElaboratedStruct, HardwareChecked};
 use crate::front::signal::Polarized;
 use crate::front::types::HardwareType;
+use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::new_index_type;
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
@@ -111,8 +112,7 @@ new_index_type!(pub IrVariable);
 #[derive(Debug, Clone)]
 pub struct IrModuleInfo {
     /// port names must be unique
-    pub ports: Arena<IrPort, IrPortInfo>,
-    pub wires: Arena<IrWire, IrWireInfo>,
+    pub signals: IrSignals,
     pub large: IrLargeArena,
 
     /// child names are not guaranteed to be unique
@@ -123,7 +123,7 @@ pub struct IrModuleInfo {
     pub debug_info_generic_args: Option<Vec<(String, String)>>,
 }
 
-impl IrModuleInfo {
+impl IrSignals {
     pub fn all_signals(&self) -> impl Iterator<Item = IrSignal> {
         let ports = self.ports.keys().map(IrSignal::Port);
         let wires = self.wires.keys().map(IrSignal::Wire);
@@ -241,6 +241,12 @@ pub type IrWires = Arena<IrWire, IrWireInfo>;
 pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
 
 #[derive(Debug, Clone)]
+pub struct IrSignals {
+    pub ports: IrPorts,
+    pub wires: IrWires,
+}
+
+#[derive(Debug, Clone)]
 pub struct IrBlock {
     pub statements: Vec<Spanned<IrStatement>>,
 }
@@ -294,44 +300,12 @@ pub struct IrAssignmentTarget {
     pub steps: IrTargetSteps,
 }
 
-#[derive(Debug, Clone)]
-pub struct IrTargetSteps {
-    pub steps_scalar: Vec<IrTargetStepScalar>,
-    pub step_slice: Option<IrTargetStepSlice>,
-}
-
-#[derive(Debug, Clone)]
-pub enum IrTargetStepScalar {
-    ArrayIndex(IrExpression),
-    TupleIndex(usize),
-    StructField(usize),
-}
-
-#[derive(Debug, Clone)]
-pub struct IrTargetStepSlice {
-    pub start: IrExpression,
-    pub len: BigUint,
-}
-
 impl IrAssignmentTarget {
     pub fn simple(base: IrSignalOrVariable) -> Self {
         IrAssignmentTarget {
             base,
-            steps: IrTargetSteps::empty(),
+            steps: IrTargetSteps::new(),
         }
-    }
-}
-
-impl IrTargetSteps {
-    pub fn empty() -> Self {
-        IrTargetSteps {
-            steps_scalar: vec![],
-            step_slice: None,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.steps_scalar.is_empty() && self.step_slice.is_none()
     }
 }
 
@@ -376,24 +350,14 @@ pub enum IrExpressionLarge {
     StructLiteral(IrStructType, Vec<IrExpression>),
     EnumLiteral(IrEnumType, usize, Option<IrExpression>),
 
-    // slice
-    ArrayIndex {
+    // steps are combined into a single operation,
+    //   so it's always clear which pieces can actually be accessed by this expression
+    Steps {
         base: IrExpression,
-        index: IrExpression,
+        steps: IrTargetSteps,
     },
-    ArraySlice {
-        base: IrExpression,
-        start: IrExpression,
-        len: BigUint,
-    },
-    TupleIndex {
-        base: IrExpression,
-        index: usize,
-    },
-    StructField {
-        base: IrExpression,
-        field: usize,
-    },
+
+    // enum subsections
     EnumTag {
         base: IrExpression,
     },
@@ -616,67 +580,51 @@ impl IrAssignmentTarget {
 }
 
 impl IrExpression {
-    // TODO avoid clones
-    pub fn ty(&self, module: &IrModuleInfo, variables: &IrVariables) -> IrType {
+    pub fn ty(&self, large: &IrLargeArena, signals: &IrSignals, variables: &IrVariables) -> IrType {
         match self {
             IrExpression::Bool(_) => IrType::Bool,
             IrExpression::Int(v) => IrType::Int(ClosedNonEmptyRange::single(v.clone())),
 
-            &IrExpression::Signal(signal) => signal.ty(module).clone(),
+            &IrExpression::Signal(signal) => signal.ty(signals).clone(),
             &IrExpression::Variable(var) => variables[var].ty.clone(),
 
-            &IrExpression::Large(expr) => {
-                match &module.large[expr] {
-                    IrExpressionLarge::Undefined(ty) => ty.clone(),
-                    IrExpressionLarge::BoolNot(_) => IrType::Bool,
-                    IrExpressionLarge::BoolBinary(_, left, _) => left.ty(module, variables),
-                    IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
-                    IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
+            &IrExpression::Large(expr) => match &large[expr] {
+                IrExpressionLarge::Undefined(ty) => ty.clone(),
+                IrExpressionLarge::BoolNot(_) => IrType::Bool,
+                IrExpressionLarge::BoolBinary(_, left, _) => left.ty(large, signals, variables),
+                IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
+                IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
-                    IrExpressionLarge::ArrayLiteral(ty_inner, len, _values) => {
-                        IrType::Array(Box::new(ty_inner.clone()), len.clone())
-                    }
-                    IrExpressionLarge::TupleLiteral(v) => {
-                        IrType::Tuple(v.iter().map(|x| x.ty(module, variables)).collect())
-                    }
-                    IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
-                    IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
-
-                    IrExpressionLarge::ArrayIndex { base, .. } => {
-                        let (inner_ty, _) = base.ty(module, variables).unwrap_array();
-                        inner_ty
-                    }
-                    IrExpressionLarge::ArraySlice { base, start: _, len } => {
-                        let (inner_ty, _) = base.ty(module, variables).unwrap_array();
-                        IrType::Array(Box::new(inner_ty), len.clone())
-                    }
-                    &IrExpressionLarge::TupleIndex { ref base, index } => {
-                        let base_ty = base.ty(module, variables).unwrap_tuple();
-                        base_ty[index].clone()
-                    }
-                    // TODO store resulting type in expression instead?
-                    &IrExpressionLarge::StructField { ref base, field } => {
-                        let base_ty = base.ty(module, variables).unwrap_struct();
-                        base_ty.fields[field].clone()
-                    }
-                    IrExpressionLarge::EnumTag { base } => {
-                        let base_ty = base.ty(module, variables).unwrap_enum();
-                        IrType::Int(base_ty.tag_range())
-                    }
-                    &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                        let base_ty = base.ty(module, variables).unwrap_enum();
-                        base_ty.variants[variant]
-                            .as_ref()
-                            .expect("cannot get payload of non-payload variant")
-                            .clone()
-                    }
-
-                    IrExpressionLarge::ToBits(ty, _) => IrType::Array(Box::new(IrType::Bool), ty.size_bits()),
-                    IrExpressionLarge::FromBits(ty, _) => ty.clone(),
-                    IrExpressionLarge::ExpandIntRange(ty, _) => IrType::Int(ty.clone()),
-                    IrExpressionLarge::ConstrainIntRange(ty, _) => IrType::Int(ty.clone()),
+                IrExpressionLarge::ArrayLiteral(ty_inner, len, _values) => {
+                    IrType::Array(Box::new(ty_inner.clone()), len.clone())
                 }
-            }
+                IrExpressionLarge::TupleLiteral(v) => {
+                    IrType::Tuple(v.iter().map(|x| x.ty(large, signals, variables)).collect())
+                }
+                IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
+                IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
+
+                IrExpressionLarge::Steps { base, steps } => {
+                    let base_ty = base.ty(large, signals, variables);
+                    steps.apply_to_type(base_ty).unwrap()
+                }
+                IrExpressionLarge::EnumTag { base } => {
+                    let base_ty = base.ty(large, signals, variables).unwrap_enum();
+                    IrType::Int(base_ty.tag_range())
+                }
+                &IrExpressionLarge::EnumPayload { ref base, variant } => {
+                    let base_ty = base.ty(large, signals, variables).unwrap_enum();
+                    base_ty.variants[variant]
+                        .as_ref()
+                        .expect("cannot get payload of non-payload variant")
+                        .clone()
+                }
+
+                IrExpressionLarge::ToBits(ty, _) => IrType::Array(Box::new(IrType::Bool), ty.size_bits()),
+                IrExpressionLarge::FromBits(ty, _) => ty.clone(),
+                IrExpressionLarge::ExpandIntRange(ty, _) => IrType::Int(ty.clone()),
+                IrExpressionLarge::ConstrainIntRange(ty, _) => IrType::Int(ty.clone()),
+            },
         }
     }
 
@@ -719,17 +667,26 @@ impl IrExpression {
                         f(x);
                     }
                 }
-                IrExpressionLarge::ArrayIndex { base, index } => {
+                IrExpressionLarge::Steps { base, steps } => {
                     f(base);
-                    f(index);
-                }
-                IrExpressionLarge::ArraySlice { base, start, len: _ } => {
-                    f(base);
-                    f(start);
-                }
-                IrExpressionLarge::TupleIndex { base, index: _ } => f(base),
-                IrExpressionLarge::StructField { base, field: _ } => {
-                    f(base);
+
+                    let IrTargetSteps {
+                        steps_scalar,
+                        step_slice,
+                    } = steps;
+                    for step in steps_scalar {
+                        match step {
+                            IrTargetStepScalar::ArrayIndex(index) => f(index),
+                            &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                                let _: usize = index;
+                            }
+                        }
+                    }
+                    if let Some(step_slice) = step_slice {
+                        let IrTargetStepSlice { start, len } = step_slice;
+                        f(start);
+                        let _: &BigUint = len;
+                    }
                 }
                 IrExpressionLarge::EnumTag { base } => {
                     f(base);
@@ -856,21 +813,56 @@ impl IrExpression {
                         None
                     }
                 }
-                IrExpressionLarge::ArrayIndex { base, index } => {
-                    build_binary!(|base, index| large.push_expr(IrExpressionLarge::ArrayIndex { base, index }))
-                }
-                IrExpressionLarge::ArraySlice { base, start, len } => {
-                    build_binary!(|base, start| large.push_expr(IrExpressionLarge::ArraySlice {
-                        base,
-                        start,
-                        len: len.clone()
-                    }))
-                }
-                &IrExpressionLarge::TupleIndex { ref base, index } => {
-                    build_unary!(|base| large.push_expr(IrExpressionLarge::TupleIndex { base, index }))
-                }
-                &IrExpressionLarge::StructField { ref base, field } => {
-                    build_unary!(|base| large.push_expr(IrExpressionLarge::StructField { base, field }))
+                IrExpressionLarge::Steps { base, steps } => {
+                    let IrTargetSteps {
+                        steps_scalar,
+                        step_slice,
+                    } = steps;
+
+                    // map base
+                    let base_new = f(base);
+                    let mut changed = base_new.is_some();
+
+                    // map steps
+                    let steps_scalar_new = steps_scalar
+                        .iter()
+                        .map(|step| match step {
+                            IrTargetStepScalar::ArrayIndex(index) => match f(index) {
+                                None => step.clone(),
+                                Some(index_new) => {
+                                    changed = true;
+                                    IrTargetStepScalar::ArrayIndex(index_new)
+                                }
+                            },
+                            &IrTargetStepScalar::TupleIndex(index) => IrTargetStepScalar::TupleIndex(index),
+                            &IrTargetStepScalar::StructField(index) => IrTargetStepScalar::StructField(index),
+                        })
+                        .collect_vec();
+                    let step_slice_new = step_slice.as_ref().map(|step_slice| {
+                        let IrTargetStepSlice { start, len } = step_slice;
+                        match f(start) {
+                            None => step_slice.clone(),
+                            Some(start_new) => {
+                                changed = true;
+                                IrTargetStepSlice {
+                                    start: start_new,
+                                    len: len.clone(),
+                                }
+                            }
+                        }
+                    });
+
+                    if changed {
+                        Some(large.push_expr(IrExpressionLarge::Steps {
+                            base: base_new.unwrap_or_else(|| base.clone()),
+                            steps: IrTargetSteps {
+                                steps_scalar: steps_scalar_new,
+                                step_slice: step_slice_new,
+                            },
+                        }))
+                    } else {
+                        None
+                    }
                 }
                 IrExpressionLarge::EnumTag { base } => {
                     build_unary!(|base| large.push_expr(IrExpressionLarge::EnumTag { base }))
@@ -904,17 +896,17 @@ impl IrExpression {
 }
 
 impl IrSignal {
-    pub fn ty(self, module: &IrModuleInfo) -> &IrType {
+    pub fn ty(self, signals: &IrSignals) -> &IrType {
         match self {
-            IrSignal::Port(port) => &module.ports[port].ty,
-            IrSignal::Wire(wire) => &module.wires[wire].ty,
+            IrSignal::Port(port) => &signals.ports[port].ty,
+            IrSignal::Wire(wire) => &signals.wires[wire].ty,
         }
     }
 
-    pub fn span(self, module: &IrModuleInfo) -> Span {
+    pub fn span(self, signals: &IrSignals) -> Span {
         match self {
-            IrSignal::Port(port) => module.ports[port].debug_span,
-            IrSignal::Wire(wire) => module.wires[wire].debug_info_id.span,
+            IrSignal::Port(port) => signals.ports[port].debug_span,
+            IrSignal::Wire(wire) => signals.wires[wire].debug_info_id.span,
         }
     }
 
@@ -925,10 +917,10 @@ impl IrSignal {
         }
     }
 
-    pub fn debug_info_name(self, module: &IrModuleInfo) -> &str {
+    pub fn debug_info_name(self, signals: &IrSignals) -> &str {
         match self {
-            IrSignal::Port(port) => module.ports[port].name.as_str(),
-            IrSignal::Wire(wire) => module.wires[wire]
+            IrSignal::Port(port) => signals.ports[port].name.as_str(),
+            IrSignal::Wire(wire) => signals.wires[wire]
                 .debug_info_id
                 .inner
                 .as_ref()
@@ -950,9 +942,9 @@ impl Polarized<IrSignal> {
 }
 
 impl IrSignalOrVariable {
-    pub fn ty<'a>(self, module: &'a IrModuleInfo, variables: &'a IrVariables) -> &'a IrType {
+    pub fn ty<'a>(self, signals: &'a IrSignals, variables: &'a IrVariables) -> &'a IrType {
         match self {
-            IrSignalOrVariable::Signal(signal) => signal.ty(module),
+            IrSignalOrVariable::Signal(signal) => signal.ty(signals),
             IrSignalOrVariable::Variable(var) => &variables[var].ty,
         }
     }

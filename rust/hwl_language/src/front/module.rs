@@ -23,7 +23,7 @@ use crate::mid::cones::compute_module_cones;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrSignalOrVariable, IrStatement, IrWire, IrWireInfo,
+    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrSignalOrVariable, IrSignals, IrStatement, IrWireInfo,
 };
 use crate::new_index_type;
 use crate::syntax::ast::{
@@ -198,8 +198,10 @@ impl CompileRefs<'_, '_> {
 
         // elaborate the body
         let mut ctx_body = BodyContext {
-            ir_ports: ports_ir,
-            ir_wires: Arena::new(),
+            ir_signals: IrSignals {
+                ports: ports_ir,
+                wires: Arena::new(),
+            },
             children: vec![],
             delayed_err: Ok(()),
         };
@@ -222,7 +224,7 @@ impl CompileRefs<'_, '_> {
                 wire_info.suggest_ty(
                     self,
                     &ctx.wire_interfaces,
-                    &mut ctx_body.ir_wires,
+                    &mut ctx_body.ir_signals.wires,
                     Spanned::new(wire_info.span_decl(), &HardwareType::Tuple(Arc::new(vec![]))),
                 )?;
             }
@@ -239,7 +241,7 @@ impl CompileRefs<'_, '_> {
                             "unknown".to_string()
                         };
 
-                        ctx_body.ir_wires[typed.ir].debug_info_domain = domain_str;
+                        ctx_body.ir_signals.wires[typed.ir].debug_info_domain = domain_str;
                     }
                 }
                 WireInfo::Interface(_) => {
@@ -254,7 +256,7 @@ impl CompileRefs<'_, '_> {
                 "unknown".to_string()
             };
             for &wire_ir in &intf_info.ir_wires {
-                ctx_body.ir_wires[wire_ir].debug_info_domain = domain_str.clone();
+                ctx_body.ir_signals.wires[wire_ir].debug_info_domain = domain_str.clone();
             }
         }
 
@@ -264,8 +266,7 @@ impl CompileRefs<'_, '_> {
             Some(steps) => steps.join("."),
         };
         let mut module_ir = IrModuleInfo {
-            ports: ctx_body.ir_ports,
-            wires: ctx_body.ir_wires,
+            signals: ctx_body.ir_signals,
             large: ctx.large,
             children: ctx_body.children,
             debug_info_def_file,
@@ -649,8 +650,7 @@ fn claim_ir_name(
 }
 
 struct BodyContext {
-    ir_ports: Arena<IrPort, IrPortInfo>,
-    ir_wires: Arena<IrWire, IrWireInfo>,
+    ir_signals: IrSignals,
     children: Vec<Spanned<IrModuleChild>>,
     delayed_err: DiagResult,
 }
@@ -766,7 +766,12 @@ impl BodyContext {
                             ctx.wires[wire].suggest_domain(&mut ctx.wire_interfaces, domain)?;
                         }
                         if let Some(ty) = ty.as_ref() {
-                            ctx.wires[wire].suggest_ty(refs, &ctx.wire_interfaces, &mut self.ir_wires, ty.as_ref())?;
+                            ctx.wires[wire].suggest_ty(
+                                refs,
+                                &ctx.wire_interfaces,
+                                &mut self.ir_signals.wires,
+                                ty.as_ref(),
+                            )?;
                         }
                     }
                     Some((assign_span, value)) => {
@@ -778,7 +783,7 @@ impl BodyContext {
                             span_init: value.span,
                         };
                         let mut flow_value =
-                            FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_wires);
+                            FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_signals);
                         let value = ctx.eval_expression(scope, &mut flow_value.as_flow(), &expected_ty, value)?;
                         let (ir_vars, mut ir_block) = flow_value.finish();
 
@@ -832,8 +837,12 @@ impl BodyContext {
                         // create the wire by suggesting the domain and ty
                         let wire_info = &mut ctx.wires[wire];
                         wire_info.suggest_domain(&mut ctx.wire_interfaces, domain)?;
-                        let wire_info_typed =
-                            wire_info.suggest_ty(refs, &ctx.wire_interfaces, &mut self.ir_wires, ty.as_ref())?;
+                        let wire_info_typed = wire_info.suggest_ty(
+                            refs,
+                            &ctx.wire_interfaces,
+                            &mut self.ir_signals.wires,
+                            ty.as_ref(),
+                        )?;
 
                         // append final assignment to process
                         let expr_hw = value.inner.as_ir_expression_unchecked(
@@ -924,7 +933,7 @@ impl BodyContext {
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
-                    let wire_ir = self.ir_wires.push(wire_ir_info);
+                    let wire_ir = self.ir_signals.wires.push(wire_ir_info);
 
                     let wire_info = WireInfoInInterface {
                         decl_span: stmt.span,
@@ -974,7 +983,7 @@ impl BodyContext {
 
         // elaborate block
         let flow_kind = HardwareProcessKind::CombinatorialProcessBody { span_keyword };
-        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_wires);
+        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_signals);
 
         let mut stack = ExitStack::new_root();
 
@@ -1062,7 +1071,7 @@ impl BodyContext {
             domain,
             registers: &mut registers,
         };
-        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_wires);
+        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_signals);
 
         let mut stack = ExitStack::new_root();
         let end = ctx.elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
@@ -1467,7 +1476,7 @@ impl BodyContext {
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection_span,
                         };
-                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_wires);
+                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_signals);
                         let connection_value =
                             ctx.eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value)?;
                         let (ir_vars, mut ir_block) = flow.finish();
@@ -1518,7 +1527,7 @@ impl BodyContext {
                         {
                             connection_signal
                         } else {
-                            let extra_ir_wire = self.ir_wires.push(IrWireInfo {
+                            let extra_ir_wire = self.ir_signals.wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
                                 debug_info_ty: ty.inner.clone().value_string(elab),
@@ -1579,7 +1588,7 @@ impl BodyContext {
                                             let wire_ty = wire_info.suggest_ty(
                                                 refs,
                                                 &ctx.wire_interfaces,
-                                                &mut self.ir_wires,
+                                                &mut self.ir_signals.wires,
                                                 ty.as_ref(),
                                             );
 

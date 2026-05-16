@@ -2,15 +2,16 @@ use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnosti
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
-    IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice,
-    IrTargetSteps, IrType, IrVariables,
+    IrSignals, IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariables,
 };
+use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
 use crate::util::Never;
+use crate::util::big_int::BigUint;
 use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
@@ -18,12 +19,13 @@ use unwrap_match::unwrap_match;
 // TODO check for cycles somewhere, maybe even here
 // TODO record instance cones
 pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
+    let signals = &module.signals;
     let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<Span>>> = IndexMap::new();
 
     let mut report_signal_drive = |signal: IrSignal, mask: IrMask<bool>, span: Span| {
         let combined_drive = combined_drivers
             .entry(signal)
-            .or_insert_with(|| IrMask::new(signal.ty(module), vec![]));
+            .or_insert_with(|| IrMask::new(signal.ty(signals), vec![]));
         IrMask::zip2_for_each_mut(combined_drive, &mask, &mut |combined, &curr_drives| {
             if curr_drives {
                 combined.push(span);
@@ -56,7 +58,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                 };
 
                 // check self-loops
-                match check_combinatorial_self_loops(diags, module, child.span, &cones) {
+                match check_combinatorial_self_loops(diags, signals, child.span, &cones) {
                     Ok(()) => {}
                     Err(e) => {
                         any_err = Err(e);
@@ -74,7 +76,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                         IrPortConnection::Input(_) => {}
                         IrPortConnection::Output(signal) => {
                             if let Some(signal) = signal {
-                                report_signal_drive(signal, IrMask::new(signal.ty(module), true), conn.span);
+                                report_signal_drive(signal, IrMask::new(signal.ty(signals), true), conn.span);
                             }
                         }
                     }
@@ -86,7 +88,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                         IrPortConnection::Input(_) => {}
                         IrPortConnection::Output(signal) => {
                             if let Some(signal) = signal {
-                                report_signal_drive(signal, IrMask::new(signal.ty(module), true), conn.span);
+                                report_signal_drive(signal, IrMask::new(signal.ty(signals), true), conn.span);
                             }
                         }
                     }
@@ -96,7 +98,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
     }
     any_err?;
 
-    for signal in module.all_signals_except_inputs() {
+    for signal in signals.all_signals_except_inputs() {
         // track driver status
         let mut any_driven = false;
         let mut any_undriven = false;
@@ -124,13 +126,13 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
 
         // get some debug info
         let signal_kind = signal.debug_info_kind();
-        let signal_name = signal.debug_info_name(module);
+        let signal_name = signal.debug_info_name(signals);
 
         // maybe report multiple drivers
         if !overlapping_drivers.is_empty() {
             let mut diag = DiagnosticError::new(
                 format!("{signal_kind} `{signal_name}` has multiple overlapping drivers"),
-                signal.span(module),
+                signal.span(signals),
                 "{signal_kind} defined here",
             );
             for drive_span in overlapping_drivers {
@@ -148,7 +150,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
             };
             DiagnosticWarning::new(
                 format!("{signal_kind} `{signal_name}` {title_suffix}"),
-                signal.span(module),
+                signal.span(signals),
                 "signal defined here",
             )
             .report(diags);
@@ -160,13 +162,12 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
 
 fn check_combinatorial_self_loops(
     diags: &Diagnostics,
-    module: &IrModuleInfo,
+    signals: &IrSignals,
     proc_span: Span,
     cones: &Cones,
 ) -> DiagResult {
     // find any signals with self loops
     let mut loop_signals = IndexSet::new();
-
     for (&signal, read) in &cones.reads {
         let Some(write) = cones.drives.get(&signal) else {
             continue;
@@ -185,12 +186,12 @@ fn check_combinatorial_self_loops(
         let mut diag = DiagnosticError::new("combinatorial self-loop", proc_span, "for this combinatorial process");
 
         // visit signals in module declaration order instead of whatever order we collected them in
-        for signal in module.all_signals() {
+        for signal in signals.all_signals() {
             let signal_kind = signal.debug_info_kind();
-            let signal_name = signal.debug_info_name(module);
+            let signal_name = signal.debug_info_name(signals);
 
             if loop_signals.contains(&signal) {
-                diag = diag.add_info(signal.span(module), format!("for {signal_kind} `{signal_name}`"));
+                diag = diag.add_info(signal.span(signals), format!("for {signal_kind} `{signal_name}`"));
             }
         }
 
@@ -234,7 +235,7 @@ fn compute_clocked_process_cones(
     // TODO should we track more specific drives anyway?
     let drives = registers
         .iter()
-        .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
+        .map(|&signal| (signal, IrMask::new(signal.ty(&module.signals), true)))
         .collect();
 
     Ok(Cones {
@@ -350,7 +351,7 @@ fn compute_block_cones_impl(
                     IrSignalOrVariable::Variable(_) => continue,
                 };
 
-                let curr = drives.curr_mut(module, base);
+                let curr = drives.curr_mut(&module.signals, base);
                 match curr.write_steps(module, process_kind, vars, steps) {
                     Ok(()) => {}
                     Err(e) => {
@@ -434,7 +435,7 @@ fn compute_block_cones_impl(
 
                     let mut any_mismatch = false;
                     IrMask::zip3_maybe_for_each(
-                        drives.curr_mut(module, signal),
+                        drives.curr_mut(&module.signals, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
                         &mut |parent, then_value, else_value| {
@@ -465,7 +466,7 @@ fn compute_block_cones_impl(
                             stmt.span,
                             "conditional branch here",
                         )
-                            .add_info(signal.span(module), "for this signal")
+                            .add_info(signal.span(&module.signals), "for this signal")
                             .add_footer_hint("This does not create valid combinatorial logic.\nEnsure both branches drive the same signal (subset) or do a default full assignment beforehand.")
                             .report(diags);
                         signal_errors.insert_first(signal, e);
@@ -512,33 +513,52 @@ fn record_expression_reads(
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     expr: &IrExpression,
 ) {
-    let steps = ReadSteps {
-        steps_scalar_rev: vec![],
-        step_slice: None,
-    };
-    record_expression_reads_impl(module, vars, drivers, reads, expr, steps);
-}
-
-struct ReadSteps {
-    steps_scalar_rev: Vec<IrTargetStepScalar>,
-    step_slice: Option<IrTargetStepSlice>,
-}
-
-fn record_expression_reads_impl(
-    module: &IrModuleInfo,
-    vars: &IrVariables,
-    drivers: &Drives,
-    reads: &mut IndexMap<IrSignal, IrMask<bool>>,
-    expr: &IrExpression,
-    steps: ReadSteps,
-) {
     match expr {
         // constants, no reads
         IrExpression::Bool(_) | IrExpression::Int(_) => {}
-        // we only care about signal reads
+        // we don't care about variable reads
         IrExpression::Variable(_) => {}
 
+        // read the entire signal
+        &IrExpression::Signal(signal) => {
+            record_signal_reads(module, vars, drivers, reads, signal, &IrTargetSteps::new())
+        }
+
+        // For steps, read all step operands.
+        // For the base signal only read the pieces that can actually be read.
         &IrExpression::Large(expr_large) => match &module.large[expr_large] {
+            IrExpressionLarge::Steps { base, steps } => {
+                // read step operands
+                let IrTargetSteps {
+                    steps_scalar,
+                    step_slice,
+                } = steps;
+                for step in steps_scalar {
+                    match step {
+                        IrTargetStepScalar::ArrayIndex(index) => {
+                            record_expression_reads(module, vars, drivers, reads, index)
+                        }
+                        &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
+                            let _: usize = index;
+                        }
+                    }
+                }
+                if let Some(step) = step_slice {
+                    let IrTargetStepSlice { start, len } = step;
+                    record_expression_reads(module, vars, drivers, reads, start);
+                    let _: &BigUint = len;
+                }
+
+                // read base
+                if let &IrExpression::Signal(base) = base {
+                    // for signals, only read the pieces that can actually be read
+                    record_signal_reads(module, vars, drivers, reads, base, steps);
+                } else {
+                    // for other expressions, just read everything
+                    record_expression_reads(module, vars, drivers, reads, base);
+                }
+            }
+
             // just read operands
             IrExpressionLarge::Undefined(_)
             | IrExpressionLarge::BoolNot(_)
@@ -559,107 +579,56 @@ fn record_expression_reads_impl(
                     record_expression_reads(module, vars, drivers, reads, operand)
                 });
             }
-
-            // participate in step collection
-            IrExpressionLarge::ArrayIndex { base, index } => {
-                let step = IrTargetStepScalar::ArrayIndex(index.clone());
-                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
-                record_expression_reads(module, vars, drivers, reads, index);
-            }
-            IrExpressionLarge::ArraySlice { base, start, len } => {
-                let step = IrTargetStepSlice {
-                    start: start.clone(),
-                    len: len.clone(),
-                };
-                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Right(step));
-                record_expression_reads(module, vars, drivers, reads, start);
-            }
-            IrExpressionLarge::TupleIndex { base, index } => {
-                let step = IrTargetStepScalar::TupleIndex(*index);
-                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
-            }
-            IrExpressionLarge::StructField { base, field } => {
-                let step = IrTargetStepScalar::StructField(*field);
-                record_expression_reads_base(module, vars, drivers, reads, base, steps, Either::Left(step));
-            }
         },
-
-        // finish step collection and record actual reads
-        &IrExpression::Signal(signal) => {
-            let ReadSteps {
-                steps_scalar_rev,
-                step_slice,
-            } = steps;
-            let mut steps_scalar = steps_scalar_rev;
-            steps_scalar.reverse();
-
-            let signal_reads = reads
-                .entry(signal)
-                .or_insert_with(|| IrMask::new(signal.ty(module), false));
-            let signal_driven = drivers.curr(signal);
-
-            // TODO this is cursed, build proper zip iterators, including simple "constant" iterators that can be mixed?
-            let mut pieces_driven = signal_driven.map(|signal_driven| {
-                let mut pieces_driven = vec![];
-                signal_driven.for_each_possible_leaf_after_steps(
-                    module,
-                    vars,
-                    &steps_scalar,
-                    step_slice.as_ref(),
-                    &mut |m| pieces_driven.push(m),
-                );
-                pieces_driven.into_iter()
-            });
-
-            signal_reads.for_each_possible_leaf_after_steps_mut(
-                module,
-                vars,
-                &steps_scalar,
-                step_slice.as_ref(),
-                &mut |piece_read| {
-                    if let Some(pieces_driven) = &mut pieces_driven {
-                        // only count reads from pieces that have not yet been driven
-                        let piece_driven = pieces_driven.next().unwrap();
-                        IrMask::zip2_for_each_mut(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
-                            *scalar_read |= !scalar_driven;
-                        })
-                    } else {
-                        // not driven at all, count as read
-                        piece_read.fill(true);
-                    }
-                },
-            );
-
-            assert!(pieces_driven.is_none_or(|it| it.is_empty()));
-        }
     }
 }
 
-fn record_expression_reads_base(
+fn record_signal_reads(
     module: &IrModuleInfo,
     vars: &IrVariables,
     drivers: &Drives,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
-    base: &IrExpression,
-    mut steps: ReadSteps,
-    step: Either<IrTargetStepScalar, IrTargetStepSlice>,
+    signal: IrSignal,
+    steps: &IrTargetSteps,
 ) {
-    if steps.step_slice.is_some() {
-        // TODO support fusion, like we did for writes by enforcing it in the IR?
-        // fallback to fully reading the base
-        record_expression_reads(module, vars, drivers, reads, base)
-    } else {
-        // continue collecting steps
-        match step {
-            Either::Left(step) => {
-                steps.steps_scalar_rev.push(step);
+    let IrTargetSteps {
+        steps_scalar,
+        step_slice,
+    } = steps;
+
+    let signal_reads = reads
+        .entry(signal)
+        .or_insert_with(|| IrMask::new(signal.ty(&module.signals), false));
+    let signal_driven = drivers.curr(signal);
+
+    // TODO this is cursed, build proper zip iterators, including simple "constant" iterators that can be mixed?
+    let mut pieces_driven = signal_driven.map(|signal_driven| {
+        let mut pieces_driven = vec![];
+        signal_driven.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice.as_ref(), &mut |m| {
+            pieces_driven.push(m)
+        });
+        pieces_driven.into_iter()
+    });
+    signal_reads.for_each_possible_leaf_after_steps_mut(
+        module,
+        vars,
+        steps_scalar,
+        step_slice.as_ref(),
+        &mut |piece_read| {
+            if let Some(pieces_driven) = &mut pieces_driven {
+                // only count reads from pieces that have not yet been driven
+                let piece_driven = pieces_driven.next().unwrap();
+                IrMask::zip2_for_each_mut(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
+                    *scalar_read |= !scalar_driven;
+                })
+            } else {
+                // not driven at all, count as read
+                piece_read.fill(true);
             }
-            Either::Right(step) => {
-                steps.step_slice = Some(step);
-            }
-        }
-        record_expression_reads_impl(module, vars, drivers, reads, base, steps);
-    }
+        },
+    );
+
+    assert!(pieces_driven.is_none_or(IterExt::is_empty));
 }
 
 impl Drives<'_> {
@@ -687,13 +656,13 @@ impl Drives<'_> {
         }
     }
 
-    fn curr_mut(&mut self, module: &IrModuleInfo, signal: IrSignal) -> &mut IrMask<bool> {
+    fn curr_mut(&mut self, signals: &IrSignals, signal: IrSignal) -> &mut IrMask<bool> {
         self.map.entry(signal).or_insert_with(|| {
             let mut curr = self.parent;
             loop {
                 curr = match curr {
                     None => {
-                        break IrMask::new(signal.ty(module), false);
+                        break IrMask::new(signal.ty(signals), false);
                     }
                     Some(curr) => {
                         if let Some(d) = curr.map.get(&signal) {
@@ -870,6 +839,9 @@ impl IrMask<bool> {
 
                     let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
+                    if len == 0 {
+                        return Ok(());
+                    }
 
                     match unwrap_int(module, vars, start) {
                         IntKind::Single(start) => {
@@ -901,7 +873,7 @@ impl IrMask<bool> {
                     IntKind::Range(index_range) => {
                         let index_slice = &mut slf[index_range];
 
-                        IrMask::write_steps_impl_dyn(index_slice, module, process_kind, vars, &[], None)
+                        IrMask::write_steps_impl_dyn(index_slice, module, process_kind, vars, steps_scalar, step_slice)
                             .map_err(|()| DynamicDriveError::ArrayIndex)?;
                     }
                 }
@@ -981,6 +953,9 @@ impl IrMask<bool> {
 
                     let start_range = unwrap_int_unified(module, vars, start);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
+                    if len == 0 {
+                        return;
+                    }
 
                     let full_range = start_range.start..start_range.end + len - 1;
                     slf[full_range].iter_mut().for_each(f);
@@ -1025,6 +1000,9 @@ impl IrMask<bool> {
 
                     let start_range = unwrap_int_unified(module, vars, start);
                     let len = usize::try_from(len).unwrap_or_else(|_| todo!());
+                    if len == 0 {
+                        return;
+                    }
 
                     let full_range = start_range.start..start_range.end + len - 1;
                     slf[full_range].iter().for_each(f);
@@ -1059,7 +1037,7 @@ fn unwrap_int(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -
     if let IrExpression::Int(value) = value {
         IntKind::Single(usize::try_from(value).unwrap_or_else(|_| todo!()))
     } else {
-        let range = value.ty(module, vars).unwrap_int();
+        let range = value.ty(&module.large, &module.signals, vars).unwrap_int();
         let start = usize::try_from(&range.start).unwrap_or_else(|_| todo!());
         let end = usize::try_from(&range.end).unwrap_or_else(|_| todo!());
         IntKind::Range(start..end)
@@ -1067,7 +1045,7 @@ fn unwrap_int(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -
 }
 
 fn unwrap_int_unified(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -> std::ops::Range<usize> {
-    let range = value.ty(module, vars).unwrap_int();
+    let range = value.ty(&module.large, &module.signals, vars).unwrap_int();
     let start = usize::try_from(&range.start).unwrap_or_else(|_| todo!());
     let end = usize::try_from(&range.end).unwrap_or_else(|_| todo!());
     start..end

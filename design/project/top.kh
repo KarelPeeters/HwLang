@@ -14,13 +14,13 @@ const N = 1024 * 1024;
 //    }
 //}
 
-module top ports(x: in async bool, y: out async bool) {
-    wire w: async [2]bool;
-    comb {
-        y = w[0];
-        w[1] = x;
-    }
-    comb {
-        w[0] = x;
-    }
-}
+//module top ports(x: in async bool, y: out async bool) {
+//    wire w: async [2]bool;
+//    comb {
+//        y = w[0];
+//        w[1] = x;
+//    }
+//    comb {
+//        w[0] = x;
+//    }
+//}

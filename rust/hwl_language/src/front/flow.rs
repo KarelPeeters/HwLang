@@ -12,8 +12,8 @@ use crate::front::value::{
     CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrStatement, IrVariable,
-    IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrSignals, IrStatement,
+    IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::pos::{Span, Spanned};
@@ -128,7 +128,7 @@ pub struct FlowHardwareRoot<'p> {
     span: Span,
     process_kind: HardwareProcessKind<'p>,
 
-    ir_wires: &'p mut IrWires,
+    ir_signals: &'p mut IrSignals,
     ir_variables: IrVariables,
 
     common: FlowHardwareCommon,
@@ -1388,8 +1388,16 @@ impl<'p> FlowHardware<'p> {
         Ok(branch_blocks)
     }
 
-    pub fn get_ir_wires(&mut self) -> &mut IrWires {
-        self.root_hw_mut().ir_wires
+    pub fn get_ir_variables(&self) -> &IrVariables {
+        &self.root_hw().ir_variables
+    }
+
+    pub fn get_ir_signals(&self) -> &IrSignals {
+        self.root_hw().ir_signals
+    }
+
+    pub fn get_ir_wires_mut(&mut self) -> &mut IrWires {
+        &mut self.root_hw_mut().ir_signals.wires
     }
 
     fn first_common_mut(&mut self) -> &mut FlowHardwareCommon {
@@ -1712,7 +1720,7 @@ impl<'p> FlowHardwareRoot<'p> {
         parent: &'p FlowCompile,
         span: Span,
         kind: HardwareProcessKind<'p>,
-        ir_wires: &'p mut IrWires,
+        ir_signals: &'p mut IrSignals,
     ) -> FlowHardwareRoot<'p> {
         let parent = unsafe { lifetime_cast::compile_ref(parent) };
         FlowHardwareRoot {
@@ -1720,7 +1728,7 @@ impl<'p> FlowHardwareRoot<'p> {
             parent,
             span,
             process_kind: kind,
-            ir_wires,
+            ir_signals,
             ir_variables: IrVariables::new(),
             common: FlowHardwareCommon {
                 variables: IndexMap::new(),
@@ -1747,7 +1755,7 @@ impl<'p> FlowHardwareRoot<'p> {
             parent: _,
             span: _,
             process_kind: _,
-            ir_wires: _,
+            ir_signals: _,
             ir_variables,
             common,
         } = self;

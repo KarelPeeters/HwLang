@@ -1,16 +1,16 @@
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrForStatement, IrIfStatement,
     IrLargeArena, IrModuleChild, IrModuleInfo, IrSignalOrVariable, IrStatement, IrString, IrStringPiece,
-    IrStringSubstitution, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrVariable, IrVariables, ValueAccess,
+    IrStringSubstitution, IrVariable, IrVariables, ValueAccess,
 };
+use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::util::data::chain_keys;
 use indexmap::{IndexMap, IndexSet};
 
 // TODO also remove signal->var copies
 pub fn cleanup_module(ir: &mut IrModuleInfo) {
     let IrModuleInfo {
-        ports: _,
-        wires: _,
+        signals: _,
         large,
         children,
         debug_info_def_file: _,

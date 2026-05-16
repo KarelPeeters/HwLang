@@ -582,7 +582,7 @@ impl CompileItemContext<'_, '_> {
                             self.wires[wire].suggest_ty(
                                 refs,
                                 &self.wire_interfaces,
-                                flow.get_ir_wires(),
+                                flow.get_ir_wires_mut(),
                                 ty.as_ref(),
                             )?;
                         }
@@ -628,9 +628,11 @@ impl CompileItemContext<'_, '_> {
                                     format!("got type `{}`", reset_ty.value_string(elab)),
                                 )
                             })?;
-                            signal
-                                .inner
-                                .suggest_ty(self, flow.get_ir_wires(), Spanned::new(reset.span, &reset_ty))?;
+                            signal.inner.suggest_ty(
+                                self,
+                                flow.get_ir_wires_mut(),
+                                Spanned::new(reset.span, &reset_ty),
+                            )?;
                         }
 
                         // check reset value type

@@ -12,6 +12,7 @@ use crate::mid::ir::{
     IrBlock, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrIntCompareOp, IrIntegerRadix,
     IrLargeArena, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariable, IrVariableInfo,
 };
+use crate::mid::steps::{IrTargetStep, IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{Expression, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::parse_token_string_middle;
@@ -309,9 +310,10 @@ fn print_hardware_sub(
             builder.push_str("[");
 
             let mut element_value = |index: IrExpression| {
-                let element_expr = large.push_expr(IrExpressionLarge::ArrayIndex {
+                let step = IrTargetStepScalar::ArrayIndex(index);
+                let element_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    index,
+                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                 });
                 HardwareValue {
                     ty: ty_inner.as_ref().clone(),
@@ -381,9 +383,10 @@ fn print_hardware_sub(
         HardwareType::Tuple(element_types) => {
             builder.push_str("(");
             for (index, ty) in enumerate(element_types.as_ref()) {
-                let element_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                let step = IrTargetStepScalar::TupleIndex(index);
+                let element_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    index,
+                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                 });
                 let element_value = HardwareValue {
                     ty: ty.clone(),
@@ -407,9 +410,10 @@ fn print_hardware_sub(
             builder.push_str(&ty_info.debug_info_name);
             builder.push_str(".new(");
             for (field_index, ((field_name, _), field_ty)) in enumerate(zip_eq(&ty_info.fields, ty_fields_hw)) {
-                let field_expr = large.push_expr(IrExpressionLarge::StructField {
+                let step = IrTargetStepScalar::StructField(field_index);
+                let field_expr = large.push_expr(IrExpressionLarge::Steps {
                     base: value.expr.clone(),
-                    field: field_index,
+                    steps: IrTargetSteps::single(IrTargetStep::Scalar(step)),
                 });
                 let field_value = HardwareValue {
                     ty: field_ty.clone(),

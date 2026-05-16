@@ -144,7 +144,7 @@ impl CompileItemContext<'_, '_> {
                     if let Ok(source_ty) = source_value.inner.ty().as_hardware_type(elab) {
                         target_base_signal.suggest_ty(
                             self,
-                            flow.get_ir_wires(),
+                            flow.get_ir_wires_mut(),
                             Spanned::new(source_value.span, &source_ty),
                         )?;
                     }
@@ -153,8 +153,13 @@ impl CompileItemContext<'_, '_> {
                 // check type
                 let (target_base_ty, target_base_ir) = target_base_signal.expect_ty_and_ir(self, target_base.span)?;
                 let target_base_ty = target_base_ty.cloned();
-                let (target_ty, target_steps_ir) =
-                    target_steps.apply_to_hardware_type(refs, &mut self.large, target_base_ty.as_ref())?;
+                let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(
+                    refs,
+                    &mut self.large,
+                    flow.get_ir_signals(),
+                    flow.get_ir_variables(),
+                    target_base_ty.as_ref(),
+                )?;
                 let reason = TypeContainsReason::Assignment {
                     span_target: target_expr.span,
                     span_target_ty: target_base_ty.span,
@@ -297,6 +302,8 @@ impl CompileItemContext<'_, '_> {
                         let (source_ty_hw, target_steps_ir) = target_steps.apply_to_hardware_type(
                             refs,
                             &mut self.large,
+                            flow.get_ir_signals(),
+                            flow.get_ir_variables(),
                             Spanned::new(target_base.span, &target_base_ty_hw),
                         )?;
 
