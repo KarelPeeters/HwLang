@@ -16,6 +16,9 @@ pub enum Sign {
     Positive,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct IsZero;
+
 // TODO benchmark i128 vs i64
 type IStorage = i128;
 
@@ -192,6 +195,10 @@ impl BigUint {
     pub fn as_usize_if_lt(&self, len: usize) -> Option<usize> {
         let s = self.try_into().ok()?;
         if s < len { Some(s) } else { None }
+    }
+
+    pub fn sub_1(&self) -> Result<BigUint, IsZero> {
+        BigUint::try_from(self - 1).map_err(|_| IsZero)
     }
 }
 

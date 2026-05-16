@@ -7,9 +7,10 @@ use crate::mid::ir::{
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
 use crate::util::Never;
-use crate::util::big_int::BigUint;
+use crate::util::big_int::{BigUint, IsZero};
 use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
+use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use std::fmt::Debug;
@@ -203,11 +204,17 @@ fn check_combinatorial_self_loops(
     Ok(())
 }
 
-// TODO optimize for large arrays
 #[derive(Debug, Clone)]
-pub enum IrMask<T> {
+enum IrMask<T> {
     Scalar(T),
-    Compound(Vec<IrMask<T>>),
+    Array(IrMaskArray<T>),
+    TupleOrStruct(Vec<IrMask<T>>),
+}
+
+#[derive(Debug, Clone)]
+struct IrMaskArray<T> {
+    start: Option<Box<IrMask<T>>>,
+    change: Vec<(BigUint, IrMask<T>)>,
 }
 
 #[derive(Debug)]
@@ -434,7 +441,7 @@ fn compute_block_cones_impl(
                     }
 
                     let mut any_mismatch = false;
-                    IrMask::zip3_maybe_for_each(
+                    IrMask::zip3_for_each_mut(
                         drives.curr_mut(&module.signals, signal),
                         then_map.get(&signal),
                         else_map.get(&signal),
@@ -687,29 +694,32 @@ impl<T> IrMask<T> {
         match ty {
             IrType::Bool | IrType::Int(_) | IrType::Enum(_) => IrMask::Scalar(init),
             IrType::Array(ty_inner, len) => {
-                let len = usize::try_from(len).unwrap_or_else(|_| todo!());
-
-                let mask_inner = IrMask::new(ty_inner, init);
-                IrMask::Compound(vec![mask_inner; len])
+                let start = if len.is_zero() {
+                    None
+                } else {
+                    let mask_inner = IrMask::new(ty_inner, init);
+                    Some(Box::new(mask_inner))
+                };
+                IrMask::Array(IrMaskArray { start, change: vec![] })
             }
-            IrType::Tuple(ty_fields) => IrMask::Compound(
-                ty_fields
+            IrType::Tuple(ty_fields) => {
+                let mask_fields = ty_fields
                     .iter()
                     .map(|ty_field| IrMask::new(ty_field, init.clone()))
-                    .collect_vec(),
-            ),
+                    .collect_vec();
+                IrMask::TupleOrStruct(mask_fields)
+            }
             IrType::Struct(ty_info) => {
                 let IrStructType {
                     ty: _,
                     debug_info_name: _,
                     fields,
                 } = ty_info;
-                IrMask::Compound(
-                    fields
-                        .values()
-                        .map(|ty_field| IrMask::new(ty_field, init.clone()))
-                        .collect_vec(),
-                )
+                let mask_fields = fields
+                    .values()
+                    .map(|ty_field| IrMask::new(ty_field, init.clone()))
+                    .collect_vec();
+                IrMask::TupleOrStruct(mask_fields)
             }
         }
     }
@@ -718,20 +728,45 @@ impl<T> IrMask<T> {
     where
         T: Clone,
     {
-        match self {
-            IrMask::Scalar(slf) => *slf = value,
-            IrMask::Compound(values) => values.iter_mut().for_each(|v| v.fill(value.clone())),
-        }
+        let _ = self.for_each_leaf_mut::<Never>(|leaf| {
+            *leaf = value.clone();
+            ControlFlow::Continue(())
+        });
     }
 
     fn for_each_leaf<B>(&self, mut f: impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
         fn for_each_leaf_impl<T, B>(slf: &IrMask<T>, f: &mut impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
             match slf {
                 IrMask::Scalar(slf) => f(slf),
-                IrMask::Compound(values) => values.iter().try_for_each(|m| for_each_leaf_impl(m, f)),
+                IrMask::Array(IrMaskArray { start, change }) => {
+                    if let Some(start) = start {
+                        for_each_leaf_impl(start, f)?;
+                    }
+                    change.iter().try_for_each(|(_, m)| for_each_leaf_impl(m, f))
+                }
+                IrMask::TupleOrStruct(values) => values.iter().try_for_each(|m| for_each_leaf_impl(m, f)),
             }
         }
         for_each_leaf_impl(self, &mut f)
+    }
+
+    fn for_each_leaf_mut<B>(&mut self, mut f: impl FnMut(&mut T) -> ControlFlow<B>) -> ControlFlow<B> {
+        fn for_each_leaf_mut_impl<T, B>(
+            slf: &mut IrMask<T>,
+            f: &mut impl FnMut(&mut T) -> ControlFlow<B>,
+        ) -> ControlFlow<B> {
+            match slf {
+                IrMask::Scalar(slf) => f(slf),
+                IrMask::Array(IrMaskArray { start, change }) => {
+                    if let Some(start) = start {
+                        for_each_leaf_mut_impl(start, f)?;
+                    }
+                    change.iter_mut().try_for_each(|(_, m)| for_each_leaf_mut_impl(m, f))
+                }
+                IrMask::TupleOrStruct(values) => values.iter_mut().try_for_each(|m| for_each_leaf_mut_impl(m, f)),
+            }
+        }
+        for_each_leaf_mut_impl(self, &mut f)
     }
 
     fn any(&self, mut f: impl FnMut(&T) -> bool) -> bool {
@@ -755,8 +790,58 @@ impl<T> IrMask<T> {
                 let b = unwrap_match!(b, IrMask::Scalar(b) => b);
                 f(a, b)
             }
-            IrMask::Compound(a) => {
-                let b = unwrap_match!(b, IrMask::Compound(b) => b);
+            IrMask::Array(IrMaskArray {
+                start: start_a,
+                change: change_a,
+            }) => {
+                let IrMaskArray {
+                    start: start_b,
+                    change: change_b,
+                } = unwrap_match!(b, IrMask::Array(b) => b);
+
+                let (start_a, start_b) = match (start_a, start_b) {
+                    (None, None) => return,
+                    (Some(start_a), Some(start_b)) => (&**start_a, &**start_b),
+                    _ => unreachable!(),
+                };
+
+                let mut curr_a = start_a;
+                let mut curr_b = start_b;
+                let mut change_a = change_a.as_slice();
+                let mut change_b = change_b.as_slice();
+
+                Self::zip2_for_each(curr_a, curr_b, f);
+                loop {
+                    match (change_a.split_first(), change_b.split_first()) {
+                        (None, None) => break,
+                        (Some(((_, next_a), rest_a)), None) => {
+                            curr_a = next_a;
+                            change_a = rest_a;
+                        }
+                        (None, Some(((_, next_b), rest_b))) => {
+                            curr_b = next_b;
+                            change_b = rest_b;
+                        }
+                        (Some(((index_a, next_a), rest_a)), Some(((index_b, next_b), rest_b))) => {
+                            if index_a < index_b {
+                                curr_a = next_a;
+                                change_a = rest_a;
+                            } else if index_a == index_b {
+                                curr_a = next_a;
+                                change_a = rest_a;
+                                curr_b = next_b;
+                                change_b = rest_b;
+                            } else {
+                                curr_b = next_b;
+                                change_b = rest_b;
+                            }
+                        }
+                    }
+                    Self::zip2_for_each(curr_a, curr_b, f);
+                }
+            }
+            IrMask::TupleOrStruct(a) => {
+                let b = unwrap_match!(b, IrMask::TupleOrStruct(b) => b);
                 for i in 0..a.len() {
                     Self::zip2_for_each(&a[i], &b[i], f);
                 }
@@ -764,45 +849,233 @@ impl<T> IrMask<T> {
         }
     }
 
-    fn zip2_for_each_mut<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U)) {
-        match a {
-            IrMask::Scalar(a) => {
-                let b = unwrap_match!(b, IrMask::Scalar(b) => b);
-                f(a, b)
+    fn zip2_for_each_mut<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U))
+    where
+        T: Clone,
+    {
+        IrMask::zip3_for_each_mut::<U, Never>(a, Some(b), None, &mut |a, b, c| {
+            let b = b.unwrap();
+            match c {
+                None => {}
+                Some(never) => never.unreachable(),
             }
-            IrMask::Compound(a) => {
-                let b = unwrap_match!(b, IrMask::Compound(b) => b);
-                for i in 0..a.len() {
-                    Self::zip2_for_each_mut(&mut a[i], &b[i], f);
-                }
-            }
-        }
+            f(a, b)
+        })
     }
 
-    fn zip3_maybe_for_each<U: Debug, V: Debug>(
+    fn zip3_for_each_mut<U: Debug, V: Debug>(
         a: &mut IrMask<T>,
         b: Option<&IrMask<U>>,
         c: Option<&IrMask<V>>,
         f: &mut impl FnMut(&mut T, Option<&U>, Option<&V>),
-    ) {
+    ) where
+        T: Clone,
+    {
         match a {
             IrMask::Scalar(a) => {
                 let b = b.map(|b| unwrap_match!(b, IrMask::Scalar(b) => b));
                 let c = c.map(|c| unwrap_match!(c, IrMask::Scalar(c) => c));
                 f(a, b, c)
             }
-            IrMask::Compound(a) => {
-                let b = b.map(|b| unwrap_match!(b, IrMask::Compound(b) => b));
-                let c = c.map(|c| unwrap_match!(c, IrMask::Compound(c) => c));
+            IrMask::Array(a) => {
+                // TODO this is a huge mess, can this be cleaned up?
+                let b = b.map(|b| unwrap_match!(b, IrMask::Array(b) => b));
+                let c = c.map(|c| unwrap_match!(c, IrMask::Array(c) => c));
+
+                if let Some(b) = b {
+                    a.ensure_change_points(b.change.iter().map(get_change_index));
+                }
+                if let Some(c) = c {
+                    a.ensure_change_points(c.change.iter().map(get_change_index));
+                }
+
+                let IrMaskArray {
+                    start: start_a,
+                    change: change_a,
+                } = a;
+                let Some(start_a) = start_a else {
+                    return;
+                };
+
+                let mut curr_and_change_b = b.map(
+                    |IrMaskArray {
+                         start: start_b,
+                         change: change_b,
+                     }| { (&**start_b.as_ref().unwrap(), change_b.as_slice()) },
+                );
+                let mut curr_and_change_c = c.map(
+                    |IrMaskArray {
+                         start: start_c,
+                         change: change_c,
+                     }| { (&**start_c.as_ref().unwrap(), change_c.as_slice()) },
+                );
+
+                Self::zip3_for_each_mut(
+                    start_a,
+                    curr_and_change_b.map(|(curr_b, _)| curr_b),
+                    curr_and_change_c.map(|(curr_c, _)| curr_c),
+                    f,
+                );
+                for (index_a, curr_a) in change_a {
+                    curr_and_change_b = curr_and_change_b.map(|(curr_b, change_b)| {
+                        if let Some(((index_b, next_b), rest_b)) = change_b.split_first() {
+                            debug_assert!(*index_a <= *index_b);
+                            if index_a == index_b {
+                                return (next_b, rest_b);
+                            }
+                        }
+                        (curr_b, change_b)
+                    });
+                    curr_and_change_c = curr_and_change_c.map(|(curr_c, change_c)| {
+                        if let Some(((index_c, next_c), rest_c)) = change_c.split_first() {
+                            debug_assert!(*index_a <= *index_c);
+                            if index_a == index_c {
+                                return (next_c, rest_c);
+                            }
+                        }
+                        (curr_c, change_c)
+                    });
+
+                    Self::zip3_for_each_mut(
+                        curr_a,
+                        curr_and_change_b.map(|(curr_b, _)| curr_b),
+                        curr_and_change_c.map(|(curr_c, _)| curr_c),
+                        f,
+                    );
+                }
+
+                if let Some((_, change_b)) = curr_and_change_b {
+                    debug_assert!(change_b.is_empty());
+                }
+                if let Some((_, change_c)) = curr_and_change_c {
+                    debug_assert!(change_c.is_empty());
+                }
+            }
+            IrMask::TupleOrStruct(a) => {
+                let b = b.map(|b| unwrap_match!(b, IrMask::TupleOrStruct(b) => b));
+                let c = c.map(|c| unwrap_match!(c, IrMask::TupleOrStruct(c) => c));
 
                 for i in 0..a.len() {
                     let b = b.map(|b| &b[i]);
                     let c = c.map(|c| &c[i]);
-                    Self::zip3_maybe_for_each(&mut a[i], b, c, f);
+                    Self::zip3_for_each_mut(&mut a[i], b, c, f);
                 }
             }
         }
     }
+}
+
+// TODO add some rust tests for this, this is way to sketchy
+// TODO this is all so much code, is there no way to compact this?
+// TODO only return the iterators for the start/end case, instead of having to support arbitrary iterators?
+impl<T: Clone> IrMaskArray<T> {
+    fn find_change(&self, index: &BigUint, assert_exists: bool) -> Option<usize> {
+        if index.is_zero() {
+            None
+        } else {
+            let change = self.change.binary_search_by_key(&index, get_change_index);
+            match change {
+                Ok(change) => Some(change),
+                Err(change) => {
+                    assert!(!assert_exists);
+                    Some(change)
+                }
+            }
+        }
+    }
+
+    fn for_each<'a>(&'a self, range: ClosedRange<&BigUint>, mut f: impl FnMut(&'a IrMask<T>)) {
+        // empty range, would hit edge cases later
+        if range.is_empty() {
+            return;
+        }
+        let ClosedRange { start, end } = range;
+
+        // figure out indices (and visit start if necessary)
+        let end_change = self.find_change(end, false).unwrap();
+        let start_change = match self.find_change(start, false) {
+            None => {
+                f(self.start.as_ref().unwrap());
+                0
+            }
+            Some(change) => change,
+        };
+
+        // visit change
+        self.change[start_change..end_change].iter().for_each(|(_, m)| f(m));
+    }
+
+    fn for_each_mut<'a>(&'a mut self, range: ClosedRange<&BigUint>, mut f: impl FnMut(&'a mut IrMask<T>)) {
+        // empty range, would hit edge cases later
+        if range.is_empty() {
+            return;
+        }
+
+        // ensure start and end-1 exist as points to mutate
+        let ClosedRange { start, end } = range;
+        let end_1 = end.sub_1().unwrap();
+        self.ensure_change_points([start, &end_1]);
+
+        // figure out indices (and visit start if necessary)
+        let end_change = self.find_change(end, true).unwrap();
+        let start_change = match self.find_change(start, true) {
+            None => {
+                f(self.start.as_mut().unwrap());
+                0
+            }
+            Some(change) => change,
+        };
+
+        // visit change
+        self.change[start_change..end_change].iter_mut().for_each(|(_, m)| f(m));
+    }
+
+    /// Ensure the given indices have dedicated slots, either as `start` (for index 0) or as `change` entries.
+    /// `indices` must be non-decreasing, duplicate indices are allowed.
+    fn ensure_change_points<'a>(&mut self, indices: impl IntoIterator<Item = &'a BigUint>) {
+        let IrMaskArray { start, change } = self;
+        let indices = indices.into_iter();
+
+        let Some(start) = start else {
+            assert!(indices.is_empty());
+            return;
+        };
+
+        // TODO actual fast implementation
+        for new_index in indices {
+            if new_index.is_zero() {
+                // zero index is start, does not need a change index
+                continue;
+            }
+
+            match change.binary_search_by_key(&new_index, get_change_index) {
+                Ok(_) => {
+                    // key already exists, do nothing
+                }
+                Err(change_index) => {
+                    // key does not yet exist, needs to be inserted with a copy of the previous value
+                    let prev_value = if change_index == 0 {
+                        (**start).clone()
+                    } else {
+                        change[change_index - 1].1.clone()
+                    };
+                    change.insert(change_index, (new_index.clone(), prev_value))
+                }
+            }
+        }
+    }
+
+    fn ensure_change_point<'a>(&mut self, index: &BigUint) -> &mut IrMask<T> {
+        self.ensure_change_points([index]);
+        match self.find_change(index, true) {
+            None => self.start.as_mut().unwrap(),
+            Some(change) => &mut self.change[change].1,
+        }
+    }
+}
+
+fn get_change_index<T>(x: &(BigUint, IrMask<T>)) -> &BigUint {
+    &x.0
 }
 
 impl IrMask<bool> {
@@ -836,23 +1109,28 @@ impl IrMask<bool> {
                 }
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
+                    let len_1 = match len.sub_1() {
+                        Ok(len_1) => len_1,
+                        Err(IsZero) => return Ok(()),
+                    };
 
-                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
-                    let len = usize::try_from(len).unwrap_or_else(|_| todo!());
-                    if len == 0 {
-                        return Ok(());
-                    }
+                    let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                    let start_int = unwrap_uint(module, vars, start);
 
-                    match unwrap_int(module, vars, start) {
+                    match start_int {
                         IntKind::Single(start) => {
-                            let slice = &mut slf[start..][..len];
-                            slice.iter_mut().for_each(|v| v.fill(true));
+                            let range_full = ClosedRange {
+                                start: &start,
+                                end: &(&start + len),
+                            };
+                            slf.for_each_mut(range_full, |v| v.fill(true))
                         }
                         IntKind::Range(start_range) => {
-                            let full_range = start_range.start..start_range.end + len - 1;
-                            let full_slice = &mut slf[full_range];
-
-                            IrMask::write_steps_impl_dyn(full_slice, module, process_kind, vars, &[], None)
+                            let full_range = ClosedRange {
+                                start: &start_range.start,
+                                end: &(&start_range.start + len_1),
+                            };
+                            IrMask::write_steps_impl_dyn(slf, full_range, module, process_kind, vars, &[], None)
                                 .map_err(|()| DynamicDriveError::ArraySlice)?;
                         }
                     }
@@ -864,22 +1142,31 @@ impl IrMask<bool> {
 
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                let index_int = unwrap_uint(module, vars, index);
 
-                match unwrap_int(module, vars, index) {
+                match index_int {
                     IntKind::Single(index) => {
-                        slf[index].write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
+                        let m = slf.ensure_change_point(&index);
+                        m.write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
                     }
                     IntKind::Range(index_range) => {
-                        let index_slice = &mut slf[index_range];
-
-                        IrMask::write_steps_impl_dyn(index_slice, module, process_kind, vars, steps_scalar, step_slice)
-                            .map_err(|()| DynamicDriveError::ArrayIndex)?;
+                        let full_range = ClosedRange::from(index_range.as_ref());
+                        IrMask::write_steps_impl_dyn(
+                            slf,
+                            full_range,
+                            module,
+                            process_kind,
+                            vars,
+                            steps_scalar,
+                            step_slice,
+                        )
+                        .map_err(|()| DynamicDriveError::ArrayIndex)?;
                     }
                 }
             }
             &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::TupleOrStruct(slf) => slf);
                 slf[index].write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
             }
         }
@@ -888,7 +1175,8 @@ impl IrMask<bool> {
     }
 
     fn write_steps_impl_dyn(
-        full_slice: &mut [IrMask<bool>],
+        full_array: &mut IrMaskArray<bool>,
+        full_range: ClosedRange<&BigUint>,
         module: &IrModuleInfo,
         process_kind: ProcessKind,
         vars: &IrVariables,
@@ -898,7 +1186,7 @@ impl IrMask<bool> {
         match process_kind {
             ProcessKind::Clocked => {
                 // always allowed, report everything that is maybe driven
-                full_slice.iter_mut().for_each(|m| {
+                full_array.for_each_mut(full_range, |m| {
                     m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, &mut |s| {
                         s.fill(true)
                     })
@@ -906,9 +1194,12 @@ impl IrMask<bool> {
             }
             ProcessKind::Combinatorial => {
                 // only allowed if everything that could be driven is already driven
-                let fully_driven = full_slice
-                    .iter()
-                    .all(|m| m.all_after_steps(module, vars, steps_scalar, step_slice));
+                // TODO short circuit?
+                let mut fully_driven = true;
+                full_array.for_each(full_range, |m| {
+                    fully_driven &= m.all_after_steps(module, vars, steps_scalar, step_slice);
+                });
+
                 if !fully_driven {
                     return Err(());
                 }
@@ -948,17 +1239,19 @@ impl IrMask<bool> {
                 }
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
+                    let len_1 = match len.sub_1() {
+                        Ok(len_1) => len_1,
+                        Err(IsZero) => return,
+                    };
 
-                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                    let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                    let start_range = unwrap_uint_range(module, vars, start);
 
-                    let start_range = unwrap_int_unified(module, vars, start);
-                    let len = usize::try_from(len).unwrap_or_else(|_| todo!());
-                    if len == 0 {
-                        return;
-                    }
-
-                    let full_range = start_range.start..start_range.end + len - 1;
-                    slf[full_range].iter_mut().for_each(f);
+                    let full_range = ClosedRange {
+                        start: &start_range.start,
+                        end: &(start_range.end + len_1),
+                    };
+                    slf.for_each_mut(full_range, f)
                 }
             }
             return;
@@ -966,15 +1259,15 @@ impl IrMask<bool> {
 
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                let index_range = unwrap_uint_range(module, vars, index);
 
-                let index_range = unwrap_int_unified(module, vars, index);
-                slf[index_range]
-                    .iter_mut()
-                    .for_each(|x| x.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f))
+                slf.for_each_mut(ClosedRange::from(index_range.as_ref()), |m| {
+                    m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f)
+                })
             }
             &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::TupleOrStruct(slf) => slf);
                 slf[index].for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f)
             }
         }
@@ -995,17 +1288,19 @@ impl IrMask<bool> {
                 }
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
+                    let len_1 = match len.sub_1() {
+                        Ok(len_1) => len_1,
+                        Err(IsZero) => return,
+                    };
 
-                    let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                    let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                    let start_range = unwrap_uint_range(module, vars, start);
 
-                    let start_range = unwrap_int_unified(module, vars, start);
-                    let len = usize::try_from(len).unwrap_or_else(|_| todo!());
-                    if len == 0 {
-                        return;
-                    }
-
-                    let full_range = start_range.start..start_range.end + len - 1;
-                    slf[full_range].iter().for_each(f);
+                    let full_range = ClosedRange {
+                        start: &start_range.start,
+                        end: &(start_range.end + len_1),
+                    };
+                    slf.for_each(full_range, f)
                 }
             }
             return;
@@ -1013,15 +1308,16 @@ impl IrMask<bool> {
 
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
 
-                let index_range = unwrap_int_unified(module, vars, index);
-                slf[index_range]
-                    .iter()
-                    .for_each(|x| x.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f))
+                let index_range = unwrap_uint_range(module, vars, index);
+
+                slf.for_each(ClosedRange::from(index_range.as_ref()), |m| {
+                    m.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f)
+                })
             }
             &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
-                let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
+                let slf = unwrap_match!(self, IrMask::TupleOrStruct(slf) => slf);
                 slf[index].for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f)
             }
         }
@@ -1029,24 +1325,21 @@ impl IrMask<bool> {
 }
 
 enum IntKind {
-    Single(usize),
-    Range(std::ops::Range<usize>),
+    Single(BigUint),
+    Range(ClosedNonEmptyRange<BigUint>),
 }
 
-fn unwrap_int(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -> IntKind {
+fn unwrap_uint(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -> IntKind {
     if let IrExpression::Int(value) = value {
-        IntKind::Single(usize::try_from(value).unwrap_or_else(|_| todo!()))
+        IntKind::Single(BigUint::try_from(value).unwrap())
     } else {
-        let range = value.ty(&module.large, &module.signals, vars).unwrap_int();
-        let start = usize::try_from(&range.start).unwrap_or_else(|_| todo!());
-        let end = usize::try_from(&range.end).unwrap_or_else(|_| todo!());
-        IntKind::Range(start..end)
+        IntKind::Range(unwrap_uint_range(module, vars, value))
     }
 }
 
-fn unwrap_int_unified(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -> std::ops::Range<usize> {
-    let range = value.ty(&module.large, &module.signals, vars).unwrap_int();
-    let start = usize::try_from(&range.start).unwrap_or_else(|_| todo!());
-    let end = usize::try_from(&range.end).unwrap_or_else(|_| todo!());
-    start..end
+fn unwrap_uint_range(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpression) -> ClosedNonEmptyRange<BigUint> {
+    value
+        .ty(&module.large, &module.signals, vars)
+        .unwrap_int()
+        .map(|v| BigUint::try_from(v).unwrap())
 }

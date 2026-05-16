@@ -27,7 +27,7 @@ use crate::syntax::ast::{
     ExpressionKind, GeneralIdentifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::big_int::{AnyInt, BigInt, BigUint};
+use crate::util::big_int::{AnyInt, BigInt, BigUint, IsZero};
 use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
@@ -1586,7 +1586,7 @@ fn eval_int_ty_call(
             })?;
 
             let range = if target_signed {
-                let width_m1 = BigUint::try_from(width - 1u8).map_err(|_| {
+                let width_m1 = width.sub_1().map_err(|_: IsZero| {
                     diags.report_error_simple(
                         "zero-width signed integers are not allowed",
                         arg.span,
