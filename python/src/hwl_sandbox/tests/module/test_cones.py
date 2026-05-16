@@ -208,3 +208,29 @@ def test_clocked_assign_dyn_slice():
     }
     """
     compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_assign_conditional_multiple_signals_no_duplicates():
+    # check that we only get a single error per signal, but do get errors for all signals
+    src = """
+    module top ports(b: in async bool, c: in async bool) {
+        wire v: async bool;
+        wire w: async bool;
+        comb {
+            if (b) {
+                if (c) {
+                    w = true;
+                }
+                v = true;
+            }
+        }
+    }
+    """
+
+    with pytest.raises(hwl.DiagnosticException) as e:
+        _ = compile_custom(src).resolve("top.top")
+
+    messages = e.value.messages
+    assert len(messages) == 2
+    for m in messages:
+        assert "driver mismatch between conditional branches" in m

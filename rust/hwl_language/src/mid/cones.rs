@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
@@ -7,7 +7,7 @@ use crate::mid::ir::{
 };
 use crate::syntax::pos::Span;
 use crate::util::Never;
-use crate::util::data::chain_keys;
+use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools};
@@ -15,7 +15,6 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
-// TODO actually record info
 // TODO check for cycles somewhere, maybe even here
 // TODO record instance cones
 pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
@@ -229,29 +228,19 @@ fn compute_clocked_process_cones(
         clock_block,
     } = proc;
 
-    let reads = {
-        // we only need to temporarily track drives to avoid false-positive reads
-        let mut reads = IndexMap::new();
-        let mut drives = Drives::root();
-        compute_block_cones(
-            diags,
-            module,
-            ProcessKind::Clocked,
-            variables,
-            clock_block,
-            &mut reads,
-            &mut drives,
-        )?;
-        reads
-    };
+    let cones_raw = compute_block_cones(diags, module, ProcessKind::Clocked, variables, clock_block)?;
 
     // the actual drives are just all the registers declared by this process
+    // TODO should we track more specific drives anyway?
     let drives = registers
         .iter()
         .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
         .collect();
 
-    Ok(Cones { reads, drives })
+    Ok(Cones {
+        reads: cones_raw.reads,
+        drives,
+    })
 }
 
 #[derive(Debug)]
@@ -267,23 +256,7 @@ fn compute_combinatorial_process_cones(
     proc: &IrCombinatorialProcess,
 ) -> DiagResult<Cones> {
     let IrCombinatorialProcess { variables, block } = proc;
-
-    let mut reads = IndexMap::new();
-    let mut drives = Drives::root();
-    compute_block_cones(
-        diags,
-        module,
-        ProcessKind::Combinatorial,
-        variables,
-        block,
-        &mut reads,
-        &mut drives,
-    )?;
-
-    Ok(Cones {
-        reads,
-        drives: drives.map,
-    })
+    compute_block_cones(diags, module, ProcessKind::Combinatorial, variables, block)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -304,14 +277,47 @@ fn compute_block_cones(
     process_kind: ProcessKind,
     vars: &IrVariables,
     block: &IrBlock,
+) -> DiagResult<Cones> {
+    let mut signal_errors = IndexMap::new();
+    let mut reads = IndexMap::new();
+    let mut drives = Drives::root();
+
+    compute_block_cones_impl(
+        diags,
+        module,
+        process_kind,
+        vars,
+        block,
+        &mut signal_errors,
+        &mut reads,
+        &mut drives,
+    );
+
+    if let Some(&e) = signal_errors.values().next() {
+        Err(e)
+    } else {
+        Ok(Cones {
+            reads,
+            drives: drives.map,
+        })
+    }
+}
+
+fn compute_block_cones_impl(
+    diags: &Diagnostics,
+    module: &IrModuleInfo,
+    process_kind: ProcessKind,
+    vars: &IrVariables,
+    block: &IrBlock,
+    signal_errors: &mut IndexMap<IrSignal, DiagError>,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
     drives: &mut Drives,
-) -> DiagResult {
+) {
     let IrBlock { statements } = block;
     for stmt in statements {
         match &stmt.inner {
             IrStatement::Assign(target, source) => {
-                let IrAssignmentTarget { base, steps } = target;
+                let &IrAssignmentTarget { base, ref steps } = target;
                 let IrTargetSteps {
                     steps_scalar,
                     step_slice,
@@ -332,24 +338,25 @@ fn compute_block_cones(
                 }
                 record_expression_reads(module, vars, drives, reads, source);
 
-                // record writes
+                // record signal writes
+                // ignore if this signal already has an error, to avoid noise
                 let base = match base {
-                    IrSignalOrVariable::Signal(base) => *base,
-                    IrSignalOrVariable::Variable(_) => {
-                        // we don't care about variables
-                        continue;
+                    IrSignalOrVariable::Signal(base) => {
+                        if signal_errors.contains_key(&base) {
+                            continue;
+                        }
+                        base
                     }
+                    IrSignalOrVariable::Variable(_) => continue,
                 };
 
                 let curr = drives.curr_mut(module, base);
                 match curr.write_steps(module, process_kind, vars, steps) {
                     Ok(()) => {}
                     Err(e) => {
-                        // TODO continue on after whitelisting this signal (in this branch) to report multiple errors at once?
                         // TODO expand this report to include much more information,
                         //   in particular which step is causing the issue and which parts were not yet driven
                         // TODO include examples in .[]. format?
-
                         let kind_str = match e {
                             DynamicDriveError::ArrayIndex => "index",
                             DynamicDriveError::ArraySlice => "slice",
@@ -362,12 +369,21 @@ fn compute_block_cones(
                         )
                             .add_footer_hint("This does not create valid combinatorial logic.\nUse a constant target or do a default full assignment beforehand.")
                             .report(diags);
-                        return Err(e);
+                        signal_errors.insert_first(base, e);
                     }
                 }
             }
             IrStatement::Block(stmt_inner) => {
-                compute_block_cones(diags, module, process_kind, vars, stmt_inner, reads, drives)?;
+                compute_block_cones_impl(
+                    diags,
+                    module,
+                    process_kind,
+                    vars,
+                    stmt_inner,
+                    signal_errors,
+                    reads,
+                    drives,
+                );
             }
             IrStatement::If(stmt_inner) => {
                 let IrIfStatement {
@@ -381,18 +397,41 @@ fn compute_block_cones(
 
                 // visit then
                 let mut then_drivers = drives.new_child();
-                compute_block_cones(diags, module, process_kind, vars, then_block, reads, &mut then_drivers)?;
+                compute_block_cones_impl(
+                    diags,
+                    module,
+                    process_kind,
+                    vars,
+                    then_block,
+                    signal_errors,
+                    reads,
+                    &mut then_drivers,
+                );
                 let then_map = then_drivers.map;
 
                 // visit else
                 let mut else_drivers = drives.new_child();
                 if let Some(else_block) = else_block {
-                    compute_block_cones(diags, module, process_kind, vars, else_block, reads, &mut else_drivers)?;
+                    compute_block_cones_impl(
+                        diags,
+                        module,
+                        process_kind,
+                        vars,
+                        else_block,
+                        signal_errors,
+                        reads,
+                        &mut else_drivers,
+                    );
                 }
                 let else_map = else_drivers.map;
 
                 // merge
                 for &signal in chain_keys(&then_map, &else_map) {
+                    // skip signals that already have errors
+                    if signal_errors.contains_key(&signal) {
+                        continue;
+                    }
+
                     let mut any_mismatch = false;
                     IrMask::zip3_maybe_for_each(
                         drives.curr_mut(module, signal),
@@ -429,7 +468,7 @@ fn compute_block_cones(
                             .add_info(signal.span(module), "for this signal")
                             .add_footer_hint("This does not create valid combinatorial logic.\nEnsure both branches drive the same signal (subset) or do a default full assignment beforehand.")
                             .report(diags);
-                        return Err(e);
+                        signal_errors.insert_first(signal, e);
                     }
                 }
             }
@@ -441,7 +480,7 @@ fn compute_block_cones(
                     // this is pessimistic, but safe:
                     //   we do not use the fact that the index variable is known in each iteration,
                     //   which considers both reads and writes to potentially access too much
-                    compute_block_cones(diags, module, process_kind, vars, block, reads, drives)?;
+                    compute_block_cones_impl(diags, module, process_kind, vars, block, signal_errors, reads, drives);
                 }
             }
             IrStatement::Print(pieces) => {
@@ -464,8 +503,6 @@ fn compute_block_cones(
             }
         }
     }
-
-    Ok(())
 }
 
 fn record_expression_reads(
