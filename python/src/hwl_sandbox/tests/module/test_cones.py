@@ -399,3 +399,100 @@ def test_comb_assign_conditional_multiple_signals_no_duplicates():
     assert len(messages) == 2
     for m in messages:
         assert "driver mismatch between conditional branches" in m
+
+
+def test_dyn_array_index_full():
+    # test that array cone checking works properly, for every possible combination of indices
+    src = """
+    module top(N: int, I: [_]bool, J: int) ports() {
+        wire w: async [N]bool;
+        comb {
+            // drive some subset of the wire
+            for (i in 0..N) {
+                if (I[i]) {
+                    w[i] = false;
+                }
+            }
+            // read the entire wire
+            val v = w;
+            // drive some extra index, this should only be accepted if we already drove it earlier
+            w[J] = true;
+        }
+        comb {
+            // drive the rest of the bits to supress the warning
+            for (i in 0..N) {
+                if (!I[i]) {
+                    w[i] = false;
+                }
+            }
+        }
+    }
+    """
+    n = 4
+
+    any_valid = False
+    any_invalid = False
+    for i_mask in range(2 ** n):
+        i_array = [i_mask & (1 << i) != 0 for i in range(n)]
+        for j in range(n):
+            valid = i_array[j]
+
+            top = compile_custom(src).resolve("top.top")
+            if valid:
+                _ = top(N=n, I=i_array, J=j)
+                any_valid = True
+            else:
+                with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+                    _ = top(N=n, I=i_array, J=j)
+                any_invalid = True
+
+    assert any_valid and any_invalid
+
+
+def test_dyn_array_index_slice_full():
+    # test that array cone checking works properly, for every possible combination of indices
+    src = """
+    module top(N: int, M: int, I: [_]bool, J: int) ports() {
+        wire w: async [N]bool;
+        comb {
+            // drive some subset of the wire
+            for (i in 0..N) {
+                if (I[i]) {
+                    w[i] = false;
+                }
+            }
+            // read the entire wire
+            val v = w;
+            // drive some extra slice, this should only be accepted if we already drove all involved wires earlier
+            w[J+..M] = [true] * M;
+        }
+        comb {
+            // drive the rest of the bits to supress the warning
+            for (i in 0..N) {
+                if (!I[i]) {
+                    w[i] = false;
+                }
+            }
+        }
+    }
+    """
+    n = 4
+    m = 2
+
+    any_valid = False
+    any_invalid = False
+    for i_mask in range(2 ** n):
+        i_array = [i_mask & (1 << i) != 0 for i in range(n)]
+        for j in range(n - m):
+            valid = all(i_array[j:j + m])
+
+            top = compile_custom(src).resolve("top.top")
+            if valid:
+                _ = top(N=n, M=m, I=i_array, J=j)
+                any_valid = True
+            else:
+                with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+                    _ = top(N=n, M=m, I=i_array, J=j)
+                any_invalid = True
+
+    assert any_valid and any_invalid
