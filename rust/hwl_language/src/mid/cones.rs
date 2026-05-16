@@ -233,7 +233,15 @@ fn compute_clocked_process_cones(
         // we only need to temporarily track drives to avoid false-positive reads
         let mut reads = IndexMap::new();
         let mut drives = Drives::root();
-        compute_block_cones(diags, module, variables, clock_block, &mut reads, &mut drives)?;
+        compute_block_cones(
+            diags,
+            module,
+            ProcessKind::Clocked,
+            variables,
+            clock_block,
+            &mut reads,
+            &mut drives,
+        )?;
         reads
     };
 
@@ -262,12 +270,26 @@ fn compute_combinatorial_process_cones(
 
     let mut reads = IndexMap::new();
     let mut drives = Drives::root();
-    compute_block_cones(diags, module, variables, block, &mut reads, &mut drives)?;
+    compute_block_cones(
+        diags,
+        module,
+        ProcessKind::Combinatorial,
+        variables,
+        block,
+        &mut reads,
+        &mut drives,
+    )?;
 
     Ok(Cones {
         reads,
         drives: drives.map,
     })
+}
+
+#[derive(Debug, Copy, Clone)]
+enum ProcessKind {
+    Clocked,
+    Combinatorial,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -279,6 +301,7 @@ enum DynamicDriveError {
 fn compute_block_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
+    process_kind: ProcessKind,
     vars: &IrVariables,
     block: &IrBlock,
     reads: &mut IndexMap<IrSignal, IrMask<bool>>,
@@ -319,7 +342,7 @@ fn compute_block_cones(
                 };
 
                 let curr = drives.curr_mut(module, base);
-                match curr.write_steps(module, vars, steps) {
+                match curr.write_steps(module, process_kind, vars, steps) {
                     Ok(()) => {}
                     Err(e) => {
                         // TODO continue on after whitelisting this signal (in this branch) to report multiple errors at once?
@@ -344,7 +367,7 @@ fn compute_block_cones(
                 }
             }
             IrStatement::Block(stmt_inner) => {
-                compute_block_cones(diags, module, vars, stmt_inner, reads, drives)?;
+                compute_block_cones(diags, module, process_kind, vars, stmt_inner, reads, drives)?;
             }
             IrStatement::If(stmt_inner) => {
                 let IrIfStatement {
@@ -358,19 +381,19 @@ fn compute_block_cones(
 
                 // visit then
                 let mut then_drivers = drives.new_child();
-                compute_block_cones(diags, module, vars, then_block, reads, &mut then_drivers)?;
+                compute_block_cones(diags, module, process_kind, vars, then_block, reads, &mut then_drivers)?;
                 let then_map = then_drivers.map;
 
                 // visit else
                 let mut else_drivers = drives.new_child();
                 if let Some(else_block) = else_block {
-                    compute_block_cones(diags, module, vars, else_block, reads, &mut else_drivers)?;
+                    compute_block_cones(diags, module, process_kind, vars, else_block, reads, &mut else_drivers)?;
                 }
                 let else_map = else_drivers.map;
 
                 // merge
                 for &signal in chain_keys(&then_map, &else_map) {
-                    let mut any_err = false;
+                    let mut any_mismatch = false;
                     IrMask::zip3_maybe_for_each(
                         drives.curr_mut(module, signal),
                         then_map.get(&signal),
@@ -384,14 +407,20 @@ fn compute_block_cones(
                             // check that children match
                             let then_value = then_value.copied().unwrap_or(false);
                             let else_value = else_value.copied().unwrap_or(false);
-                            any_err |= then_value != else_value;
+                            any_mismatch |= then_value != else_value;
 
-                            // store union, assume driven to avoid future false positives
+                            // store union, assume driven because:
+                            // * for clocked blocks, this is correct
+                            // * for combinatorial blocks, this avoids false negatives in driver tracking
                             *parent |= then_value | else_value;
                         },
                     );
-                    if any_err {
-                        // TODO include info where signal was written and which parts were written
+
+                    let allow_driver_mismatch = match process_kind {
+                        ProcessKind::Clocked => true,
+                        ProcessKind::Combinatorial => false,
+                    };
+                    if any_mismatch && !allow_driver_mismatch {
                         let e = DiagnosticError::new(
                             "driver mismatch between conditional branches",
                             stmt.span,
@@ -412,7 +441,7 @@ fn compute_block_cones(
                     // this is pessimistic, but safe:
                     //   we do not use the fact that the index variable is known in each iteration,
                     //   which considers both reads and writes to potentially access too much
-                    compute_block_cones(diags, module, vars, block, reads, drives)?;
+                    compute_block_cones(diags, module, process_kind, vars, block, reads, drives)?;
                 }
             }
             IrStatement::Print(pieces) => {
@@ -774,6 +803,7 @@ impl IrMask<bool> {
     fn write_steps(
         &mut self,
         module: &IrModuleInfo,
+        process_kind: ProcessKind,
         vars: &IrVariables,
         steps: &IrTargetSteps,
     ) -> Result<(), DynamicDriveError> {
@@ -781,17 +811,19 @@ impl IrMask<bool> {
             steps_scalar,
             step_slice,
         } = steps;
-        self.write_steps_impl(module, vars, steps_scalar, step_slice.as_ref())
+        self.write_steps_impl(module, process_kind, vars, steps_scalar, step_slice.as_ref())
     }
 
     fn write_steps_impl(
         &mut self,
         module: &IrModuleInfo,
+        process_kind: ProcessKind,
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
     ) -> Result<(), DynamicDriveError> {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
+            // no remaining scalar steps, only maybe the final scalar step left
             match step_slice {
                 None => {
                     self.fill(true);
@@ -808,16 +840,11 @@ impl IrMask<bool> {
                             slice.iter_mut().for_each(|v| v.fill(true));
                         }
                         IntKind::Range(start_range) => {
-                            let index_range = start_range.start..start_range.end + len - 1;
+                            let full_range = start_range.start..start_range.end + len - 1;
+                            let full_slice = &mut slf[full_range];
 
-                            // check no partially written elements in range
-                            let fully_driven = slf[index_range].iter().all(|m| m.all(|&b| b));
-                            if !fully_driven {
-                                return Err(DynamicDriveError::ArraySlice);
-                            }
-
-                            // we don't need to set anything,
-                            //   we've just checked that everything that could be written was already written
+                            IrMask::write_steps_impl_dyn(full_slice, module, process_kind, vars, &[], None)
+                                .map_err(|()| DynamicDriveError::ArraySlice)?;
                         }
                     }
                 }
@@ -832,25 +859,53 @@ impl IrMask<bool> {
 
                 match unwrap_int(module, vars, index) {
                     IntKind::Single(index) => {
-                        slf[index].write_steps_impl(module, vars, steps_scalar, step_slice)?;
+                        slf[index].write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
                     }
                     IntKind::Range(index_range) => {
-                        // check no partially written elements in range
-                        let fully_driven = slf[index_range]
-                            .iter()
-                            .all(|m| m.all_after_steps(module, vars, steps_scalar, step_slice));
-                        if !fully_driven {
-                            return Err(DynamicDriveError::ArrayIndex);
-                        }
+                        let index_slice = &mut slf[index_range];
 
-                        // we don't need to set anything,
-                        //   we've just checked that everything that could be written was already written
+                        IrMask::write_steps_impl_dyn(index_slice, module, process_kind, vars, &[], None)
+                            .map_err(|()| DynamicDriveError::ArrayIndex)?;
                     }
                 }
             }
             &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
                 let slf = unwrap_match!(self, IrMask::Compound(slf) => slf);
-                slf[index].write_steps_impl(module, vars, steps_scalar, step_slice)?;
+                slf[index].write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_steps_impl_dyn(
+        full_slice: &mut [IrMask<bool>],
+        module: &IrModuleInfo,
+        process_kind: ProcessKind,
+        vars: &IrVariables,
+        steps_scalar: &[IrTargetStepScalar],
+        step_slice: Option<&IrTargetStepSlice>,
+    ) -> Result<(), ()> {
+        match process_kind {
+            ProcessKind::Clocked => {
+                // always allowed, report everything that is maybe driven
+                full_slice.iter_mut().for_each(|m| {
+                    m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, &mut |s| {
+                        s.fill(true)
+                    })
+                });
+            }
+            ProcessKind::Combinatorial => {
+                // only allowed if everything that could be driven is already driven
+                let fully_driven = full_slice
+                    .iter()
+                    .all(|m| m.all_after_steps(module, vars, steps_scalar, step_slice));
+                if !fully_driven {
+                    return Err(());
+                }
+
+                // we don't need to set anything,
+                //   we've just checked that everything that could be written was already written
             }
         }
 

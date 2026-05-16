@@ -136,3 +136,75 @@ def test_comb_read_after_write():
     }
     """
     compile_custom(src).resolve_module("top.top")
+
+
+def test_comb_multi_step_cone():
+    src = """
+    module top(c: bool) ports(x: in async bool) {
+        wire w: async [4]Tuple(bool, uint(8));
+        comb {
+            for (i in 0..4) { w[i].0 = false; }
+            
+            if (x) {
+                if (c) {
+                    w[0].0 = true;
+                } else {
+                    w[0].1 = 1;
+                }
+            } 
+        }
+        // drive the rest of the wire
+        comb {
+            for (i in 0..4) {
+                if (c) {
+                    w[i].1 = 0;
+                } else {
+                    w[i].0 = false;
+                }
+            }
+        }
+    }
+    """
+    top = compile_custom(src).resolve("top.top")
+
+    top(c=True)
+    with pytest.raises(hwl.DiagnosticException, match="driver mismatch between conditional branches"):
+        top(c=False)
+
+
+def test_clocked_assign_conditional():
+    src = """
+    module top ports(clk: in clock, sync(clk) { c: in bool, x: in bool }) {
+        clocked(clk) {
+            reg r: bool = undef;
+            if (c) {
+                r = x;
+            } 
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_clocked_assign_dyn_index():
+    src = """
+    module top ports(clk: in clock, sync(clk) { i: in int(0..4) }) {
+        clocked(clk) {
+            reg r: [4]bool = undef;
+            r[i] = false; 
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
+
+
+def test_clocked_assign_dyn_slice():
+    src = """
+    module top ports(clk: in clock, sync(clk) { i: in int(0..3) }) {
+        clocked(clk) {
+            reg r: [4]bool = undef;
+            r[i+..2] = [false, false]; 
+        }
+    }
+    """
+    compile_custom(src).resolve_module("top.top")
