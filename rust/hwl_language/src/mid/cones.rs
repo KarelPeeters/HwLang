@@ -237,7 +237,7 @@ fn compute_clocked_process_cones(
         reads
     };
 
-    // the actual drives are just all the registers assigned to this process
+    // the actual drives are just all the registers declared by this process
     let drives = registers
         .iter()
         .map(|&signal| (signal, IrMask::new(signal.ty(module), true)))
@@ -270,7 +270,11 @@ fn compute_combinatorial_process_cones(
     })
 }
 
-struct UndrivenConditionalDrive;
+#[derive(Debug, Copy, Clone)]
+enum DynamicDriveError {
+    ArrayIndex,
+    ArraySlice,
+}
 
 fn compute_block_cones(
     diags: &Diagnostics,
@@ -317,18 +321,21 @@ fn compute_block_cones(
                 let curr = drives.curr_mut(module, base);
                 match curr.write_steps(module, vars, steps) {
                     Ok(()) => {}
-                    Err(UndrivenConditionalDrive) => {
+                    Err(e) => {
                         // TODO continue on after whitelisting this signal (in this branch) to report multiple errors at once?
                         // TODO expand this report to include much more information,
                         //   in particular which step is causing the issue and which parts were not yet driven
-                        // TODO include whether this was due to dynamic indexing, dynamic slicing or a true conditional
                         // TODO include examples in .[]. format?
-                        // TODO add hints: assign default beforehand
+
+                        let kind_str = match e {
+                            DynamicDriveError::ArrayIndex => "index",
+                            DynamicDriveError::ArraySlice => "slice",
+                        };
 
                         let e = DiagnosticError::new(
-                            "dynamic array assignment to not yet driven signal",
+                            format!("dynamic array {kind_str} assignment to not yet driven signal"),
                             stmt.span,
-                            "dynamic array assignment here",
+                            format!("dynamic array {kind_str} assignment here"),
                         )
                             .add_footer_hint("This does not create valid combinatorial logic.\nUse a constant target or do a default full assignment beforehand.")
                             .report(diags);
@@ -769,7 +776,7 @@ impl IrMask<bool> {
         module: &IrModuleInfo,
         vars: &IrVariables,
         steps: &IrTargetSteps,
-    ) -> Result<(), UndrivenConditionalDrive> {
+    ) -> Result<(), DynamicDriveError> {
         let IrTargetSteps {
             steps_scalar,
             step_slice,
@@ -783,7 +790,7 @@ impl IrMask<bool> {
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-    ) -> Result<(), UndrivenConditionalDrive> {
+    ) -> Result<(), DynamicDriveError> {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
                 None => {
@@ -806,7 +813,7 @@ impl IrMask<bool> {
                             // check no partially written elements in range
                             let fully_driven = slf[index_range].iter().all(|m| m.all(|&b| b));
                             if !fully_driven {
-                                return Err(UndrivenConditionalDrive);
+                                return Err(DynamicDriveError::ArraySlice);
                             }
 
                             // we don't need to set anything,
@@ -833,7 +840,7 @@ impl IrMask<bool> {
                             .iter()
                             .all(|m| m.all_after_steps(module, vars, steps_scalar, step_slice));
                         if !fully_driven {
-                            return Err(UndrivenConditionalDrive);
+                            return Err(DynamicDriveError::ArrayIndex);
                         }
 
                         // we don't need to set anything,

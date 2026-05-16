@@ -50,7 +50,7 @@ def test_comb_dyn_index():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
+    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
         top(c=False)
 
 
@@ -72,7 +72,7 @@ def test_comb_dyn_index_partial():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
+    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
         top(c=False)
 
 
@@ -91,7 +91,7 @@ def test_comb_dyn_slice():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array assignment to not yet driven signal"):
+    with pytest.raises(hwl.DiagnosticException, match="dynamic array slice assignment to not yet driven signal"):
         top(c=False)
 
 
