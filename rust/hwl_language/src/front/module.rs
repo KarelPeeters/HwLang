@@ -988,7 +988,7 @@ impl BodyContext {
             block: ir_block,
         };
         self.children
-            .push(Spanned::new(stmt.span, IrModuleChild::CombinatorialProcess(process)));
+            .push(Spanned::new(span_keyword, IrModuleChild::CombinatorialProcess(process)));
 
         Ok(())
     }
@@ -1173,7 +1173,7 @@ impl BodyContext {
             clock_block,
         };
         self.children
-            .push(Spanned::new(stmt.span, IrModuleChild::ClockedProcess(process)));
+            .push(Spanned::new(span_keyword, IrModuleChild::ClockedProcess(process)));
 
         Ok(())
     }
