@@ -7,7 +7,7 @@ use crate::mid::ir::{
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
 use crate::util::Never;
-use crate::util::big_int::{BigUint, IsZero};
+use crate::util::big_int::{AnyInt, BigUint, IsZero};
 use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
@@ -213,6 +213,7 @@ enum IrMask<T> {
 
 #[derive(Debug, Clone)]
 struct IrMaskArray<T> {
+    len: BigUint,
     start: Option<Box<IrMask<T>>>,
     change: Vec<(BigUint, IrMask<T>)>,
 }
@@ -700,7 +701,11 @@ impl<T> IrMask<T> {
                     let mask_inner = IrMask::new(ty_inner, init);
                     Some(Box::new(mask_inner))
                 };
-                IrMask::Array(IrMaskArray { start, change: vec![] })
+                IrMask::Array(IrMaskArray {
+                    len: len.clone(),
+                    start,
+                    change: vec![],
+                })
             }
             IrType::Tuple(ty_fields) => {
                 let mask_fields = ty_fields
@@ -738,7 +743,7 @@ impl<T> IrMask<T> {
         fn for_each_leaf_impl<T, B>(slf: &IrMask<T>, f: &mut impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
             match slf {
                 IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(IrMaskArray { start, change }) => {
+                IrMask::Array(IrMaskArray { start, change, .. }) => {
                     if let Some(start) = start {
                         for_each_leaf_impl(start, f)?;
                     }
@@ -757,7 +762,7 @@ impl<T> IrMask<T> {
         ) -> ControlFlow<B> {
             match slf {
                 IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(IrMaskArray { start, change }) => {
+                IrMask::Array(IrMaskArray { start, change, .. }) => {
                     if let Some(start) = start {
                         for_each_leaf_mut_impl(start, f)?;
                     }
@@ -793,10 +798,12 @@ impl<T> IrMask<T> {
             IrMask::Array(IrMaskArray {
                 start: start_a,
                 change: change_a,
+                ..
             }) => {
                 let IrMaskArray {
                     start: start_b,
                     change: change_b,
+                    ..
                 } = unwrap_match!(b, IrMask::Array(b) => b);
 
                 let (start_a, start_b) = match (start_a, start_b) {
@@ -892,6 +899,7 @@ impl<T> IrMask<T> {
                 let IrMaskArray {
                     start: start_a,
                     change: change_a,
+                    ..
                 } = a;
                 let Some(start_a) = start_a else {
                     return;
@@ -901,12 +909,14 @@ impl<T> IrMask<T> {
                     |IrMaskArray {
                          start: start_b,
                          change: change_b,
+                         ..
                      }| { (&**start_b.as_ref().unwrap(), change_b.as_slice()) },
                 );
                 let mut curr_and_change_c = c.map(
                     |IrMaskArray {
                          start: start_c,
                          change: change_c,
+                         ..
                      }| { (&**start_c.as_ref().unwrap(), change_c.as_slice()) },
                 );
 
@@ -970,8 +980,12 @@ impl<T> IrMask<T> {
 // TODO only return the iterators for the start/end case, instead of having to support arbitrary iterators?
 impl<T: Clone> IrMaskArray<T> {
     fn find_change(&self, index: &BigUint, assert_exists: bool) -> Option<usize> {
+        assert!(index <= &self.len);
+
         if index.is_zero() {
             None
+        } else if index == &self.len {
+            Some(self.change.len())
         } else {
             let change = self.change.binary_search_by_key(&index, get_change_index);
             match change {
@@ -991,17 +1005,29 @@ impl<T: Clone> IrMaskArray<T> {
         }
         let ClosedRange { start, end } = range;
 
-        // figure out indices (and visit start if necessary)
+        // figure out indices and visit the segment covering start
         let end_change = self.find_change(end, false).unwrap();
-        let start_change = match self.find_change(start, false) {
-            None => {
-                f(self.start.as_ref().unwrap());
-                0
+        let start_change = if start.is_zero() {
+            f(self.start.as_ref().unwrap());
+            0
+        } else {
+            match self.change.binary_search_by_key(&start, get_change_index) {
+                Ok(change) => {
+                    f(&self.change[change].1);
+                    change + 1
+                }
+                Err(change) => {
+                    if change == 0 {
+                        f(self.start.as_ref().unwrap());
+                    } else {
+                        f(&self.change[change - 1].1);
+                    }
+                    change
+                }
             }
-            Some(change) => change,
         };
 
-        // visit change
+        // visit later change points inside the range
         self.change[start_change..end_change].iter().for_each(|(_, m)| f(m));
     }
 
@@ -1011,10 +1037,10 @@ impl<T: Clone> IrMaskArray<T> {
             return;
         }
 
-        // ensure start and end-1 exist as points to mutate
+        // ensure the first and last elements exist as slots, and end exists as the exclusive boundary
         let ClosedRange { start, end } = range;
         let end_1 = end.sub_1().unwrap();
-        self.ensure_change_points([start, &end_1]);
+        self.ensure_change_points([start, &end_1, end]);
 
         // figure out indices (and visit start if necessary)
         let end_change = self.find_change(end, true).unwrap();
@@ -1033,7 +1059,7 @@ impl<T: Clone> IrMaskArray<T> {
     /// Ensure the given indices have dedicated slots, either as `start` (for index 0) or as `change` entries.
     /// `indices` must be non-decreasing, duplicate indices are allowed.
     fn ensure_change_points<'a>(&mut self, indices: impl IntoIterator<Item = &'a BigUint>) {
-        let IrMaskArray { start, change } = self;
+        let IrMaskArray { len, start, change } = self;
         let indices = indices.into_iter();
 
         let Some(start) = start else {
@@ -1047,6 +1073,11 @@ impl<T: Clone> IrMaskArray<T> {
                 // zero index is start, does not need a change index
                 continue;
             }
+            if new_index == len {
+                // len is an end-exclusive boundary, not a real array element
+                continue;
+            }
+            assert!(new_index < len);
 
             match change.binary_search_by_key(&new_index, get_change_index) {
                 Ok(_) => {
@@ -1062,14 +1093,6 @@ impl<T: Clone> IrMaskArray<T> {
                     change.insert(change_index, (new_index.clone(), prev_value))
                 }
             }
-        }
-    }
-
-    fn ensure_change_point<'a>(&mut self, index: &BigUint) -> &mut IrMask<T> {
-        self.ensure_change_points([index]);
-        match self.find_change(index, true) {
-            None => self.start.as_mut().unwrap(),
-            Some(change) => &mut self.change[change].1,
         }
     }
 }
@@ -1128,7 +1151,7 @@ impl IrMask<bool> {
                         IntKind::Range(start_range) => {
                             let full_range = ClosedRange {
                                 start: &start_range.start,
-                                end: &(&start_range.start + len_1),
+                                end: &(&start_range.end + len_1),
                             };
                             IrMask::write_steps_impl_dyn(slf, full_range, module, process_kind, vars, &[], None)
                                 .map_err(|()| DynamicDriveError::ArraySlice)?;
@@ -1147,8 +1170,18 @@ impl IrMask<bool> {
 
                 match index_int {
                     IntKind::Single(index) => {
-                        let m = slf.ensure_change_point(&index);
-                        m.write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)?;
+                        let end = index.next();
+                        let range = ClosedRange {
+                            start: &index,
+                            end: &end,
+                        };
+                        let mut result = Ok(());
+                        slf.for_each_mut(range, |m| {
+                            result = result.and_then(|()| {
+                                m.write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)
+                            });
+                        });
+                        result?;
                     }
                     IntKind::Range(index_range) => {
                         let full_range = ClosedRange::from(index_range.as_ref());
@@ -1342,4 +1375,19 @@ fn unwrap_uint_range(module: &IrModuleInfo, vars: &IrVariables, value: &IrExpres
         .ty(&module.large, &module.signals, vars)
         .unwrap_int()
         .map(|v| BigUint::try_from(v).unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mid::cones::IrMaskArray;
+
+    #[test]
+    fn mask_array_basics() {
+        // let array = IrMaskArray {
+        //     len: (),
+        //     start: None,
+        //     change: vec![],
+        // }
+        todo!()
+    }
 }
