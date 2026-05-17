@@ -496,3 +496,23 @@ def test_dyn_array_index_slice_full():
                 any_invalid = True
 
     assert any_valid and any_invalid
+
+
+def test_dyn_array_huge():
+    # test that huge arrays can be tracked efficiently (thanks to the sparse array mask data structure)
+    src = """
+    const N = 2**128;
+    module top(c: bool) ports(x: in async [N/2]bool, y: out async [N]bool) {
+        comb {
+            y[..N/2] = x;
+            if (c) {
+                y[N/2..] = y[..N/2];
+            } 
+        }
+    }
+    """
+    top = compile_custom(src).resolve("top.top")
+
+    _ = top(c=True)
+    with pytest.raises(hwl.DiagnosticException, match="port `y` is not fully driven"):
+        _ = top(c=False)
