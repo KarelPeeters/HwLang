@@ -5,7 +5,7 @@ use crate::util::range::ClosedRange;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 
-/// TODO docs
+/// Data structure for arrays that are sparse, not in their values, but in _changes_ to their values.
 ///
 /// For all visitor methods:
 ///   The number of times the callback is called is not necessarily the same as the length of the array or range,
@@ -15,23 +15,23 @@ use std::ops::ControlFlow;
 ///   Range boundry indices are added to the array,
 ///   to ensure modifications to the inner element don't incorrectly affect elements outside the range.
 #[derive(Debug, Clone)]
-pub struct ChangeArray<T> {
+pub struct SparseChangeArray<T> {
     len: BigUint,
     start: Option<T>,
     changes: Vec<(BigUint, T)>,
 }
 
-impl<T> ChangeArray<T> {
-    pub fn new(len: BigUint, init: T) -> ChangeArray<T> {
-        ChangeArray {
+impl<T> SparseChangeArray<T> {
+    pub fn new(len: BigUint, init: T) -> SparseChangeArray<T> {
+        SparseChangeArray {
             len,
             start: Some(init),
             changes: vec![],
         }
     }
 
-    pub fn new_empty() -> ChangeArray<T> {
-        ChangeArray {
+    pub fn new_empty() -> SparseChangeArray<T> {
+        SparseChangeArray {
             len: BigUint::ZERO,
             start: None,
             changes: vec![],
@@ -72,6 +72,7 @@ impl<T> ChangeArray<T> {
         }
     }
 
+    #[allow(clippy::needless_lifetimes)]
     pub fn for_each<'a, B>(&'a self, mut f: impl FnMut(&'a T) -> ControlFlow<B>) -> ControlFlow<B> {
         if let Some(start) = &self.start {
             f(start)?;
@@ -81,6 +82,7 @@ impl<T> ChangeArray<T> {
         }
     }
 
+    #[allow(clippy::needless_lifetimes)]
     pub fn for_each_mut<'a, B>(&'a mut self, mut f: impl FnMut(&'a mut T) -> ControlFlow<B>) -> ControlFlow<B> {
         if let Some(start) = &mut self.start {
             f(start)?;
@@ -90,6 +92,7 @@ impl<T> ChangeArray<T> {
         }
     }
 
+    #[allow(clippy::needless_lifetimes)]
     pub fn for_each_in_range<'a, B>(
         &'a self,
         range: ClosedRange<&BigUint>,
@@ -133,6 +136,7 @@ impl<T> ChangeArray<T> {
             .try_for_each(f)
     }
 
+    #[allow(clippy::needless_lifetimes)]
     pub fn for_each_in_range_mut<'a, B>(
         &'a mut self,
         range: ClosedRange<&BigUint>,
@@ -243,17 +247,17 @@ impl<T> ChangeArray<T> {
     }
 
     pub fn zip2_for_each<U, R>(
-        a: &ChangeArray<T>,
-        b: &ChangeArray<U>,
+        a: &SparseChangeArray<T>,
+        b: &SparseChangeArray<U>,
         mut f: impl FnMut(&T, &U) -> ControlFlow<R>,
     ) -> ControlFlow<R> {
         zip_impl::<Never, _, _, _>(None, Some(a), Some(b), |_, a, b| f(a.unwrap(), b.unwrap()))
     }
 
     pub fn zip3_mut_for_each<U, V, R>(
-        a: &mut ChangeArray<T>,
-        b: Option<&ChangeArray<U>>,
-        c: Option<&ChangeArray<V>>,
+        a: &mut SparseChangeArray<T>,
+        b: Option<&SparseChangeArray<U>>,
+        c: Option<&SparseChangeArray<V>>,
         mut f: impl FnMut(&mut T, Option<&U>, Option<&V>) -> ControlFlow<R>,
     ) -> ControlFlow<R>
     where
@@ -264,9 +268,9 @@ impl<T> ChangeArray<T> {
 }
 
 fn zip_impl<A: Clone, B, C, R>(
-    a: Option<&mut ChangeArray<A>>,
-    b: Option<&ChangeArray<B>>,
-    c: Option<&ChangeArray<C>>,
+    a: Option<&mut SparseChangeArray<A>>,
+    b: Option<&SparseChangeArray<B>>,
+    c: Option<&SparseChangeArray<C>>,
     mut f: impl FnMut(Option<&mut A>, Option<&B>, Option<&C>) -> ControlFlow<R>,
 ) -> ControlFlow<R> {
     // check array lengths match and handle no args or empty array cases
@@ -401,10 +405,10 @@ fn pair_first<A, B>(x: &(A, B)) -> &A {
 #[cfg(test)]
 mod tests {
     use super::zip_impl;
-    use crate::mid::change_array::ChangeArray;
     use crate::util::big_int::BigUint;
     use crate::util::exhaust::exhaust;
     use crate::util::range::ClosedRange;
+    use crate::util::sparse_change_array::SparseChangeArray;
     use crate::util::{Never, ResultNeverExt};
     use indexmap::IndexSet;
     use itertools::{Itertools, enumerate};
@@ -564,9 +568,9 @@ mod tests {
         });
     }
 
-    fn build_from_array<T: Clone + Eq>(array_dense: &[T]) -> ChangeArray<T> {
+    fn build_from_array<T: Clone + Eq>(array_dense: &[T]) -> SparseChangeArray<T> {
         let result = match array_dense.split_first() {
-            None => ChangeArray::new_empty(),
+            None => SparseChangeArray::new_empty(),
             Some((first, rest)) => {
                 let mut changes = vec![];
                 let mut prev = first;
@@ -577,7 +581,7 @@ mod tests {
                     }
                 }
 
-                ChangeArray {
+                SparseChangeArray {
                     len: BigUint::from(array_dense.len()),
                     start: Some(first.clone()),
                     changes,
@@ -588,7 +592,7 @@ mod tests {
         result
     }
 
-    fn assert_array_match(dense: &[u64], change: &ChangeArray<u64>) {
+    fn assert_array_match(dense: &[u64], change: &SparseChangeArray<u64>) {
         assert_eq!(&BigUint::from(dense.len()), change.len());
         for i in 0..dense.len() {
             assert_eq!(&dense[i], change.get(&BigUint::from(i)));

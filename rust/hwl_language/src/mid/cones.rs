@@ -1,5 +1,4 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
-use crate::mid::change_array::ChangeArray;
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
@@ -11,6 +10,7 @@ use crate::util::big_int::{AnyInt, BigUint, IsZero};
 use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
+use crate::util::sparse_change_array::SparseChangeArray;
 use crate::util::{Never, ResultNeverExt};
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
@@ -209,7 +209,7 @@ fn check_combinatorial_self_loops(
 #[derive(Debug, Clone)]
 enum IrMask<T> {
     Scalar(T),
-    Array(Box<ChangeArray<IrMask<T>>>),
+    Array(Box<SparseChangeArray<IrMask<T>>>),
     TupleOrStruct(Vec<IrMask<T>>),
 }
 
@@ -691,10 +691,10 @@ impl<T> IrMask<T> {
             IrType::Bool | IrType::Int(_) | IrType::Enum(_) => IrMask::Scalar(init),
             IrType::Array(ty_inner, len) => {
                 let array = if len.is_zero() {
-                    ChangeArray::new_empty()
+                    SparseChangeArray::new_empty()
                 } else {
                     let mask_inner = IrMask::new(ty_inner, init);
-                    ChangeArray::new(len.clone(), mask_inner)
+                    SparseChangeArray::new(len.clone(), mask_inner)
                 };
                 IrMask::Array(Box::new(array))
             }
@@ -779,7 +779,7 @@ impl<T> IrMask<T> {
             }
             IrMask::Array(a) => {
                 let b = unwrap_match!(b, IrMask::Array(b) => b);
-                ChangeArray::zip2_for_each::<_, Never>(a, b, |a, b| {
+                SparseChangeArray::zip2_for_each::<_, Never>(a, b, |a, b| {
                     Self::zip2_for_each(a, b, f);
                     ControlFlow::Continue(())
                 })
@@ -825,7 +825,7 @@ impl<T> IrMask<T> {
             IrMask::Array(a) => {
                 let b = b.map(|b| unwrap_match!(b, IrMask::Array(b) => &**b));
                 let c = c.map(|c| unwrap_match!(c, IrMask::Array(c) => &**c));
-                ChangeArray::zip3_mut_for_each::<_, _, Never>(a, b, c, |a, b, c| {
+                SparseChangeArray::zip3_mut_for_each::<_, _, Never>(a, b, c, |a, b, c| {
                     Self::zip3_for_each_mut(a, b, c, f);
                     ControlFlow::Continue(())
                 })
@@ -958,7 +958,7 @@ impl IrMask<bool> {
     }
 
     fn write_steps_impl_dyn(
-        full_array: &mut ChangeArray<IrMask<bool>>,
+        full_array: &mut SparseChangeArray<IrMask<bool>>,
         full_range: ClosedRange<&BigUint>,
         module: &IrModuleInfo,
         process_kind: ProcessKind,

@@ -12,6 +12,7 @@ pub mod pool;
 pub mod range;
 pub mod range_multi;
 pub mod regex;
+pub mod sparse_change_array;
 pub mod store;
 pub mod sync;
 
