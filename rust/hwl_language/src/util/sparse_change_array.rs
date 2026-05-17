@@ -23,9 +23,10 @@ pub struct SparseChangeArray<T> {
 
 impl<T> SparseChangeArray<T> {
     pub fn new(len: BigUint, init: T) -> SparseChangeArray<T> {
+        let start = if len.is_zero() { None } else { Some(init) };
         SparseChangeArray {
             len,
-            start: Some(init),
+            start,
             changes: vec![],
         }
     }
