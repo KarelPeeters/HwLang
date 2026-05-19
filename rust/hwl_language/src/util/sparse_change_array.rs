@@ -597,33 +597,45 @@ mod tests {
                     }
                     r
                 };
-                let actual_visit = {
+
+                let mut expected_cover = vec![false; len];
+                expected_cover[range_start as usize..range_end as usize].fill(true);
+
+                let (actual_visit, actual_cover) = {
                     let mut r = vec![];
+                    let mut c = vec![false; len];
                     array_change
-                        .for_each_in_range::<Never>(range.as_ref(), |_, &x| {
+                        .for_each_in_range::<Never>(range.as_ref(), |block, &x| {
                             r.push(x);
+                            cover_check_set(&mut c, block);
                             ControlFlow::Continue(())
                         })
                         .remove_never();
-                    r
+                    (r, c)
                 };
                 assert_eq!(expected_visit, actual_visit);
+                assert_eq!(expected_cover, actual_cover);
 
                 // check mutable visit
                 //   verify that filling a range works the same for dense and change arrays
                 println!("  mutable");
-                let mut array_dense_mut = array_dense.clone();
-                let mut array_change_mut = array_change.clone();
 
+                let mut array_dense_mut = array_dense.clone();
                 array_dense_mut[range_start as usize..range_end as usize].fill(VALUE_LIMIT);
+
+                let mut array_change_mut = array_change.clone();
+                let mut actual_cover_mut = vec![false; len];
+
                 array_change_mut
-                    .for_each_in_range_mut::<Never>(range.as_ref(), |_, x| {
+                    .for_each_in_range_mut::<Never>(range.as_ref(), |block, x| {
                         *x = VALUE_LIMIT;
+                        cover_check_set(&mut actual_cover_mut, block);
                         ControlFlow::Continue(())
                     })
                     .remove_never();
 
                 assert_array_match(&array_dense_mut, &array_change_mut);
+                assert_eq!(expected_cover, actual_cover_mut);
             });
         });
     }
@@ -684,12 +696,15 @@ mod tests {
 
             // run on change
             let mut seen_change = IndexSet::new();
+            let mut cover_change = vec![false; len];
+
             zip_impl(
                 a_pair.as_mut().map(|(_, a)| a),
                 b_pair.as_ref().map(|(_, b)| b),
                 c_pair.as_ref().map(|(_, c)| c),
-                |_, a, b, c| {
+                |block, a, b, c| {
                     op(&mut seen_change, a, b, c);
+                    cover_check_set(&mut cover_change, block);
                     ControlFlow::Continue(())
                 },
             )
@@ -767,6 +782,16 @@ mod tests {
         assert_eq!(&BigUint::from(dense.len()), sparse.len());
         for i in 0..dense.len() {
             assert_eq!(&dense[i], sparse.get(&BigUint::from(i)));
+        }
+    }
+
+    fn cover_check_set(cover: &mut [bool], range: ClosedRange<&BigUint>) {
+        let range = range.map(|x| usize::try_from(x).unwrap());
+        let range = range.start..range.end;
+
+        for i in range {
+            assert!(!cover[i]);
+            cover[i] = true;
         }
     }
 }
