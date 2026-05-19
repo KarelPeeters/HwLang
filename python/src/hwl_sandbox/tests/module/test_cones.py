@@ -520,25 +520,28 @@ def test_dyn_array_huge():
         _ = top(c=False)
 
 
-def test_cones_multiple_drivers_parts():
+def test_cones_multiple_drivers_paths():
     src = """
     struct Foo {
         array: [4][4]bool,
         tuple: Tuple(bool, uint(8)),
-        tuple_nested: Tuple(Tuple(bool)),
+        tuple_nested: Tuple(Tuple(bool, bool)),
+        compound_overdriven: Tuple(bool, bool),
     }
     pub module top ports() {
         wire w: Foo;
         comb {
             w.array = [[false] * 4] * 4;
             w.tuple = (false, 0);
-            w.tuple_nested = ((false,),);
+            w.tuple_nested = ((false, false),);
+            w.compound_overdriven = (false, false);
         }
         comb {
             w.array[0][..2] = [true, true];
             w.array[1][2..] = [true, true];
             w.tuple.1 = 4;
             w.tuple_nested.0.0 = true;
+            w.compound_overdriven = (false, false);
         }
     }
     """
@@ -547,13 +550,15 @@ def test_cones_multiple_drivers_parts():
         "w.array[1][2..4]",
         "w.tuple.1",
         "w.tuple_nested.0.0",
+        "w.compound_overdriven",
     ]
 
     with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers") as e:
         compile_custom(src).resolve_module("top.top")
 
+    print(e.value)
     assert len(e.value.messages) == 1
-    pattern = r"parts with multiple drivers:" + "".join(r"\s*" + re.escape(p) for p in expected_paths)
+    pattern = r"parts with multiple drivers:\n" + "\n".join(r" *" + re.escape(p) for p in expected_paths)
     assert re.search(pattern, e.value.messages[0], re.MULTILINE)
 
     # TODO add test that checks mix of un-driven and over-driven

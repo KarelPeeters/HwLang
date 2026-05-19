@@ -246,25 +246,25 @@ fn build_driver_info_message<T: Eq + Debug>(
     signal_ty: &IrType,
     signal_name: &str,
     mut mask: IrMask<T>,
-    mut cond: impl FnMut(&T) -> bool,
+    cond: impl FnMut(&T) -> bool,
 ) -> String {
     mask.canonicalize();
 
     let mut result = format!("{msg}:");
     let mut path_count: usize = 0;
 
-    let _: ControlFlow<()> = mask.for_each_path(signal_ty, |prefix, scalar| {
-        if cond(scalar) {
-            swrite!(&mut result, "\n    {signal_name}{prefix}");
-            path_count += 1;
+    let report = |prefix: &str| {
+        swrite!(&mut result, "\n    {signal_name}{prefix}");
+        path_count += 1;
 
-            if path_count >= MAX_DRIVER_INFO_PATHS {
-                swrite!(&mut result, "\n    {signal_name}...");
-                return ControlFlow::Break(());
-            }
+        if path_count < MAX_DRIVER_INFO_PATHS {
+            ControlFlow::Continue(())
+        } else {
+            swrite!(&mut result, "\n    {signal_name}...");
+            ControlFlow::Break(())
         }
-        ControlFlow::Continue(())
-    });
+    };
+    let _: ControlFlow<()> = mask.for_each_path(signal_ty, cond, report);
 
     result
 }
@@ -801,31 +801,57 @@ impl<T> IrMask<T> {
         }
     }
 
-    fn for_each_path<B>(&self, ty: &IrType, mut f: impl FnMut(&str, &T) -> ControlFlow<B>) -> ControlFlow<B>
+    fn for_each_path<B>(
+        &self,
+        ty: &IrType,
+        mut cond: impl FnMut(&T) -> bool,
+        mut report: impl FnMut(&str) -> ControlFlow<B>,
+    ) -> ControlFlow<B>
     where
         T: Debug,
     {
         fn g<T: Debug, B>(
             slf: &IrMask<T>,
             ty: &IrType,
-            f: &mut impl FnMut(&str, &T) -> ControlFlow<B>,
             prefix: &mut String,
+            mut cond: &mut impl FnMut(&T) -> bool,
+            report: &mut impl FnMut(&str) -> ControlFlow<B>,
         ) -> ControlFlow<B> {
+            // stop at scalars
+            if let IrMask::Scalar(slf) = slf {
+                if cond(slf) {
+                    report(prefix)?;
+                }
+                return ControlFlow::Continue(());
+            }
+
+            // stop when uniform, to avoid creating unnecessarily long prefixes
+            if slf.all(&mut cond) {
+                report(prefix)?;
+                return ControlFlow::Continue(());
+            }
+
+            // branch on compounds
             let prefix_len = prefix.len();
             match ty {
                 IrType::Bool | IrType::Int(_) | IrType::Enum(_) => {
-                    let slf = unwrap_match!(slf, IrMask::Scalar(slf) => slf);
-                    f(prefix, slf)?;
+                    unreachable!("scalars already handled")
                 }
                 IrType::Array(ty_inner, _) => {
                     let slf = unwrap_match!(slf, IrMask::Array(slf) => slf);
                     slf.for_each_block(|range, mask| {
-                        if let Some(single) = range.as_single() {
+                        let range_full = ClosedRange {
+                            start: &BigUint::ZERO,
+                            end: slf.len(),
+                        };
+                        if range == range_full {
+                            swrite!(prefix, "[..]")
+                        } else if let Some(single) = range.as_single() {
                             swrite!(prefix, "[{single}]")
                         } else {
                             swrite!(prefix, "[{range}]")
                         };
-                        g(mask, ty_inner, f, prefix)?;
+                        g(mask, ty_inner, prefix, cond, report)?;
                         prefix.truncate(prefix_len);
                         ControlFlow::Continue(())
                     })?;
@@ -836,7 +862,7 @@ impl<T> IrMask<T> {
 
                     for (field_index, field_ty) in enumerate(ty_fields) {
                         swrite!(prefix, ".{field_index}");
-                        g(&slf[field_index], field_ty, f, prefix)?;
+                        g(&slf[field_index], field_ty, prefix, cond, report)?;
                         prefix.truncate(prefix_len);
                     }
                 }
@@ -846,7 +872,7 @@ impl<T> IrMask<T> {
 
                     for (field_index, (field_name, field_ty)) in enumerate(&ty_info.fields) {
                         swrite!(prefix, ".{field_name}");
-                        g(&slf[field_index], field_ty, f, prefix)?;
+                        g(&slf[field_index], field_ty, prefix, cond, report)?;
                         prefix.truncate(prefix_len);
                     }
                 }
@@ -856,7 +882,7 @@ impl<T> IrMask<T> {
         }
 
         let mut prefix = String::new();
-        g(self, ty, &mut f, &mut prefix)
+        g(self, ty, &mut prefix, &mut cond, &mut report)
     }
 
     fn fill(&mut self, value: T)
