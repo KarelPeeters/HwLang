@@ -98,7 +98,7 @@ impl<T> SparseChangeArray<T> {
     }
 
     #[allow(clippy::needless_lifetimes)]
-    pub fn for_each<'a, B>(
+    pub fn for_each_block<'a, B>(
         &'a self,
         mut f: impl FnMut(ClosedRange<&BigUint>, &'a T) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
@@ -122,7 +122,7 @@ impl<T> SparseChangeArray<T> {
         ControlFlow::Continue(())
     }
 
-    pub fn for_each_mut<B>(
+    pub fn for_each_block_mut<B>(
         &mut self,
         mut f: impl FnMut(ClosedRange<&BigUint>, &mut T) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
@@ -155,7 +155,7 @@ impl<T> SparseChangeArray<T> {
     }
 
     #[allow(clippy::needless_lifetimes)]
-    pub fn for_each_in_range<'a, B>(
+    pub fn for_each_block_in_range<'a, B>(
         &'a self,
         range: ClosedRange<&BigUint>,
         mut f: impl FnMut(ClosedRange<&BigUint>, &'a T) -> ControlFlow<B>,
@@ -210,7 +210,7 @@ impl<T> SparseChangeArray<T> {
         ControlFlow::Continue(())
     }
 
-    pub fn for_each_in_range_mut<B>(
+    pub fn for_each_block_in_range_mut<B>(
         &mut self,
         range: ClosedRange<&BigUint>,
         mut f: impl FnMut(ClosedRange<&BigUint>, &mut T) -> ControlFlow<B>,
@@ -337,7 +337,7 @@ impl<T> SparseChangeArray<T> {
         }
     }
 
-    pub fn zip2_for_each<U, R>(
+    pub fn zip2_for_each_block<U, R>(
         a: &SparseChangeArray<T>,
         b: &SparseChangeArray<U>,
         mut f: impl FnMut(ClosedRange<&BigUint>, &T, &U) -> ControlFlow<R>,
@@ -347,7 +347,7 @@ impl<T> SparseChangeArray<T> {
         })
     }
 
-    pub fn zip3_mut_for_each<U, V, R>(
+    pub fn zip3_for_each_block_mut<U, V, R>(
         a: &mut SparseChangeArray<T>,
         b: Option<&SparseChangeArray<U>>,
         c: Option<&SparseChangeArray<V>>,
@@ -469,8 +469,8 @@ fn zip_impl<A: Clone, B, C, R>(
         // handle simple cases first
         let (b, c) = match (b, c) {
             (None, None) => return ControlFlow::Continue(()),
-            (Some(b), None) => return b.for_each(|range, b| f(range, None, Some(b), None)),
-            (None, Some(c)) => return c.for_each(|range, c| f(range, None, None, Some(c))),
+            (Some(b), None) => return b.for_each_block(|range, b| f(range, None, Some(b), None)),
+            (None, Some(c)) => return c.for_each_block(|range, c| f(range, None, None, Some(c))),
             (Some(b), Some(c)) => (b, c),
         };
 
@@ -605,7 +605,7 @@ mod tests {
                     let mut r = vec![];
                     let mut c = vec![false; len];
                     array_change
-                        .for_each_in_range::<Never>(range.as_ref(), |block, &x| {
+                        .for_each_block_in_range::<Never>(range.as_ref(), |block, &x| {
                             r.push(x);
                             cover_check_set(&mut c, block);
                             ControlFlow::Continue(())
@@ -627,7 +627,7 @@ mod tests {
                 let mut actual_cover_mut = vec![false; len];
 
                 array_change_mut
-                    .for_each_in_range_mut::<Never>(range.as_ref(), |block, x| {
+                    .for_each_block_in_range_mut::<Never>(range.as_ref(), |block, x| {
                         *x = VALUE_LIMIT;
                         cover_check_set(&mut actual_cover_mut, block);
                         ControlFlow::Continue(())
