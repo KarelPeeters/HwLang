@@ -1,9 +1,9 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
-use crate::front::expression::NamedOrValue;
+use crate::front::expression::{LrValue, NamedOrValue};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{
     Flow, FlowCompile, FlowCompileContent, FlowHardwareRoot, FlowRoot, FlowRootContent, HardwareProcessKind,
@@ -17,12 +17,13 @@ use crate::front::signal::{
     WireInfoSingle, WireInterfaceInfo,
 };
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
-use crate::front::value::{CompileValue, MaybeUndefined, ReferenceInner, SimpleCompileValue, Value, ValueCommon};
+use crate::front::value::{CompileValue, MaybeUndefined, SimpleCompileValue, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
+use crate::mid::cones::compute_and_check_module_cones;
 use crate::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
     IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPort,
-    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrSignalOrVariable, IrStatement, IrWire, IrWireInfo,
+    IrPortConnection, IrPortInfo, IrPorts, IrSignal, IrSignalOrVariable, IrSignals, IrStatement, IrWireInfo,
 };
 use crate::new_index_type;
 use crate::syntax::ast::{
@@ -38,9 +39,9 @@ use crate::util::big_int::BigInt;
 use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair, result_pair_split};
-use indexmap::IndexMap;
 use indexmap::map::Entry;
-use itertools::{Either, Itertools, chain, enumerate, zip_eq};
+use indexmap::{IndexMap, IndexSet};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -178,7 +179,7 @@ impl CompileRefs<'_, '_> {
             flow,
         } = ports;
         let &ast::ItemDefModuleInternal {
-            span: def_span,
+            span: _,
             vis: _,
             id: def_id,
             params: _,
@@ -187,18 +188,20 @@ impl CompileRefs<'_, '_> {
         } = &self.fixed.parsed[ast_ref];
 
         self.check_should_stop(def_id.span())?;
+        let diags = self.diags;
 
         // rebuild scopes
         let mut ctx = CompileItemContext::new_restore(self, None, Some(elab), ports, port_interfaces);
-        let flow_root = FlowRoot::restore(self.diags, flow_root);
+        let flow_root = FlowRoot::restore(diags, flow_root);
         let mut flow = FlowCompile::restore_root(&flow_root, flow);
         let scope_ports = Scope::restore_from_content(ScopeParent::Frozen(scope_params), scope_ports);
 
         // elaborate the body
         let mut ctx_body = BodyContext {
-            ir_ports: ports_ir,
-            ir_wires: Arena::new(),
-            drivers: IndexMap::new(),
+            ir_signals: IrSignals {
+                ports: ports_ir,
+                wires: Arena::new(),
+            },
             children: vec![],
             delayed_err: Ok(()),
         };
@@ -212,77 +215,20 @@ impl CompileRefs<'_, '_> {
         )?;
         ctx_body.delayed_err?;
 
-        // check for driver issues
-        // (wires without inferred types are fine if they're not actually used or driven)
-        // TODO add warning for unused signals / input ports
-        let signals_that_need_drivers = chain(
-            ctx.ports
-                .iter()
-                .filter_map(|(p, info)| match info.direction.inner {
-                    PortDirection::Input => None,
-                    PortDirection::Output => Some(p),
-                })
-                .map(Signal::Port),
-            ctx.wires.keys().map(Signal::Wire),
-        );
-
-        let mut drivers = ctx_body.drivers;
-        let mut any_driver_err = Ok(());
-        for signal in signals_that_need_drivers {
-            let drivers = drivers.swap_remove(&signal);
-            if drivers.as_ref().is_some_and(|d| d.len() == 1) {
-                // okay, exactly one driver
-                continue;
-            }
-
-            let kind_str = signal.kind_str();
-            let (decl_span, diag_str) = match signal {
-                Signal::Port(signal) => {
-                    let info = &ctx.ports[signal];
-                    (info.span, info.name.as_str())
-                }
-                Signal::Wire(signal) => {
-                    let info = &ctx.wires[signal];
-                    (info.span_decl(), info.diagnostic_str())
-                }
-            };
-
-            if let Some(drivers) = drivers {
-                // error: multiple drivers
-                let mut diag = DiagnosticError::new(
-                    format!("{kind_str} `{diag_str}` has multiple drivers"),
-                    decl_span,
-                    format!("{kind_str} declared here"),
-                );
-
-                for (kind, span) in drivers {
-                    let kind_str = match kind {
-                        DriverKind::WireDeclaration => "wire declaration expression",
-                        DriverKind::CombinatorialProcess => "combinatorial process",
-                        DriverKind::ClockedProcessRegister => "clocked process register",
-                        DriverKind::InstanceOutputPort => "instance output port",
-                    };
-                    diag = diag.add_info(span, format!("driven by {kind_str} here"));
-                }
-
-                any_driver_err = Err(diag.report(self.diags));
-            } else {
-                // warning: no drivers
-                DiagnosticWarning::new(
-                    format!("{kind_str} `{diag_str}` has no driver"),
-                    decl_span,
-                    "declared here",
-                )
-                .report(self.diags);
+        // infer a default type for all wires that still don't have one
+        //   this causes them to actually appear in the IR output, which is useful because:
+        //   * we get the "wire has no driver" warnings from the IR driver checks
+        //   * they can still appear in the simulator signal list
+        for (_, wire_info) in ctx.wires.iter_mut() {
+            if let Ok(None) = wire_info.typed_maybe(self, &ctx.wire_interfaces) {
+                wire_info.suggest_ty(
+                    self,
+                    &ctx.wire_interfaces,
+                    &mut ctx_body.ir_signals.wires,
+                    Spanned::new(wire_info.span_decl(), &HardwareType::Tuple(Arc::new(vec![]))),
+                )?;
             }
         }
-        if !drivers.is_empty() {
-            return Err(self
-                .diags
-                .report_error_internal(def_span, "leftover drivers after checking all signals"));
-        }
-
-        any_driver_err?;
 
         // fill in debug domains for wires
         for wire_info in ctx.wires.values() {
@@ -295,7 +241,7 @@ impl CompileRefs<'_, '_> {
                             "unknown".to_string()
                         };
 
-                        ctx_body.ir_wires[typed.ir].debug_info_domain = domain_str;
+                        ctx_body.ir_signals.wires[typed.ir].debug_info_domain = domain_str;
                     }
                 }
                 WireInfo::Interface(_) => {
@@ -310,7 +256,7 @@ impl CompileRefs<'_, '_> {
                 "unknown".to_string()
             };
             for &wire_ir in &intf_info.ir_wires {
-                ctx_body.ir_wires[wire_ir].debug_info_domain = domain_str.clone();
+                ctx_body.ir_signals.wires[wire_ir].debug_info_domain = domain_str.clone();
             }
         }
 
@@ -320,8 +266,7 @@ impl CompileRefs<'_, '_> {
             Some(steps) => steps.join("."),
         };
         let mut module_ir = IrModuleInfo {
-            ports: ctx_body.ir_ports,
-            wires: ctx_body.ir_wires,
+            signals: ctx_body.ir_signals,
             large: ctx.large,
             children: ctx_body.children,
             debug_info_def_file,
@@ -333,6 +278,9 @@ impl CompileRefs<'_, '_> {
         if self.fixed.settings.do_ir_cleanup {
             cleanup_module(&mut module_ir);
         }
+
+        // TODO
+        compute_and_check_module_cones(diags, &module_ir)?;
 
         Ok(module_ir)
     }
@@ -702,12 +650,8 @@ fn claim_ir_name(
 }
 
 struct BodyContext {
-    ir_ports: Arena<IrPort, IrPortInfo>,
-    ir_wires: Arena<IrWire, IrWireInfo>,
-
-    drivers: IndexMap<Signal, Vec<(DriverKind, Span)>>,
+    ir_signals: IrSignals,
     children: Vec<Spanned<IrModuleChild>>,
-
     delayed_err: DiagResult,
 }
 
@@ -822,7 +766,12 @@ impl BodyContext {
                             ctx.wires[wire].suggest_domain(&mut ctx.wire_interfaces, domain)?;
                         }
                         if let Some(ty) = ty.as_ref() {
-                            ctx.wires[wire].suggest_ty(refs, &ctx.wire_interfaces, &mut self.ir_wires, ty.as_ref())?;
+                            ctx.wires[wire].suggest_ty(
+                                refs,
+                                &ctx.wire_interfaces,
+                                &mut self.ir_signals.wires,
+                                ty.as_ref(),
+                            )?;
                         }
                     }
                     Some((assign_span, value)) => {
@@ -834,7 +783,7 @@ impl BodyContext {
                             span_init: value.span,
                         };
                         let mut flow_value =
-                            FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_wires);
+                            FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_signals);
                         let value = ctx.eval_expression(scope, &mut flow_value.as_flow(), &expected_ty, value)?;
                         let (ir_vars, mut ir_block) = flow_value.finish();
 
@@ -888,8 +837,12 @@ impl BodyContext {
                         // create the wire by suggesting the domain and ty
                         let wire_info = &mut ctx.wires[wire];
                         wire_info.suggest_domain(&mut ctx.wire_interfaces, domain)?;
-                        let wire_info_typed =
-                            wire_info.suggest_ty(refs, &ctx.wire_interfaces, &mut self.ir_wires, ty.as_ref())?;
+                        let wire_info_typed = wire_info.suggest_ty(
+                            refs,
+                            &ctx.wire_interfaces,
+                            &mut self.ir_signals.wires,
+                            ty.as_ref(),
+                        )?;
 
                         // append final assignment to process
                         let expr_hw = value.inner.as_ir_expression_unchecked(
@@ -911,8 +864,6 @@ impl BodyContext {
                         };
                         self.children
                             .push(Spanned::new(stmt.span, IrModuleChild::CombinatorialProcess(process)));
-
-                        self.report_driver(wire.into(), DriverKind::WireDeclaration, assign_span);
                     }
                 }
 
@@ -982,7 +933,7 @@ impl BodyContext {
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
-                    let wire_ir = self.ir_wires.push(wire_ir_info);
+                    let wire_ir = self.ir_signals.wires.push(wire_ir_info);
 
                     let wire_info = WireInfoInInterface {
                         decl_span: stmt.span,
@@ -1031,12 +982,8 @@ impl BodyContext {
         let diags = ctx.refs.diags;
 
         // elaborate block
-        let mut signals_driven = IndexMap::new();
-        let flow_kind = HardwareProcessKind::CombinatorialProcessBody {
-            span_keyword,
-            signals_driven: &mut signals_driven,
-        };
-        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_wires);
+        let flow_kind = HardwareProcessKind::CombinatorialProcessBody { span_keyword };
+        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_signals);
 
         let mut stack = ExitStack::new_root();
 
@@ -1044,18 +991,13 @@ impl BodyContext {
         end.unwrap_normal(diags, block.span)?;
         let (ir_vars, ir_block) = flow.finish();
 
-        // report drivers
-        for (signal, span) in signals_driven {
-            self.report_driver(signal, DriverKind::CombinatorialProcess, span);
-        }
-
         // record process
         let process = IrCombinatorialProcess {
             variables: ir_vars,
             block: ir_block,
         };
         self.children
-            .push(Spanned::new(stmt.span, IrModuleChild::CombinatorialProcess(process)));
+            .push(Spanned::new(span_keyword, IrModuleChild::CombinatorialProcess(process)));
 
         Ok(())
     }
@@ -1129,7 +1071,7 @@ impl BodyContext {
             domain,
             registers: &mut registers,
         };
-        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_wires);
+        let mut flow = FlowHardwareRoot::new(flow_parent, block.span, flow_kind, &mut self.ir_signals);
 
         let mut stack = ExitStack::new_root();
         let end = ctx.elaborate_block(scope, &mut flow.as_flow(), &mut stack, block)?;
@@ -1137,10 +1079,8 @@ impl BodyContext {
 
         let (ir_vars, ir_block) = flow.finish();
 
-        // report drivers
-        for (&signal, info) in &registers {
-            self.report_driver(signal, DriverKind::ClockedProcessRegister, info.span);
-        }
+        // record IR registers
+        let registers_ir: IndexSet<IrSignal> = registers.iter().map(|(_, info)| info.ir).collect();
 
         // build reset structure
         let (clock_block, async_reset) = match reset {
@@ -1235,13 +1175,14 @@ impl BodyContext {
         // record process
         let clock_ir = Spanned::new(clock.span, ctx.domain_signal_to_ir(clock)?);
         let process = IrClockedProcess {
+            registers: registers_ir,
             variables: ir_vars,
             async_reset,
             clock_signal: clock_ir,
             clock_block,
         };
         self.children
-            .push(Spanned::new(stmt.span, IrModuleChild::ClockedProcess(process)));
+            .push(Spanned::new(span_keyword, IrModuleChild::ClockedProcess(process)));
 
         Ok(())
     }
@@ -1535,7 +1476,7 @@ impl BodyContext {
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection_span,
                         };
-                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_wires);
+                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_signals);
                         let connection_value =
                             ctx.eval_expression(scope, &mut flow.as_flow(), &ty.inner.as_type(), value)?;
                         let (ir_vars, mut ir_block) = flow.finish();
@@ -1586,7 +1527,7 @@ impl BodyContext {
                         {
                             connection_signal
                         } else {
-                            let extra_ir_wire = self.ir_wires.push(IrWireInfo {
+                            let extra_ir_wire = self.ir_signals.wires.push(IrWireInfo {
                                 ty: ty.inner.as_ir(refs),
                                 debug_info_id: connector_id.spanned_string(source).map_inner(Some),
                                 debug_info_ty: ty.inner.clone().value_string(elab),
@@ -1629,13 +1570,12 @@ impl BodyContext {
                                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
                                 let named = ctx.eval_scoped_as_named(scope, id)?;
 
-                                let (signal_ir, signal_target, signal_domain, signal_ty) = match named.inner {
+                                let (signal_ir, signal_domain, signal_ty) = match named {
                                     NamedOrValue::Named(NamedValue::Signal(signal)) => match signal {
                                         Signal::Port(port) => {
                                             let port_info = &ctx.ports[port];
                                             (
                                                 IrSignal::Port(port_info.ir),
-                                                Signal::Port(port),
                                                 port_info.domain.map_inner(ValueDomain::from_port_domain),
                                                 port_info.ty.as_ref(),
                                             )
@@ -1648,14 +1588,14 @@ impl BodyContext {
                                             let wire_ty = wire_info.suggest_ty(
                                                 refs,
                                                 &ctx.wire_interfaces,
-                                                &mut self.ir_wires,
+                                                &mut self.ir_signals.wires,
                                                 ty.as_ref(),
                                             );
 
                                             let wire_domain = wire_domain?;
                                             let wire_ty = wire_ty?;
 
-                                            (IrSignal::Wire(wire_ty.ir), Signal::Wire(wire), wire_domain, wire_ty.ty)
+                                            (IrSignal::Wire(wire_ty.ir), wire_domain, wire_ty.ty)
                                         }
                                     },
                                     _ => return Err(build_error()),
@@ -1685,9 +1625,6 @@ impl BodyContext {
                                     connector_domain,
                                     "output port connection",
                                 ));
-
-                                // report driver
-                                self.report_driver(signal_target, DriverKind::InstanceOutputPort, value.span);
 
                                 // success, build connection
                                 any_err?;
@@ -1720,48 +1657,38 @@ impl BodyContext {
 
                 // eval expr
                 let mut flow_connection = flow_parent.new_child_isolated();
-                let value = ctx.eval_expression_with_implications_allow_interface_ref(
-                    scope,
-                    &mut flow_connection,
-                    &Type::Any,
-                    value,
-                )?;
+                let value_eval = ctx.eval_expression_as_lr(scope, &mut flow_connection, &Type::Any, value)?;
 
                 // expect interface
-                let build_err_not_interface = || {
-                    DiagnosticError::new("expected interface value", value.span, "got non-interface value")
-                        .add_info(connector_id.span, "port defined as interface here")
-                        .report(diags)
+                let value_eval = match value_eval {
+                    LrValue::LeftInterface(intf) => intf,
+                    LrValue::LeftTarget(_) | LrValue::Right(_) => {
+                        let e = DiagnosticError::new("expected interface value", value.span, "got non-interface value")
+                            .add_info(connector_id.span, "port defined as interface here")
+                            .report(diags);
+                        return Err(e);
+                    }
                 };
 
-                let (value_interface, value_domain, value_signals) = match value.inner {
-                    Value::Simple(SimpleCompileValue::Reference(reference)) => {
-                        match reference.get(ctx, &flow_connection, value.span)? {
-                            ReferenceInner::Interface { intf, elab: _ } => {
-                                match intf {
-                                    Interface::Port(port_interface) => {
-                                        let info = &ctx.port_interfaces[port_interface];
-                                        let port_interface = info.view.map_inner(|v| v.interface);
-                                        let port_domain = info.domain.map_inner(|d| {
-                                            ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))
-                                        });
-                                        let port_signals = PortOrWire::Port(&info.ports);
-                                        (port_interface, port_domain, port_signals)
-                                    }
-                                    Interface::Wire(wire_interface) => {
-                                        let info = &mut ctx.wire_interfaces[wire_interface];
-                                        let wire_domain = info.suggest_domain(connector_domain)?;
-                                        // reborrow immutably
-                                        let info = &ctx.wire_interfaces[wire_interface];
-                                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
-                                        (info.interface, wire_domain, wire_signals)
-                                    }
-                                }
-                            }
-                            _ => return Err(build_err_not_interface()),
-                        }
+                // get interface details
+                let (value_interface, value_domain, value_signals) = match value_eval {
+                    Interface::Port(port_interface) => {
+                        let info = &ctx.port_interfaces[port_interface];
+                        let port_interface = info.view.map_inner(|v| v.interface);
+                        let port_domain = info
+                            .domain
+                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port))));
+                        let port_signals = PortOrWire::Port(&info.ports);
+                        (port_interface, port_domain, port_signals)
                     }
-                    _ => return Err(build_err_not_interface()),
+                    Interface::Wire(wire_interface) => {
+                        let info = &mut ctx.wire_interfaces[wire_interface];
+                        let wire_domain = info.suggest_domain(connector_domain)?;
+                        // reborrow immutably
+                        let info = &ctx.wire_interfaces[wire_interface];
+                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
+                        (info.interface, wire_domain, wire_signals)
+                    }
                 };
 
                 // check interface match (including generics)
@@ -1842,7 +1769,6 @@ impl BodyContext {
                         }
                         PortDirection::Output => {
                             any_output = true;
-                            self.report_driver(value_signal, DriverKind::InstanceOutputPort, value.span);
                             IrPortConnection::Output(Some(value_ir))
                         }
                     };
@@ -1884,10 +1810,6 @@ impl BodyContext {
                 Ok(result_connections)
             }
         }
-    }
-
-    fn report_driver(&mut self, signal: Signal, kind: DriverKind, span: Span) {
-        self.drivers.entry(signal).or_default().push((kind, span))
     }
 }
 

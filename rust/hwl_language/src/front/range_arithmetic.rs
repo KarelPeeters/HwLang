@@ -39,16 +39,6 @@ pub fn range_binary_add(
     range_from_min_max(a_min + b_min, a_max + b_max)
 }
 
-pub fn range_binary_add_uint(
-    a: ClosedNonEmptyRange<&BigUint>,
-    b: ClosedNonEmptyRange<&BigUint>,
-) -> ClosedNonEmptyRange<BigUint> {
-    ClosedNonEmptyRange {
-        start: a.start + b.start,
-        end: BigUint::try_from(a.end + b.end - 1).expect("non-empty, so cannot underflow"),
-    }
-}
-
 pub fn multi_range_binary_add(
     a: &ClosedNonEmptyMultiRange<BigInt>,
     b: &ClosedNonEmptyMultiRange<BigInt>,

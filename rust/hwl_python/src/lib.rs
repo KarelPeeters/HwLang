@@ -11,10 +11,10 @@ use hwl_language::front::compile::{
 };
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
-use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
 use hwl_language::front::scope::ScopedEntry;
+use hwl_language::front::steps::{TargetStepCompile, TargetSteps};
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::{CompileValue as RustCompileValue, NotCompile, Value as RustValue};
 use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
@@ -44,6 +44,7 @@ use pyo3::{
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 mod check;
 mod convert;
@@ -704,24 +705,12 @@ impl Value {
         };
         let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
 
-        let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
-        let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
-
         // evaluate dot index
         // TODO release GIL
-        let result = item_ctx
-            .eval_dot_index_id(
-                &mut flow,
-                &RustType::Any,
-                dummy_span,
-                Spanned::new(dummy_span, ValueWithImplications::from(self.value.clone())),
-                Spanned::new(dummy_span, attr),
-            )
-            .and_then(|result| {
-                RustCompileValue::try_from(&result).map_err(|_: NotCompile| {
-                    diags.report_error_internal(dummy_span, "compile-time dot index return non-compile value")
-                })
-            });
+        let base = Spanned::new(dummy_span, self.value.clone());
+        let step = TargetStepCompile::DotIndexId(Arc::new(attr.to_owned()));
+        let steps = TargetSteps::new(vec![Spanned::new(dummy_span, &step)]);
+        let result = steps.apply_to_compile_value(&mut item_ctx, base);
         refs.run_compile_loop(compile.pool.as_ref());
 
         // handle result

@@ -44,6 +44,14 @@ pub trait IterExt: Iterator {
             }
         })
     }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn is_empty(mut self) -> bool
+    where
+        Self: Sized,
+    {
+        self.next().is_none()
+    }
 }
 
 impl<I: Iterator> IterExt for I {

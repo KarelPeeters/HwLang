@@ -3,9 +3,10 @@ use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrEnumType,
     IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance,
-    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrStatement, IrString,
-    IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariables,
+    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals,
+    IrStatement, IrString, IrStringSubstitution, IrStructType, IrType, IrVariables,
 };
+use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::arena::Arena;
@@ -15,7 +16,6 @@ use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::IndexSet;
 use itertools::zip_eq;
 
-// TODO expand all of this
 impl IrDatabase {
     pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
         let IrDatabase {
@@ -36,12 +36,15 @@ impl IrModuleInfo {
         modules: &Arena<IrModule, IrModuleInfo>,
         external_modules: &IndexSet<String>,
     ) -> DiagResult {
+        let large = &self.large;
+        let signals = &self.signals;
         let no_variables = &IrVariables::new();
 
         for child in &self.children {
             match &child.inner {
                 IrModuleChild::ClockedProcess(process) => {
                     let IrClockedProcess {
+                        registers,
                         variables,
                         clock_signal,
                         clock_block,
@@ -52,16 +55,7 @@ impl IrModuleInfo {
                         signal: clock_signal_inner,
                     } = clock_signal.inner;
 
-                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
-                    clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
-                    check_type_match(
-                        diags,
-                        clock_signal.span,
-                        &IrType::Bool,
-                        &clock_signal_inner_expr.ty(self, no_variables),
-                    )?;
-                    clock_block.validate(diags, self, variables)?;
-
+                    // reset
                     if let Some(async_reset) = async_reset {
                         let IrAsyncResetInfo {
                             signal: reset_signal,
@@ -77,22 +71,38 @@ impl IrModuleInfo {
                         check_type_is_bool(
                             diags,
                             reset_signal.span,
-                            &reset_signal_inner_expr.ty(self, no_variables),
+                            &reset_signal_inner_expr.ty(large, signals, no_variables),
                         )?;
 
-                        // TODO check drivers, ie. only driven and reset in one process
                         for reset in resets {
                             let &(reg, ref value) = &reset.inner;
 
-                            let empty_variables = IrVariables::new();
-                            let reg_ty = IrExpression::Signal(reg).ty(self, &empty_variables);
+                            if !registers.contains(&reg) {
+                                return Err(
+                                    diags.report_error_internal(reset.span, "trying to reset non-driven signal")
+                                );
+                            }
 
-                            check_type_match(diags, reset.span, &reg_ty, &value.ty(self, &empty_variables))?
+                            let empty_variables = IrVariables::new();
+                            let reg_ty = IrExpression::Signal(reg).ty(large, signals, &empty_variables);
+
+                            check_type_match(diags, reset.span, &reg_ty, &value.ty(large, signals, &empty_variables))?
                         }
                     }
+
+                    // clock
+                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
+                    clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
+                    check_type_match(
+                        diags,
+                        clock_signal.span,
+                        &IrType::Bool,
+                        &clock_signal_inner_expr.ty(large, signals, no_variables),
+                    )?;
+                    clock_block.validate(diags, self, Some(registers), variables)?;
                 }
                 IrModuleChild::CombinatorialProcess(process) => {
-                    process.block.validate(diags, self, &process.variables)?;
+                    process.block.validate(diags, self, None, &process.variables)?;
                 }
                 IrModuleChild::ModuleInternalInstance(instance) => {
                     let &IrModuleInternalInstance {
@@ -102,7 +112,7 @@ impl IrModuleInfo {
                     } = instance;
                     let child_module_info = &modules[module];
 
-                    for ((_, port_info), connection) in zip_eq(&child_module_info.ports, port_connections) {
+                    for ((_, port_info), connection) in zip_eq(&child_module_info.signals.ports, port_connections) {
                         let IrPortInfo {
                             name: _,
                             direction: port_dir,
@@ -119,8 +129,8 @@ impl IrModuleInfo {
 
                         check_dir_match(diags, connection.span, port_dir, conn_dir)?;
                         if let Some(conn_sig) = conn_sig {
-                            conn_sig.validate(self);
-                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(self))?;
+                            conn_sig.validate(signals);
+                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(signals))?;
                         }
                     }
                 }
@@ -148,8 +158,8 @@ impl IrModuleInfo {
                             IrPortConnection::Output(signal) => signal,
                         };
                         if let Some(conn_sig) = conn_sig {
-                            conn_sig.validate(self);
-                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(self))?;
+                            conn_sig.validate(signals);
+                            check_type_match(diags, connection.span, port_ty, conn_sig.ty(signals))?;
                         }
                     }
                 }
@@ -161,19 +171,50 @@ impl IrModuleInfo {
 }
 
 impl IrBlock {
-    pub fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, variables: &IrVariables) -> DiagResult {
+    fn validate(
+        &self,
+        diags: &Diagnostics,
+        module: &IrModuleInfo,
+        can_drive: Option<&IndexSet<IrSignal>>,
+        variables: &IrVariables,
+    ) -> DiagResult {
+        let large = &module.large;
+        let signals = &module.signals;
+
         for stmt in &self.statements {
             match &stmt.inner {
                 IrStatement::Assign(target, expr) => {
-                    let target_ty = assignment_target_ty(module, variables, target);
+                    let &IrAssignmentTarget { base, ref steps } = target;
 
+                    // check target allowed
+                    match base {
+                        IrSignalOrVariable::Signal(signal) => {
+                            if let Some(can_drive) = can_drive {
+                                if !can_drive.contains(&signal) {
+                                    return Err(
+                                        diags.report_error_internal(stmt.span, "assigning to non-driven signal")
+                                    );
+                                }
+                            }
+                        }
+                        IrSignalOrVariable::Variable(var) => {
+                            let _ = variables[var];
+                        }
+                    }
+
+                    // check target
+                    let base_ty = base.ty(signals, variables);
+                    let target_ty = steps.validate(diags, module, variables, stmt.span, base_ty.clone())?;
+
+                    // check expr
                     expr.validate(diags, module, variables, stmt.span)?;
-                    let expr_ty = expr.ty(module, variables);
+                    let expr_ty = expr.ty(large, signals, variables);
 
+                    // check type match
                     check_type_match(diags, stmt.span, &target_ty, &expr_ty)?;
                 }
                 IrStatement::Block(block) => {
-                    block.validate(diags, module, variables)?;
+                    block.validate(diags, module, can_drive, variables)?;
                 }
                 IrStatement::If(if_stmt) => {
                     let IrIfStatement {
@@ -183,12 +224,12 @@ impl IrBlock {
                     } = if_stmt;
 
                     condition.validate(diags, module, variables, stmt.span)?;
-                    check_type_is_bool(diags, stmt.span, &condition.ty(module, variables))?;
+                    check_type_is_bool(diags, stmt.span, &condition.ty(large, signals, variables))?;
 
-                    then_block.validate(diags, module, variables)?;
+                    then_block.validate(diags, module, can_drive, variables)?;
 
                     if let Some(else_block) = else_block {
-                        else_block.validate(diags, module, variables)?;
+                        else_block.validate(diags, module, can_drive, variables)?;
                     }
                 }
                 IrStatement::For(for_stmt) => {
@@ -197,7 +238,7 @@ impl IrBlock {
                         ref range,
                         ref block,
                     } = for_stmt;
-                    let index_ty = IrExpression::Variable(index).ty(module, variables);
+                    let index_ty = IrExpression::Variable(index).ty(large, signals, variables);
                     let index_range = check_type_is_int(diags, stmt.span, &index_ty)?;
 
                     if !index_range.contains_range(range.as_ref()) {
@@ -207,7 +248,7 @@ impl IrBlock {
                         return Err(diags.report_error_internal(stmt.span, msg));
                     }
 
-                    block.validate(diags, module, variables)?;
+                    block.validate(diags, module, can_drive, variables)?;
                 }
                 IrStatement::Print(pieces) => validate_string(diags, module, variables, stmt.span, pieces)?,
                 IrStatement::AssertFailed => {}
@@ -224,13 +265,16 @@ fn validate_string(
     span: Span,
     s: &IrString,
 ) -> DiagResult {
+    let large = &module.large;
+    let signals = &module.signals;
+
     for p in s {
         match p {
             StringPiece::Literal(_) => {}
             StringPiece::Substitute(p) => match p {
                 IrStringSubstitution::Integer(p, _) => {
                     p.validate(diags, module, variables, span)?;
-                    check_type_is_int(diags, span, &p.ty(module, variables))?;
+                    check_type_is_int(diags, span, &p.ty(large, signals, variables))?;
                 }
             },
         }
@@ -238,54 +282,85 @@ fn validate_string(
     Ok(())
 }
 
-fn assignment_target_ty<'a>(
-    module: &'a IrModuleInfo,
-    variables: &'a IrVariables,
-    target: &IrAssignmentTarget,
-) -> IrType {
-    let IrAssignmentTarget { base, steps } = target;
-    let IrTargetSteps {
-        steps_scalar,
-        step_slice,
-    } = steps;
-
-    let mut curr_ty = base.ty(module, variables).clone();
-
-    for step in steps_scalar {
-        curr_ty = match step {
-            IrTargetStepScalar::ArrayIndex(_index) => {
-                let (inner_ty, _len) = curr_ty.unwrap_array();
-                inner_ty
-            }
-            &IrTargetStepScalar::TupleIndex(index) => {
-                let tys = curr_ty.unwrap_tuple();
-                tys.get_owned(index)
-            }
-            &IrTargetStepScalar::StructField(field) => {
-                let ty = curr_ty.unwrap_struct();
-                ty.fields.get_index_owned(field).unwrap().1
-            }
-        };
-    }
-
-    if let Some(step_slice) = step_slice {
-        let IrTargetStepSlice { start: _, len } = step_slice;
-        let (inner_ty, _) = curr_ty.unwrap_array();
-        curr_ty = IrType::Array(Box::new(inner_ty), len.clone());
-    }
-
-    curr_ty
-}
-
-impl IrExpression {
-    pub fn validate(
+impl IrTargetSteps {
+    fn validate(
         &self,
         diags: &Diagnostics,
         module: &IrModuleInfo,
         variables: &IrVariables,
         span: Span,
-    ) -> DiagResult {
+        base_ty: IrType,
+    ) -> DiagResult<IrType> {
+        let IrTargetSteps {
+            steps_scalar,
+            step_slice,
+        } = self;
+
         let large = &module.large;
+        let signals = &module.signals;
+
+        let mut curr_ty = base_ty;
+
+        for step in steps_scalar {
+            curr_ty = match step {
+                IrTargetStepScalar::ArrayIndex(index) => {
+                    let (ty_inner, ty_len) = check_type_is_array(diags, span, curr_ty)?;
+                    let index_ty = index.ty(large, signals, variables);
+                    let index_ty = check_type_is_int(diags, span, &index_ty)?;
+
+                    let valid_range = ClosedRange {
+                        start: BigInt::ZERO,
+                        end: BigInt::from(ty_len),
+                    };
+                    if !valid_range.contains_range(index_ty.as_ref()) {
+                        return Err(diags.report_error_internal(span, "IR target ArrayIndex out of bounds"));
+                    }
+
+                    ty_inner
+                }
+                &IrTargetStepScalar::TupleIndex(index) => {
+                    let ty_fields = check_type_is_tuple(diags, span, curr_ty)?;
+                    if index >= ty_fields.len() {
+                        return Err(diags.report_error_internal(span, "IR target TupleIndex out of bounds"));
+                    }
+                    ty_fields.get_owned(index)
+                }
+                &IrTargetStepScalar::StructField(field) => {
+                    let ty_info = check_type_is_struct(diags, span, curr_ty)?;
+                    if field >= ty_info.fields.len() {
+                        return Err(diags.report_error_internal(span, "IR target StructField out of bounds"));
+                    }
+                    ty_info.fields.get_index_owned(field).unwrap().1
+                }
+            };
+        }
+
+        if let Some(step_slice) = step_slice {
+            let IrTargetStepSlice { start, len } = step_slice;
+
+            let (ty_inner, ty_len) = check_type_is_array(diags, span, curr_ty)?;
+            let start_ty = start.ty(large, signals, variables);
+            let start_ty = check_type_is_int(diags, span, &start_ty)?;
+
+            let valid_range = ClosedRange {
+                start: BigInt::ZERO,
+                end: ty_len - len + 1,
+            };
+            if !valid_range.contains_range(start_ty.as_ref()) {
+                return Err(diags.report_error_internal(span, "IR target StepSlice out of bounds"));
+            }
+
+            curr_ty = IrType::Array(Box::new(ty_inner), len.clone());
+        }
+
+        Ok(curr_ty)
+    }
+}
+
+impl IrExpression {
+    fn validate(&self, diags: &Diagnostics, module: &IrModuleInfo, variables: &IrVariables, span: Span) -> DiagResult {
+        let large = &module.large;
+        let signals = &module.signals;
 
         // validate operands
         let mut any_err = Ok(());
@@ -299,7 +374,8 @@ impl IrExpression {
             // always valid
             IrExpression::Bool(_) | IrExpression::Int(_) => {}
 
-            &IrExpression::Signal(sig) => sig.validate(module),
+            // basic existence checks
+            &IrExpression::Signal(sig) => sig.validate(signals),
             &IrExpression::Variable(var) => {
                 let _ = variables[var];
             }
@@ -310,19 +386,19 @@ impl IrExpression {
                     // always valid
                 }
                 IrExpressionLarge::BoolNot(inner) => {
-                    check_type_is_bool(diags, span, &inner.ty(module, variables))?;
+                    check_type_is_bool(diags, span, &inner.ty(large, signals, variables))?;
                 }
                 IrExpressionLarge::BoolBinary(_op, left, right) => {
-                    check_type_is_bool(diags, span, &left.ty(module, variables))?;
-                    check_type_is_bool(diags, span, &right.ty(module, variables))?;
+                    check_type_is_bool(diags, span, &left.ty(large, signals, variables))?;
+                    check_type_is_bool(diags, span, &right.ty(large, signals, variables))?;
                 }
                 IrExpressionLarge::IntArithmetic(_op, _range, left, right) => {
-                    check_type_is_int(diags, span, &left.ty(module, variables))?;
-                    check_type_is_int(diags, span, &right.ty(module, variables))?;
+                    check_type_is_int(diags, span, &left.ty(large, signals, variables))?;
+                    check_type_is_int(diags, span, &right.ty(large, signals, variables))?;
                 }
                 IrExpressionLarge::IntCompare(_op, left, right) => {
-                    check_type_is_int(diags, span, &left.ty(module, variables))?;
-                    check_type_is_int(diags, span, &right.ty(module, variables))?;
+                    check_type_is_int(diags, span, &left.ty(large, signals, variables))?;
+                    check_type_is_int(diags, span, &right.ty(large, signals, variables))?;
                 }
                 IrExpressionLarge::TupleLiteral(_values) => {
                     // always valid
@@ -332,14 +408,14 @@ impl IrExpression {
                     for value in values {
                         match value {
                             IrArrayLiteralElement::Single(value) => {
-                                let value_ty = value.ty(module, variables);
+                                let value_ty = value.ty(large, signals, variables);
                                 check_type_match(diags, span, inner_ty, &value_ty)?;
                                 actual_len += 1u32;
                             }
                             IrArrayLiteralElement::Spread(value) => {
-                                let value_ty = value.ty(module, variables);
-                                let (value_inner_ty, value_len) = check_type_is_array(diags, span, &value_ty)?;
-                                check_type_match(diags, span, inner_ty, value_inner_ty)?;
+                                let value_ty = value.ty(large, signals, variables);
+                                let (value_inner_ty, value_len) = check_type_is_array(diags, span, value_ty)?;
+                                check_type_match(diags, span, inner_ty, &value_inner_ty)?;
                                 actual_len += value_len;
                             }
                         }
@@ -353,7 +429,7 @@ impl IrExpression {
                         return Err(diags.report_error_internal(span, "IR StructLiteral wrong field count"));
                     }
                     for ((_, field_ty), field_value) in zip_eq(&ty.fields, values) {
-                        let value_ty = field_value.ty(module, variables);
+                        let value_ty = field_value.ty(large, signals, variables);
                         check_type_match(diags, span, field_ty, &value_ty)?;
                     }
                 }
@@ -366,65 +442,23 @@ impl IrExpression {
                     match (ty_payload, payload) {
                         (None, None) => {}
                         (Some(payload_ty), Some(payload_expr)) => {
-                            let value_ty = payload_expr.ty(module, variables);
+                            let value_ty = payload_expr.ty(large, signals, variables);
                             check_type_match(diags, span, payload_ty, &value_ty)?;
                         }
                         _ => return Err(diags.report_error_internal(span, "IR EnumLiteral payload mismatch")),
                     }
                 }
-                IrExpressionLarge::ArrayIndex { base, index } => {
-                    let base_ty = base.ty(module, variables);
-                    let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
-
-                    let index_ty = index.ty(module, variables);
-                    let index_range = check_type_is_int(diags, span, &index_ty)?;
-
-                    let valid_range = ClosedRange {
-                        start: BigInt::ZERO,
-                        end: BigInt::from(base_len),
-                    };
-                    if !valid_range.contains_range(index_range.as_ref()) {
-                        return Err(diags.report_error_internal(span, "IR ArrayIndex out of bounds"));
-                    }
-                }
-                IrExpressionLarge::ArraySlice { base, start, len } => {
-                    let base_ty = base.ty(module, variables);
-                    let (_, base_len) = check_type_is_array(diags, span, &base_ty)?;
-
-                    let start_ty = start.ty(module, variables);
-                    let start_range = check_type_is_int(diags, span, &start_ty)?;
-
-                    let valid_range = ClosedRange {
-                        start: BigInt::ZERO,
-                        end: base_len - len + 1,
-                    };
-                    if !valid_range.contains_range(start_range.as_ref()) {
-                        return Err(diags.report_error_internal(span, "IR ArraySlice out of bounds"));
-                    }
-                }
-                &IrExpressionLarge::TupleIndex { ref base, index } => {
-                    let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_tuple(diags, span, &base_ty)?;
-
-                    if index >= base_ty.len() {
-                        return Err(diags.report_error_internal(span, "IR TupleIndex index out of bounds"));
-                    }
-                }
-                &IrExpressionLarge::StructField { ref base, field } => {
-                    let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_struct(diags, span, &base_ty)?;
-
-                    if field >= base_ty.fields.len() {
-                        return Err(diags.report_error_internal(span, "IR StructField out of bounds"));
-                    }
+                IrExpressionLarge::Steps { base, steps } => {
+                    let base_ty = base.ty(large, signals, variables);
+                    steps.validate(diags, module, variables, span, base_ty)?;
                 }
                 IrExpressionLarge::EnumTag { base } => {
-                    let base_ty = base.ty(module, variables);
-                    let _ = check_type_is_enum(diags, span, &base_ty)?;
+                    let base_ty = base.ty(large, signals, variables);
+                    let _ = check_type_is_enum(diags, span, base_ty)?;
                 }
                 &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                    let base_ty = base.ty(module, variables);
-                    let base_ty = check_type_is_enum(diags, span, &base_ty)?;
+                    let base_ty = base.ty(large, signals, variables);
+                    let base_ty = check_type_is_enum(diags, span, base_ty)?;
 
                     if variant >= base_ty.variants.len() {
                         return Err(diags.report_error_internal(span, "IR EnumPayload invalid variant"));
@@ -435,18 +469,18 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::ToBits(ty, expr) => {
-                    if ty != &expr.ty(module, variables) {
+                    if ty != &expr.ty(large, signals, variables) {
                         return Err(diags.report_error_internal(span, "IR ToBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::FromBits(ty, expr) => {
-                    let expr_ty = expr.ty(module, variables);
+                    let expr_ty = expr.ty(large, signals, variables);
                     if expr_ty != IrType::Array(Box::new(IrType::Bool), ty.size_bits()) {
                         return Err(diags.report_error_internal(span, "IR FromBits type mismatch"));
                     }
                 }
                 IrExpressionLarge::ExpandIntRange(outer, inner) => {
-                    let inner_ty = inner.ty(module, variables);
+                    let inner_ty = inner.ty(large, signals, variables);
                     let inner_range = check_type_is_int(diags, span, &inner_ty)?;
 
                     if !outer.contains_range(inner_range.as_ref()) {
@@ -454,7 +488,7 @@ impl IrExpression {
                     }
                 }
                 IrExpressionLarge::ConstrainIntRange(outer, inner) => {
-                    let inner_ty = inner.ty(module, variables);
+                    let inner_ty = inner.ty(large, signals, variables);
                     let inner_range = check_type_is_int(diags, span, &inner_ty)?;
 
                     if !inner_range.contains_range(outer.as_ref()) {
@@ -471,14 +505,14 @@ impl IrExpression {
 }
 
 impl IrSignal {
-    pub fn validate(self, module: &IrModuleInfo) {
+    fn validate(self, signals: &IrSignals) {
         // assert that signal/var exists in this context
         match self {
             IrSignal::Port(port) => {
-                let _ = module.ports[port];
+                let _ = signals.ports[port];
             }
             IrSignal::Wire(wire) => {
-                let _ = module.wires[wire];
+                let _ = signals.wires[wire];
             }
         }
     }
@@ -510,13 +544,9 @@ fn check_type_is_bool(diags: &Diagnostics, span: Span, actual: &IrType) -> DiagR
     check_type_match(diags, span, &IrType::Bool, actual)
 }
 
-fn check_type_is_array<'t>(
-    diags: &Diagnostics,
-    span: Span,
-    actual: &'t IrType,
-) -> DiagResult<(&'t IrType, &'t BigUint)> {
+fn check_type_is_array(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<(IrType, BigUint)> {
     match actual {
-        IrType::Array(inner, len) => Ok((inner, len)),
+        IrType::Array(inner, len) => Ok((*inner, len)),
         _ => {
             let msg = format!("IR type mismatch: expected array, got {actual:?}");
             Err(diags.report_error_internal(span, msg))
@@ -524,7 +554,7 @@ fn check_type_is_array<'t>(
     }
 }
 
-fn check_type_is_tuple<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t [IrType]> {
+fn check_type_is_tuple(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<Vec<IrType>> {
     match actual {
         IrType::Tuple(elements) => Ok(elements),
         _ => {
@@ -534,7 +564,7 @@ fn check_type_is_tuple<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) 
     }
 }
 
-fn check_type_is_struct<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t IrStructType> {
+fn check_type_is_struct(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<IrStructType> {
     match actual {
         IrType::Struct(ty) => Ok(ty),
         _ => {
@@ -544,7 +574,7 @@ fn check_type_is_struct<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType)
     }
 }
 
-fn check_type_is_enum<'t>(diags: &Diagnostics, span: Span, actual: &'t IrType) -> DiagResult<&'t IrEnumType> {
+fn check_type_is_enum(diags: &Diagnostics, span: Span, actual: IrType) -> DiagResult<IrEnumType> {
     match actual {
         IrType::Enum(ty) => Ok(ty),
         _ => {

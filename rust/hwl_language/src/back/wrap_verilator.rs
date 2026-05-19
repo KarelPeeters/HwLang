@@ -105,10 +105,12 @@ impl VerilatedLib {
         };
 
         let top_info = &modules[top_module];
-        let ports_named = top_info.ports.iter().map(|(p, info)| (info.name.clone(), p)).collect();
+        let top_ports = &top_info.signals.ports;
+        let ports_named = top_ports.iter().map(|(p, info)| (info.name.clone(), p)).collect();
+
         Ok(Self {
             lib: Arc::new(lib),
-            ports: top_info.ports.clone(),
+            ports: top_ports.clone(),
             ports_named,
         })
     }

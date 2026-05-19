@@ -490,23 +490,20 @@ impl CompileItemContext<'_, '_> {
                     RegisterDeclarationKind::Wire(decl) => {
                         let RegisterDeclarationWire {
                             span_keyword_wire,
-                            target,
+                            target: target_expr,
                         } = decl;
 
                         // eval target
-                        let target = self.eval_expression_as_assign_target(scope, flow, target)?;
-                        let AssignmentTarget {
-                            base,
-                            steps: array_steps,
-                        } = target.inner;
+                        let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
+                        let AssignmentTarget { base, steps } = target;
 
                         let signal = match base.inner {
                             SignalOrVariable::Signal(signal) => signal,
                             SignalOrVariable::Variable(var) => {
-                                let var_info = flow.var_info(Spanned::new(target.span, var))?;
+                                let var_info = flow.var_info(Spanned::new(target_expr.span, var))?;
                                 return Err(DiagnosticError::new(
                                     "expected existing signal for register wire declaration",
-                                    target.span,
+                                    target_expr.span,
                                     "found variable",
                                 )
                                 .add_info(span_keyword_wire, "expecting signal because this is a wire register")
@@ -515,8 +512,8 @@ impl CompileItemContext<'_, '_> {
                                 .report(diags));
                             }
                         };
-                        if !array_steps.is_empty() {
-                            return Err(diags.report_error_todo(target.span, "partial signal registers"));
+                        if !steps.is_empty() {
+                            return Err(diags.report_error_todo(target_expr.span, "partial signal registers"));
                         }
 
                         // check direction
@@ -526,7 +523,7 @@ impl CompileItemContext<'_, '_> {
                                 check_port_is_output(
                                     diags,
                                     port_info,
-                                    target.span,
+                                    target_expr.span,
                                     "cannot drive an input port with a register",
                                     "declaring a register for an input port here",
                                 )?;
@@ -546,7 +543,7 @@ impl CompileItemContext<'_, '_> {
                             return Err(diag);
                         }
 
-                        Spanned::new(target.span, signal)
+                        Spanned::new(target_expr.span, signal)
                     }
                     RegisterDeclarationKind::New(new) => {
                         let RegisterDeclarationNew { id, ty } = new;
@@ -585,7 +582,7 @@ impl CompileItemContext<'_, '_> {
                             self.wires[wire].suggest_ty(
                                 refs,
                                 &self.wire_interfaces,
-                                flow.get_ir_wires(),
+                                flow.get_ir_wires_mut(),
                                 ty.as_ref(),
                             )?;
                         }
@@ -631,9 +628,11 @@ impl CompileItemContext<'_, '_> {
                                     format!("got type `{}`", reset_ty.value_string(elab)),
                                 )
                             })?;
-                            signal
-                                .inner
-                                .suggest_ty(self, flow.get_ir_wires(), Spanned::new(reset.span, &reset_ty))?;
+                            signal.inner.suggest_ty(
+                                self,
+                                flow.get_ir_wires_mut(),
+                                Spanned::new(reset.span, &reset_ty),
+                            )?;
                         }
 
                         // check reset value type

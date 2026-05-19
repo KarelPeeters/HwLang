@@ -61,9 +61,7 @@ impl CompileItemContext<'_, '_> {
             ));
         };
         let id = self.eval_general_id(scope, flow, id)?;
-        let value = self
-            .eval_scoped_as_named(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?
-            .inner;
+        let value = self.eval_scoped_as_named(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?;
 
         // get type
         let ty = match value {

@@ -19,3 +19,5 @@ pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 pub const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
 pub const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
+
+pub const MAX_DRIVER_INFO_PATHS: usize = 20;

@@ -778,6 +778,7 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
         => ExpressionKind::ArrayComprehension(ArrayComprehension { body, index, span_keyword, iter }),
 
     // tuple literal
+    // TODO allow spread operator
     "(" <SeparatedAtLeastOneSep<Expr,",">> ")"
         => ExpressionKind::TupleLiteral(<>),
     "(" ")" => ExpressionKind::TupleLiteral(vec![]),

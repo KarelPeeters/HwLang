@@ -37,7 +37,7 @@ pub fn lower_verilator(modules: &IrModules, top_module: IrModule, verilog: &Lowe
         };
 
         let mut f = String::new();
-        for (port_index, (_, port_info)) in enumerate(&top_module_info.ports) {
+        for (port_index, (_, port_info)) in enumerate(&top_module_info.signals.ports) {
             // zero-width ports don't exist in verilog, and so can't be accessed here
             if port_info.ty.size_bits().is_zero() {
                 continue;

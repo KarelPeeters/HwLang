@@ -5,10 +5,11 @@ use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
     IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
     IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance,
-    IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrStatement, IrStringPiece,
-    IrStringSubstitution, IrStructType, IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps, IrType, IrVariable,
-    IrVariableInfo, IrVariables, IrWire, IrWireInfo,
+    IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals, IrStatement,
+    IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
+    IrWireInfo,
 };
+use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
@@ -56,14 +57,14 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_modules: &[IrM
 fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) -> DiagResult<String> {
     let module_info = &modules[module];
     let IrModuleInfo {
-        ports,
-        wires,
+        signals,
         large: _,
         children,
         debug_info_def_file: _,
         debug_info_id: _,
         debug_info_generic_args: _,
     } = module_info;
+    let IrSignals { ports, wires } = signals;
     let module_index = module.inner().index();
 
     // TODO include module debug name and add generic args as a comment or even in the name
@@ -127,6 +128,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         match &child.inner {
             IrModuleChild::ClockedProcess(proc) => {
                 let IrClockedProcess {
+                    registers: _,
                     variables,
                     clock_signal,
                     clock_block,
@@ -172,11 +174,11 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                         match reg {
                             IrSignal::Port(port) => {
                                 // TODO this is probably not correct
-                                let name = port_str(port, &ctx.module_info.ports[port]);
+                                let name = port_str(port, &ctx.module_info.signals.ports[port]);
                                 swrite!(ctx.f, "*{next}_ports.{name}")
                             }
                             IrSignal::Wire(wire) => {
-                                let name = wire_str(wire, &ctx.module_info.wires[wire]);
+                                let name = wire_str(wire, &ctx.module_info.signals.wires[wire]);
                                 swrite!(ctx.f, "{next}_signals.{name}")
                             }
                         }
@@ -266,13 +268,20 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                 );
                 swriteln!(f_step_ports, "{I}return {struct_child_ports} {{");
                 for (connection_index, connection) in enumerate(port_connections) {
-                    let port_info = child_module_info.ports.get_by_index(connection_index).unwrap().1;
+                    let port_info = child_module_info
+                        .signals
+                        .ports
+                        .get_by_index(connection_index)
+                        .unwrap()
+                        .1;
 
                     let connection_str = match connection.inner {
                         IrPortConnection::Input(expr) => match expr {
-                            IrSignal::Port(port) => format!("ports.{}", port_str(port, &module_info.ports[port])),
+                            IrSignal::Port(port) => {
+                                format!("ports.{}", port_str(port, &module_info.signals.ports[port]))
+                            }
                             IrSignal::Wire(wire) => {
-                                format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
+                                format!("&signals.{}", wire_str(wire, &module_info.signals.wires[wire]))
                             }
                         },
                         IrPortConnection::Output(expr) => match expr {
@@ -283,10 +292,10 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
                                 format!("&signals.dummy_{child_index}_{connection_index}")
                             }
                             Some(IrSignal::Port(port)) => {
-                                format!("ports.{}", port_str(port, &module_info.ports[port]))
+                                format!("ports.{}", port_str(port, &module_info.signals.ports[port]))
                             }
                             Some(IrSignal::Wire(wire)) => {
-                                format!("&signals.{}", wire_str(wire, &module_info.wires[wire]))
+                                format!("&signals.{}", wire_str(wire, &module_info.signals.wires[wire]))
                             }
                         },
                     };
@@ -388,7 +397,8 @@ impl CodegenBlockContext<'_> {
             Evaluated::Temporary(v) => Ok(v),
             Evaluated::Inline(v) => {
                 let tmp = self.new_temporary();
-                let ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.variables))?;
+                let expr_ty = expr.ty(&self.module_info.large, &self.module_info.signals, self.variables);
+                let ty_str = type_to_cpp(self.diags, span, &expr_ty)?;
                 swriteln!(self.f, "{indent}{ty_str} {tmp} = {v};");
                 Ok(tmp)
             }
@@ -398,11 +408,11 @@ impl CodegenBlockContext<'_> {
     fn eval_signal(&self, signal: IrSignal, stage_read: Stage) -> Evaluated {
         match signal {
             IrSignal::Port(port) => {
-                let name = port_str(port, &self.module_info.ports[port]);
+                let name = port_str(port, &self.module_info.signals.ports[port]);
                 Evaluated::Inline(format!("(*{stage_read}_ports.{name})"))
             }
             IrSignal::Wire(wire) => {
-                let name = wire_str(wire, &self.module_info.wires[wire]);
+                let name = wire_str(wire, &self.module_info.signals.wires[wire]);
                 Evaluated::Inline(format!("{stage_read}_signals.{name}"))
             }
         }
@@ -485,7 +495,7 @@ impl CodegenBlockContext<'_> {
                         .map(|e| self.eval(indent, span, e, stage_read))
                         .try_collect_vec()?;
 
-                    let result_ty = expr.ty(self.module_info, self.variables);
+                    let result_ty = expr.ty(&self.module_info.large, &self.module_info.signals, self.variables);
                     let result_ty_str = type_to_cpp(self.diags, span, &result_ty)?;
                     let tmp_result = self.new_temporary();
 
@@ -561,7 +571,9 @@ impl CodegenBlockContext<'_> {
                             }
                             IrArrayLiteralElement::Spread(value) => {
                                 let value_eval = self.eval(indent, span, value, stage_read)?;
-                                let element_len = unwrap_match!(value.ty(self.module_info, self.variables), IrType::Array(_, element_len) => element_len);
+                                let value_ty =
+                                    value.ty(&self.module_info.large, &self.module_info.signals, self.variables);
+                                let element_len = unwrap_match!(value_ty, IrType::Array(_, element_len) => element_len);
                                 swriteln!(
                                     self.f,
                                     "{indent}std::copy_n({value_eval}.begin(), {value_eval}.size(), {tmp_result}.begin() + {offset});"
@@ -573,33 +585,52 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
-                IrExpressionLarge::ArrayIndex { base, index } => {
+                IrExpressionLarge::Steps { base, steps } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
-                    let index_eval = self.eval(indent, span, index, stage_read)?;
-                    Evaluated::Inline(format!("{base_eval}[{index_eval}]"))
-                }
-                IrExpressionLarge::ArraySlice { base, start, len } => {
-                    let base_eval = self.eval(indent, span, base, stage_read)?;
-                    let start_eval = self.eval(indent, span, start, stage_read)?;
+                    if steps.is_empty() {
+                        // keep Evaluated metedata if possible
+                        base_eval
+                    } else {
+                        let IrTargetSteps {
+                            steps_scalar,
+                            step_slice,
+                        } = steps;
 
-                    let tmp_result = self.new_temporary();
-                    let result_ty_str = type_to_cpp(self.diags, span, &expr.ty(self.module_info, self.variables))?;
+                        let mut result = base_eval.to_string();
+                        for step in steps_scalar {
+                            match step {
+                                IrTargetStepScalar::ArrayIndex(index) => {
+                                    let index_eval = self.eval(indent, span, index, stage_read)?;
+                                    result = format!("({result})[{index_eval}]");
+                                }
+                                &IrTargetStepScalar::TupleIndex(index) => {
+                                    result = format!("std::get<{index}>({result})");
+                                }
+                                &IrTargetStepScalar::StructField(field) => {
+                                    result = format!("std::get<{field}>({result})");
+                                }
+                            }
+                        }
 
-                    swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
-                    swriteln!(
-                        self.f,
-                        "{indent}std::copy_n({base_eval}.begin() + {start_eval}, {len}, {tmp_result}.begin());"
-                    );
+                        if let Some(step_slice) = step_slice {
+                            let IrTargetStepSlice { start, len } = step_slice;
+                            let start_eval = self.eval(indent, span, start, stage_read)?;
 
-                    Evaluated::Temporary(tmp_result)
-                }
-                IrExpressionLarge::TupleIndex { base, index } => {
-                    let base_eval = self.eval(indent, span, base, stage_read)?;
-                    Evaluated::Inline(format!("std::get<{index}>({base_eval})"))
-                }
-                IrExpressionLarge::StructField { base, field } => {
-                    let base_eval = self.eval(indent, span, base, stage_read)?;
-                    Evaluated::Inline(format!("std::get<{field}>({base_eval})"))
+                            let result_ty = expr.ty(&self.module_info.large, &self.module_info.signals, self.variables);
+                            let result_ty_str = type_to_cpp(self.diags, span, &result_ty)?;
+                            let tmp_result = self.new_temporary();
+
+                            swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
+                            swriteln!(
+                                self.f,
+                                "{indent}std::copy_n(({result}).begin() + {start_eval}, {len}, {tmp_result}.begin());"
+                            );
+
+                            Evaluated::Temporary(tmp_result)
+                        } else {
+                            Evaluated::Inline(result)
+                        }
+                    }
                 }
                 IrExpressionLarge::EnumTag { base } => {
                     let base_eval = self.eval(indent, span, base, stage_read)?;
@@ -973,12 +1004,12 @@ impl CodegenBlockContext<'_> {
         let mut target_str = String::new();
         let target_is_ptr = match base {
             IrSignalOrVariable::Signal(IrSignal::Port(port)) => {
-                let port_str = port_str(port, &self.module_info.ports[port]);
+                let port_str = port_str(port, &self.module_info.signals.ports[port]);
                 swrite!(target_str, "{next}_ports.{port_str}");
                 true
             }
             IrSignalOrVariable::Signal(IrSignal::Wire(wire)) => {
-                let wire_str = wire_str(wire, &self.module_info.wires[wire]);
+                let wire_str = wire_str(wire, &self.module_info.signals.wires[wire]);
                 swrite!(target_str, "{next}_signals.{wire_str}");
                 false
             }

@@ -7,7 +7,7 @@ use crate::front::flow::{Flow, FlowHardware, HardwareProcessKind, VarSetValue};
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
 use crate::front::scope::Scope;
 use crate::front::signal::{Signal, SignalOrVariable};
-use crate::front::steps::AssignmentSteps;
+use crate::front::steps::TargetSteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, Value, ValueCommon};
 use crate::mid::ir::{IrAssignmentTarget, IrExpression, IrSignalOrVariable, IrStatement};
@@ -17,14 +17,14 @@ use crate::syntax::pos::{Span, Spanned};
 #[derive(Debug, Clone)]
 pub struct AssignmentTarget {
     pub base: Spanned<SignalOrVariable>,
-    pub steps: AssignmentSteps,
+    pub steps: TargetSteps,
 }
 
 impl AssignmentTarget {
     pub fn simple(base: Spanned<SignalOrVariable>) -> Self {
         Self {
             base,
-            steps: AssignmentSteps::new(vec![]),
+            steps: TargetSteps::new(vec![]),
         }
     }
 }
@@ -48,12 +48,12 @@ impl CompileItemContext<'_, '_> {
             value: right_expr,
         } = stmt;
 
-        // evaluate target (as target, not yet as a value)
+        // evaluate target
         let target = self.eval_expression_as_assign_target(scope, flow, target_expr)?;
-        let AssignmentTarget {
+        let &AssignmentTarget {
             base: target_base,
-            steps: target_steps,
-        } = &target.inner;
+            steps: ref target_steps,
+        } = &target;
 
         // compute source, by evaluating right but also left if needed
         let source_value = match op.inner {
@@ -80,30 +80,9 @@ impl CompileItemContext<'_, '_> {
                 self.eval_expression_with_implications(scope, flow, right_expected_ty, right_expr)?
             }
             Some(op_inner) => {
-                // evaluate left
-                let left_base_value = match target_base.inner {
-                    SignalOrVariable::Signal(signal) => {
-                        flow.signal_eval(self, Spanned::new(target_base.span, signal))?
-                    }
-                    SignalOrVariable::Variable(var) => {
-                        flow.var_eval(refs, &mut self.large, Spanned::new(target_base.span, var))?
-                    }
-                };
-
-                // apply steps to left, preserving implications if possible
-                let left_value = if target_steps.is_empty() {
-                    left_base_value
-                } else {
-                    let left_base_value = left_base_value.into_value();
-                    let left_value = target_steps.apply_to_value(
-                        refs,
-                        &mut self.large,
-                        Spanned::new(target_base.span, left_base_value),
-                    )?;
-
-                    ValueWithImplications::simple(left_value)
-                };
-                let left_value = Spanned::new(target.span, left_value);
+                // evaluate left, including steps
+                let left_value = flow.signal_or_var_eval(self, target_base, target_steps)?;
+                let left_value = Spanned::new(target_expr.span, left_value);
 
                 // evaluate right
                 let right_value = self.eval_expression_with_implications(scope, flow, &Type::Any, right_expr)?;
@@ -165,7 +144,7 @@ impl CompileItemContext<'_, '_> {
                     if let Ok(source_ty) = source_value.inner.ty().as_hardware_type(elab) {
                         target_base_signal.suggest_ty(
                             self,
-                            flow.get_ir_wires(),
+                            flow.get_ir_wires_mut(),
                             Spanned::new(source_value.span, &source_ty),
                         )?;
                     }
@@ -174,10 +153,15 @@ impl CompileItemContext<'_, '_> {
                 // check type
                 let (target_base_ty, target_base_ir) = target_base_signal.expect_ty_and_ir(self, target_base.span)?;
                 let target_base_ty = target_base_ty.cloned();
-                let (target_ty, target_steps_ir) =
-                    target_steps.apply_to_hardware_type(refs, &mut self.large, target_base_ty.as_ref())?;
+                let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(
+                    refs,
+                    &mut self.large,
+                    flow.get_ir_signals(),
+                    flow.get_ir_variables(),
+                    target_base_ty.as_ref(),
+                )?;
                 let reason = TypeContainsReason::Assignment {
-                    span_target: target.span,
+                    span_target: target_expr.span,
                     span_target_ty: target_base_ty.span,
                 };
                 check_type_contains_value(diags, elab, reason, &target_ty.as_type(), source_value.as_ref())?;
@@ -248,7 +232,7 @@ impl CompileItemContext<'_, '_> {
                 if let Some(target_base_ty) = &target_base_ty {
                     let source_expected_ty = target_steps.apply_to_expected_type(refs, target_base_ty.clone())?;
                     let reason = TypeContainsReason::Assignment {
-                        span_target: target.span,
+                        span_target: target_expr.span,
                         span_target_ty: target_base_ty.span,
                     };
                     check_type_contains_value(diags, elab, reason, &source_expected_ty, source_value.as_ref())?;
@@ -318,12 +302,14 @@ impl CompileItemContext<'_, '_> {
                         let (source_ty_hw, target_steps_ir) = target_steps.apply_to_hardware_type(
                             refs,
                             &mut self.large,
+                            flow.get_ir_signals(),
+                            flow.get_ir_variables(),
                             Spanned::new(target_base.span, &target_base_ty_hw),
                         )?;
 
                         // convert source value to hardware
                         let reason = TypeContainsReason::Assignment {
-                            span_target: target.span,
+                            span_target: target_expr.span,
                             span_target_ty: target_base_ty.span,
                         };
                         check_type_contains_value(diags, elab, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
@@ -392,15 +378,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let block_kind = match flow.process_kind() {
-            HardwareProcessKind::CombinatorialProcessBody {
-                span_keyword: _,
-                signals_driven,
-            } => {
-                signals_driven
-                    .entry(target_base_signal.inner)
-                    .or_insert(target_base_signal.span);
-                BlockKind::Combinatorial
-            }
+            HardwareProcessKind::CombinatorialProcessBody { span_keyword: _ } => BlockKind::Combinatorial,
             HardwareProcessKind::ClockedProcessBody {
                 span_keyword: _,
                 domain,
@@ -461,7 +439,7 @@ impl CompileItemContext<'_, '_> {
         condition_domains: impl Iterator<Item = Spanned<ValueDomain>>,
         op_span: Span,
         target_base_domain: Spanned<ValueDomain>,
-        steps: &AssignmentSteps,
+        steps: &TargetSteps,
         value_domain: Spanned<ValueDomain>,
     ) -> DiagResult {
         match block_kind {

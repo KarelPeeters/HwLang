@@ -6,13 +6,14 @@ use crate::front::implication::{
 };
 use crate::front::scope::CaptureFailed;
 use crate::front::signal::{Signal, SignalOrVariable};
+use crate::front::steps::TargetSteps;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{
     CompileValue, HardwareValue, MaybeUndefined, MixedCompoundValue, NotCompile, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrStatement, IrVariable,
-    IrVariableInfo, IrVariables, IrWires,
+    IrAssignmentTarget, IrBlock, IrExpression, IrExpressionLarge, IrLargeArena, IrSignal, IrSignals, IrStatement,
+    IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
 use crate::syntax::pos::{Span, Spanned};
@@ -127,7 +128,7 @@ pub struct FlowHardwareRoot<'p> {
     span: Span,
     process_kind: HardwareProcessKind<'p>,
 
-    ir_wires: &'p mut IrWires,
+    ir_signals: &'p mut IrSignals,
     ir_variables: IrVariables,
 
     common: FlowHardwareCommon,
@@ -136,7 +137,6 @@ pub struct FlowHardwareRoot<'p> {
 pub enum HardwareProcessKind<'e> {
     CombinatorialProcessBody {
         span_keyword: Span,
-        signals_driven: &'e mut IndexMap<Signal, Span>,
     },
     ClockedProcessBody {
         span_keyword: Span,
@@ -597,6 +597,7 @@ pub trait Flow: FlowPrivate {
         &mut self,
         ctx: &mut CompileItemContext,
         signal: Spanned<Signal>,
+        steps: &TargetSteps,
     ) -> DiagResult<ValueWithImplications> {
         match self.signal_get_content(signal.inner)? {
             SignalContent::Compile(value) => {
@@ -605,16 +606,16 @@ pub trait Flow: FlowPrivate {
             }
             SignalContent::Hardware(content) => {
                 let &SignalContentHardware {
-                    version_index,
-                    ref implications,
+                    version_index: full_version_index,
+                    implications: ref full_implications,
                 } = content;
 
                 // get implied info, immediately return if compile-time
-                let version = ValueVersion {
+                let full_version = ValueVersion {
                     signal: signal.inner.into(),
-                    index: version_index,
+                    index: full_version_index,
                 };
-                let implied = self.get_implied(version);
+                let implied = self.get_implied(full_version);
                 let implied_int_range = match implied {
                     None => None,
                     Some(implied) => match implied {
@@ -634,20 +635,7 @@ pub trait Flow: FlowPrivate {
                 };
 
                 // evaluate without copy
-                let value_raw_without_copy = signal.inner.as_hardware_value(ctx, signal.span)?;
-
-                // constrain
-                let value_without_copy = match implied_int_range {
-                    None => value_raw_without_copy,
-                    Some(range) => HardwareValue {
-                        ty: HardwareType::Int(range.clone()),
-                        domain: value_raw_without_copy.domain,
-                        expr: ctx.large.push_expr(IrExpressionLarge::ConstrainIntRange(
-                            range.enclosing_range().cloned(),
-                            value_raw_without_copy.expr,
-                        )),
-                    },
-                };
+                let value_full_raw_without_copy = signal.inner.as_hardware_value(ctx, signal.span)?;
 
                 // check that we can access the domain in the current block
                 // TODO this probably disables too many things, eg. nested blocks
@@ -657,7 +645,7 @@ pub trait Flow: FlowPrivate {
                             ctx.check_valid_domain_crossing(
                                 signal.span,
                                 domain.map_inner(ValueDomain::Sync),
-                                Spanned::new(signal.span, value_without_copy.domain()),
+                                Spanned::new(signal.span, value_full_raw_without_copy.domain()),
                                 "signal read in clocked block",
                             )?;
                         }
@@ -667,8 +655,46 @@ pub trait Flow: FlowPrivate {
                     }
                 }
 
+                // constrain
+                let value_full_without_copy = match implied_int_range {
+                    None => value_full_raw_without_copy,
+                    Some(range) => HardwareValue {
+                        ty: HardwareType::Int(range.clone()),
+                        domain: value_full_raw_without_copy.domain,
+                        expr: ctx.large.push_expr(IrExpressionLarge::ConstrainIntRange(
+                            range.enclosing_range().cloned(),
+                            value_full_raw_without_copy.expr,
+                        )),
+                    },
+                };
+
+                // apply steps
+                let value_without_copy = {
+                    let base = HardwareValueWithImplications {
+                        value: value_full_without_copy,
+                        version: Some(full_version),
+                        implications: full_implications.clone(),
+                    };
+                    let base = Spanned::new(signal.span, ValueWithImplications::Hardware(base));
+                    let result = steps.apply_to_value(ctx, &Type::Type, base)?;
+                    match result {
+                        ValueWithImplications::Simple(value) => {
+                            // we got a compile-time value, just return it
+                            return Ok(Value::Simple(value));
+                        }
+                        ValueWithImplications::Compound(x) => {
+                            // we don't need to take a copy, this value is already not a raw signal
+                            return Ok(Value::Compound(x));
+                        }
+                        ValueWithImplications::Hardware(value_without_copy) => {
+                            // we might not always need a copy (in case this is an already shadowed value),
+                            //   but it doesn't hurt either
+                            value_without_copy
+                        }
+                    }
+                };
+
                 // copy the value into a temporary variable to avoid later writes from leaking through
-                let implications = implications.clone();
                 let slf = match self.kind_mut() {
                     FlowKind::Compile(_) => unreachable!("already checked this earlier"),
                     FlowKind::Hardware(slf) => slf,
@@ -679,22 +705,39 @@ pub trait Flow: FlowPrivate {
                     ctx.refs,
                     signal.span,
                     Some(debug_info_id),
-                    value_without_copy,
+                    value_without_copy.value,
                 );
 
                 // add self-implications
-                let mut implications = implications;
-                if value_var.ty == HardwareType::Bool {
+                let mut implications = value_without_copy.implications;
+                if value_var.ty == HardwareType::Bool
+                    && let Some(version) = value_without_copy.version
+                {
                     implications.add_bool_self_implications(version);
                 }
 
                 // wrap result
                 let value = HardwareValueWithImplications {
                     value: value_var.map_expression(IrExpression::Variable),
-                    version: Some(version),
+                    version: value_without_copy.version,
                     implications,
                 };
                 Ok(Value::Hardware(value))
+            }
+        }
+    }
+
+    fn signal_or_var_eval(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        base: Spanned<SignalOrVariable>,
+        steps: &TargetSteps,
+    ) -> DiagResult<ValueWithImplications> {
+        match base.inner {
+            SignalOrVariable::Signal(signal) => self.signal_eval(ctx, Spanned::new(base.span, signal), steps),
+            SignalOrVariable::Variable(var) => {
+                let left_base_value = self.var_eval(ctx.refs, &mut ctx.large, Spanned::new(base.span, var))?;
+                steps.apply_to_value(ctx, &Type::Any, Spanned::new(base.span, left_base_value))
             }
         }
     }
@@ -906,8 +949,9 @@ impl Flow for FlowCompile<'_> {
 
     fn signal_eval(
         &mut self,
-        _: &mut CompileItemContext,
+        ctx: &mut CompileItemContext,
         signal: Spanned<Signal>,
+        steps: &TargetSteps,
     ) -> DiagResult<ValueWithImplications> {
         // This is a compile-time flow, so normally signals can't be evaluated.
         // They might have an implied compile-time value through, so check that first.
@@ -941,7 +985,9 @@ impl Flow for FlowCompile<'_> {
                             match signal_content {
                                 SignalContent::Compile(value) => {
                                     // we've found a compile-time value, we can return that
-                                    return Ok(Value::from(value.clone()));
+                                    let value = Spanned::new(signal.span, ValueWithImplications::from(value.clone()));
+                                    let result = steps.apply_to_value(ctx, &Type::Type, value)?;
+                                    return Ok(result);
                                 }
                                 SignalContent::Hardware(_) => {
                                     // we've found proof that the signal is hardware, so we need to stop
@@ -1342,8 +1388,16 @@ impl<'p> FlowHardware<'p> {
         Ok(branch_blocks)
     }
 
-    pub fn get_ir_wires(&mut self) -> &mut IrWires {
-        self.root_hw_mut().ir_wires
+    pub fn get_ir_variables(&self) -> &IrVariables {
+        &self.root_hw().ir_variables
+    }
+
+    pub fn get_ir_signals(&self) -> &IrSignals {
+        self.root_hw().ir_signals
+    }
+
+    pub fn get_ir_wires_mut(&mut self) -> &mut IrWires {
+        &mut self.root_hw_mut().ir_signals.wires
     }
 
     fn first_common_mut(&mut self) -> &mut FlowHardwareCommon {
@@ -1666,7 +1720,7 @@ impl<'p> FlowHardwareRoot<'p> {
         parent: &'p FlowCompile,
         span: Span,
         kind: HardwareProcessKind<'p>,
-        ir_wires: &'p mut IrWires,
+        ir_signals: &'p mut IrSignals,
     ) -> FlowHardwareRoot<'p> {
         let parent = unsafe { lifetime_cast::compile_ref(parent) };
         FlowHardwareRoot {
@@ -1674,7 +1728,7 @@ impl<'p> FlowHardwareRoot<'p> {
             parent,
             span,
             process_kind: kind,
-            ir_wires,
+            ir_signals,
             ir_variables: IrVariables::new(),
             common: FlowHardwareCommon {
                 variables: IndexMap::new(),
@@ -1701,7 +1755,7 @@ impl<'p> FlowHardwareRoot<'p> {
             parent: _,
             span: _,
             process_kind: _,
-            ir_wires: _,
+            ir_signals: _,
             ir_variables,
             common,
         } = self;
@@ -2398,7 +2452,7 @@ impl<T> Lattice<T> {
 
 /// The borrow checking has trouble with nested chains of parent references,
 /// but they're not actually unsafe in the way we want to use them.
-// Supress false positive https://github.com/rust-lang/rust-clippy/issues/12860.
+// Suppress false positive https://github.com/rust-lang/rust-clippy/issues/12860.
 #[allow(clippy::unnecessary_cast)]
 mod lifetime_cast {
     use crate::front::flow::{FlowCompile, FlowHardware, FlowHardwareBranch, FlowHardwareRoot};

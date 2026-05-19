@@ -10,6 +10,7 @@ use crate::front::scope::FrozenScope;
 use crate::front::signal::{Interface, Signal};
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
+use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{FunctionDeclaration, ParameterSelf, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
@@ -639,9 +640,10 @@ impl ValueCommon for HardwareValue {
                 });
                 let result = iter
                     .map(|index| {
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::ArrayIndex {
+                        let step = IrTargetStepScalar::ArrayIndex(IrExpression::Int(index.into()));
+                        let curr_elem_expr = large.push_expr(IrExpressionLarge::Steps {
                             base: self.expr.clone(),
-                            index: IrExpression::Int(index.into()),
+                            steps: IrTargetSteps::single(step),
                         });
                         let curr_elem_hw = HardwareValue {
                             ty: ty_inner_curr.as_ref().clone(),
@@ -666,9 +668,10 @@ impl ValueCommon for HardwareValue {
 
                 let result = (0..ty.len())
                     .map(|i| {
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::TupleIndex {
+                        let step = IrTargetStepScalar::TupleIndex(i);
+                        let curr_elem_expr = large.push_expr(IrExpressionLarge::Steps {
                             base: self.expr.clone(),
-                            index: i,
+                            steps: IrTargetSteps::single(step),
                         });
                         let curr_elem_hw = HardwareValue {
                             ty: ty_curr[i].clone(),

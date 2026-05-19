@@ -4,7 +4,7 @@ use crate::front::domain::{PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
 use crate::front::types::HardwareType;
-use crate::front::value::HardwareValue;
+use crate::front::value::{HardwareValue, SimpleCompileValue};
 use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection};
@@ -246,7 +246,7 @@ impl WireInfo {
     }
 
     pub fn typed_maybe<'s>(
-        &'s mut self,
+        &'s self,
         refs: CompileRefs<'_, 's>,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
     ) -> DiagResult<Option<WireInfoTyped<&'s HardwareType>>> {
@@ -460,6 +460,43 @@ impl Signal {
             Signal::Port(port) => Ok(ctx.ports[port].as_hardware_value()),
             Signal::Wire(wire) => ctx.wires[wire].as_hardware_value(ctx.refs, &mut ctx.wire_interfaces, span),
         }
+    }
+}
+
+impl Interface {
+    pub fn get_signal(self, ctx: &CompileItemContext, base_span: Span, id: Spanned<&str>) -> DiagResult<Signal> {
+        let refs = ctx.refs;
+
+        let (elab_intf, base_intf_span) = match self {
+            Interface::Port(intf) => {
+                let info = &ctx.port_interfaces[intf];
+                (info.view.inner.interface, info.view.span)
+            }
+            Interface::Wire(intf) => {
+                let info = &ctx.wire_interfaces[intf];
+                (info.interface.inner, info.interface.span)
+            }
+        };
+        let info = refs.shared.elaboration_arenas.interface_info(elab_intf);
+
+        let signal_index = info.signals.get_index_of(id.inner).ok_or_else(|| {
+            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(&refs.shared.elaboration_arenas);
+            DiagnosticError::new(
+                format!("signal `{}` not found on interface", id.inner),
+                id.span,
+                "attempt to access signal here",
+            )
+            .add_info(base_span, format!("base is instance of `{interface_str}`"))
+            .add_info(base_intf_span, "interface set here")
+            .add_info(info.id.span(), "interface declared here")
+            .report(refs.diags)
+        })?;
+
+        let signal = match self {
+            Interface::Port(intf) => Signal::Port(ctx.port_interfaces[intf].ports[signal_index]),
+            Interface::Wire(intf) => Signal::Wire(ctx.wire_interfaces[intf].wires[signal_index]),
+        };
+        Ok(signal)
     }
 }
 

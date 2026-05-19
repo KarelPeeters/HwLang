@@ -1,26 +1,22 @@
 use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{
-    TypeContainsReason, check_hardware_type_for_bit_operation, check_type_contains_value, check_type_is_bool,
-    check_type_is_int, check_type_is_string_compile, check_type_is_uint, check_type_is_uint_compile,
+    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_string_compile,
+    check_type_is_uint, check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::{ValueVersion, VariableId};
-use crate::front::function::{
-    EvaluatedArgs, FunctionBits, FunctionBitsKind, FunctionBody, FunctionValue, error_cannot_infer_generic_params,
-    error_unique_mismatch,
-};
+use crate::front::function::EvaluatedArgs;
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::{ElaboratedInterfaceView, ElaboratedModule, FunctionItemBody};
+use crate::front::item::ElaboratedModule;
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
-use crate::front::steps::{AssignmentStep, AssignmentStepCompile, AssignmentStepHardware, AssignmentSteps};
+use crate::front::steps::{TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    BoundMethod, CompileCompoundValue, CompileValue, EnumValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile,
-    MixedCompoundValue, NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value,
-    ValueCommon,
+    CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
+    NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
@@ -31,7 +27,7 @@ use crate::syntax::ast::{
     ExpressionKind, GeneralIdentifier, IntLiteral, MaybeIdentifier, RangeLiteral, SyncDomain, UnaryOp,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::util::big_int::{AnyInt, BigInt, BigUint};
+use crate::util::big_int::{AnyInt, BigInt, BigUint, IsZero};
 use crate::util::data::{VecExt, vec_concat};
 
 use crate::front::exit::ExitStack;
@@ -40,26 +36,87 @@ use crate::front::range_arithmetic::{
     multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
     multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
 };
+use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::token::{
     parse_token_int_literal_binary, parse_token_int_literal_decimal, parse_token_int_literal_hexadecimal,
 };
+use crate::util::ResultDoubleExt;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::store::ArcOrRef;
-use crate::util::{ResultDoubleExt, ResultExt};
 use itertools::Either;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
-// TODO rename/remove
 #[derive(Debug)]
 pub enum NamedOrValue {
     Named(NamedValue),
     Value(Value),
 }
 
-pub const POSSIBLE_BUILTIN_TYPE_MEMBERS: &[&str] = &["size_bits", "to_bits", "from_bits", "from_bits_unsafe", "new"];
+#[derive(Debug)]
+pub enum LrValue {
+    LeftTarget(AssignmentTarget),
+    LeftInterface(Interface),
+    Right(ValueWithImplications),
+}
+
+impl LrValue {
+    pub fn from_named(span: Span, named: NamedValue) -> LrValue {
+        match named {
+            NamedValue::Variable(var) => LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(span, var.into()))),
+            NamedValue::Signal(sig) => LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(span, sig.into()))),
+            NamedValue::Interface(intf) => LrValue::LeftInterface(intf),
+        }
+    }
+
+    /// Evaluate as a value.
+    pub fn read_value(
+        self,
+        ctx: &mut CompileItemContext,
+        flow: &mut impl Flow,
+        span: Span,
+    ) -> DiagResult<ValueWithImplications> {
+        let refs = ctx.refs;
+        let diags = refs.diags;
+
+        match self {
+            LrValue::LeftTarget(v) => {
+                // eval base
+                let AssignmentTarget { base, steps } = v;
+                flow.signal_or_var_eval(ctx, base, &steps)
+            }
+            LrValue::LeftInterface(intf) => {
+                let e = DiagnosticError::new("cannot evaluate interface as value", span, "evaluating interface here")
+                    .add_info(intf.span_decl(ctx), "interface set here")
+                    .add_footer_hint("to access individual signals, use dot indexing: `<intf>.<signal>`")
+                    .add_footer_hint("to get a reference to the whole interface, use `ref(<intf>)`")
+                    .report(diags);
+                Err(e)
+            }
+            LrValue::Right(v) => Ok(v),
+        }
+    }
+
+    /// Evaluate as an assignment target.
+    pub fn into_target(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<AssignmentTarget> {
+        let diags = ctx.refs.diags;
+
+        match self {
+            LrValue::LeftTarget(t) => Ok(t),
+            LrValue::LeftInterface(intf) => {
+                let e = DiagnosticError::new("cannot use interface as target", span, "interface used as target here")
+                    .add_info(intf.span_decl(ctx), "interface declared here")
+                    .report(diags);
+                Err(e)
+            }
+            LrValue::Right(_) => {
+                Err(diags.report_error_simple("cannot use value as target", span, "value used as target here"))
+            }
+        }
+    }
+}
 
 impl<'a> CompileItemContext<'a, '_> {
     pub fn eval_general_id(
@@ -98,18 +155,33 @@ impl<'a> CompileItemContext<'a, '_> {
         }
     }
 
+    pub fn eval_scoped_as_lr<'s>(
+        &mut self,
+        scope: &'s Scope,
+        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
+    ) -> DiagResult<LrValue> {
+        let key = key.into();
+        let key_span = key.span();
+
+        let named = self.eval_scoped_as_named(scope, key)?;
+        let result = match named {
+            NamedOrValue::Named(named_inner) => LrValue::from_named(key_span, named_inner),
+            NamedOrValue::Value(value) => LrValue::Right(ValueWithImplications::simple(value)),
+        };
+        Ok(result)
+    }
+
     pub fn eval_scoped_as_named<'s>(
         &mut self,
         scope: &Scope,
         key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
-    ) -> DiagResult<Spanned<NamedOrValue>> {
+    ) -> DiagResult<NamedOrValue> {
         let diags = self.refs.diags;
 
         let key = key.into();
         let key_span = key.span();
 
         let found = scope.find(diags, key)?;
-        let span_decl = found.span_decl;
 
         let result = match found.value {
             ScopedEntry::Named(value) => NamedOrValue::Named(value),
@@ -122,57 +194,12 @@ impl<'a> CompileItemContext<'a, '_> {
                 let CapturedValue { span_capture, value } = value;
                 match value {
                     Ok(value) => NamedOrValue::Value(Value::from(Arc::unwrap_or_clone(value))),
-                    Err(e) => return Err(e.to_diag_error(span_decl, span_capture, key_span).report(diags)),
+                    Err(e) => return Err(e.to_diag_error(found.span_decl, span_capture, key_span).report(diags)),
                 }
             }
             ScopedEntry::Value(value) => NamedOrValue::Value(value),
         };
-        Ok(Spanned {
-            span: span_decl,
-            inner: result,
-        })
-    }
-
-    pub fn eval_scoped_as_value<'s>(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
-        allow_interface_ref: bool,
-    ) -> DiagResult<ValueWithImplications> {
-        let refs = self.refs;
-        let diags = refs.diags;
-
-        let key = key.into();
-        let key_span = key.span();
-
-        match self.eval_scoped_as_named(scope, key)?.inner {
-            NamedOrValue::Value(value) => Ok(Value::simple(value)),
-            NamedOrValue::Named(value) => match value {
-                NamedValue::Variable(var) => flow.var_eval(refs, &mut self.large, Spanned::new(key_span, var)),
-                NamedValue::Signal(signal) => flow.signal_eval(self, Spanned::new(key_span, signal)),
-                NamedValue::Interface(intf) => {
-                    let elab_intf = intf.elab_interface(self);
-
-                    if allow_interface_ref {
-                        let module = self.curr_module.ok_or_else(|| {
-                            diags.report_error_internal(key_span, "reference to interface instance outside module")
-                        })?;
-
-                        let rf = ReferenceWrapper::new_interface(
-                            module,
-                            intf,
-                            elab_intf.inner,
-                            intf.span_decl(self),
-                            key_span,
-                        );
-                        Ok(Value::Simple(SimpleCompileValue::Reference(rf)))
-                    } else {
-                        Err(error_cannot_eval_interface_as(diags, key_span, elab_intf.span, "value"))
-                    }
-                }
-            },
-        }
+        Ok(result)
     }
 
     pub fn eval_expression(
@@ -194,35 +221,35 @@ impl<'a> CompileItemContext<'a, '_> {
         expected_ty: &Type,
         expr: Expression,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
-        self.eval_expression_inner(scope, flow, expected_ty, expr, false)
-            .map(|value| Spanned::new(expr.span, value))
+        let value = self
+            .eval_expression_as_lr(scope, flow, expected_ty, expr)?
+            .read_value(self, flow, expr.span)?;
+        Ok(Spanned::new(expr.span, value))
     }
 
-    pub fn eval_expression_with_implications_allow_interface_ref(
+    pub fn eval_expression_as_assign_target(
+        &mut self,
+        scope: &Scope,
+        flow: &mut impl Flow,
+        expr: Expression,
+    ) -> DiagResult<AssignmentTarget> {
+        self.eval_expression_as_lr(scope, flow, &Type::Any, expr)?
+            .into_target(self, expr.span)
+    }
+
+    pub fn eval_expression_as_lr(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
         expected_ty: &Type,
         expr: Expression,
-    ) -> DiagResult<Spanned<ValueWithImplications>> {
-        self.eval_expression_inner(scope, flow, expected_ty, expr, true)
-            .map(|value| Spanned::new(expr.span, value))
-    }
-
-    fn eval_expression_inner(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        expected_ty: &Type,
-        expr: Expression,
-        allow_interface_ref: bool,
-    ) -> DiagResult<ValueWithImplications> {
+    ) -> DiagResult<LrValue> {
         let refs = self.refs;
-        let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
+        let diags = refs.diags;
+        let source = refs.fixed.source;
         let elab = &refs.shared.elaboration_arenas;
 
-        let result_simple = match refs.get_expr(expr) {
+        let result: LrValue = match refs.get_expr(expr) {
             &ExpressionKind::ParseError(_) => {
                 return Err(diags.report_error_internal(expr.span, "encountered parse error"));
             }
@@ -245,23 +272,26 @@ impl<'a> CompileItemContext<'a, '_> {
                     )
                 })?;
 
-                let expr = self
+                let result = self
                     .large
                     .push_expr(IrExpressionLarge::Undefined(expected_ty_hw.as_ir(refs)));
-                Value::Hardware(HardwareValue {
+                let result = HardwareValue {
                     ty: expected_ty_hw,
                     domain: ValueDomain::CompileTime,
-                    expr,
-                })
+                    expr: result,
+                };
+                LrValue::Right(ValueWithImplications::simple(Value::Hardware(result)))
             }
-            ExpressionKind::Type => Value::new_ty(Type::Type),
+            ExpressionKind::Type => LrValue::Right(Value::new_ty(Type::Type)),
+            ExpressionKind::Slf => self.eval_scoped_as_lr(scope, ScopeKey::Slf(expr.span))?,
             &ExpressionKind::Builtin { span_keyword, ref args } => {
-                let value = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
-                return Ok(Value::simple(value));
+                let result = self.eval_builtin(scope, flow, expr.span, span_keyword, args)?;
+                LrValue::Right(ValueWithImplications::simple(result))
             }
-
-            &ExpressionKind::Wrapped(inner) => {
-                return self.eval_expression_inner(scope, flow, expected_ty, inner, allow_interface_ref);
+            &ExpressionKind::Wrapped(operand) => {
+                // intentionally discard LR-state, force evaluation
+                let result = self.eval_expression_with_implications(scope, flow, expected_ty, operand)?;
+                LrValue::Right(result.inner)
             }
             ExpressionKind::Block(block_expr) => {
                 let &BlockExpression {
@@ -269,21 +299,20 @@ impl<'a> CompileItemContext<'a, '_> {
                     expression,
                 } = block_expr;
 
+                // run statements in new block scope
                 let mut scope_inner = scope.new_child(expr.span);
-
                 let mut stack = ExitStack::new_in_block_expression(expr.span);
                 let end = self.elaborate_block_statements(&mut scope_inner, flow, &mut stack, statements)?;
                 end.unwrap_normal(diags, expr.span)?;
 
-                self.eval_expression(&scope_inner, flow, expected_ty, expression)?.inner
+                // intentionally discard LR-state, force evaluation
+                let result = self.eval_expression_with_implications(&scope_inner, flow, expected_ty, expression)?;
+                LrValue::Right(result.inner)
             }
             &ExpressionKind::Id(id) => {
                 let id = self.eval_general_id(scope, flow, id)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
-                return self.eval_scoped_as_value(scope, flow, id, allow_interface_ref);
-            }
-            ExpressionKind::Slf => {
-                return self.eval_scoped_as_value(scope, flow, ScopeKey::Slf(expr.span), allow_interface_ref);
+                self.eval_scoped_as_lr(scope, id)?
             }
             ExpressionKind::IntLiteral(pattern) => {
                 let parsed = match *pattern {
@@ -292,15 +321,24 @@ impl<'a> CompileItemContext<'a, '_> {
                     IntLiteral::Hexadecimal { span } => parse_token_int_literal_hexadecimal(source.span_str(span)),
                 };
                 let value = parsed.map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
-                Value::new_int(BigInt::from(value))
+
+                let value = Value::new_int(BigInt::from(value));
+                LrValue::Right(ValueWithImplications::simple(value))
             }
-            &ExpressionKind::BoolLiteral(literal) => Value::new_bool(literal),
-            ExpressionKind::StringLiteral(pieces) => self.eval_string_literal(scope, flow, pieces)?,
-            ExpressionKind::ArrayLiteral(values) => {
-                self.eval_array_literal(scope, flow, expected_ty, expr.span, values)?
+            &ExpressionKind::BoolLiteral(literal) => LrValue::Right(Value::new_bool(literal)),
+            ExpressionKind::StringLiteral(pieces) => {
+                let result = self.eval_string_literal(scope, flow, pieces)?;
+                LrValue::Right(ValueWithImplications::simple(result))
             }
-            ExpressionKind::TupleLiteral(values) => self.eval_tuple_literal(scope, flow, expected_ty, values)?,
-            ExpressionKind::RangeLiteral(literal) => {
+            ExpressionKind::ArrayLiteral(elements) => {
+                let result = self.eval_array_literal(scope, flow, expected_ty, expr.span, elements)?;
+                LrValue::Right(ValueWithImplications::simple(result))
+            }
+            ExpressionKind::TupleLiteral(elements) => {
+                let result = self.eval_tuple_literal(scope, flow, expected_ty, elements)?;
+                LrValue::Right(ValueWithImplications::simple(result))
+            }
+            &ExpressionKind::RangeLiteral(literal) => {
                 let mut eval_bound = |bound: Expression, op_span: Span| {
                     let bound_span = bound.span;
                     let bound = self.eval_expression(scope, flow, &Type::Int(MultiRange::open()), bound)?;
@@ -311,7 +349,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     Ok(Spanned::new(bound_span, bound))
                 };
 
-                match *literal {
+                let result = match literal {
                     RangeLiteral::ExclusiveEnd {
                         op_span,
                         ref start,
@@ -347,8 +385,7 @@ impl<'a> CompileItemContext<'a, '_> {
 
                         let start = start.map(|s| s.inner);
                         let end = end.map(|e| e.inner);
-                        let range = RangeValue::Normal(Range { start, end });
-                        Value::Compound(MixedCompoundValue::Range(range))
+                        RangeValue::Normal(Range { start, end })
                     }
                     RangeLiteral::InclusiveEnd {
                         op_span,
@@ -405,8 +442,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         };
 
                         let start = start.map(|s| s.inner);
-                        let range = RangeValue::Normal(Range { start, end: Some(end) });
-                        Value::Compound(MixedCompoundValue::Range(range))
+                        RangeValue::Normal(Range { start, end: Some(end) })
                     }
                     RangeLiteral::Length { op_span, start, length } => {
                         let start = eval_bound(start, op_span);
@@ -425,7 +461,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let start = start?;
                         let length = length?;
 
-                        let range = match (start.inner, length) {
+                        match (start.inner, length) {
                             (MaybeCompile::Hardware(start), MaybeCompile::Compile(length)) => {
                                 // preserve full information to allow for hardware slicing
                                 RangeValue::HardwareStartLength { start, length }
@@ -461,11 +497,12 @@ impl<'a> CompileItemContext<'a, '_> {
                                     end: Some(end),
                                 })
                             }
-                        };
-
-                        Value::Compound(MixedCompoundValue::Range(range))
+                        }
                     }
-                }
+                };
+
+                let result = Value::Compound(MixedCompoundValue::Range(result));
+                LrValue::Right(ValueWithImplications::simple(result))
             }
             ExpressionKind::ArrayComprehension(array_comprehension) => {
                 let &ArrayComprehension {
@@ -523,7 +560,8 @@ impl<'a> CompileItemContext<'a, '_> {
                     values.push(value);
                 }
 
-                array_literal_combine_values(refs, flow, &mut self.large, expr.span, values)?
+                let result = array_literal_combine_values(refs, flow, &mut self.large, expr.span, values)?;
+                LrValue::Right(ValueWithImplications::simple(result))
             }
 
             &ExpressionKind::UnaryOp(op, operand) => match op.inner {
@@ -535,13 +573,13 @@ impl<'a> CompileItemContext<'a, '_> {
                         TypeContainsReason::Operator(op.span),
                         operand.clone().map_inner(ValueWithImplications::into_value),
                     )?;
-                    return Ok(operand.inner);
+                    LrValue::Right(operand.inner)
                 }
                 UnaryOp::Neg => {
                     let operand = self.eval_expression(scope, flow, &Type::Any, operand)?;
                     let operand_int = check_type_is_int(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
-                    match operand_int {
+                    let result = match operand_int {
                         MaybeCompile::Compile(c) => Value::new_int(-c),
                         MaybeCompile::Hardware(v) => {
                             let range = multi_range_unary_neg(&v.ty);
@@ -559,14 +597,15 @@ impl<'a> CompileItemContext<'a, '_> {
                             };
                             Value::Hardware(result)
                         }
-                    }
+                    };
+                    LrValue::Right(ValueWithImplications::simple(result))
                 }
                 UnaryOp::Not => {
                     let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
                     let operand_bool = check_type_is_bool(diags, elab, TypeContainsReason::Operator(op.span), operand)?;
 
-                    match operand_bool {
-                        MaybeCompile::Compile(c) => Value::new_bool(!c),
+                    let result = match operand_bool {
+                        MaybeCompile::Compile(c) => ValueWithImplications::new_bool(!c),
                         MaybeCompile::Hardware(v) => {
                             let result = HardwareValue {
                                 ty: HardwareType::Bool,
@@ -578,48 +617,24 @@ impl<'a> CompileItemContext<'a, '_> {
                                 version: None,
                                 implications: v.implications.invert(),
                             };
-                            return Ok(Value::Hardware(result_with_implications));
+                            ValueWithImplications::Hardware(result_with_implications)
                         }
-                    }
+                    };
+
+                    LrValue::Right(result)
                 }
             },
             &ExpressionKind::BinaryOp(op, left, right) => {
                 let left = self.eval_expression_with_implications(scope, flow, &Type::Any, left);
                 let right = self.eval_expression_with_implications(scope, flow, &Type::Any, right);
                 let result = eval_binary_expression(refs, &mut self.large, expr.span, op, left?, right?)?;
-                return Ok(result);
-            }
-            &ExpressionKind::ArrayIndex {
-                span_brackets,
-                base,
-                ref indices,
-            } => {
-                // eval base
-                let base = self.eval_expression(scope, flow, &Type::Any, base)?;
-
-                // TODO support nd arrays
-                // evaluate index
-                let index = indices
-                    .single_ref()
-                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional array indexing"))?;
-                let index = match index {
-                    &ArrayLiteralElement::Single(index) => index,
-                    ArrayLiteralElement::Spread(_, _) => {
-                        return Err(diags.report_error_todo(index.span(), "multidimensional array indexing"));
-                    }
-                };
-
-                // delegate to common steps processing
-                let step = self.eval_expression_as_array_step(scope, flow, index)?;
-                let steps = AssignmentSteps::new(vec![Spanned::new(span_brackets, step)]);
-                steps.apply_to_value(self.refs, &mut self.large, base)?
+                LrValue::Right(result)
             }
             &ExpressionKind::ArrayType {
                 span_brackets: _,
                 ref lengths,
                 inner_ty,
             } => {
-                // TODO add syntax for "any-length" lists, maybe `[_]inner`, that also scales nicely?
                 // TODO support nd arrays
                 // evaluate length
                 let length = lengths
@@ -654,27 +669,106 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // eval inner type and construct new array type
                 let inner_ty = self.eval_expression_as_ty(scope, flow, inner_ty)?;
-                Value::new_ty(Type::Array(Arc::new(inner_ty.inner), length))
+                let result = Value::new_ty(Type::Array(Arc::new(inner_ty.inner), length));
+                LrValue::Right(ValueWithImplications::simple(result))
             }
-            &ExpressionKind::DotIndex(base, index) => match index {
-                DotIndexKind::Id(index) => {
-                    let base =
-                        self.eval_expression_with_implications_allow_interface_ref(scope, flow, &Type::Any, base)?;
-                    let index = index.spanned_str(refs.fixed.source);
-                    return self.eval_dot_index_id(flow, expected_ty, expr.span, base, index);
-                }
-                DotIndexKind::Int { span: index_span } => {
-                    let base = self.eval_expression(scope, flow, &Type::Any, base)?;
+            &ExpressionKind::ArrayIndex {
+                span_brackets: _,
+                base,
+                ref indices,
+            } => {
+                // eval base
+                let base_span = base.span;
+                let base = self.eval_expression_as_lr(scope, flow, &Type::Any, base)?;
 
-                    let index = parse_token_int_literal_decimal(source.span_str(index_span))
-                        .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?;
+                // TODO support nd arrays
+                // evaluate index
+                let index = indices
+                    .single_ref()
+                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional array indexing"))?;
+                let index = match index {
+                    &ArrayLiteralElement::Single(index) => index,
+                    ArrayLiteralElement::Spread(_, _) => {
+                        return Err(diags.report_error_todo(index.span(), "multidimensional array indexing"));
+                    }
+                };
 
-                    // delegate to common steps processing
-                    let step = AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index));
-                    let steps = AssignmentSteps::new(vec![Spanned::new(index_span, step)]);
-                    steps.apply_to_value(self.refs, &mut self.large, base)?
+                // apply step to value
+                let step = self.eval_expression_as_array_step(scope, flow, index)?;
+                let step = Spanned::new(index.span, step);
+
+                match base {
+                    LrValue::LeftTarget(base) => {
+                        let mut result = base;
+                        result.steps.push(step);
+                        LrValue::LeftTarget(result)
+                    }
+                    LrValue::LeftInterface(intf) => {
+                        let e = DiagnosticError::new(
+                            "cannot index into interface",
+                            expr.span,
+                            "trying to index into interface here",
+                        )
+                        .add_info(base_span, "base evaluates to an interface")
+                        .add_info(intf.span_decl(self), "interface declared here")
+                        .report(diags);
+                        return Err(e);
+                    }
+                    LrValue::Right(base) => {
+                        let steps = TargetSteps::single(step);
+                        let result = steps.apply_to_value(self, expected_ty, Spanned::new(base_span, base))?;
+                        LrValue::Right(result)
+                    }
                 }
-            },
+            }
+            &ExpressionKind::DotIndex(base, index) => {
+                let base_span = base.span;
+                let base = self.eval_expression_as_lr(scope, flow, &Type::Any, base)?;
+
+                let index_span = index.span();
+                let index = match index {
+                    DotIndexKind::Id(index) => Either::Left(index.str(refs.fixed.source)),
+                    DotIndexKind::Int { span } => Either::Right(
+                        parse_token_int_literal_decimal(refs.fixed.source.span_str(span))
+                            .map_err(|_| diags.report_error_internal(expr.span, "failed to parse int"))?,
+                    ),
+                };
+
+                let index_to_step = |index: Either<&str, BigUint>| {
+                    let step = match index {
+                        Either::Left(index) => TargetStepCompile::DotIndexId(Arc::new(index.to_owned())),
+                        Either::Right(index) => TargetStepCompile::DotIndexInt(index),
+                    };
+                    Spanned::new(index_span, TargetStep::Compile(step))
+                };
+
+                match base {
+                    LrValue::LeftTarget(base) => {
+                        let mut result = base;
+                        result.steps.push(index_to_step(index));
+                        LrValue::LeftTarget(result)
+                    }
+                    LrValue::LeftInterface(base) => {
+                        let index = index.left().ok_or_else(|| {
+                            DiagnosticError::new(
+                                "cannot tuple index into interface",
+                                expr.span,
+                                "trying to tuple index here",
+                            )
+                            .add_info(base_span, "base evaluates to an interface")
+                            .add_info(base.span_decl(self), "interface declared here")
+                            .report(diags)
+                        })?;
+
+                        let signal = base.get_signal(self, base_span, Spanned::new(index_span, index))?;
+                        LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(expr.span, signal.into())))
+                    }
+                    LrValue::Right(base) => {
+                        let steps = TargetSteps::new(vec![index_to_step(index)]);
+                        LrValue::Right(steps.apply_to_value(self, expected_ty, Spanned::new(base_span, base))?)
+                    }
+                }
+            }
             &ExpressionKind::Call(target, ref args) => {
                 // eval target
                 let target = self.eval_expression(scope, flow, &Type::Any, target)?;
@@ -684,7 +778,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     Value::Simple(SimpleCompileValue::Type(Type::Type)) => {
                         // typeof operator
                         let ty = self.eval_type_of(scope, flow, expr.span, args)?;
-                        return Ok(ValueWithImplications::new_ty(ty));
+                        return Ok(LrValue::Right(ValueWithImplications::new_ty(ty)));
                     }
                     _ => {
                         // fallthrough into normal call logic
@@ -719,25 +813,25 @@ impl<'a> CompileItemContext<'a, '_> {
                     inner: args_eval,
                 });
 
-                self.eval_call(flow, expected_ty, expr.span, target.as_ref(), args)?
+                let result = self.eval_call(flow, expected_ty, expr.span, target.as_ref(), args)?;
+                LrValue::Right(ValueWithImplications::simple(result))
             }
             &ExpressionKind::UnsafeValueWithDomain(value, domain) => {
-                // evaluate value and domain
+                // evaluate value
                 let flow_hw = flow.require_hardware(expr.span, "domain cast")?;
-
                 let value = {
                     // evaluate the value with disabled domain checks
                     // (the whole point of this operation is to bypass domain checking)
                     // TODO is this not accidentally disabling eg. writes to unrelated signals too?
                     let mut flow_hw_inner = flow_hw.new_child_scoped_without_domain_checks();
-                    self.eval_expression(scope, &mut flow_hw_inner, expected_ty, value)
+                    self.eval_expression(scope, &mut flow_hw_inner, expected_ty, value)?
                 };
 
-                let mut flow_domain = flow.new_child_compile(domain.span, "domain");
-                let domain = self.eval_domain(scope, &mut flow_domain, domain);
-
-                let value = value?;
-                let domain = domain?;
+                // evaluate domain
+                let domain = {
+                    let mut flow_domain = flow.new_child_compile(domain.span, "domain");
+                    self.eval_domain(scope, &mut flow_domain, domain)?
+                };
 
                 // convert value to hardware
                 let ty = match value.inner.ty().as_hardware_type(elab) {
@@ -756,114 +850,126 @@ impl<'a> CompileItemContext<'a, '_> {
                     .inner
                     .as_ir_expression_unchecked(refs, &mut self.large, value.span, &ty)?;
 
-                // set domain
-                Value::Hardware(HardwareValue {
+                // override domain
+                let result = Value::Hardware(HardwareValue {
                     ty,
                     domain: ValueDomain::from_domain_kind(domain.inner),
                     expr: value_expr,
-                })
+                });
+                LrValue::Right(ValueWithImplications::simple(result))
             }
-            &ExpressionKind::Ref(span_op, inner) => {
-                let id = match refs.get_expr(inner) {
-                    &ExpressionKind::Id(id) => self.eval_general_id(scope, flow, id)?,
-                    _ => return Err(diags.report_error_todo(expr.span, "reference to general expression")),
+            &ExpressionKind::Ref(span_keyword, operand) => {
+                let expected_ty_inner = match expected_ty {
+                    Type::Ref(expected_ty_inner) => expected_ty_inner,
+                    Type::RefInterface(_) => &Type::Interface,
+                    _ => &Type::Any,
                 };
-                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                let id_eval = self.eval_scoped_as_named(scope, id)?;
+                let operand_span = operand.span;
+                let operand = self.eval_expression_as_lr(scope, flow, expected_ty_inner, operand)?;
 
-                match id_eval.inner {
-                    NamedOrValue::Named(value) => match value {
-                        NamedValue::Variable(var) => {
-                            // Reference types are invariant, since they can be read and written to.
-                            // Variables without any type can contain and accept any type,
-                            //   so their type as a reference must be `Ref(any)` too.
-                            let var_info = flow.var_info(Spanned::new(id.span, var))?;
-                            let var_ty = var_info.ty.as_ref().map_or(Type::Any, |ty| ty.inner.clone());
-
-                            let flow_id = flow.root_id();
-
-                            let rf = ReferenceWrapper::new_variable(
-                                flow_id,
-                                var,
-                                Arc::new(var_ty),
-                                var_info.span_decl,
-                                span_op,
-                            );
-                            Value::Simple(SimpleCompileValue::Reference(rf))
+                let result = match operand {
+                    LrValue::LeftTarget(operand) => {
+                        let AssignmentTarget { base, steps } = operand;
+                        if !steps.is_empty() {
+                            return Err(diags.report_error_todo(operand_span, "reference to target with steps"));
                         }
-                        NamedValue::Signal(signal) => {
-                            let module = self.curr_module.ok_or_else(|| {
-                                diags.report_error_internal(expr.span, "reference to interface instance outside module")
-                            })?;
 
-                            let signal_ty = signal.expect_ty(self, id.span)?;
-                            let rf = ReferenceWrapper::new_signal(
-                                module,
-                                signal,
-                                Arc::new(signal_ty.inner.clone()),
-                                signal.span_decl(self),
-                                span_op,
-                            );
-                            Value::Simple(SimpleCompileValue::Reference(rf))
+                        match base.inner {
+                            SignalOrVariable::Signal(signal) => {
+                                let curr_module = self.curr_module.ok_or_else(|| {
+                                    diags.report_error_internal(expr.span, "reference to signal outside module")
+                                })?;
+                                let signal_ty = signal.expect_ty(self, base.span)?;
+                                ReferenceWrapper::new_signal(
+                                    curr_module,
+                                    signal,
+                                    Arc::new(signal_ty.inner.clone()),
+                                    signal.span_decl(self),
+                                    span_keyword,
+                                )
+                            }
+                            SignalOrVariable::Variable(var) => {
+                                // Reference types are invariant, since they can be read and written to.
+                                // Variables without any type can contain and accept any type,
+                                //   so their type as a reference must be `Ref(any)` too.
+                                let var_info = flow.var_info(Spanned::new(base.span, var))?;
+                                let var_ty = var_info.ty.as_ref().map_or(Type::Any, |ty| ty.inner.clone());
+                                ReferenceWrapper::new_variable(
+                                    flow.root_id(),
+                                    var,
+                                    Arc::new(var_ty),
+                                    var_info.span_decl,
+                                    span_keyword,
+                                )
+                            }
                         }
-                        NamedValue::Interface(intf) => {
-                            let module = self.curr_module.ok_or_else(|| {
-                                diags.report_error_internal(expr.span, "reference to interface instance outside module")
-                            })?;
+                    }
+                    LrValue::LeftInterface(intf) => {
+                        let curr_module = self.curr_module.ok_or_else(|| {
+                            diags.report_error_internal(expr.span, "reference to interface outside module")
+                        })?;
+                        let intf_elab = intf.elab_interface(self);
 
-                            let elab_intf = intf.elab_interface(self).inner;
-                            let rf =
-                                ReferenceWrapper::new_interface(module, intf, elab_intf, intf.span_decl(self), span_op);
-                            Value::Simple(SimpleCompileValue::Reference(rf))
-                        }
-                    },
-                    NamedOrValue::Value(_) => {
-                        let diag = DiagnosticError::new(
+                        ReferenceWrapper::new_interface(curr_module, intf, intf_elab.inner, intf_elab.span, expr.span)
+                    }
+                    LrValue::Right(_) => {
+                        let e = DiagnosticError::new(
                             "cannot take reference to value",
-                            expr.span,
+                            span_keyword,
                             "trying to take reference here",
                         )
-                        .add_info(id_eval.span, "value declared here")
+                        .add_info(operand_span, "this expression evaluates to a value")
                         .report(diags);
-                        return Err(diag);
+                        return Err(e);
                     }
-                }
-            }
-            &ExpressionKind::Deref(span_op, inner) => {
-                let deref = self.eval_deref_operator(scope, flow, expr.span, span_op, inner)?;
-                match deref {
-                    Either::Left(SignalOrVariable::Variable(var)) => {
-                        return flow.var_eval(refs, &mut self.large, Spanned::new(expr.span, var));
-                    }
-                    Either::Left(SignalOrVariable::Signal(signal)) => {
-                        let flow = flow.require_hardware(span_op, "signal read")?;
-                        return flow.signal_eval(self, Spanned::new(expr.span, signal));
-                    }
-                    Either::Right(intf) => {
-                        if allow_interface_ref {
-                            let module = self.curr_module.ok_or_else(|| {
-                                diags.report_error_internal(expr.span, "reference to interface instance outside module")
-                            })?;
+                };
 
-                            let elab_intf = intf.elab_interface(self).inner;
-                            let rf =
-                                ReferenceWrapper::new_interface(module, intf, elab_intf, intf.span_decl(self), span_op);
-                            Value::Simple(SimpleCompileValue::Reference(rf))
-                        } else {
-                            return Err(error_cannot_eval_interface_as(
-                                diags,
-                                expr.span,
-                                intf.elab_interface(self).span,
-                                "value",
-                            ));
+                LrValue::Right(Value::Simple(SimpleCompileValue::Reference(result)))
+            }
+            &ExpressionKind::Deref(span_keyword, operand) => {
+                let reason = Spanned::new(span_keyword, "dereference operand");
+                let operand = self.eval_expression_as_compile(scope, flow, &Type::Any, operand, reason)?;
+
+                if let Value::Simple(SimpleCompileValue::Reference(rf)) = operand.inner {
+                    match rf.get(self, flow, operand.span)? {
+                        ReferenceInner::Variable { var, ty: _ } => {
+                            if !flow.var_still_exists(var) {
+                                let err = DiagnosticError::new(
+                                    "cannot access variable after its scope has ended",
+                                    expr.span,
+                                    "trying to deference here",
+                                )
+                                .add_info(rf.span_decl, "variable declared here")
+                                .add_info(rf.span_ref, "reference taken here")
+                                .report(diags);
+                                return Err(err);
+                            }
+                            LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(expr.span, var.into())))
                         }
+                        ReferenceInner::Signal {
+                            signal,
+                            ty: _,
+                            ty_hw: _,
+                        } => LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))),
+                        ReferenceInner::Interface { intf, elab: _ } => LrValue::LeftInterface(intf),
                     }
+                } else {
+                    let diag = DiagnosticError::new(
+                        "cannot dereference non-reference value",
+                        expr.span,
+                        "trying to dereference non-reference here",
+                    )
+                    .add_info(
+                        operand.span,
+                        format!("operand is has type `{}`", operand.inner.ty().value_string(elab)),
+                    )
+                    .report(diags);
+                    return Err(diag);
                 }
             }
         };
-
-        Ok(Value::simple(result_simple))
+        Ok(result)
     }
 
     pub fn eval_call(
@@ -906,295 +1012,6 @@ impl<'a> CompileItemContext<'a, '_> {
                 format!("got value with type `{}`", target.inner.ty().value_string(elab)),
             )),
         }
-    }
-
-    pub fn eval_dot_index_id(
-        &mut self,
-        flow: &mut impl Flow,
-        expected_ty: &Type,
-        expr_span: Span,
-        base: Spanned<ValueWithImplications>,
-        index: Spanned<&str>,
-    ) -> DiagResult<ValueWithImplications> {
-        // TODO make sure users don't accidentally define fields/variants/functions with the same name
-        // TODO add array.len, type.int_start, type.int_end, type.int_ranges
-
-        let refs = self.refs;
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
-
-        // interface fields
-        if let Value::Simple(SimpleCompileValue::Reference(rf)) = &base.inner {
-            let rf = rf.get(self, flow, base.span)?;
-            if let ReferenceInner::Interface { intf, elab: _ } = rf {
-                let signal = self.interface_get_signal(base.span, intf, index)?;
-                let flow = flow.require_hardware(expr_span, "signal read")?;
-                return flow.signal_eval(self, Spanned::new(expr_span, signal));
-            }
-        }
-
-        // interface views
-        if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base.inner {
-            let info = self.refs.shared.elaboration_arenas.interface_info(base_interface);
-            let (view_index, _) = info.get_view(diags, index)?;
-
-            let interface_view = ElaboratedInterfaceView {
-                interface: base_interface,
-                view_index,
-            };
-            return Ok(Value::Simple(SimpleCompileValue::InterfaceView(interface_view)));
-        }
-
-        // common type attributes
-        if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
-            match index.inner {
-                "size_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
-                    let width = ty_hw.size_bits(refs);
-                    return Ok(Value::new_int(width.into()));
-                }
-                // TODO all of these should return functions with a single params,
-                //   without the need for scope capturing
-                "to_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
-                    let func = FunctionBits {
-                        ty_hw,
-                        kind: FunctionBitsKind::ToBits,
-                    };
-                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
-                }
-                "from_bits" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
-
-                    if !ty_hw.every_bit_pattern_is_valid(refs) {
-                        let diag = DiagnosticError::new(
-                            "from_bits is only allowed for types where every bit pattern is valid",
-                            base.span,
-                            format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
-                        )
-                        .add_footer_hint("consider using a target type where every bit pattern is valid")
-                        .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe` instead")
-                        .report(diags);
-                        return Err(diag);
-                    }
-
-                    let func = FunctionBits {
-                        ty_hw,
-                        kind: FunctionBitsKind::FromBits { is_unsafe: false },
-                    };
-                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
-                }
-                "from_bits_unsafe" => {
-                    let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
-                    let func = FunctionBits {
-                        ty_hw,
-                        kind: FunctionBitsKind::FromBits { is_unsafe: true },
-                    };
-                    return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
-                }
-                _ => {}
-            }
-
-            // array type attributes
-            if let Type::Array(ty_inner, ty_len) = ty {
-                match index.inner {
-                    "inner" => {
-                        return Ok(Value::new_ty((**ty_inner).clone()));
-                    }
-                    "len" => {
-                        return if let Some(ty_len) = ty_len {
-                            Ok(Value::new_int(BigInt::from(ty_len)))
-                        } else {
-                            let diag = DiagnosticError::new(
-                                "cannot get length of array type with unknown length",
-                                index.span,
-                                "trying to get length here",
-                            )
-                            .add_info(base.span, format!("array type is `{}`", ty.value_string(elab)))
-                            .report(diags);
-                            Err(diag)
-                        };
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // struct new, struct static members
-        if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
-            if index.inner == "new" {
-                let func = FunctionValue::StructNew(elab);
-                return Ok(Value::Simple(SimpleCompileValue::Function(func)));
-            }
-
-            let info = self.refs.shared.elaboration_arenas.struct_info(elab);
-            if let Some(value) = info.members_static.get(index.inner) {
-                return Ok(Value::from(value.as_ref_ok()?.clone()));
-            }
-        }
-
-        // struct new for not yet inferred struct types
-        let base_item_function = match &base.inner {
-            Value::Simple(SimpleCompileValue::Function(FunctionValue::User(func))) => match &func.body.inner {
-                FunctionBody::ItemBody(body) => Some(body),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
-            && index.inner == "new"
-        {
-            let func = FunctionValue::StructNewInfer(unique);
-            return Ok(Value::Simple(SimpleCompileValue::Function(func)));
-        }
-
-        // enum variants
-        let eval_enum = |elab| {
-            let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            let variant_index = info.variant_index(diags, index)?;
-            let variant_info = &info.variants[variant_index];
-
-            let result = match &variant_info.payload_ty {
-                None => Value::Compound(MixedCompoundValue::Enum(EnumValue {
-                    ty: elab,
-                    variant: variant_index,
-                    payload: None,
-                })),
-                Some(_) => Value::Simple(SimpleCompileValue::Function(FunctionValue::EnumNew(
-                    elab,
-                    variant_index,
-                ))),
-            };
-            Ok(result)
-        };
-
-        if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
-            // enum members
-            let info = self.refs.shared.elaboration_arenas.enum_info(elab);
-            if let Some(value) = info.members_static.get(index.inner) {
-                return Ok(Value::from(value.as_ref_ok()?.clone()));
-            }
-
-            // enum variants
-            return eval_enum(elab);
-        }
-        if let Some(&FunctionItemBody::Enum(unique, ref generic_info)) = base_item_function {
-            return if let &Type::Enum(expected) = expected_ty {
-                let expected_info = self.refs.shared.elaboration_arenas.enum_info(expected);
-                if expected_info.unique == unique {
-                    eval_enum(expected)
-                } else {
-                    Err(
-                        error_unique_mismatch("enum", base.span, expected_info.unique.id().span(), unique.id().span())
-                            .report(diags),
-                    )
-                }
-            } else {
-                let generic_variant = generic_info.find_variant(diags, index)?;
-                if generic_variant.has_payload {
-                    // delay type inference until payload construction/call time
-                    let func = FunctionValue::EnumNewInfer(unique, Arc::new(index.inner.to_owned()));
-                    Ok(Value::Simple(SimpleCompileValue::Function(func)))
-                } else {
-                    // non-payload variant, we need to know the type now
-                    let err = error_cannot_infer_generic_params("enum", base.span, expr_span, unique.id().span());
-                    return Err(err.report(diags));
-                }
-            };
-        }
-
-        // struct fields and methods
-        let base_ty = base.inner.ty();
-        if let Type::Struct(base_ty_struct) = base_ty {
-            let info = self.refs.shared.elaboration_arenas.struct_info(base_ty_struct);
-
-            // try method
-            if let Some(method) = info.methods_self.get(index.inner) {
-                let bound = BoundMethod {
-                    self_type: base_ty,
-                    self_value: Box::new(base.inner.into_value()),
-                    method: Arc::clone(method),
-                };
-                return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
-            }
-
-            // try field
-            let step = AssignmentStep::Compile(AssignmentStepCompile::StructField(Arc::new(index.inner.to_owned())));
-            let steps = AssignmentSteps::new(vec![Spanned::new(index.span, step)]);
-            return steps
-                .apply_to_value(refs, &mut self.large, base.map_inner(ValueWithImplications::into_value))
-                .map(Value::simple);
-        }
-
-        // enum methods
-        if let Type::Enum(base_ty_enum) = base_ty {
-            let info = self.refs.shared.elaboration_arenas.enum_info(base_ty_enum);
-
-            // try method
-            if let Some(method) = info.methods_self.get(index.inner) {
-                let bound = BoundMethod {
-                    self_type: base_ty,
-                    self_value: Box::new(base.inner.into_value()),
-                    method: Arc::clone(method),
-                };
-                return Ok(Value::Compound(MixedCompoundValue::BoundMethod(bound)));
-            }
-        }
-
-        // array length
-        if let Type::Array(_, value_len) = &base_ty
-            && index.inner == "len"
-        {
-            return if let Some(value_len) = value_len {
-                Ok(Value::new_int(BigInt::from(value_len)))
-            } else {
-                Err(diags.report_error_internal(expr_span, "value has type with unknown array length"))
-            };
-        }
-
-        // fallthrough into error
-        let diag = DiagnosticError::new(
-            "invalid dot index expression",
-            index.span,
-            format!("no attribute found with name `{}`", index.inner),
-        )
-        .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
-        .report(diags);
-        Err(diag)
-    }
-
-    fn interface_get_signal(&self, base_span: Span, intf: Interface, index: Spanned<&str>) -> DiagResult<Signal> {
-        let (elab_intf, base_intf_span) = match intf {
-            Interface::Port(intf) => {
-                let info = &self.port_interfaces[intf];
-                (info.view.inner.interface, info.view.span)
-            }
-            Interface::Wire(intf) => {
-                let info = &self.wire_interfaces[intf];
-                (info.interface.inner, info.interface.span)
-            }
-        };
-        let info = self.refs.shared.elaboration_arenas.interface_info(elab_intf);
-
-        let signal_index = info.signals.get_index_of(index.inner).ok_or_else(|| {
-            let interface_str =
-                SimpleCompileValue::Interface(elab_intf).value_string(&self.refs.shared.elaboration_arenas);
-            DiagnosticError::new(
-                format!("signal `{}` not found on interface", index.inner),
-                index.span,
-                "attempt to access signal here",
-            )
-            .add_info(base_span, format!("base is instance of `{interface_str}`"))
-            .add_info(base_intf_span, "interface set here")
-            .add_info(info.id.span(), "interface declared here")
-            .report(self.refs.diags)
-        })?;
-
-        let signal = match intf {
-            Interface::Port(intf) => Signal::Port(self.port_interfaces[intf].ports[signal_index]),
-            Interface::Wire(intf) => Signal::Wire(self.wire_interfaces[intf].wires[signal_index]),
-        };
-        Ok(signal)
     }
 
     fn eval_array_literal(
@@ -1262,7 +1079,7 @@ impl<'a> CompileItemContext<'a, '_> {
         scope: &Scope,
         flow: &mut impl Flow,
         index: Expression,
-    ) -> DiagResult<AssignmentStep> {
+    ) -> DiagResult<TargetStep> {
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -1298,7 +1115,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         )
                     })?;
 
-                    AssignmentStep::Compile(AssignmentStepCompile::ArrayIndex(index))
+                    TargetStep::Compile(TargetStepCompile::ArrayIndex(index))
                 }
                 _ => return Err(err_wrong_type()),
             },
@@ -1340,7 +1157,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             },
                         };
 
-                        AssignmentStep::Compile(AssignmentStepCompile::ArraySlice { start, length })
+                        TargetStep::Compile(TargetStepCompile::ArraySlice { start, length })
                     }
                     RangeValue::HardwareStartLength { start, length } => {
                         let start = HardwareUInt::try_from(start).map_err(|start| {
@@ -1350,7 +1167,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 format!("array slice start cannot be negative, got range {}", start.ty),
                             )
                         })?;
-                        AssignmentStep::Hardware(AssignmentStepHardware::ArraySlice { start, length })
+                        TargetStep::Hardware(TargetStepHardware::ArraySlice { start, length })
                     }
                 },
                 _ => return Err(err_wrong_type()),
@@ -1375,7 +1192,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         format!("array index cannot be negative, got range {}", index.ty),
                     )
                 })?;
-                AssignmentStep::Hardware(AssignmentStepHardware::ArrayIndex(index))
+                TargetStep::Hardware(TargetStepHardware::ArrayIndex(index))
             }
         };
 
@@ -1466,226 +1283,6 @@ impl<'a> CompileItemContext<'a, '_> {
         })
     }
 
-    pub fn eval_expression_as_assign_target(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        expr: Expression,
-    ) -> DiagResult<Spanned<AssignmentTarget>> {
-        let diags = self.refs.diags;
-
-        let result = match *self.refs.get_expr_inner(expr) {
-            ExpressionKind::Id(id) => {
-                let id = self.eval_general_id(scope, flow, id)?;
-                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
-
-                let named = self.eval_scoped_as_named(scope, id)?.inner;
-                self.eval_named_as_assign_target(expr.span, named)?
-            }
-            ExpressionKind::Deref(span_op, inner) => {
-                let deref = self.eval_deref_operator(scope, flow, expr.span, span_op, inner);
-                match deref? {
-                    Either::Left(target) => AssignmentTarget::simple(Spanned::new(expr.span, target)),
-                    Either::Right(intf) => {
-                        let intf_span = intf.elab_interface(self).span;
-                        return Err(error_cannot_eval_interface_as(
-                            diags,
-                            expr.span,
-                            intf_span,
-                            "assignment target",
-                        ));
-                    }
-                }
-            }
-            ExpressionKind::ArrayIndex {
-                span_brackets,
-                base,
-                ref indices,
-            } => {
-                // eval base
-                let base = self.eval_expression_as_assign_target(scope, flow, base)?;
-
-                // eval index
-                let index = indices
-                    .single_ref()
-                    .ok_or_else(|| diags.report_error_todo(expr.span, "multidimensional arrays"))?;
-                let index = match index {
-                    &ArrayLiteralElement::Single(index) => index,
-                    ArrayLiteralElement::Spread(_, _) => {
-                        return Err(diags.report_error_todo(index.span(), "multidimensional arrays"));
-                    }
-                };
-
-                let index_step = self.eval_expression_as_array_step(scope, flow, index)?;
-                let index_step = Spanned::new(span_brackets, index_step);
-
-                // wrap result
-                let mut target = base.inner;
-                target.steps.steps.push(index_step);
-                target
-            }
-            ExpressionKind::DotIndex(base, index) => match index {
-                DotIndexKind::Id(index) => {
-                    // evaluate base
-                    // there are two possible cases here:
-                    // * interface -> signal indexing
-                    // * existing assignment target -> field indexing
-                    let base_span = base.span;
-                    let base: Either<Interface, AssignmentTarget> = match *self.refs.get_expr_inner(base) {
-                        ExpressionKind::Id(base) => {
-                            let base = self.eval_general_id(scope, flow, base)?;
-                            let base = base.as_ref().map_inner(ArcOrRef::as_ref);
-
-                            let base = self.eval_scoped_as_named(scope, base)?;
-
-                            if let NamedOrValue::Named(NamedValue::Interface(intf)) = base.inner {
-                                Either::Left(intf)
-                            } else {
-                                let base = self.eval_named_as_assign_target(expr.span, base.inner)?;
-                                Either::Right(base)
-                            }
-                        }
-                        ExpressionKind::Deref(span_op, inner) => {
-                            match self.eval_deref_operator(scope, flow, expr.span, span_op, inner)? {
-                                Either::Left(base) => {
-                                    Either::Right(AssignmentTarget::simple(Spanned::new(expr.span, base)))
-                                }
-                                Either::Right(intf) => Either::Left(intf),
-                            }
-                        }
-                        _ => {
-                            let base = self.eval_expression_as_assign_target(scope, flow, base)?;
-                            Either::Right(base.inner)
-                        }
-                    };
-
-                    // evaluate index
-                    let index_str = index.spanned_str(self.refs.fixed.source);
-
-                    // apply indexing operation
-                    match base {
-                        Either::Left(base_intf) => {
-                            let signal = self.interface_get_signal(base_span, base_intf, index_str)?;
-                            AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))
-                        }
-                        Either::Right(base_target) => {
-                            let field_step = AssignmentStep::Compile(AssignmentStepCompile::StructField(Arc::new(
-                                index_str.inner.to_owned(),
-                            )));
-                            let field_step = Spanned::new(index_str.span, field_step);
-
-                            let mut target = base_target;
-                            target.steps.steps.push(field_step);
-                            target
-                        }
-                    }
-                }
-                DotIndexKind::Int { span } => {
-                    // eval base
-                    let base = self.eval_expression_as_assign_target(scope, flow, base)?;
-
-                    // eval index
-                    let index = parse_token_int_literal_decimal(self.refs.fixed.source.span_str(span))
-                        .map_err(|_| diags.report_error_internal(span, "failed to parse int literal"))?;
-
-                    let index_step = AssignmentStep::Compile(AssignmentStepCompile::TupleIndex(index));
-                    let index_step = Spanned::new(span, index_step);
-
-                    // wrap result
-                    let mut target = base.inner;
-                    target.steps.steps.push(index_step);
-                    target
-                }
-            },
-            _ => {
-                let err = error_expected_assignment_target(diags, expr.span, "other expression", None);
-                return Err(err);
-            }
-        };
-
-        Ok(Spanned {
-            span: expr.span,
-            inner: result,
-        })
-    }
-
-    pub fn eval_named_as_assign_target(
-        &mut self,
-        expr_span: Span,
-        named: NamedOrValue,
-    ) -> DiagResult<AssignmentTarget> {
-        let diags = self.refs.diags;
-
-        match named {
-            NamedOrValue::Value(_) => Err(error_expected_assignment_target(diags, expr_span, "value", None)),
-            NamedOrValue::Named(s) => match s {
-                NamedValue::Variable(v) => Ok(AssignmentTarget::simple(Spanned::new(expr_span, v.into()))),
-                NamedValue::Signal(signal) => Ok(AssignmentTarget::simple(Spanned::new(expr_span, signal.into()))),
-                NamedValue::Interface(intf) => {
-                    let span_decl = match intf {
-                        Interface::Port(intf) => self.port_interfaces[intf].id.span,
-                        Interface::Wire(intf) => self.wire_interfaces[intf].id.span(),
-                    };
-                    let err = error_expected_assignment_target(diags, expr_span, "interface instance", Some(span_decl));
-                    Err(err)
-                }
-            },
-        }
-    }
-
-    fn eval_deref_operator(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        expr_span: Span,
-        deref_span: Span,
-        operand: Expression,
-    ) -> DiagResult<Either<SignalOrVariable, Interface>> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
-
-        let reason = Spanned::new(deref_span, "dereference operand");
-        let operand = self.eval_expression_as_compile(scope, flow, &Type::Any, operand, reason)?;
-
-        match operand.inner {
-            CompileValue::Simple(SimpleCompileValue::Reference(rf)) => match rf.get(self, flow, operand.span)? {
-                ReferenceInner::Variable { var, ty: _ } => {
-                    if !flow.var_still_exists(var) {
-                        let err = DiagnosticError::new(
-                            "cannot access variable after its scope has ended",
-                            expr_span,
-                            "trying to deference here",
-                        )
-                        .add_info(rf.span_decl, "variable declared here")
-                        .add_info(rf.span_ref, "reference taken here")
-                        .report(diags);
-                        return Err(err);
-                    }
-                    Ok(Either::Left(var.into()))
-                }
-                ReferenceInner::Signal {
-                    signal,
-                    ty: _,
-                    ty_hw: _,
-                } => Ok(Either::Left(signal.into())),
-                ReferenceInner::Interface { intf, elab: _ } => Ok(Either::Right(intf)),
-            },
-            v => {
-                let diag = DiagnosticError::new(
-                    "cannot dereference non-reference value",
-                    expr_span,
-                    "trying to dereference non-reference here",
-                )
-                .add_info(
-                    operand.span,
-                    format!("operand is has type `{}`", v.ty().value_string(elab)),
-                )
-                .report(diags);
-                Err(diag)
-            }
-        }
-    }
-
     pub fn eval_expression_as_domain_signal(
         &mut self,
         scope: &Scope,
@@ -1724,8 +1321,8 @@ impl<'a> CompileItemContext<'a, '_> {
                 let id = self.eval_general_id(scope, flow, id).map_err(Either::Right)?;
                 let id = id.as_ref().map_inner(ArcOrRef::as_ref);
 
-                let value = self.eval_scoped_as_named(scope, id).map_err(|e| Either::Right(e))?;
-                match value.inner {
+                let named = self.eval_scoped_as_named(scope, id).map_err(|e| Either::Right(e))?;
+                match named {
                     NamedOrValue::Value(_) => Err(build_err("value")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Signal(s) => Ok(Polarized::new(s)),
@@ -1989,7 +1586,7 @@ fn eval_int_ty_call(
             })?;
 
             let range = if target_signed {
-                let width_m1 = BigUint::try_from(width - 1u8).map_err(|_| {
+                let width_m1 = width.sub_1().map_err(|_: IsZero| {
                     diags.report_error_simple(
                         "zero-width signed integers are not allowed",
                         arg.span,
@@ -2146,9 +1743,10 @@ impl Iterator for ForIterator {
                     let index_expr = IrExpression::Int(BigInt::from(next.clone()));
                     *next += 1u8;
 
-                    let element_expr = IrExpressionLarge::ArrayIndex {
+                    let step = IrTargetStepScalar::ArrayIndex(index_expr);
+                    let element_expr = IrExpressionLarge::Steps {
                         base: base_expr.clone(),
-                        index: index_expr,
+                        steps: IrTargetSteps::single(step),
                     };
                     Some(Value::Hardware(HardwareValue {
                         ty: (*ty_inner).clone(),
@@ -2955,33 +2553,3 @@ fn message_range_or_single(name: &str, range: &impl AnyMultiRange<BigInt>, suffi
 }
 
 const HINT_RANGE_USE_START_LENGTH: &str = "to construct ranges that are valid by design, use the `start+..len` syntax";
-
-fn error_cannot_eval_interface_as(
-    diags: &Diagnostics,
-    expr_span: Span,
-    elab_intf_span: Span,
-    as_str: &str,
-) -> DiagError {
-    DiagnosticError::new(
-        format!("cannot evaluate interface as {as_str}"),
-        expr_span,
-        "evaluating interface here",
-    )
-    .add_info(elab_intf_span, "interface set here")
-    .add_footer_hint("to access individual signals, use dot indexing: `<intf>.<signal>`")
-    .add_footer_hint("to get a reference to the whole interface, use `ref <intf>`")
-    .report(diags)
-}
-
-fn error_expected_assignment_target(
-    diags: &Diagnostics,
-    span: Span,
-    actual: &str,
-    span_def: Option<Span>,
-) -> DiagError {
-    let mut diag = DiagnosticError::new("expected assignment target", span, format!("got {actual}"));
-    if let Some(span_def) = span_def {
-        diag = diag.add_info(span_def, format!("{actual} declared here"));
-    }
-    diag.report(diags)
-}

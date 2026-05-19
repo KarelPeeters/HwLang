@@ -1,15 +1,26 @@
-module top ports() {}
+const N = 1024 * 1024;
 
-struct Foo {
-    x: uint,
-    y: uint,
+//module top ports(
+//    i: in async int(0..2),
+//    b: in async bool,
+//    d: in async [N]bool,
+//) {
+//    wire w: async [N]bool;
+//    comb {
+//        w[..N / 2] = d[..N / 2];
+//    }
+//    comb {
+//        w[N / 2..] = d[N / 2..];
+//    }
+//}
 
-    fn total(self) -> uint {
-        return self.x + self.y;
-    }
-}
-
-const {
-    val f = Foo.new(x=0, y=4);
-    print(f.total());
-}
+//module top ports(x: in async bool, y: out async bool) {
+//    wire w: async [2]bool;
+//    comb {
+//        y = w[0];
+//        w[1] = x;
+//    }
+//    comb {
+//        w[0] = x;
+//    }
+//}
