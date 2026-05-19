@@ -35,7 +35,7 @@ def test_port_driver_multi_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -50,7 +50,7 @@ def test_port_driver_multi_comb_clocked():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -126,7 +126,7 @@ def test_wire_driver_multi_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -139,7 +139,7 @@ def test_wire_driver_multi_expr_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -152,7 +152,7 @@ def test_wire_driver_multi_expr_clocked_with_assign():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -166,7 +166,7 @@ def test_wire_driver_multi_expr_clocked_without_assign():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -182,7 +182,7 @@ def test_wire_driver_multi_expr_child():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
