@@ -1,3 +1,5 @@
+import re
+
 import hwl
 import pytest
 
@@ -516,3 +518,42 @@ def test_dyn_array_huge():
     _ = top(c=True)
     with pytest.raises(hwl.DiagnosticException, match="port `y` is not fully driven"):
         _ = top(c=False)
+
+
+def test_cones_multiple_drivers_parts():
+    src = """
+    struct Foo {
+        array: [4][4]bool,
+        tuple: Tuple(bool, uint(8)),
+        tuple_nested: Tuple(Tuple(bool)),
+    }
+    pub module top ports() {
+        wire w: Foo;
+        comb {
+            w.array = [[false] * 4] * 4;
+            w.tuple = (false, 0);
+            w.tuple_nested = ((false,),);
+        }
+        comb {
+            w.array[0][..2] = [true, true];
+            w.array[1][2..] = [true, true];
+            w.tuple.1 = 4;
+            w.tuple_nested.0.0 = true;
+        }
+    }
+    """
+    expected_paths = [
+        "w.array[0][0..2]",
+        "w.array[1][2..4]",
+        "w.tuple.1",
+        "w.tuple_nested.0.0",
+    ]
+
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers") as e:
+        compile_custom(src).resolve_module("top.top")
+
+    assert len(e.value.messages) == 1
+    pattern = r"parts with multiple drivers:" + "".join(r"\s*" + re.escape(p) for p in expected_paths)
+    assert re.search(pattern, e.value.messages[0], re.MULTILINE)
+
+    # TODO add test that checks mix of un-driven and over-driven

@@ -12,8 +12,10 @@ use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::sparse_change_array::SparseChangeArray;
 use crate::util::{Never, ResultNeverExt};
+use hwl_util::constants::MAX_DRIVER_INFO_PATHS;
+use hwl_util::swrite;
 use indexmap::{IndexMap, IndexSet};
-use itertools::Itertools;
+use itertools::{Itertools, enumerate};
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
@@ -102,22 +104,25 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
 
     for signal in signals.all_signals_except_inputs() {
         // track driver status
-        let mut any_driven = false;
         let mut any_undriven = false;
-        let mut overlapping_drivers = IndexSet::new();
+        let mut all_undriven = true;
+        let mut any_overlapping = IndexSet::new();
+        let mut all_overlapping = true;
 
         if let Some(mask) = combined_drivers.get(&signal) {
             mask.for_each_leaf(|v| {
                 match v.len() {
                     0 => {
                         any_undriven = true;
+                        all_overlapping = false;
                     }
                     1 => {
-                        any_driven = true;
+                        all_undriven = false;
+                        all_overlapping = false;
                     }
                     _ => {
-                        any_driven = true;
-                        overlapping_drivers.extend(v.iter().copied())
+                        all_undriven = false;
+                        any_overlapping.extend(v.iter().copied())
                     }
                 }
                 ControlFlow::Continue(())
@@ -132,31 +137,61 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
         let signal_name = signal.debug_info_name(signals);
 
         // maybe report multiple drivers
-        if !overlapping_drivers.is_empty() {
+        if !any_overlapping.is_empty() {
+            let (title_suffix, msg_info) = if all_overlapping {
+                ("has multiple drivers", None)
+            } else {
+                let mask = combined_drivers.get(&signal).unwrap().clone();
+                let msg_info = build_driver_info_message(
+                    "parts with multiple drivers",
+                    signal.ty(signals),
+                    signal_name,
+                    mask,
+                    |v| v.len() > 1,
+                );
+                ("has multiple overlapping drivers", Some(msg_info))
+            };
+
             let mut diag = DiagnosticError::new(
-                format!("{signal_kind} `{signal_name}` has multiple overlapping drivers"),
+                format!("{signal_kind} `{signal_name}` {title_suffix}"),
                 signal.span(signals),
-                "{signal_kind} defined here",
+                format!("{signal_kind} defined here"),
             );
-            for drive_span in overlapping_drivers {
+            for drive_span in any_overlapping {
                 diag = diag.add_info(drive_span, "driven here");
             }
+            if let Some(msg_info) = msg_info {
+                diag = diag.add_footer_info(msg_info);
+            }
+
             any_err = Err(diag.report(diags));
         }
 
-        // maybe report (partially) undriven
+        // report warning for (partially) undriven signals
         if any_undriven {
-            let title_suffix = if !any_driven {
-                "has no driver"
+            let (title_suffix, msg_info) = if all_undriven {
+                ("has no driver", None)
             } else {
-                "is not fully driven"
+                let mask = combined_drivers.get(&signal).unwrap().clone();
+                let msg_info = build_driver_info_message(
+                    "parts without a driver",
+                    signal.ty(signals),
+                    signal_name,
+                    mask,
+                    Vec::is_empty,
+                );
+                ("is not fully driven", Some(msg_info))
             };
-            DiagnosticWarning::new(
+
+            let mut diag = DiagnosticWarning::new(
                 format!("{signal_kind} `{signal_name}` {title_suffix}"),
                 signal.span(signals),
-                "signal defined here",
-            )
-            .report(diags);
+                format!("{signal_kind} defined here"),
+            );
+            if let Some(msg_info) = msg_info {
+                diag = diag.add_footer_info(msg_info);
+            }
+            diag.report(diags);
         }
     }
 
@@ -206,7 +241,35 @@ fn check_combinatorial_self_loops(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+fn build_driver_info_message<T: Eq + Debug>(
+    msg: &str,
+    signal_ty: &IrType,
+    signal_name: &str,
+    mut mask: IrMask<T>,
+    mut cond: impl FnMut(&T) -> bool,
+) -> String {
+    mask.canonicalize();
+
+    let mut result = format!("{msg}:");
+    let mut path_count: usize = 0;
+
+    let _: ControlFlow<()> = mask.for_each_path(signal_ty, |prefix, scalar| {
+        if cond(scalar) {
+            swrite!(&mut result, "\n    {signal_name}{prefix}");
+            path_count += 1;
+
+            if path_count >= MAX_DRIVER_INFO_PATHS {
+                swrite!(&mut result, "\n    {signal_name}...");
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    });
+
+    result
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 enum IrMask<T> {
     Scalar(T),
     Array(Box<SparseChangeArray<IrMask<T>>>),
@@ -718,6 +781,82 @@ impl<T> IrMask<T> {
                 IrMask::TupleOrStruct(mask_fields)
             }
         }
+    }
+
+    fn canonicalize(&mut self)
+    where
+        T: Eq,
+    {
+        match self {
+            IrMask::Scalar(_) => {}
+            IrMask::Array(slf) => {
+                slf.for_each_block_mut(|_, inner| {
+                    inner.canonicalize();
+                    ControlFlow::Continue(())
+                })
+                .remove_never();
+                slf.canonicalize()
+            }
+            IrMask::TupleOrStruct(slf) => slf.iter_mut().for_each(Self::canonicalize),
+        }
+    }
+
+    fn for_each_path<B>(&self, ty: &IrType, mut f: impl FnMut(&str, &T) -> ControlFlow<B>) -> ControlFlow<B>
+    where
+        T: Debug,
+    {
+        fn g<T: Debug, B>(
+            slf: &IrMask<T>,
+            ty: &IrType,
+            f: &mut impl FnMut(&str, &T) -> ControlFlow<B>,
+            prefix: &mut String,
+        ) -> ControlFlow<B> {
+            let prefix_len = prefix.len();
+            match ty {
+                IrType::Bool | IrType::Int(_) | IrType::Enum(_) => {
+                    let slf = unwrap_match!(slf, IrMask::Scalar(slf) => slf);
+                    f(prefix, slf)?;
+                }
+                IrType::Array(ty_inner, _) => {
+                    let slf = unwrap_match!(slf, IrMask::Array(slf) => slf);
+                    slf.for_each_block(|range, mask| {
+                        if let Some(single) = range.as_single() {
+                            swrite!(prefix, "[{single}]")
+                        } else {
+                            swrite!(prefix, "[{range}]")
+                        };
+                        g(mask, ty_inner, f, prefix)?;
+                        prefix.truncate(prefix_len);
+                        ControlFlow::Continue(())
+                    })?;
+                }
+                IrType::Tuple(ty_fields) => {
+                    let slf = unwrap_match!(slf, IrMask::TupleOrStruct(slf) => slf);
+                    assert_eq!(slf.len(), ty_fields.len());
+
+                    for (field_index, field_ty) in enumerate(ty_fields) {
+                        swrite!(prefix, ".{field_index}");
+                        g(&slf[field_index], field_ty, f, prefix)?;
+                        prefix.truncate(prefix_len);
+                    }
+                }
+                IrType::Struct(ty_info) => {
+                    let slf = unwrap_match!(slf, IrMask::TupleOrStruct(slf) => slf);
+                    assert_eq!(slf.len(), ty_info.fields.len());
+
+                    for (field_index, (field_name, field_ty)) in enumerate(&ty_info.fields) {
+                        swrite!(prefix, ".{field_name}");
+                        g(&slf[field_index], field_ty, f, prefix)?;
+                        prefix.truncate(prefix_len);
+                    }
+                }
+            }
+
+            ControlFlow::Continue(())
+        }
+
+        let mut prefix = String::new();
+        g(self, ty, &mut f, &mut prefix)
     }
 
     fn fill(&mut self, value: T)

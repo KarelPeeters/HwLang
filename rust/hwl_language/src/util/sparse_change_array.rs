@@ -15,7 +15,11 @@ use std::ops::ControlFlow;
 /// For mutating visitor methods:
 ///   Range boundry indices are added to the array,
 ///   to ensure modifications to the inner element don't incorrectly affect elements outside the range.
-#[derive(Debug, Clone)]
+///
+/// For Eq/PartialEq:
+///   These also require the change indices to match between both arrays, not just the values.
+///   This is simple to implement, but could be changed in the future is necessary.
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SparseChangeArray<T> {
     len: BigUint,
     start: Option<T>,
