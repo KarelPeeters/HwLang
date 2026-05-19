@@ -735,7 +735,7 @@ impl<T> IrMask<T> {
         fn for_each_leaf_impl<T, B>(slf: &IrMask<T>, f: &mut impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
             match slf {
                 IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(slf) => slf.for_each(|m| for_each_leaf_impl(m, f)),
+                IrMask::Array(slf) => slf.for_each(|_, m| for_each_leaf_impl(m, f)),
                 IrMask::TupleOrStruct(values) => values.iter().try_for_each(|m| for_each_leaf_impl(m, f)),
             }
         }
@@ -749,7 +749,7 @@ impl<T> IrMask<T> {
         ) -> ControlFlow<B> {
             match slf {
                 IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(slf) => slf.for_each_mut(|m| for_each_leaf_mut_impl(m, f)),
+                IrMask::Array(slf) => slf.for_each_mut(|_, m| for_each_leaf_mut_impl(m, f)),
                 IrMask::TupleOrStruct(values) => values.iter_mut().try_for_each(|m| for_each_leaf_mut_impl(m, f)),
             }
         }
@@ -779,7 +779,7 @@ impl<T> IrMask<T> {
             }
             IrMask::Array(a) => {
                 let b = unwrap_match!(b, IrMask::Array(b) => b);
-                SparseChangeArray::zip2_for_each::<_, Never>(a, b, |a, b| {
+                SparseChangeArray::zip2_for_each::<_, Never>(a, b, |_, a, b| {
                     Self::zip2_for_each(a, b, f);
                     ControlFlow::Continue(())
                 })
@@ -825,7 +825,7 @@ impl<T> IrMask<T> {
             IrMask::Array(a) => {
                 let b = b.map(|b| unwrap_match!(b, IrMask::Array(b) => &**b));
                 let c = c.map(|c| unwrap_match!(c, IrMask::Array(c) => &**c));
-                SparseChangeArray::zip3_mut_for_each::<_, _, Never>(a, b, c, |a, b, c| {
+                SparseChangeArray::zip3_mut_for_each::<_, _, Never>(a, b, c, |_, a, b, c| {
                     Self::zip3_for_each_mut(a, b, c, f);
                     ControlFlow::Continue(())
                 })
@@ -890,7 +890,7 @@ impl IrMask<bool> {
                                 start: &start,
                                 end: &(&start + len),
                             };
-                            slf.for_each_in_range_mut(range_full, |v| {
+                            slf.for_each_in_range_mut(range_full, |_, v| {
                                 v.fill(true);
                                 ControlFlow::Continue(())
                             })
@@ -924,7 +924,7 @@ impl IrMask<bool> {
                             end: &end,
                         };
                         let mut result = Ok(());
-                        slf.for_each_in_range_mut(range, |m| {
+                        slf.for_each_in_range_mut(range, |_, m| {
                             result = result.and_then(|()| {
                                 m.write_steps_impl(module, process_kind, vars, steps_scalar, step_slice)
                             });
@@ -970,7 +970,7 @@ impl IrMask<bool> {
             ProcessKind::Clocked => {
                 // always allowed, report everything that is maybe driven
                 full_array
-                    .for_each_in_range_mut(full_range, |m| {
+                    .for_each_in_range_mut(full_range, |_, m| {
                         m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, &mut |s| {
                             s.fill(true)
                         });
@@ -981,7 +981,7 @@ impl IrMask<bool> {
             ProcessKind::Combinatorial => {
                 // only allowed if everything that could be driven is already driven
                 let fully_driven = full_array
-                    .for_each_in_range(full_range, |m| {
+                    .for_each_in_range(full_range, |_, m| {
                         let fully_driven = m.all_after_steps(module, vars, steps_scalar, step_slice);
                         if fully_driven {
                             ControlFlow::Continue(())
@@ -1015,13 +1015,13 @@ impl IrMask<bool> {
         all
     }
 
-    fn for_each_possible_leaf_after_steps_mut<'a>(
-        &'a mut self,
+    fn for_each_possible_leaf_after_steps_mut(
+        &mut self,
         module: &IrModuleInfo,
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&'a mut IrMask<bool>),
+        f: &mut impl FnMut(&mut IrMask<bool>),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
@@ -1042,7 +1042,7 @@ impl IrMask<bool> {
                         start: &start_range.start,
                         end: &(start_range.end + len_1),
                     };
-                    slf.for_each_in_range_mut(full_range, |m| {
+                    slf.for_each_in_range_mut(full_range, |_, m| {
                         f(m);
                         ControlFlow::Continue(())
                     })
@@ -1057,7 +1057,7 @@ impl IrMask<bool> {
                 let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
                 let index_range = unwrap_uint_range(module, vars, index);
 
-                slf.for_each_in_range_mut(ClosedRange::from(index_range.as_ref()), |m| {
+                slf.for_each_in_range_mut(ClosedRange::from(index_range.as_ref()), |_, m| {
                     m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f);
                     ControlFlow::Continue(())
                 })
@@ -1097,7 +1097,7 @@ impl IrMask<bool> {
                         start: &start_range.start,
                         end: &(start_range.end + len_1),
                     };
-                    slf.for_each_in_range(full_range, |m| {
+                    slf.for_each_in_range(full_range, |_, m| {
                         f(m);
                         ControlFlow::Continue(())
                     })
@@ -1113,7 +1113,7 @@ impl IrMask<bool> {
 
                 let index_range = unwrap_uint_range(module, vars, index);
 
-                slf.for_each_in_range(ClosedRange::from(index_range.as_ref()), |m| {
+                slf.for_each_in_range(ClosedRange::from(index_range.as_ref()), |_, m| {
                     m.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice, f);
                     ControlFlow::Continue(())
                 })

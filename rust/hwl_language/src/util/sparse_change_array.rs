@@ -2,6 +2,7 @@ use crate::util::Never;
 use crate::util::big_int::BigUint;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedRange;
+use itertools::enumerate;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 
@@ -73,31 +74,91 @@ impl<T> SparseChangeArray<T> {
         }
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    pub fn for_each<'a, B>(&'a self, mut f: impl FnMut(&'a T) -> ControlFlow<B>) -> ControlFlow<B> {
-        if let Some(start) = &self.start {
-            f(start)?;
-            self.changes.iter().try_for_each(|(_, x)| f(x))
-        } else {
-            ControlFlow::Continue(())
+    /// Remove any duplicate change entries.
+    pub fn canonicalize(&mut self)
+    where
+        T: Eq,
+    {
+        let Some(start) = self.start.as_ref() else { return };
+
+        let mut write = 0;
+        for read in 0..self.changes.len() {
+            let curr = &self.changes[read].1;
+            let prev = if write == 0 { start } else { &self.changes[write - 1].1 };
+            if curr != prev {
+                self.changes.swap(write, read);
+                write += 1;
+            }
+        }
+        self.changes.truncate(write);
+
+        if cfg!(debug_assertions) {
+            self.assert_valid();
         }
     }
 
     #[allow(clippy::needless_lifetimes)]
-    pub fn for_each_mut<'a, B>(&'a mut self, mut f: impl FnMut(&'a mut T) -> ControlFlow<B>) -> ControlFlow<B> {
-        if let Some(start) = &mut self.start {
-            f(start)?;
-            self.changes.iter_mut().try_for_each(|(_, x)| f(x))
-        } else {
-            ControlFlow::Continue(())
+    pub fn for_each<'a, B>(
+        &'a self,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &'a T) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        if let Some(start) = &self.start {
+            let start_range = ClosedRange {
+                start: &BigUint::ZERO,
+                end: self.changes.first().map(pair_first).unwrap_or(&self.len),
+            };
+            f(start_range, start)?;
+
+            for (i, (curr_index, curr_value)) in enumerate(&self.changes) {
+                let next_index = self.changes.get(i + 1).map(pair_first).unwrap_or(&self.len);
+                let curr_range = ClosedRange {
+                    start: curr_index,
+                    end: next_index,
+                };
+                f(curr_range, curr_value)?;
+            }
         }
+
+        ControlFlow::Continue(())
+    }
+
+    pub fn for_each_mut<B>(
+        &mut self,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &mut T) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        if let Some(start) = &mut self.start {
+            let start_range = ClosedRange {
+                start: &BigUint::ZERO,
+                end: self.changes.first().map(pair_first).unwrap_or(&self.len),
+            };
+            f(start_range, start)?;
+
+            for (i, last) in (0..self.changes.len()).with_last() {
+                let (curr_index, curr_value, next_index) = if last {
+                    let (curr_index, curr_value) = &mut self.changes[i];
+                    (&*curr_index, curr_value, &self.len)
+                } else {
+                    let [(curr_index, curr_value), (next_index, _)] =
+                        self.changes.get_disjoint_mut([i, i + 1]).unwrap();
+                    (&*curr_index, curr_value, &*next_index)
+                };
+
+                let curr_range = ClosedRange {
+                    start: curr_index,
+                    end: next_index,
+                };
+                f(curr_range, curr_value)?;
+            }
+        }
+
+        ControlFlow::Continue(())
     }
 
     #[allow(clippy::needless_lifetimes)]
     pub fn for_each_in_range<'a, B>(
         &'a self,
         range: ClosedRange<&BigUint>,
-        mut f: impl FnMut(&'a T) -> ControlFlow<B>,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &'a T) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
         // unwrap and handle edge cases
         let Some(start) = &self.start else {
@@ -128,20 +189,31 @@ impl<T> SparseChangeArray<T> {
             .unwrap_or_else(|insert| insert);
 
         // actually visit
+        let change_start_unwrap = change_start.unwrap_or(0);
         if change_start.is_none() {
-            f(start)?;
+            let curr_range = ClosedRange {
+                start: range_start,
+                end: self.changes.first().map(pair_first).unwrap_or(&self.len).min(range_end),
+            };
+            f(curr_range, start)?;
         }
-        self.changes[change_start.unwrap_or(0)..change_end]
-            .iter()
-            .map(|(_, x)| x)
-            .try_for_each(f)
+        for i in change_start_unwrap..change_end {
+            let (curr_index, curr_value) = &self.changes[i];
+            let curr_end = self.changes.get(i + 1).map(pair_first).unwrap_or(&self.len);
+            let curr_range = ClosedRange {
+                start: curr_index.max(range_start),
+                end: curr_end.min(range_end),
+            };
+            f(curr_range, curr_value)?;
+        }
+
+        ControlFlow::Continue(())
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    pub fn for_each_in_range_mut<'a, B>(
-        &'a mut self,
+    pub fn for_each_in_range_mut<B>(
+        &mut self,
         range: ClosedRange<&BigUint>,
-        mut f: impl FnMut(&'a mut T) -> ControlFlow<B>,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &mut T) -> ControlFlow<B>,
     ) -> ControlFlow<B>
     where
         T: Clone,
@@ -183,12 +255,30 @@ impl<T> SparseChangeArray<T> {
         // actually visit
         let start = self.start.as_mut().unwrap();
         if change_start.is_none() {
-            f(start)?;
+            let end = self.changes.first().map(pair_first).unwrap_or(&self.len).min(range_end);
+            let curr_range = ClosedRange {
+                start: range_start,
+                end,
+            };
+            f(curr_range, start)?;
         }
-        self.changes[change_start.unwrap_or(0)..change_end]
-            .iter_mut()
-            .map(|(_, x)| x)
-            .try_for_each(f)
+        for (i, last) in (change_start.unwrap_or(0)..change_end).with_last() {
+            let (curr_index, curr_value, next_index) = if last {
+                let (curr_index, curr_value) = &mut self.changes[i];
+                (&*curr_index, curr_value, range_end)
+            } else {
+                let [(curr_index, curr_value), (next_index, _)] = self.changes.get_disjoint_mut([i, i + 1]).unwrap();
+                (&*curr_index, curr_value, &*next_index)
+            };
+
+            let curr_range = ClosedRange {
+                start: curr_index,
+                end: next_index,
+            };
+            f(curr_range, curr_value)?;
+        }
+
+        ControlFlow::Continue(())
     }
 
     /// Ensure the given `indices` are present in this array. The past indices must be non-decreasing.
@@ -250,21 +340,23 @@ impl<T> SparseChangeArray<T> {
     pub fn zip2_for_each<U, R>(
         a: &SparseChangeArray<T>,
         b: &SparseChangeArray<U>,
-        mut f: impl FnMut(&T, &U) -> ControlFlow<R>,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &T, &U) -> ControlFlow<R>,
     ) -> ControlFlow<R> {
-        zip_impl::<Never, _, _, _>(None, Some(a), Some(b), |_, a, b| f(a.unwrap(), b.unwrap()))
+        zip_impl::<Never, _, _, _>(None, Some(a), Some(b), |range, _, a, b| {
+            f(range, a.unwrap(), b.unwrap())
+        })
     }
 
     pub fn zip3_mut_for_each<U, V, R>(
         a: &mut SparseChangeArray<T>,
         b: Option<&SparseChangeArray<U>>,
         c: Option<&SparseChangeArray<V>>,
-        mut f: impl FnMut(&mut T, Option<&U>, Option<&V>) -> ControlFlow<R>,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &mut T, Option<&U>, Option<&V>) -> ControlFlow<R>,
     ) -> ControlFlow<R>
     where
         T: Clone,
     {
-        zip_impl(Some(a), b, c, |a, b, c| f(a.unwrap(), b, c))
+        zip_impl(Some(a), b, c, |range, a, b, c| f(range, a.unwrap(), b, c))
     }
 }
 
@@ -272,7 +364,7 @@ fn zip_impl<A: Clone, B, C, R>(
     a: Option<&mut SparseChangeArray<A>>,
     b: Option<&SparseChangeArray<B>>,
     c: Option<&SparseChangeArray<C>>,
-    mut f: impl FnMut(Option<&mut A>, Option<&B>, Option<&C>) -> ControlFlow<R>,
+    mut f: impl FnMut(ClosedRange<&BigUint>, Option<&mut A>, Option<&B>, Option<&C>) -> ControlFlow<R>,
 ) -> ControlFlow<R> {
     // check array lengths match and handle no args or empty array cases
     let mut len = a.as_ref().map(|a| a.len.clone());
@@ -307,39 +399,64 @@ fn zip_impl<A: Clone, B, C, R>(
         let mut state_c = c.map(|c| (c.start.as_ref().unwrap(), c.changes.as_slice()));
 
         // visit first element
-        f(
-            Some(a.start.as_mut().unwrap()),
-            state_b.map(|(s, _)| s),
-            state_c.map(|(s, _)| s),
-        )?;
+        {
+            let start_range = ClosedRange {
+                start: &BigUint::ZERO,
+                end: a.changes.first().map(pair_first).unwrap_or(&a.len),
+            };
+            f(
+                start_range,
+                Some(a.start.as_mut().unwrap()),
+                state_b.map(|(s, _)| s),
+                state_c.map(|(s, _)| s),
+            )?;
+        }
 
         // visit change elements
         // just walk over all indices in the base, and step the others when relevant
-        for (index_a, curr_a) in &mut a.changes {
-            let index_a = &*index_a;
+        for (i, last) in (0..a.changes.len()).with_last() {
+            // figure out the range
+            let (curr_index, curr_a, next_index) = if last {
+                let (curr_index, curr_a) = &mut a.changes[i];
+                (&*curr_index, curr_a, &a.len)
+            } else {
+                let [(curr_index, curr_a), (next_index, _)] = a.changes.get_disjoint_mut([i, i + 1]).unwrap();
+                (&*curr_index, curr_a, &*next_index)
+            };
+            let curr_range = ClosedRange {
+                start: curr_index,
+                end: next_index,
+            };
 
             // pop b/c if necessary
-            if let Some((curr_b, changes_b)) = &mut state_b {
-                if let Some(((index_b, next_b), rest_b)) = changes_b.split_first() {
-                    debug_assert!(index_a <= index_b);
-                    if index_a == index_b {
-                        *curr_b = next_b;
-                        *changes_b = rest_b;
+            {
+                if let Some((curr_b, changes_b)) = &mut state_b {
+                    if let Some(((index_b, next_b), rest_b)) = changes_b.split_first() {
+                        debug_assert!(curr_index <= index_b);
+                        if curr_index == index_b {
+                            *curr_b = next_b;
+                            *changes_b = rest_b;
+                        }
                     }
                 }
-            }
-            if let Some((curr_c, changes_c)) = &mut state_c {
-                if let Some(((index_c, next_c), rest_c)) = changes_c.split_first() {
-                    debug_assert!(index_a <= index_c);
-                    if index_a == index_c {
-                        *curr_c = next_c;
-                        *changes_c = rest_c;
+                if let Some((curr_c, changes_c)) = &mut state_c {
+                    if let Some(((index_c, next_c), rest_c)) = changes_c.split_first() {
+                        debug_assert!(curr_index <= index_c);
+                        if curr_index == index_c {
+                            *curr_c = next_c;
+                            *changes_c = rest_c;
+                        }
                     }
                 }
             }
 
             // visit change element
-            f(Some(curr_a), state_b.map(|(s, _)| s), state_c.map(|(s, _)| s))?;
+            f(
+                curr_range,
+                Some(curr_a),
+                state_b.map(|(s, _)| s),
+                state_c.map(|(s, _)| s),
+            )?;
         }
 
         if let Some((_, changes_b)) = state_b {
@@ -352,31 +469,42 @@ fn zip_impl<A: Clone, B, C, R>(
         // handle simple cases first
         let (b, c) = match (b, c) {
             (None, None) => return ControlFlow::Continue(()),
-            (Some(b), None) => return b.for_each(|b| f(None, Some(b), None)),
-            (None, Some(c)) => return c.for_each(|c| f(None, None, Some(c))),
+            (Some(b), None) => return b.for_each(|range, b| f(range, None, Some(b), None)),
+            (None, Some(c)) => return c.for_each(|range, c| f(range, None, None, Some(c))),
             (Some(b), Some(c)) => (b, c),
         };
 
         // build state
+        let mut prev_index = &BigUint::ZERO;
         let mut curr_b = b.start.as_ref().unwrap();
         let mut changes_b = b.changes.as_slice();
         let mut curr_c = c.start.as_ref().unwrap();
         let mut changes_c = c.changes.as_slice();
 
-        // visit first element
-        f(None, Some(curr_b), Some(curr_c))?;
-
         loop {
-            // pop the lowest index (or both)
-            match (changes_b.split_first(), changes_c.split_first()) {
-                (None, None) => break,
-                (Some(((_, next_b), rest_b)), None) => {
+            let prev_b = curr_b;
+            let prev_c = curr_c;
+
+            // figure out which side has the lowest next change index, and pop it
+            let next_index = match (changes_b.split_first(), changes_c.split_first()) {
+                (None, None) => {
+                    // done, still visit the last element
+                    let curr_range = ClosedRange {
+                        start: prev_index,
+                        end: &len,
+                    };
+                    f(curr_range, None, Some(curr_b), Some(curr_c))?;
+                    break;
+                }
+                (Some(((index_b, next_b), rest_b)), None) => {
                     curr_b = next_b;
                     changes_b = rest_b;
+                    index_b
                 }
-                (None, Some(((_, next_c), rest_c))) => {
+                (None, Some(((index_c, next_c), rest_c))) => {
                     curr_c = next_c;
                     changes_c = rest_c;
+                    index_c
                 }
                 (Some(((index_b, next_b), rest_b)), Some(((index_c, next_c), rest_c))) => {
                     let cmp = index_b.cmp(index_c);
@@ -388,11 +516,20 @@ fn zip_impl<A: Clone, B, C, R>(
                         curr_c = next_c;
                         changes_c = rest_c;
                     }
-                }
-            }
 
-            // visit change element
-            f(None, Some(curr_b), Some(curr_c))?;
+                    if cmp.is_le() { index_b } else { index_c }
+                }
+            };
+
+            // visit previous element
+            let prev_range = ClosedRange {
+                start: prev_index,
+                end: next_index,
+            };
+            f(prev_range, None, Some(prev_b), Some(prev_c))?;
+
+            // update prev
+            prev_index = next_index;
         }
     }
 
@@ -423,7 +560,7 @@ mod tests {
         exhaust(|ex| {
             let len = ex.choose(LEN_LIMIT as u64) as usize;
             let array_dense = (0..len).map(|_| ex.choose(VALUE_LIMIT)).collect_vec();
-            let array_change = build_from_array(&array_dense);
+            let array_change = build_from_array(&array_dense, |_| false);
 
             println!("generated array");
             println!("  dense:  {:?}", array_dense);
@@ -463,7 +600,7 @@ mod tests {
                 let actual_visit = {
                     let mut r = vec![];
                     array_change
-                        .for_each_in_range::<Never>(range.as_ref(), |&x| {
+                        .for_each_in_range::<Never>(range.as_ref(), |_, &x| {
                             r.push(x);
                             ControlFlow::Continue(())
                         })
@@ -480,7 +617,7 @@ mod tests {
 
                 array_dense_mut[range_start as usize..range_end as usize].fill(VALUE_LIMIT);
                 array_change_mut
-                    .for_each_in_range_mut::<Never>(range.as_ref(), |x| {
+                    .for_each_in_range_mut::<Never>(range.as_ref(), |_, x| {
                         *x = VALUE_LIMIT;
                         ControlFlow::Continue(())
                     })
@@ -502,7 +639,7 @@ mod tests {
             let mut create_array_pair = || {
                 ex.choose_bool().then(|| {
                     let dense = (0..len).map(|_| ex.choose(VALUE_LIMIT)).collect_vec();
-                    let change = build_from_array(&dense);
+                    let change = build_from_array(&dense, |_| false);
                     (dense, change)
                 })
             };
@@ -551,7 +688,7 @@ mod tests {
                 a_pair.as_mut().map(|(_, a)| a),
                 b_pair.as_ref().map(|(_, b)| b),
                 c_pair.as_ref().map(|(_, c)| c),
-                |a, b, c| {
+                |_, a, b, c| {
                     op(&mut seen_change, a, b, c);
                     ControlFlow::Continue(())
                 },
@@ -569,14 +706,45 @@ mod tests {
         });
     }
 
-    fn build_from_array<T: Clone + Eq>(array_dense: &[T]) -> SparseChangeArray<T> {
+    #[test]
+    fn test_canonicalize_exhaust() {
+        const LEN_LIMIT: usize = 6;
+        const VALUE_LIMIT: u64 = 3;
+
+        exhaust(|ex| {
+            let len = ex.choose(LEN_LIMIT as u64) as usize;
+
+            let array_dense = (0..len).map(|_| ex.choose(VALUE_LIMIT)).collect_vec();
+            let mut any_dummy = false;
+            let mut array_sparse = build_from_array(&array_dense, |_| {
+                let d = ex.choose_bool();
+                any_dummy |= d;
+                d
+            });
+
+            println!("dense:  {:?}", array_dense);
+            println!("before: {:?}", array_sparse);
+            assert_array_match(&array_dense, &array_sparse);
+
+            let changes_before = array_sparse.changes.len();
+            array_sparse.canonicalize();
+            println!("after:  {:?}", array_sparse);
+            assert_array_match(&array_dense, &array_sparse);
+            assert_eq!(array_sparse.changes.len() < changes_before, any_dummy);
+        });
+    }
+
+    fn build_from_array<T: Clone + Eq>(
+        array_dense: &[T],
+        mut include_dummy_change: impl FnMut(usize) -> bool,
+    ) -> SparseChangeArray<T> {
         let result = match array_dense.split_first() {
             None => SparseChangeArray::new_empty(),
             Some((first, rest)) => {
                 let mut changes = vec![];
                 let mut prev = first;
                 for (i, curr) in enumerate(rest) {
-                    if curr != prev {
+                    if curr != prev || include_dummy_change(i) {
                         changes.push((BigUint::from(i + 1), curr.clone()));
                         prev = curr;
                     }
@@ -593,10 +761,12 @@ mod tests {
         result
     }
 
-    fn assert_array_match(dense: &[u64], change: &SparseChangeArray<u64>) {
-        assert_eq!(&BigUint::from(dense.len()), change.len());
+    fn assert_array_match(dense: &[u64], sparse: &SparseChangeArray<u64>) {
+        sparse.assert_valid();
+
+        assert_eq!(&BigUint::from(dense.len()), sparse.len());
         for i in 0..dense.len() {
-            assert_eq!(&dense[i], change.get(&BigUint::from(i)));
+            assert_eq!(&dense[i], sparse.get(&BigUint::from(i)));
         }
     }
 }
