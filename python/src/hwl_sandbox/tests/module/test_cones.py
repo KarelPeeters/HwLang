@@ -561,4 +561,33 @@ def test_cones_multiple_drivers_paths():
     pattern = r"parts with multiple drivers:\n" + "\n".join(r" *" + re.escape(p) for p in expected_paths)
     assert re.search(pattern, e.value.messages[0], re.MULTILINE)
 
-    # TODO add test that checks mix of un-driven and over-driven
+
+def test_cones_mix_driven_undriven_overdriven():
+    src = """
+    const zero = 0;
+    const one = 1;
+    module top ports() {
+        wire w: [3]bool;
+        comb {
+            w[zero] = true;
+            w[one] = true;
+        }
+        comb {
+            w[zero] = true;
+        }
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException) as e:
+        compile_custom(src).resolve_module("top.top")
+
+    print(e.value)
+    assert len(e.value.messages) == 2
+
+    assert "error: wire `w` has multiple overlapping drivers" in e.value.messages[0]
+    assert "w[0]" in e.value.messages[0]
+
+    assert "warning: wire `w` is not fully driven" in e.value.messages[1]
+    assert "w[2]" in e.value.messages[1]
+
+    for m in e.value.messages:
+        assert "w[1]" not in m
