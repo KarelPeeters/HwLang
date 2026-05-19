@@ -9,7 +9,7 @@ def test_port_driver_none():
     module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` has no driver"):
+    with pytest.raises(hwl.DiagnosticException, match="port `y` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -60,7 +60,7 @@ def test_wire_driver_none_with_type():
         wire w: bool;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has no driver"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -70,7 +70,7 @@ def test_wire_driver_none_with_unit_type():
         wire w: Tuple();
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has no driver"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -80,7 +80,7 @@ def test_wire_driver_none_without_type():
         wire w;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has no driver"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 

@@ -156,7 +156,7 @@ def test_comb_dyn_empty_slice_does_not_drive():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has no driver"):
+    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
         compile_custom(src).resolve_module("top.top")
 
 

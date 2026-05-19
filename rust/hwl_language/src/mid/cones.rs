@@ -170,7 +170,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
         // report warning for (partially) undriven signals
         if any_undriven {
             let (title_suffix, msg_info) = if all_undriven {
-                ("has no driver", None)
+                ("is not driven", None)
             } else {
                 let mask = combined_drivers.get(&signal).unwrap().clone();
                 let msg_info = build_driver_info_message(
