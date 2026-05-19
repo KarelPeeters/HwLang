@@ -2,27 +2,52 @@ use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnosti
 use crate::mid::ir::{
     IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
-    IrSignals, IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariables,
+    IrSignals, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariables,
 };
+use crate::mid::mask::IrMask;
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
+use crate::util::ResultNeverExt;
 use crate::util::big_int::{AnyInt, BigUint, IsZero};
 use crate::util::data::{IndexMapExt, chain_keys};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::sparse_change_array::SparseChangeArray;
-use crate::util::{Never, ResultNeverExt};
 use hwl_util::constants::MAX_DRIVER_INFO_PATHS;
 use hwl_util::swrite;
 use indexmap::{IndexMap, IndexSet};
-use itertools::{Itertools, enumerate};
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
-// TODO check for cycles somewhere, maybe even here
+#[derive(Debug)]
+pub struct Cones {
+    // Reads only count if they read values that have not yet been written yet.
+    reads: IndexMap<IrSignal, IrMask<bool>>,
+    drives: IndexMap<IrSignal, IrMask<bool>>,
+}
+
+#[derive(Debug)]
+pub struct Drives<'p> {
+    parent: Option<&'p Drives<'p>>,
+    map: IndexMap<IrSignal, IrMask<bool>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum ProcessKind {
+    Clocked,
+    Combinatorial,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum DynamicDriveError {
+    ArrayIndex,
+    ArraySlice,
+}
+
+// TODO check for larger cycles somewhere, maybe even here
 // TODO record instance cones
-pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
+pub fn compute_and_check_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagResult {
     let signals = &module.signals;
     let mut combined_drivers: IndexMap<IrSignal, IrMask<Vec<Span>>> = IndexMap::new();
 
@@ -142,7 +167,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                 ("has multiple drivers", None)
             } else {
                 let mask = combined_drivers.get(&signal).unwrap().clone();
-                let msg_info = build_driver_info_message(
+                let msg_info = build_diag_info_message_paths(
                     "parts with multiple drivers",
                     signal.ty(signals),
                     signal_name,
@@ -173,7 +198,7 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
                 ("is not driven", None)
             } else {
                 let mask = combined_drivers.get(&signal).unwrap().clone();
-                let msg_info = build_driver_info_message(
+                let msg_info = build_diag_info_message_paths(
                     "parts without a driver",
                     signal.ty(signals),
                     signal_name,
@@ -196,90 +221,6 @@ pub fn compute_module_cones(diags: &Diagnostics, module: &IrModuleInfo) -> DiagR
     }
 
     any_err
-}
-
-fn check_combinatorial_self_loops(
-    diags: &Diagnostics,
-    signals: &IrSignals,
-    proc_span: Span,
-    cones: &Cones,
-) -> DiagResult {
-    // find any signals with self loops
-    let mut loop_signals = IndexSet::new();
-    for (&signal, read) in &cones.reads {
-        let Some(write) = cones.drives.get(&signal) else {
-            continue;
-        };
-
-        let mut any_overlap = false;
-        IrMask::zip2_for_each(read, write, &mut |r, w| any_overlap |= *r & *w);
-
-        if any_overlap {
-            loop_signals.insert(signal);
-        }
-    }
-
-    // report error if necessary
-    if !loop_signals.is_empty() {
-        let mut diag = DiagnosticError::new("combinatorial self-loop", proc_span, "for this combinatorial process");
-
-        // visit signals in module declaration order instead of whatever order we collected them in
-        for signal in signals.all_signals() {
-            let signal_kind = signal.debug_info_kind();
-            let signal_name = signal.debug_info_name(signals);
-
-            if loop_signals.contains(&signal) {
-                diag = diag.add_info(signal.span(signals), format!("for {signal_kind} `{signal_name}`"));
-            }
-        }
-
-        return Err(diag
-            .add_footer_hint("This does not create valid combinatorial logic.")
-            .report(diags));
-    }
-
-    Ok(())
-}
-
-fn build_driver_info_message<T: Eq + Debug>(
-    msg: &str,
-    signal_ty: &IrType,
-    signal_name: &str,
-    mut mask: IrMask<T>,
-    cond: impl FnMut(&T) -> bool,
-) -> String {
-    mask.canonicalize();
-
-    let mut result = format!("{msg}:");
-    let mut path_count: usize = 0;
-
-    let report = |prefix: &str| {
-        swrite!(&mut result, "\n    {signal_name}{prefix}");
-        path_count += 1;
-
-        if path_count < MAX_DRIVER_INFO_PATHS {
-            ControlFlow::Continue(())
-        } else {
-            swrite!(&mut result, "\n    {signal_name}...");
-            ControlFlow::Break(())
-        }
-    };
-    let _: ControlFlow<()> = mask.for_each_path(signal_ty, cond, report);
-
-    result
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-enum IrMask<T> {
-    Scalar(T),
-    Array(Box<SparseChangeArray<IrMask<T>>>),
-    TupleOrStruct(Vec<IrMask<T>>),
-}
-
-#[derive(Debug)]
-pub struct Drives<'p> {
-    parent: Option<&'p Drives<'p>>,
-    map: IndexMap<IrSignal, IrMask<bool>>,
 }
 
 fn compute_clocked_process_cones(
@@ -310,13 +251,6 @@ fn compute_clocked_process_cones(
     })
 }
 
-#[derive(Debug)]
-pub struct Cones {
-    // Reads only count if they read values that have not yet been written yet.
-    reads: IndexMap<IrSignal, IrMask<bool>>,
-    drives: IndexMap<IrSignal, IrMask<bool>>,
-}
-
 fn compute_combinatorial_process_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
@@ -324,18 +258,6 @@ fn compute_combinatorial_process_cones(
 ) -> DiagResult<Cones> {
     let IrCombinatorialProcess { variables, block } = proc;
     compute_block_cones(diags, module, ProcessKind::Combinatorial, variables, block)
-}
-
-#[derive(Debug, Copy, Clone)]
-enum ProcessKind {
-    Clocked,
-    Combinatorial,
-}
-
-#[derive(Debug, Copy, Clone)]
-enum DynamicDriveError {
-    ArrayIndex,
-    ArraySlice,
 }
 
 fn compute_block_cones(
@@ -369,7 +291,6 @@ fn compute_block_cones(
         })
     }
 }
-
 fn compute_block_cones_impl(
     diags: &Diagnostics,
     module: &IrModuleInfo,
@@ -697,6 +618,77 @@ fn record_signal_reads(
     assert!(pieces_driven.is_none_or(IterExt::is_empty));
 }
 
+fn check_combinatorial_self_loops(
+    diags: &Diagnostics,
+    signals: &IrSignals,
+    proc_span: Span,
+    cones: &Cones,
+) -> DiagResult {
+    // find any signals with self loops
+    let mut loop_signals = IndexSet::new();
+    for (&signal, read) in &cones.reads {
+        let Some(write) = cones.drives.get(&signal) else {
+            continue;
+        };
+
+        let mut any_overlap = false;
+        IrMask::zip2_for_each(read, write, &mut |r, w| any_overlap |= *r & *w);
+
+        if any_overlap {
+            loop_signals.insert(signal);
+        }
+    }
+
+    // report error if necessary
+    if !loop_signals.is_empty() {
+        let mut diag = DiagnosticError::new("combinatorial self-loop", proc_span, "for this combinatorial process");
+
+        // visit signals in module declaration order instead of whatever order we collected them in
+        for signal in signals.all_signals() {
+            let signal_kind = signal.debug_info_kind();
+            let signal_name = signal.debug_info_name(signals);
+
+            if loop_signals.contains(&signal) {
+                diag = diag.add_info(signal.span(signals), format!("for {signal_kind} `{signal_name}`"));
+            }
+        }
+
+        return Err(diag
+            .add_footer_hint("This does not create valid combinatorial logic.")
+            .report(diags));
+    }
+
+    Ok(())
+}
+
+fn build_diag_info_message_paths<T: Eq + Debug>(
+    msg: &str,
+    signal_ty: &IrType,
+    signal_name: &str,
+    mut mask: IrMask<T>,
+    cond: impl FnMut(&T) -> bool,
+) -> String {
+    mask.canonicalize();
+
+    let mut result = format!("{msg}:");
+    let mut path_count: usize = 0;
+
+    let report = |prefix: &str| {
+        swrite!(&mut result, "\n    {signal_name}{prefix}");
+        path_count += 1;
+
+        if path_count < MAX_DRIVER_INFO_PATHS {
+            ControlFlow::Continue(())
+        } else {
+            swrite!(&mut result, "\n    {signal_name}...");
+            ControlFlow::Break(())
+        }
+    };
+    let _: ControlFlow<()> = mask.for_each_path(signal_ty, cond, report);
+
+    result
+}
+
 impl Drives<'_> {
     fn root() -> Drives<'static> {
         Drives {
@@ -740,273 +732,6 @@ impl Drives<'_> {
                 };
             }
         })
-    }
-}
-
-// TODO rework/refactor this to be more elegant
-// TODO move to separate module
-impl<T> IrMask<T> {
-    fn new(ty: &IrType, init: T) -> IrMask<T>
-    where
-        T: Clone,
-    {
-        match ty {
-            IrType::Bool | IrType::Int(_) | IrType::Enum(_) => IrMask::Scalar(init),
-            IrType::Array(ty_inner, len) => {
-                let array = if len.is_zero() {
-                    SparseChangeArray::new_empty()
-                } else {
-                    let mask_inner = IrMask::new(ty_inner, init);
-                    SparseChangeArray::new(len.clone(), mask_inner)
-                };
-                IrMask::Array(Box::new(array))
-            }
-            IrType::Tuple(ty_fields) => {
-                let mask_fields = ty_fields
-                    .iter()
-                    .map(|ty_field| IrMask::new(ty_field, init.clone()))
-                    .collect_vec();
-                IrMask::TupleOrStruct(mask_fields)
-            }
-            IrType::Struct(ty_info) => {
-                let IrStructType {
-                    ty: _,
-                    debug_info_name: _,
-                    fields,
-                } = ty_info;
-                let mask_fields = fields
-                    .values()
-                    .map(|ty_field| IrMask::new(ty_field, init.clone()))
-                    .collect_vec();
-                IrMask::TupleOrStruct(mask_fields)
-            }
-        }
-    }
-
-    fn canonicalize(&mut self)
-    where
-        T: Eq,
-    {
-        match self {
-            IrMask::Scalar(_) => {}
-            IrMask::Array(slf) => {
-                slf.for_each_block_mut(|_, inner| {
-                    inner.canonicalize();
-                    ControlFlow::Continue(())
-                })
-                .remove_never();
-                slf.canonicalize()
-            }
-            IrMask::TupleOrStruct(slf) => slf.iter_mut().for_each(Self::canonicalize),
-        }
-    }
-
-    fn for_each_path<B>(
-        &self,
-        ty: &IrType,
-        mut cond: impl FnMut(&T) -> bool,
-        mut report: impl FnMut(&str) -> ControlFlow<B>,
-    ) -> ControlFlow<B>
-    where
-        T: Debug,
-    {
-        fn g<T: Debug, B>(
-            slf: &IrMask<T>,
-            ty: &IrType,
-            prefix: &mut String,
-            mut cond: &mut impl FnMut(&T) -> bool,
-            report: &mut impl FnMut(&str) -> ControlFlow<B>,
-        ) -> ControlFlow<B> {
-            // stop at scalars
-            if let IrMask::Scalar(slf) = slf {
-                if cond(slf) {
-                    report(prefix)?;
-                }
-                return ControlFlow::Continue(());
-            }
-
-            // stop when uniform, to avoid creating unnecessarily long prefixes
-            if slf.all(&mut cond) {
-                report(prefix)?;
-                return ControlFlow::Continue(());
-            }
-
-            // branch on compounds
-            let prefix_len = prefix.len();
-            match ty {
-                IrType::Bool | IrType::Int(_) | IrType::Enum(_) => {
-                    unreachable!("scalars already handled")
-                }
-                IrType::Array(ty_inner, _) => {
-                    let slf = unwrap_match!(slf, IrMask::Array(slf) => slf);
-                    slf.for_each_block(|range, mask| {
-                        let range_full = ClosedRange {
-                            start: &BigUint::ZERO,
-                            end: slf.len(),
-                        };
-                        if range == range_full {
-                            swrite!(prefix, "[..]")
-                        } else if let Some(single) = range.as_single() {
-                            swrite!(prefix, "[{single}]")
-                        } else {
-                            swrite!(prefix, "[{range}]")
-                        };
-                        g(mask, ty_inner, prefix, cond, report)?;
-                        prefix.truncate(prefix_len);
-                        ControlFlow::Continue(())
-                    })?;
-                }
-                IrType::Tuple(ty_fields) => {
-                    let slf = unwrap_match!(slf, IrMask::TupleOrStruct(slf) => slf);
-                    assert_eq!(slf.len(), ty_fields.len());
-
-                    for (field_index, field_ty) in enumerate(ty_fields) {
-                        swrite!(prefix, ".{field_index}");
-                        g(&slf[field_index], field_ty, prefix, cond, report)?;
-                        prefix.truncate(prefix_len);
-                    }
-                }
-                IrType::Struct(ty_info) => {
-                    let slf = unwrap_match!(slf, IrMask::TupleOrStruct(slf) => slf);
-                    assert_eq!(slf.len(), ty_info.fields.len());
-
-                    for (field_index, (field_name, field_ty)) in enumerate(&ty_info.fields) {
-                        swrite!(prefix, ".{field_name}");
-                        g(&slf[field_index], field_ty, prefix, cond, report)?;
-                        prefix.truncate(prefix_len);
-                    }
-                }
-            }
-
-            ControlFlow::Continue(())
-        }
-
-        let mut prefix = String::new();
-        g(self, ty, &mut prefix, &mut cond, &mut report)
-    }
-
-    fn fill(&mut self, value: T)
-    where
-        T: Clone,
-    {
-        self.for_each_leaf_mut(|leaf| {
-            *leaf = value.clone();
-            ControlFlow::Continue(())
-        })
-        .remove_never();
-    }
-
-    fn for_each_leaf<B>(&self, mut f: impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
-        fn for_each_leaf_impl<T, B>(slf: &IrMask<T>, f: &mut impl FnMut(&T) -> ControlFlow<B>) -> ControlFlow<B> {
-            match slf {
-                IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(slf) => slf.for_each_block(|_, m| for_each_leaf_impl(m, f)),
-                IrMask::TupleOrStruct(values) => values.iter().try_for_each(|m| for_each_leaf_impl(m, f)),
-            }
-        }
-        for_each_leaf_impl(self, &mut f)
-    }
-
-    fn for_each_leaf_mut<B>(&mut self, mut f: impl FnMut(&mut T) -> ControlFlow<B>) -> ControlFlow<B> {
-        fn for_each_leaf_mut_impl<T, B>(
-            slf: &mut IrMask<T>,
-            f: &mut impl FnMut(&mut T) -> ControlFlow<B>,
-        ) -> ControlFlow<B> {
-            match slf {
-                IrMask::Scalar(slf) => f(slf),
-                IrMask::Array(slf) => slf.for_each_block_mut(|_, m| for_each_leaf_mut_impl(m, f)),
-                IrMask::TupleOrStruct(values) => values.iter_mut().try_for_each(|m| for_each_leaf_mut_impl(m, f)),
-            }
-        }
-        for_each_leaf_mut_impl(self, &mut f)
-    }
-
-    fn any(&self, mut f: impl FnMut(&T) -> bool) -> bool {
-        self.for_each_leaf(|v| {
-            if f(v) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-        .is_break()
-    }
-
-    fn all(&self, mut f: impl FnMut(&T) -> bool) -> bool {
-        !self.any(|v| !f(v))
-    }
-
-    fn zip2_for_each<U: Debug>(a: &IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&T, &U)) {
-        match a {
-            IrMask::Scalar(a) => {
-                let b = unwrap_match!(b, IrMask::Scalar(b) => b);
-                f(a, b)
-            }
-            IrMask::Array(a) => {
-                let b = unwrap_match!(b, IrMask::Array(b) => b);
-                SparseChangeArray::zip2_for_each_block::<_, Never>(a, b, |_, a, b| {
-                    Self::zip2_for_each(a, b, f);
-                    ControlFlow::Continue(())
-                })
-                .remove_never();
-            }
-            IrMask::TupleOrStruct(a) => {
-                let b = unwrap_match!(b, IrMask::TupleOrStruct(b) => b);
-                for i in 0..a.len() {
-                    Self::zip2_for_each(&a[i], &b[i], f);
-                }
-            }
-        }
-    }
-
-    fn zip2_for_each_mut<U: Debug>(a: &mut IrMask<T>, b: &IrMask<U>, f: &mut impl FnMut(&mut T, &U))
-    where
-        T: Clone,
-    {
-        IrMask::zip3_for_each_mut::<U, Never>(a, Some(b), None, &mut |a, b, c| {
-            let b = b.unwrap();
-            match c {
-                None => {}
-                Some(never) => never.unreachable(),
-            }
-            f(a, b)
-        })
-    }
-
-    fn zip3_for_each_mut<U: Debug, V: Debug>(
-        a: &mut IrMask<T>,
-        b: Option<&IrMask<U>>,
-        c: Option<&IrMask<V>>,
-        f: &mut impl FnMut(&mut T, Option<&U>, Option<&V>),
-    ) where
-        T: Clone,
-    {
-        match a {
-            IrMask::Scalar(a) => {
-                let b = b.map(|b| unwrap_match!(b, IrMask::Scalar(b) => b));
-                let c = c.map(|c| unwrap_match!(c, IrMask::Scalar(c) => c));
-                f(a, b, c)
-            }
-            IrMask::Array(a) => {
-                let b = b.map(|b| unwrap_match!(b, IrMask::Array(b) => &**b));
-                let c = c.map(|c| unwrap_match!(c, IrMask::Array(c) => &**c));
-                SparseChangeArray::zip3_for_each_block_mut::<_, _, Never>(a, b, c, |_, a, b, c| {
-                    Self::zip3_for_each_mut(a, b, c, f);
-                    ControlFlow::Continue(())
-                })
-                .remove_never();
-            }
-            IrMask::TupleOrStruct(a) => {
-                let b = b.map(|b| unwrap_match!(b, IrMask::TupleOrStruct(b) => b));
-                let c = c.map(|c| unwrap_match!(c, IrMask::TupleOrStruct(c) => c));
-
-                for i in 0..a.len() {
-                    let b = b.map(|b| &b[i]);
-                    let c = c.map(|c| &c[i]);
-                    Self::zip3_for_each_mut(&mut a[i], b, c, f);
-                }
-            }
-        }
     }
 }
 
