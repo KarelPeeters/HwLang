@@ -10,7 +10,6 @@ use crate::syntax::pos::Span;
 use crate::util::ResultNeverExt;
 use crate::util::big_int::{AnyInt, BigUint, IsZero};
 use crate::util::data::{IndexMapExt, chain_keys};
-use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::sparse_change_array::SparseChangeArray;
 use hwl_util::constants::MAX_DRIVER_INFO_PATHS;
@@ -588,23 +587,15 @@ fn record_signal_reads(
         .or_insert_with(|| IrMask::new(signal.ty(&module.signals), false));
     let signal_driven = drivers.curr(signal);
 
-    // TODO this is cursed, build proper zip iterators, including simple "constant" iterators that can be mixed?
-    let mut pieces_driven = signal_driven.map(|signal_driven| {
-        let mut pieces_driven = vec![];
-        signal_driven.for_each_possible_leaf_after_steps(module, vars, steps_scalar, step_slice.as_ref(), &mut |m| {
-            pieces_driven.push(m)
-        });
-        pieces_driven.into_iter()
-    });
     signal_reads.for_each_possible_leaf_after_steps_mut(
+        signal_driven,
         module,
         vars,
         steps_scalar,
         step_slice.as_ref(),
-        &mut |piece_read| {
-            if let Some(pieces_driven) = &mut pieces_driven {
+        &mut |piece_read, piece_driven| {
+            if let Some(piece_driven) = piece_driven {
                 // only count reads from pieces that have not yet been driven
-                let piece_driven = pieces_driven.next().unwrap();
                 IrMask::zip2_for_each_mut(piece_read, piece_driven, &mut |scalar_read, scalar_driven| {
                     *scalar_read |= !scalar_driven;
                 })
@@ -614,8 +605,6 @@ fn record_signal_reads(
             }
         },
     );
-
-    assert!(pieces_driven.is_none_or(IterExt::is_empty));
 }
 
 fn check_combinatorial_self_loops(
@@ -861,9 +850,14 @@ impl IrMask<bool> {
                 // always allowed, report everything that is maybe driven
                 full_array
                     .for_each_block_in_range_mut(full_range, |_, m| {
-                        m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, &mut |s| {
-                            s.fill(true)
-                        });
+                        m.for_each_possible_leaf_after_steps_mut(
+                            None,
+                            module,
+                            vars,
+                            steps_scalar,
+                            step_slice,
+                            &mut |s, _| s.fill(true),
+                        );
                         ControlFlow::Continue(())
                     })
                     .remove_never();
@@ -907,16 +901,17 @@ impl IrMask<bool> {
 
     fn for_each_possible_leaf_after_steps_mut(
         &mut self,
+        other: Option<&Self>,
         module: &IrModuleInfo,
         vars: &IrVariables,
         steps_scalar: &[IrTargetStepScalar],
         step_slice: Option<&IrTargetStepSlice>,
-        f: &mut impl FnMut(&mut IrMask<bool>),
+        f: &mut impl FnMut(&mut Self, Option<&Self>),
     ) {
         let Some((step_curr, steps_scalar)) = steps_scalar.split_first() else {
             match step_slice {
                 None => {
-                    f(self);
+                    f(self, other);
                 }
                 Some(step_slice) => {
                     let IrTargetStepSlice { start, len } = step_slice;
@@ -926,14 +921,15 @@ impl IrMask<bool> {
                     };
 
                     let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                    let other = other.map(|other| unwrap_match!(other, IrMask::Array(other) => &**other));
                     let start_range = unwrap_uint_range(module, vars, start);
 
                     let full_range = ClosedRange {
                         start: &start_range.start,
                         end: &(start_range.end + len_1),
                     };
-                    slf.for_each_block_in_range_mut(full_range, |_, m| {
-                        f(m);
+                    slf.zip2_for_each_block_in_range_mut(full_range, other, |_, slf, other| {
+                        f(slf, other);
                         ControlFlow::Continue(())
                     })
                     .remove_never();
@@ -945,17 +941,23 @@ impl IrMask<bool> {
         match step_curr {
             IrTargetStepScalar::ArrayIndex(index) => {
                 let slf = unwrap_match!(self, IrMask::Array(slf) => slf);
+                let other = other.map(|other| unwrap_match!(other, IrMask::Array(other) => &**other));
                 let index_range = unwrap_uint_range(module, vars, index);
 
-                slf.for_each_block_in_range_mut(ClosedRange::from(index_range.as_ref()), |_, m| {
-                    m.for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f);
-                    ControlFlow::Continue(())
-                })
+                slf.zip2_for_each_block_in_range_mut(
+                    ClosedRange::from(index_range.as_ref()),
+                    other,
+                    |_, m, m_other| {
+                        m.for_each_possible_leaf_after_steps_mut(m_other, module, vars, steps_scalar, step_slice, f);
+                        ControlFlow::Continue(())
+                    },
+                )
                 .remove_never();
             }
             &IrTargetStepScalar::TupleIndex(index) | &IrTargetStepScalar::StructField(index) => {
                 let slf = unwrap_match!(self, IrMask::TupleOrStruct(slf) => slf);
-                slf[index].for_each_possible_leaf_after_steps_mut(module, vars, steps_scalar, step_slice, f)
+                let other = other.map(|other| &unwrap_match!(other, IrMask::TupleOrStruct(other) => other)[index]);
+                slf[index].for_each_possible_leaf_after_steps_mut(other, module, vars, steps_scalar, step_slice, f)
             }
         }
     }

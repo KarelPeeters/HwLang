@@ -52,6 +52,15 @@ impl<C> ResultNeverExt<C> for ControlFlow<Never, C> {
     }
 }
 
+impl ResultNeverExt<()> for Option<Never> {
+    fn remove_never(self) {
+        match self {
+            None => {}
+            Some(never) => never.unreachable(),
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! try_inner {
     ($e:expr) => {

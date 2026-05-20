@@ -591,3 +591,16 @@ def test_cones_mix_driven_undriven_overdriven():
 
     for m in e.value.messages:
         assert "w[1]" not in m
+
+
+def test_cones_clocked_dyn_index():
+    src = """
+    module top ports(clk: in clock, sync(clk) { x: in [4]bool, i: in int(0..4) }) {
+        clocked(clk) {
+            reg r: [4]bool = undef;
+            r = x;
+            val y: bool = r[i];
+        }
+    }
+    """
+    _ = compile_custom(src).resolve_module("top.top")

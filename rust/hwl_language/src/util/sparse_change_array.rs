@@ -1,7 +1,7 @@
-use crate::util::Never;
 use crate::util::big_int::BigUint;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedRange;
+use crate::util::{Never, ResultNeverExt};
 use itertools::enumerate;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
@@ -222,7 +222,25 @@ impl<T> SparseChangeArray<T> {
     where
         T: Clone,
     {
-        // unwrap and handle edge cases
+        self.zip2_for_each_block_in_range_mut::<Never, B>(range, None, |block, slf, n| {
+            n.copied().remove_never();
+            f(block, slf)
+        })
+    }
+
+    pub fn zip2_for_each_block_in_range_mut<U, B>(
+        &mut self,
+        range: ClosedRange<&BigUint>,
+        other: Option<&SparseChangeArray<U>>,
+        mut f: impl FnMut(ClosedRange<&BigUint>, &mut T, Option<&U>) -> ControlFlow<B>,
+    ) -> ControlFlow<B>
+    where
+        T: Clone,
+    {
+        // check lengths and handle some (empty) edge cases
+        if let Some(other) = other {
+            assert_eq!(&self.len, &other.len);
+        }
         if self.start.is_none() {
             assert!(range.start.is_zero());
             assert!(range.is_empty());
@@ -244,34 +262,50 @@ impl<T> SparseChangeArray<T> {
         let range_end_sub_1 = range_end.sub_1().unwrap();
         self.ensure_indices([range_start, &range_end_sub_1, range_end]);
 
-        // find those indices
-        let change_start = if range_start.is_zero() {
+        if let Some(other) = other {
+            let other_change_start = other.changes.partition_point(|(i, _)| i < range_start);
+            let other_change_end = other.changes.partition_point(|(i, _)| i < range_end);
+            let other_changes = &other.changes[other_change_start..other_change_end];
+            self.ensure_indices(other_changes.iter().map(pair_first));
+        }
+
+        // find self change range (this needs to happen after potentially having added indices)
+        let slf_change_start = if range_start.is_zero() {
             None
         } else {
             Some(self.changes.binary_search_by_key(&range_start, pair_first).unwrap())
         };
-        let change_end = if range_end == &self.len {
+        let slf_change_end = if range_end == &self.len {
             self.changes.len()
         } else {
             self.changes.binary_search_by_key(&range_end, pair_first).unwrap()
         };
 
-        // actually visit
-        let start = self.start.as_mut().unwrap();
-        if change_start.is_none() {
-            let end = self.changes.first().map(pair_first).unwrap_or(&self.len).min(range_end);
+        // visit start if necessary
+        if slf_change_start.is_none() {
+            let first_range_end = self.changes.first().map(pair_first).unwrap_or(&self.len).min(range_end);
             let curr_range = ClosedRange {
                 start: range_start,
-                end,
+                end: first_range_end,
             };
-            f(curr_range, start)?;
+
+            let slf_value = self.start.as_mut().unwrap();
+            let other_value = other.map(|other| other.get(range_start));
+
+            f(curr_range, slf_value, other_value)?;
         }
-        for (i, last) in (change_start.unwrap_or(0)..change_end).with_last() {
-            let (curr_index, curr_value, next_index) = if last {
-                let (curr_index, curr_value) = &mut self.changes[i];
+
+        // visit change blocks
+        for (slf_change_index, last) in (slf_change_start.unwrap_or(0)..slf_change_end).with_last() {
+            // get indices and value from self
+            let (curr_index, slf_value, next_index) = if last {
+                let (curr_index, curr_value) = &mut self.changes[slf_change_index];
                 (&*curr_index, curr_value, range_end)
             } else {
-                let [(curr_index, curr_value), (next_index, _)] = self.changes.get_disjoint_mut([i, i + 1]).unwrap();
+                let [(curr_index, curr_value), (next_index, _)] = self
+                    .changes
+                    .get_disjoint_mut([slf_change_index, slf_change_index + 1])
+                    .unwrap();
                 (&*curr_index, curr_value, &*next_index)
             };
 
@@ -279,7 +313,10 @@ impl<T> SparseChangeArray<T> {
                 start: curr_index,
                 end: next_index,
             };
-            f(curr_range, curr_value)?;
+
+            let other_value = other.map(|other| other.get(curr_index));
+
+            f(curr_range, slf_value, other_value)?;
         }
 
         ControlFlow::Continue(())
@@ -722,6 +759,83 @@ mod tests {
             if let Some((a_dense, a_change)) = a_pair {
                 assert_array_match(&a_dense, &a_change);
             }
+        });
+    }
+
+    #[test]
+    fn test_zip2_in_range_mut_exhaust() {
+        const LEN_LIMIT: usize = 5;
+        const VALUE_LIMIT: u64 = 3;
+
+        exhaust(|ex| {
+            let len = ex.choose(LEN_LIMIT as u64) as usize;
+
+            let array_a_dense = (0..len).map(|_| ex.choose(VALUE_LIMIT)).collect_vec();
+            let array_a_change = build_from_array(&array_a_dense, |_| ex.choose_bool());
+
+            let other_pair = ex.choose_bool().then(|| {
+                let dense = (0..len).map(|_| ex.choose(VALUE_LIMIT)).collect_vec();
+                let change = build_from_array(&dense, |_| ex.choose_bool());
+                (dense, change)
+            });
+
+            println!("generated arrays");
+            println!("  a dense:  {:?}", array_a_dense);
+            println!("  a change: {:?}", array_a_change);
+            println!("  other:    {:?}", other_pair);
+
+            exhaust(|ex_inner| {
+                let range_start = ex_inner.choose((len + 1) as u64);
+                let range_end = ex_inner.choose_range(range_start, (len + 1) as u64);
+                let range = ClosedRange {
+                    start: range_start,
+                    end: range_end,
+                }
+                .map(BigUint::from);
+
+                println!("  visiting range {range_start}..{range_end}");
+
+                // dense reference run
+                let op = |a: &mut u64, b: Option<&u64>| {
+                    let b = b.copied().unwrap_or(VALUE_LIMIT);
+                    if *a < b {
+                        *a += b;
+                    }
+                };
+
+                let mut expected_dense = array_a_dense.clone();
+                for i in range_start as usize..range_end as usize {
+                    let b = other_pair.as_ref().map(|(b, _)| &b[i]);
+                    op(&mut expected_dense[i], b);
+                }
+
+                // sparse run
+                let mut actual_change = array_a_change.clone();
+                let mut actual_cover = vec![false; len];
+                let mut seen = vec![];
+
+                actual_change
+                    .zip2_for_each_block_in_range_mut::<u64, Never>(
+                        range.as_ref(),
+                        other_pair.as_ref().map(|(_, b)| b),
+                        |block, a, b| {
+                            seen.push((*a, b.copied()));
+                            op(a, b);
+                            cover_check_set(&mut actual_cover, block);
+                            ControlFlow::Continue(())
+                        },
+                    )
+                    .remove_never();
+
+                let mut expected_cover = vec![false; len];
+                expected_cover[range_start as usize..range_end as usize].fill(true);
+
+                assert_eq!(expected_cover, actual_cover);
+                assert_array_match(&expected_dense, &actual_change);
+                if range_start < range_end {
+                    assert!(!seen.is_empty());
+                }
+            });
         });
     }
 
