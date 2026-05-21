@@ -102,6 +102,7 @@ pub enum TypeContainsReason {
         span_target: Span,
         span_target_ty: Span,
     },
+    SpreadOperator(Span),
     Operator(Span),
     InstanceModule(Span),
     InstancePortInput {
@@ -145,6 +146,7 @@ impl TypeContainsReason {
             } => diag
                 .add_info(span_target, format!("target requires type `{target_ty_str}`"))
                 .add_info(span_target_ty, "target type set here"),
+            TypeContainsReason::SpreadOperator(span) => diag.add_info(span, "spread operator requires an array"),
             TypeContainsReason::Operator(span) => {
                 diag.add_info(span, format!("operator requires type `{target_ty_str}`"))
             }

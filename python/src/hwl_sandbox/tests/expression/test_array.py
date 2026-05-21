@@ -315,3 +315,20 @@ def test_array_comprehension_iter(tmp_dir: Path):
 def test_array_len(tmp_dir: Path):
     e = compare_expression(["[4]uint(8)"], "uint(8)", "a0.len", tmp_dir)
     e.eval_assert([[1, 2, 3, 4]], 4)
+
+
+def test_array_spread_non_array(tmp_dir: Path):
+    # compile value
+    src = "fn f() { return [*false]; }"
+    f = compile_custom(src).resolve("top.f")
+    with pytest.raises(hwl.DiagnosticException, match="spread operator requires an array"):
+        f()
+
+    # hardware value
+    src = """
+    module top ports(x: in async bool) {
+        wire w = [*x];
+    }
+    """
+    with pytest.raises(hwl.DiagnosticException, match="spread operator requires an array"):
+        _ = compile_custom(src).resolve("top.top")

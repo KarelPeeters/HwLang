@@ -2418,6 +2418,22 @@ fn array_literal_combine_values(
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
+    // check that spread operator only deals with arrays
+    let mut any_err = Ok(());
+    for v in &values {
+        match v {
+            ArrayLiteralElement::Single(_) => {}
+            &ArrayLiteralElement::Spread(span_op, ref v) => {
+                let reason = TypeContainsReason::SpreadOperator(span_op);
+                let res =
+                    check_type_contains_value(diags, elab, reason, &Type::Array(Arc::new(Type::Any), None), v.as_ref());
+                any_err = any_err.and(res);
+            }
+        }
+    }
+    any_err?;
+
+    // figure out if there are any non-compile values
     let first_non_compile = values
         .iter()
         .find(|v| CompileValue::try_from(&v.value().inner).is_err())
@@ -2429,15 +2445,11 @@ fn array_literal_combine_values(
             .iter()
             .map(|v| match v {
                 ArrayLiteralElement::Single(v) => Ok(v.inner.ty()),
-                ArrayLiteralElement::Spread(_, v) => {
+                &ArrayLiteralElement::Spread(span_spread, ref v) => {
                     let v_ty = v.inner.ty();
                     match v_ty {
                         Type::Array(ty_inner, _len) => Ok(Arc::unwrap_or_clone(ty_inner)),
-                        _ => Err(diags.report_error_simple(
-                            "spread operator requires an array value",
-                            v.span,
-                            format!("got non-array type `{}`", v_ty.value_string(elab)),
-                        )),
+                        _ => Err(diags.report_error_internal(span_spread, "spread operator expected array")),
                     }
                 }
             })
@@ -2527,9 +2539,7 @@ fn array_literal_combine_values(
                     let elem_inner = CompileValue::try_from(&elem_inner.inner).unwrap();
                     let elem_inner_array = match elem_inner {
                         CompileValue::Simple(SimpleCompileValue::Array(elem_inner)) => elem_inner,
-                        _ => {
-                            return Err(diags.report_error_internal(span_spread, "expected array value"));
-                        }
+                        _ => return Err(diags.report_error_internal(span_spread, "spread operator expected array")),
                     };
                     result.extend(elem_inner_array.iter().cloned())
                 }
