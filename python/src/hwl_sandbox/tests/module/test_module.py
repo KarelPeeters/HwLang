@@ -335,3 +335,47 @@ def test_input_port_no_process():
 
     # we expect exactly one process, in child, no additional process in top
     assert verilog.count("always @(") == 1
+
+
+def test_module_instance_expand_port_simple(tmp_dir: Path):
+    # test that port type expansion works correctly
+    src = """
+    module parent ports(x: in async uint(2), y: out async uint(5)) {
+        instance child ports(x, y);
+    }
+    module child ports(x: in async uint(3), y: out async uint(4)) {
+        comb { y = x; }
+    }
+    """
+
+    top = compile_custom(src).resolve_module("top.parent")
+    print(top.as_verilog().source)
+    inst = top.as_verilated(tmp_dir).instance()
+
+    for v in range(2 ** 2):
+        inst.ports.x.value = v
+        inst.step(1)
+        assert inst.ports.y.value == v
+
+
+def test_module_instance_expand_port_tuple(tmp_dir: Path):
+    # test that port type expansion works correctly
+    src = """
+    module parent ports(x: in async Tuple(uint(2), bool), y: out async Tuple(uint(5), bool)) {
+        instance child ports(x, y);
+    }
+    module child ports(x: in async Tuple(uint(3), bool), y: out async Tuple(uint(4), bool)) {
+        comb { y = x; }
+    }
+    """
+
+    top = compile_custom(src).resolve_module("top.parent")
+    print(top.as_verilog().source)
+    inst = top.as_verilated(tmp_dir).instance()
+
+    for v_i in range(2 ** 2):
+        for v_b in [False, True]:
+            v = (v_i, v_b)
+            inst.ports.x.value = v
+            inst.step(1)
+            assert inst.ports.y.value == v

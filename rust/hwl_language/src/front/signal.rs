@@ -127,7 +127,7 @@ impl PortInfo {
         HardwareValue {
             ty: self.ty.inner.clone(),
             domain: ValueDomain::from_port_domain(self.domain.inner),
-            expr: IrExpression::Signal(IrSignal::Port(self.ir)),
+            expr: self.ir.as_expression(),
         }
     }
 }

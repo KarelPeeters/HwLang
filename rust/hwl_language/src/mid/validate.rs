@@ -66,7 +66,7 @@ impl IrModuleInfo {
                             signal: reset_signal_inner,
                         } = reset_signal.inner;
 
-                        let reset_signal_inner_expr = IrExpression::Signal(reset_signal_inner);
+                        let reset_signal_inner_expr = reset_signal_inner.as_expression();
                         reset_signal_inner_expr.validate(diags, self, no_variables, reset_signal.span)?;
                         check_type_is_bool(
                             diags,
@@ -91,7 +91,7 @@ impl IrModuleInfo {
                     }
 
                     // clock
-                    let clock_signal_inner_expr = IrExpression::Signal(clock_signal_inner);
+                    let clock_signal_inner_expr = clock_signal_inner.as_expression();
                     clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
                     check_type_match(
                         diags,

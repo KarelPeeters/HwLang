@@ -301,9 +301,9 @@ pub struct IrAssignmentTarget {
 }
 
 impl IrAssignmentTarget {
-    pub fn simple(base: IrSignalOrVariable) -> Self {
+    pub fn simple(base: impl Into<IrSignalOrVariable>) -> Self {
         IrAssignmentTarget {
-            base,
+            base: base.into(),
             steps: IrTargetSteps::new(),
         }
     }
@@ -927,17 +927,33 @@ impl IrSignal {
                 .map_or("_", String::as_str),
         }
     }
+
+    pub fn as_expression(self) -> IrExpression {
+        IrExpression::Signal(self)
+    }
 }
 
 impl Polarized<IrSignal> {
     pub fn as_expression(self, large: &mut IrLargeArena) -> IrExpression {
         let Polarized { inverted, signal } = self;
-        let signal = IrExpression::Signal(signal);
+        let signal = signal.as_expression();
         if inverted {
             large.push_expr(IrExpressionLarge::BoolNot(signal))
         } else {
             signal
         }
+    }
+}
+
+impl IrWire {
+    pub fn as_expression(self) -> IrExpression {
+        IrExpression::Signal(IrSignal::Wire(self))
+    }
+}
+
+impl IrPort {
+    pub fn as_expression(self) -> IrExpression {
+        IrExpression::Signal(IrSignal::Port(self))
     }
 }
 

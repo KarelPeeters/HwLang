@@ -1512,7 +1512,7 @@ impl<'p> FlowHardware<'p> {
 
         let var_ir = self.new_ir_variable(var_ir_info);
 
-        let target = IrAssignmentTarget::simple(var_ir.into());
+        let target = IrAssignmentTarget::simple(var_ir);
         let stmt_store = IrStatement::Assign(target, value.expr);
         self.push_ir_statement(Spanned::new(span, stmt_store));
 
@@ -2124,7 +2124,7 @@ fn merge_branch_variable(
                     // copy from variable to itself, skip store
                     Ok(None)
                 } else {
-                    let store = IrStatement::Assign(IrAssignmentTarget::simple(var_ir.into()), assigned_expr);
+                    let store = IrStatement::Assign(IrAssignmentTarget::simple(var_ir), assigned_expr);
                     Ok(Some(Spanned::new(span_merge, store)))
                 }
             }
