@@ -2,7 +2,7 @@ use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::DomainSignal;
 use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
-use crate::front::module::ElaboratedModuleHeader;
+use crate::front::module_header::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
 use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
 use crate::front::signal::{

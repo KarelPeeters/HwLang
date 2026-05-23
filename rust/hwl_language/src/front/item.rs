@@ -5,7 +5,7 @@ use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
-use crate::front::module::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
+use crate::front::module_header::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
 use crate::front::scope::{CaptureFailed, DeclaredValueSingle, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::steps::POSSIBLE_BUILTIN_TYPE_MEMBERS;
 use crate::front::types::{HardwareType, Type};
