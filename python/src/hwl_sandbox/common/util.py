@@ -30,6 +30,9 @@ def diag_general(level: str, title: str, has_message: str | None, has_info: str 
         diags = e.diagnostics
         assert len(diags) > 0, "Diagnostic exception should not be empty"
 
+        for d in diags:
+            assert "internal compiler error" not in d.title, "Internal compiler errors should not occur"
+
         assert len(diags) == 1, f"Expected exactly one diagnostic, got {len(diags)}"
         diag = diags[0]
 
