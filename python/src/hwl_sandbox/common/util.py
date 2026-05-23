@@ -30,8 +30,7 @@ def diag_general(level: str, title: str, has_message: str | None, has_info: str 
         diags = e.diagnostics
         assert len(diags) > 0, "Diagnostic exception should not be empty"
 
-        assert len(diags) == 1, \
-            f"Expected exactly one diagnostic, got {len(diags)} in\n{e.combined_string_colored}"
+        assert len(diags) == 1, f"Expected exactly one diagnostic, got {len(diags)}"
         diag = diags[0]
 
         assert diag.title == title, f"Diagnostic title mismatch, expected {title}"
