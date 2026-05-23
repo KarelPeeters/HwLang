@@ -76,26 +76,22 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
             should_stop: &should_stop,
         };
 
-        // find top module, discarding any diagnostics reported here
-        let dummy_diags = Diagnostics::new();
-        let top_module = {
-            refs.diags = &dummy_diags;
-
-            let top_module = if let Ok(top) = refs.resolve_item_by_path(Spanned::new(dummy_span, "top.top"))
-                && let Ok(top) = refs.eval_item(top)
-                && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
-            {
-                Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
-            } else {
-                None
-            };
-
-            refs.diags = &diags;
-            top_module
-        };
-
+        // compile everything with real diagnostics first
         refs.run_compile_loop(None);
-        let db = shared.finish_ir_database(&diags, dummy_span)?;
+        let db = shared.finish_ir_database_ref(&diags, dummy_span)?;
+
+        // find top module, use dummy_diags to suppress "path not found" errors
+        // (we already did the main compilation, so no real errors will be discarded)
+        let dummy_diags = Diagnostics::new();
+        refs.diags = &dummy_diags;
+        let top_module = if let Ok(top) = refs.resolve_item_by_path(Spanned::new(dummy_span, "top.top"))
+            && let Ok(top) = refs.eval_item(top)
+            && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
+        {
+            Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
+        } else {
+            None
+        };
 
         Ok((db, top_module))
     });
