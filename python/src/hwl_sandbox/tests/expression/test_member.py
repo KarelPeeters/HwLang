@@ -1,9 +1,6 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_member_struct_static():
@@ -55,12 +52,7 @@ def test_member_duplicate():
     }
     const a = Foo.derp;
     """
-    # noinspection PyUnresolvedReferences
-    with pytest.raises(
-            hwl.DiagnosticException,
-            match="identifier `derp` declared multiple times",
-            check=lambda e: len(e.messages) == 1
-    ):
+    with diag_error("identifier `derp` declared multiple times"):
         _ = compile_custom(src).resolve("top.a")
 
 
@@ -71,7 +63,7 @@ def test_member_err_builtin():
         const size_bits = 4;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="struct member name collides with builtin type member"):
+    with diag_error("struct member name collides with builtin type member"):
         _ = compile_custom(src).resolve("top.Foo")
 
 
@@ -82,7 +74,7 @@ def test_member_err_field():
         const x = 4;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="conflicting definitions of struct member"):
+    with diag_error("conflicting definitions of struct member"):
         _ = compile_custom(src).resolve("top.Foo")
 
 
@@ -136,7 +128,7 @@ def test_self_value_none():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="self is not bound in this scope"):
+    with diag_error("self is not bound in this scope"):
         _ = f()
 
 

@@ -1,10 +1,7 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
 from hwl_sandbox.common.compare import compare_body
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_enum_construction_and_match(tmp_dir: Path):
@@ -50,7 +47,7 @@ def test_enum_infer_different():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="enum expected type mismatch"):
+    with diag_error("enum expected type mismatch"):
         f()
 
 
@@ -70,9 +67,9 @@ def test_enum_cannot_infer():
     c = compile_custom(src)
     f = c.resolve("top.f")
     g = c.resolve("top.g")
-    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+    with diag_error("cannot infer enum parameters"):
         f()
-    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+    with diag_error("cannot infer enum parameters"):
         g()
 
 
@@ -94,7 +91,7 @@ def test_enum_infer_no_payload():
     g = c.resolve("top.g")
 
     f()
-    with pytest.raises(hwl.DiagnosticException, match="cannot infer enum parameters"):
+    with diag_error("cannot infer enum parameters"):
         g()
 
 
@@ -109,7 +106,7 @@ def test_enum_infer_non_existing():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="enum variant `NonExisting` not found"):
+    with diag_error("enum variant `NonExisting` not found"):
         f()
 
 
@@ -140,7 +137,7 @@ def test_enum_mixed_payload():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="payload must be consistent"):
+    with diag_error("enum variant payload must be consistent between generic instantiations"):
         _ = compile_custom(src).resolve("top.Foo")
 
 
@@ -151,6 +148,6 @@ def test_enum_empty():
     module top_empty ports(x: in async Empty) {}    
     module top_non_empty ports(x: in async NonEmpty) {}    
     """
-    with pytest.raises(hwl.DiagnosticException, match="port type must be representable in hardware"):
+    with diag_error("port type must be representable in hardware"):
         _ = compile_custom(src).resolve("top.top_empty")
     _ = compile_custom(src).resolve("top.top_non_empty")

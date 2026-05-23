@@ -1,16 +1,38 @@
-use crate::DiagnosticException;
-use hwl_language::front::diagnostic::{DiagError, DiagResult, Diagnostics, diags_to_string_vec};
+use crate::{Diagnostic, DiagnosticException, DiagnosticPreviouslyReportedException};
+use hwl_language::front::diagnostic::{
+    DiagError, DiagResult, DiagnosticLevel, Diagnostics, diag_to_string, diags_to_string,
+};
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::Never;
+use itertools::Itertools;
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 
 pub fn check_diags(py: Python, source: &RustSourceDatabase, diags: &Diagnostics) -> Result<(), PyErr> {
     if diags.len() == 0 {
         Ok(())
     } else {
+        let diags = diags.clone().finish();
+
+        let py_diagnostics = diags.iter().map(|diag| {
+            let level = match diag.level {
+                DiagnosticLevel::Error => "error",
+                DiagnosticLevel::Warning => "warning",
+            };
+            Diagnostic {
+                level: level.to_owned(),
+                title: diag.content.title.clone(),
+                messages: diag.content.messages.iter().map(|(_, s)| s.clone()).collect_vec(),
+                infos: diag.content.infos.iter().map(|(_, s)| s.clone()).collect_vec(),
+                full_string: diag_to_string(source, diag.clone(), false),
+                full_string_colored: diag_to_string(source, diag.clone(), true),
+            }
+        });
+
         let exc = DiagnosticException {
-            messages: diags_to_string_vec(source, diags.clone().finish(), false),
-            messages_colored: diags_to_string_vec(source, diags.clone().finish(), true),
+            diagnostics: PyList::new(py, py_diagnostics)?.unbind(),
+            combined_string: diags_to_string(source, diags.clone(), false),
+            combined_string_colored: diags_to_string(source, diags.clone(), true),
         };
         Err(exc.into_err(py)?)
     }
@@ -23,22 +45,16 @@ pub fn map_diag_error<T>(
     value: DiagResult<T>,
 ) -> Result<T, PyErr> {
     check_diags(py, source, diags)?;
-    unwrap_diag_result(py, value)
+    unwrap_diag_result(value)
 }
 
-pub fn unwrap_diag_result<T>(py: Python, result: DiagResult<T>) -> Result<T, PyErr> {
+pub fn unwrap_diag_result<T>(result: DiagResult<T>) -> Result<T, PyErr> {
     match result {
         Ok(result) => Ok(result),
         Err(e) => {
             let _: DiagError = e;
-
-            // TODO create a dedicated exception type for this case?
             let msg = "diagnostic already reported previously";
-            let exc = DiagnosticException {
-                messages: vec![msg.to_string()],
-                messages_colored: vec![msg.to_string()],
-            };
-            Err(exc.into_err(py)?)
+            Err(DiagnosticPreviouslyReportedException::new_err(msg))
         }
     }
 }

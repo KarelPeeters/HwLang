@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import hwl
-import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_read_const_from_signal(tmp_dir: Path):
@@ -217,7 +216,7 @@ def test_var_type_enforced_scalar():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = compile_custom(src_b).resolve("top.top")
 
 
@@ -250,7 +249,7 @@ def test_var_type_enforced_array():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = compile_custom(src_b).resolve("top.top")
 
 
@@ -286,5 +285,5 @@ def test_assign_immutable():
             }
         }
         """
-    with pytest.raises(hwl.DiagnosticException, match="cannot assign to immutable variable"):
+    with diag_error("cannot assign to immutable variable"):
         _ = compile_custom(src_b).resolve("top.top")

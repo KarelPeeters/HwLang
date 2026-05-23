@@ -1,7 +1,6 @@
-import hwl
 import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_extra_list_in_interface():
@@ -30,9 +29,9 @@ def test_extra_list_in_interface():
     foo(X=True, Y=False, Z=False, V=False)
     foo(X=False, Y=True, Z=False, V=False)
 
-    with pytest.raises(hwl.DiagnosticException, match="port not found"):
+    with diag_error("port not found in this interface"):
         foo(X=False, Y=False, Z=True, V=False)
-    with pytest.raises(hwl.DiagnosticException, match="port not found"):
+    with diag_error("port not found in this interface"):
         foo(X=False, Y=False, Z=False, V=True)
 
 
@@ -113,7 +112,7 @@ def test_extra_list_in_module_instance():
     parent = compile_custom(src).resolve("top.parent")
 
     parent(False)
-    with pytest.raises(hwl.DiagnosticException, match="connection does not match any port"):
+    with diag_error("connection does not match any port"):
         parent(True)
 
 
@@ -138,16 +137,16 @@ def test_extra_list_in_params():
     assert g(True, True, 0) == 0
     assert g(True, True, 1) == 1
 
-    with pytest.raises(hwl.DiagnosticException, match="argument did not match"):
+    with diag_error("argument did not match any param"):
         assert g(False, True, 0) == 0
-    with pytest.raises(hwl.DiagnosticException, match="missing argument"):
+    with diag_error("missing argument for parameter `x`"):
         assert g(True, False, 0) == 0
 
 
 def test_extra_list_params_conflict():
     src = "fn f(const c = false; c: bool) {}"
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="declared multiple times"):
+    with diag_error("identifier `c` declared multiple times"):
         f(c=False)
 
 
@@ -193,17 +192,17 @@ def test_extra_list_scopes():
     # branches local
     f(c=True, d=False, e=False, b=2 ** 4 - 1)
     f(c=True, d=False, e=False, b=2 ** 2 - 1)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(c=False, d=False, e=False, b=2 ** 4 - 1)
     f(c=False, d=False, e=False, b=2 ** 2 - 1)
 
     # reuse
-    with pytest.raises(hwl.DiagnosticException, match="identifier `B` declared multiple times"):
+    with diag_error("identifier `B` declared multiple times"):
         f(c=True, d=False, e=True, b=0)
 
     # no leaking
     f(c=True, d=True, e=False, b=0)
-    with pytest.raises(hwl.DiagnosticException, match="undeclared identifier"):
+    with diag_error("undeclared identifier `C`"):
         f(c=False, d=True, e=False, b=0)
 
 

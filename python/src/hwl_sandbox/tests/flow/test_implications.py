@@ -1,7 +1,6 @@
-import hwl
 import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_signal_does_not_fit():
@@ -14,7 +13,7 @@ def test_signal_does_not_fit():
     """
     c = compile_custom(src)
 
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = c.resolve("top.top")
 
 
@@ -46,7 +45,7 @@ def test_signal_reassigned():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = c.resolve("top.top")
 
 
@@ -61,7 +60,7 @@ def test_variable_does_not_fit():
     """
     c = compile_custom(src)
 
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = c.resolve("top.top")
 
 
@@ -93,7 +92,7 @@ def test_variable_reassigned():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = c.resolve("top.top")
 
 
@@ -239,7 +238,7 @@ def test_imply_non_zero_div():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="division by zero"):
+    with diag_error("division by zero is not allowed"):
         _ = compile_custom(src_raw).resolve("top.top")
 
     src_checked = """
@@ -447,7 +446,7 @@ def test_imply_assignment_breaks_connection():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         _ = c.resolve("top.top")
 
 

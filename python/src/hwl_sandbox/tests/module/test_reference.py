@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import hwl
-import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_ref_port_read(tmp_dir: Path):
@@ -49,7 +48,7 @@ def test_ref_port_write_input_error():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="cannot assign to input port"):
+    with diag_error("cannot assign to input port"):
         compile_custom(src).resolve("top.top")
 
 
@@ -82,7 +81,7 @@ def test_ref_interface():
 
     _ = c.resolve("top.top_basic")
     _ = c.resolve("top.top_ref")
-    with pytest.raises(hwl.DiagnosticException, match="cannot evaluate interface as value"):
+    with diag_error("cannot evaluate interface as value"):
         _ = c.resolve("top.top_wrong")
 
 
@@ -110,9 +109,9 @@ def test_ref_ty():
     }
     """
     compile_custom(src).resolve("top.top_correct")
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         compile_custom(src).resolve("top.top_wrong_single")
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         compile_custom(src).resolve("top.top_wrong_intf")
 
 
@@ -141,7 +140,7 @@ def test_ref_var_read_dropped():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="cannot access variable after its scope has ended"):
+    with diag_error("cannot access variable after its scope has ended"):
         f(4)
 
 
@@ -157,5 +156,5 @@ def test_ref_var_write_dropped():
     }
     """
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="cannot access variable after its scope has ended"):
+    with diag_error("cannot access variable after its scope has ended"):
         f(4)

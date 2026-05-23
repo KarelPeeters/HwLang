@@ -1,6 +1,4 @@
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_flow_read_hw_in_hw():
@@ -10,5 +8,5 @@ def test_flow_read_hw_in_hw():
 
 def test_flow_read_hw_in_const():
     src = """module foo ports(p: in async bool) { const { val _ = p + 2; } }"""
-    with pytest.raises(match="signal evaluation is only allowed in a hardware context"):
+    with diag_error("signal evaluation is only allowed in a hardware context"):
         compile_custom(src).resolve("top.foo")

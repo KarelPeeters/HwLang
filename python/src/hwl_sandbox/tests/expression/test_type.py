@@ -1,7 +1,6 @@
-import hwl
 import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_type_int_simple():
@@ -10,9 +9,9 @@ def test_type_int_simple():
 
     f(0)
     f(7)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(8)
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(15)
 
 
@@ -29,30 +28,30 @@ def test_type_int_multi():
     for f in [f_basic, f_shuffled]:
         f(0)
         f(7)
-        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        with diag_error("type mismatch"):
             f(8)
-        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        with diag_error("type mismatch"):
             f(15)
         f(20)
         f(29)
-        with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+        with diag_error("type mismatch"):
             f(30)
 
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f_empty(0)
 
 
 def test_type_int_empty():
     src = "fn f(x: int(0..0)) {}"
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(0)
 
 
 # TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure
 @pytest.mark.skip
 def test_type_recursive_struct_generic():
-    with pytest.raises(hwl.DiagnosticException, match="cyclic dependency"):
+    with diag_error("cyclic dependency"):
         c = compile_custom("struct S(T: type) { a: int, b: S(T) }")
         s = c.resolve("top.S")
         _ = s(int)
@@ -71,13 +70,13 @@ def test_type_array():
     assert f([True]) == 1
     assert f([True, False]) == 2
 
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         assert f([0]) == 2
 
     assert g([True, False]) == 2
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         assert g([True]) == 1
-    with pytest.raises(hwl.DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         assert g([0, 1]) == 3
 
 
@@ -98,5 +97,5 @@ def test_type_tuple_index():
     g = compile_custom(src).resolve("top.g")
 
     assert f() == bool
-    with pytest.raises(hwl.DiagnosticException, match="cannot index into tuple type with unknown field types"):
+    with diag_error("cannot index into tuple type with unknown field types"):
         g()

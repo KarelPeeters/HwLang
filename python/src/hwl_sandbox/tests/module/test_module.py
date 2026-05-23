@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import hwl
-import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_port_reg_name(tmpdir: Path):
@@ -205,7 +204,7 @@ def test_cyclic_instantiation_real():
     """
     c = compile_custom(src)
 
-    with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
+    with diag_error("cyclic module instantiation"):
         foo: hwl.Module = c.resolve("top.foo")
         print(foo.as_verilog().source)
 
@@ -230,7 +229,7 @@ def test_reference_escape_simple():
     }
     module child(a: any) ports() {}
     """
-    with pytest.raises(hwl.DiagnosticException, match="item parameters cannot contain references"):
+    with diag_error("item parameters cannot contain references"):
         compile_custom(src).resolve("top.top")
 
 
@@ -248,7 +247,7 @@ def test_reference_escape_function():
         comb { f(); }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="attempt to use signal reference outside its declaring module"):
+    with diag_error("attempt to use signal reference outside its declaring module"):
         compile_custom(src).resolve("top.top")
 
 
@@ -294,7 +293,7 @@ def test_self_instance():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="cyclic module instantiation"):
+    with diag_error("cyclic module instantiation"):
         c.resolve("top.top")
 
 

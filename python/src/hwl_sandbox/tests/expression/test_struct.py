@@ -1,10 +1,7 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
 from hwl_sandbox.common.compare import compare_body
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_type_normal_struct():
@@ -13,7 +10,7 @@ def test_type_normal_struct():
 
 
 def test_type_recursive_struct_simple():
-    with pytest.raises(hwl.DiagnosticException, match="cyclic dependency"):
+    with diag_error("encountered cyclic dependency"):
         c = compile_custom("struct S { a: int, b: S }")
         _ = c.resolve("top.S")
 

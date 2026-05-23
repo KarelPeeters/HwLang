@@ -1,5 +1,3 @@
-import hwl
-
 from hwl_sandbox.common.util import compile_custom
 
 

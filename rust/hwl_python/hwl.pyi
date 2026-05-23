@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Any, Iterator
+from typing import List, Optional, Any, Iterator, Literal
 
 
 def format_file(source: str) -> str: ...
@@ -133,12 +133,25 @@ class VerilatedPort:
 class HwlException(Exception): ...
 
 
+class DiagnosticException(HwlException):
+    diagnostics: List[Diagnostic]
+    combined_string: str
+    combined_string_colored: str
+
+
+class Diagnostic:
+    level: Literal["error", "warning"]
+    title: str
+    messages: list[str]
+    infos: list[str]
+    full_string: str
+    full_string_colored: str
+
+
 class SourceSetException(HwlException): ...
 
 
-class DiagnosticException(HwlException):
-    messages: List[str]
-    messages_colored: List[str]
+class DiagnosticPreviouslyReportedException(HwlException): ...
 
 
 class ResolveException(HwlException): ...

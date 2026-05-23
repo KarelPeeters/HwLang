@@ -1,10 +1,7 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
 from hwl_sandbox.common.compare import compare_body, compare_expression
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_bool_to_bits(tmp_dir: Path):
@@ -126,7 +123,7 @@ def test_from_bits_rejected():
     """
     c = compile_custom(src)
     f = c.resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="only allowed for types where every bit pattern is valid"):
+    with diag_error("from_bits is only allowed for types where every bit pattern is valid"):
         f([False, False])
 
 
@@ -142,7 +139,7 @@ def test_from_bits_unsafe_compile():
     assert f([False, False]) == 0
     assert f([True, False]) == 1
     assert f([False, True]) == 2
-    with pytest.raises(hwl.DiagnosticException, match="invalid bit pattern"):
+    with diag_error("invalid bit pattern for type"):
         f([True, True])
 
 

@@ -422,6 +422,11 @@ impl DiagnosticContent {
     }
 }
 
+pub fn diag_to_string(source: &SourceDatabase, diag: Diagnostic, ansi_color: bool) -> String {
+    let settings = DiagnosticStringSettings::default(ansi_color);
+    diag.into_string(source, settings)
+}
+
 pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> String {
     let settings = DiagnosticStringSettings::default(ansi_color);
 

@@ -1,7 +1,4 @@
-import hwl
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_assign_left():
@@ -13,7 +10,7 @@ def test_assign_left():
 def test_assign_right():
     src = "fn f() { 4 = 8; }"
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="cannot use value as target"):
+    with diag_error("cannot use value as target"):
         f()
 
 
@@ -28,5 +25,5 @@ def test_assign_interface():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="cannot use interface as target"):
+    with diag_error("cannot use interface as target"):
         _ = compile_custom(src).resolve_module("top.top")

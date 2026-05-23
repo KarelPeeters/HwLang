@@ -1,10 +1,7 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
 from hwl_sandbox.common.compare import compare_body
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error, diag_warning
 
 
 def test_match_bool(tmp_dir: Path):
@@ -86,7 +83,7 @@ def test_match_fallthrough_compile():
     f = c.resolve("top.f")
 
     assert f(0) == 0
-    with pytest.raises(hwl.DiagnosticException, match="reached end without matching any branch"):
+    with diag_error("compile-time match statement reached end without matching any branch"):
         assert f(1) == 0
 
 
@@ -102,7 +99,7 @@ def test_match_fallthrough_hardware_int():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="must be exhaustive"):
+    with diag_error("hardware match statement must be exhaustive"):
         c.resolve("top.foo_int")
 
 
@@ -116,11 +113,9 @@ def test_match_fallthrough_hardware_enum():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="must be exhaustive"):
+    with diag_error("hardware match statement must be exhaustive"):
         c.resolve("top.top")
 
-
-def test_match_warn_unreachable():
     # TODO setting to allow warnings without crashing?
     src = """
     module top ports(x: in async bool) {
@@ -134,7 +129,7 @@ def test_match_warn_unreachable():
     }
     """
     c = compile_custom(src)
-    with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
+    with diag_warning("unreachable match branch"):
         c.resolve("top.top")
 
 
@@ -149,5 +144,5 @@ def test_match_enum_after_wildcard():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="unreachable match branch"):
+    with diag_warning("unreachable match branch"):
         compile_custom(body).resolve("top.top")

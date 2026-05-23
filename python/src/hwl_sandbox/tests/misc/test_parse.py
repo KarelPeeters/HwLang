@@ -1,7 +1,4 @@
-import hwl
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_parse_clear_error():
@@ -16,5 +13,5 @@ def test_parse_clear_error():
         val v = 8;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="unexpected token `->`"):
+    with diag_error("unexpected token", has_message="unexpected token `->`"):
         compile_custom(src)

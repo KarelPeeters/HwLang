@@ -36,7 +36,7 @@ use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
 use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
-use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyModule, PyModuleMethods, PyTuple};
+use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
     Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyResult, Python, create_exception, intern, pyclass,
     pyfunction, pymethods, pymodule, wrap_pyfunction,
@@ -143,9 +143,30 @@ struct HwlException {}
 #[pyclass(extends=HwlException)]
 struct DiagnosticException {
     #[pyo3(get)]
+    diagnostics: Py<PyList>,
+
+    #[pyo3(get)]
+    combined_string: String,
+    #[pyo3(get)]
+    combined_string_colored: String,
+}
+
+// We expose lots of detail here, so it can be used in tests assertions.
+#[pyclass]
+struct Diagnostic {
+    #[pyo3(get)]
+    level: String,
+    #[pyo3(get)]
+    title: String,
+    #[pyo3(get)]
     messages: Vec<String>,
     #[pyo3(get)]
-    messages_colored: Vec<String>,
+    infos: Vec<String>,
+
+    #[pyo3(get)]
+    full_string: String,
+    #[pyo3(get)]
+    full_string_colored: String,
 }
 
 create_exception!(hwl, SourceSetException, HwlException);
@@ -153,6 +174,7 @@ create_exception!(hwl, ResolveException, HwlException);
 create_exception!(hwl, GenerateVerilogException, HwlException);
 create_exception!(hwl, VerilationException, HwlException);
 create_exception!(hwl, SimulationFinishedException, HwlException);
+create_exception!(hwl, DiagnosticPreviouslyReportedException, HwlException);
 
 #[pymethods]
 impl HwlException {
@@ -168,14 +190,14 @@ impl DiagnosticException {
     pub fn into_err(self, py: Python) -> PyResult<PyErr> {
         // TODO should we include ansi colors in python exceptions by default or not?
         //   it's nice when it works, but will it always work?
-        let messages_colored = self.messages_colored.iter().join("\n\n");
+        let combined_message_colored = self.combined_string_colored.clone();
 
         let init = PyClassInitializer::from(HwlException {}).add_subclass(self);
         let instance = Py::new(py, init)?;
 
         // set exception message
         // ideally we would immediately pass this to the super constructor, but pyo3 does not yet seem to support that
-        instance.setattr(py, intern!(py, "args"), (messages_colored,))?;
+        instance.setattr(py, intern!(py, "args"), (combined_message_colored,))?;
 
         Ok(PyErr::from_value(instance.into_bound(py).into_any()))
     }
@@ -202,12 +224,21 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VerilatedInstance>()?;
     m.add_class::<VerilatedPorts>()?;
     m.add_class::<VerilatedPort>()?;
+    m.add_class::<Diagnostic>()?;
     m.add("HwlException", py.get_type::<HwlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
     m.add("DiagnosticException", py.get_type::<DiagnosticException>())?;
+    m.add(
+        "DiagnosticPreviouslyReportedException",
+        py.get_type::<DiagnosticPreviouslyReportedException>(),
+    )?;
     m.add("ResolveException", py.get_type::<ResolveException>())?;
     m.add("GenerateVerilogException", py.get_type::<GenerateVerilogException>())?;
     m.add("VerilationException", py.get_type::<VerilationException>())?;
+    m.add(
+        "SimulationFinishedException",
+        py.get_type::<SimulationFinishedException>(),
+    )?;
     Ok(())
 }
 

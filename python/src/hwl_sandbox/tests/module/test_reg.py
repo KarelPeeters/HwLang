@@ -1,9 +1,6 @@
 from pathlib import Path
 
-import hwl
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_reg_simple():
@@ -44,7 +41,7 @@ def test_non_reg_clocked():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="clocked process cannot drive port"):
+    with diag_error("clocked process cannot drive port without marking it as a register"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -58,7 +55,7 @@ def test_reg_twice():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port already marked as a register in this process"):
+    with diag_error("port already marked as a register in this process"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -79,7 +76,7 @@ def test_reg_domain_different():
     }
     """
     _ = compile_custom(src).resolve("top.top_valid")
-    with pytest.raises(hwl.DiagnosticException, match="invalid domain crossing"):
+    with diag_error("invalid domain crossing: different reset"):
         _ = compile_custom(src).resolve("top.top_invalid")
 
 
@@ -152,7 +149,7 @@ def test_reg_input_port():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="cannot drive an input port with a register"):
+    with diag_error("cannot drive an input port with a register"):
         _ = compile_custom(src).resolve("top.top")
 
 

@@ -1,7 +1,7 @@
-import hwl
 import pytest
 
-from hwl_sandbox.common.util import compile_custom
+import hwl
+from hwl_sandbox.common.util import compile_custom, diag_error, diag_warning
 
 
 def test_port_driver_none():
@@ -9,7 +9,7 @@ def test_port_driver_none():
     module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` is not driven"):
+    with diag_warning("port `y` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -35,7 +35,7 @@ def test_port_driver_multi_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple drivers"):
+    with diag_error("port `y` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -50,7 +50,7 @@ def test_port_driver_multi_comb_clocked():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="port `y` has multiple drivers"):
+    with diag_error("port `y` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -60,7 +60,7 @@ def test_wire_driver_none_with_type():
         wire w: bool;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
+    with diag_warning("wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -70,7 +70,7 @@ def test_wire_driver_none_with_unit_type():
         wire w: Tuple();
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
+    with diag_warning("wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -80,7 +80,7 @@ def test_wire_driver_none_without_type():
         wire w;
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
+    with diag_warning("wire `w` is not driven"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -116,7 +116,7 @@ def test_wire_driver_single_comb():
 
 def test_wire_driver_multi_comb():
     src = """
-    module top ports(clk: in clock, rst: in async bool, y: out sync(clk, async rst) bool) {
+    module top ports(clk: in clock, rst: in async bool) {
         wire w: bool;
         comb {
             w = false;
@@ -126,7 +126,7 @@ def test_wire_driver_multi_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
+    with diag_error("wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -139,7 +139,7 @@ def test_wire_driver_multi_expr_comb():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
+    with diag_error("wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -152,7 +152,7 @@ def test_wire_driver_multi_expr_clocked_with_assign():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
+    with diag_error("wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -166,7 +166,7 @@ def test_wire_driver_multi_expr_clocked_without_assign():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
+    with diag_error("wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -182,7 +182,7 @@ def test_wire_driver_multi_expr_child():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple drivers"):
+    with diag_error("wire `w` has multiple drivers"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -195,7 +195,7 @@ def test_write_to_signal_in_wire_expr():
         };
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="assigning to signals is only allowed in processes"):
+    with diag_error("assigning to signals is only allowed in processes"):
         _ = compile_custom(src).resolve("top.top")
 
 
@@ -209,5 +209,5 @@ def test_write_to_signal_in_port_expr():
     }
     module child ports(x: in async bool) {}
     """
-    with pytest.raises(hwl.DiagnosticException, match="assigning to signals is only allowed in processes"):
+    with diag_error("assigning to signals is only allowed in processes"):
         _ = compile_custom(src).resolve("top.top")

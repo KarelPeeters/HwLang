@@ -1,7 +1,4 @@
-import pytest
-
-import hwl
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_domain_unsafe():
@@ -18,7 +15,7 @@ def test_domain_unsafe():
     """
     top = compile_custom(src).resolve("top.top")
 
-    with pytest.raises(hwl.DiagnosticException, match="invalid domain crossing: async to sync"):
+    with diag_error("invalid domain crossing: async to sync"):
         _ = top(c=False)
     _ = top(c=True)
 

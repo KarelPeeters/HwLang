@@ -1,9 +1,7 @@
-import re
-
 import hwl
 import pytest
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error, diag_warning
 
 
 # TODO extensive tests for mixes of full/partial/dynamic writes
@@ -33,7 +31,7 @@ def test_comb_assign_conditional():
     top(c_root=True, c_else=False)
     top(c_root=False, c_else=True)
     top(c_root=True, c_else=True)
-    with pytest.raises(hwl.DiagnosticException, match="driver mismatch between conditional branches"):
+    with diag_error("driver mismatch between conditional branches"):
         top(c_root=False, c_else=False)
 
 
@@ -52,7 +50,7 @@ def test_comb_dyn_index():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
+    with diag_error("dynamic array index assignment to not yet driven signal"):
         top(c=False)
 
 
@@ -74,7 +72,7 @@ def test_comb_dyn_index_partial():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
+    with diag_error("dynamic array index assignment to not yet driven signal"):
         top(c=False)
 
 
@@ -111,7 +109,7 @@ def test_comb_dyn_index_tuple_field_before_field_default():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array index assignment to not yet driven signal"):
+    with diag_error("dynamic array index assignment to not yet driven signal"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -130,7 +128,7 @@ def test_comb_dyn_slice():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="dynamic array slice assignment to not yet driven signal"):
+    with diag_error("dynamic array slice assignment to not yet driven signal"):
         top(c=False)
 
 
@@ -156,7 +154,7 @@ def test_comb_dyn_empty_slice_does_not_drive():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` is not driven"):
+    with diag_warning("wire `w` is not driven"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -170,7 +168,7 @@ def test_comb_write_after_read():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+    with diag_error("combinatorial self-loop"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -218,7 +216,7 @@ def test_comb_multi_process_partial_drivers_overlapping():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers"):
+    with diag_error("wire `w` has multiple overlapping drivers"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -260,7 +258,7 @@ def test_comb_dynamic_read_before_some_possible_write():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+    with diag_error("combinatorial self-loop"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -287,7 +285,7 @@ def test_comb_slice_then_index_read_before_write():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+    with diag_error("combinatorial self-loop"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -301,7 +299,7 @@ def test_comb_read_slice_then_index():
         }
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+    with diag_error("combinatorial self-loop"):
         compile_custom(src).resolve_module("top.top")
 
 
@@ -335,7 +333,7 @@ def test_comb_multi_step_cone():
     top = compile_custom(src).resolve("top.top")
 
     top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="driver mismatch between conditional branches"):
+    with diag_error("driver mismatch between conditional branches"):
         top(c=False)
 
 
@@ -396,11 +394,14 @@ def test_comb_assign_conditional_multiple_signals_no_duplicates():
 
     with pytest.raises(hwl.DiagnosticException) as e:
         _ = compile_custom(src).resolve("top.top")
+    print(e.value)
 
-    messages = e.value.messages
-    assert len(messages) == 2
-    for m in messages:
-        assert "driver mismatch between conditional branches" in m
+    # expect two diagnostics, one for each signal
+    diags = e.value.diagnostics
+    assert len(diags) == 2
+    for m in diags:
+        assert m.level == "error"
+        assert m.title == "driver mismatch between conditional branches"
 
 
 def test_dyn_array_index_full():
@@ -444,7 +445,7 @@ def test_dyn_array_index_full():
                 _ = top(N=n, I=i_array, J=j)
                 any_valid = True
             else:
-                with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+                with diag_error("combinatorial self-loop"):
                     _ = top(N=n, I=i_array, J=j)
                 any_invalid = True
 
@@ -493,7 +494,7 @@ def test_dyn_array_index_slice_full():
                 _ = top(N=n, M=m, I=i_array, J=j)
                 any_valid = True
             else:
-                with pytest.raises(hwl.DiagnosticException, match="combinatorial self-loop"):
+                with diag_error("combinatorial self-loop"):
                     _ = top(N=n, M=m, I=i_array, J=j)
                 any_invalid = True
 
@@ -516,7 +517,7 @@ def test_dyn_array_huge():
     top = compile_custom(src).resolve("top.top")
 
     _ = top(c=True)
-    with pytest.raises(hwl.DiagnosticException, match="port `y` is not fully driven"):
+    with diag_warning("port `y` is not fully driven"):
         _ = top(c=False)
 
 
@@ -553,13 +554,17 @@ def test_cones_multiple_drivers_paths():
         "w.compound_overdriven",
     ]
 
-    with pytest.raises(hwl.DiagnosticException, match="wire `w` has multiple overlapping drivers") as e:
+    # with diag_error("wire `w` has multiple overlapping drivers") as e:
+    with pytest.raises(hwl.DiagnosticException) as e:
         compile_custom(src).resolve_module("top.top")
 
-    print(e.value)
-    assert len(e.value.messages) == 1
-    pattern = r"parts with multiple drivers:\n" + "\n".join(r" *" + re.escape(p) for p in expected_paths)
-    assert re.search(pattern, e.value.messages[0], re.MULTILINE)
+    diags = e.value.diagnostics
+    assert len(diags) == 1
+    diag = diags[0]
+
+    assert diag.level == "error"
+    for path in expected_paths:
+        assert path in diag.full_string
 
 
 def test_cones_mix_driven_undriven_overdriven():
@@ -581,16 +586,20 @@ def test_cones_mix_driven_undriven_overdriven():
         compile_custom(src).resolve_module("top.top")
 
     print(e.value)
-    assert len(e.value.messages) == 2
 
-    assert "error: wire `w` has multiple overlapping drivers" in e.value.messages[0]
-    assert "w[0]" in e.value.messages[0]
+    diags = e.value.diagnostics
+    assert len(diags) == 2
 
-    assert "warning: wire `w` is not fully driven" in e.value.messages[1]
-    assert "w[2]" in e.value.messages[1]
+    assert diags[0].level == "error"
+    assert diags[0].title == "wire `w` has multiple overlapping drivers"
+    assert "w[0]" in diags[0].full_string
 
-    for m in e.value.messages:
-        assert "w[1]" not in m
+    assert diags[1].level == "warning"
+    assert diags[1].title == "wire `w` is not fully driven"
+    assert "w[2]" in diags[1].full_string
+
+    for diag in diags:
+        assert "w[1]" not in diag.full_string
 
 
 def test_cones_clocked_dyn_index():

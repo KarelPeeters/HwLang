@@ -4,7 +4,7 @@ import hwl
 import pytest
 from hwl.hwl import DiagnosticException
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_interact_add():
@@ -25,11 +25,11 @@ def test_interact_types():
 
     assert f(bool, False) is False
     assert f(bool, True) is True
-    with pytest.raises(DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(bool, 0)
 
     assert f(int, 0) == 0
-    with pytest.raises(DiagnosticException, match="type mismatch"):
+    with diag_error("type mismatch"):
         f(int, False)
 
 

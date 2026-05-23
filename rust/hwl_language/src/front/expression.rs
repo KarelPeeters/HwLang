@@ -371,7 +371,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_range, None);
                                 let diag = DiagnosticError::new(
-                                    "invalid range, requires start <= end",
+                                    "invalid range: open range requires that `start <= end`",
                                     op_span,
                                     "range constructed here",
                                 )
@@ -409,7 +409,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let msg_start = message_range_or_single("start", &start_range, None);
                                 let msg_end = message_range_or_single("end", &end_inc_range, None);
                                 let diag = DiagnosticError::new(
-                                    "invalid range: requires start <= end_inc + 1",
+                                    "invalid range: closed range requires that `start <= end_inc + 1`",
                                     op_span,
                                     "inclusive range constructed here",
                                 )

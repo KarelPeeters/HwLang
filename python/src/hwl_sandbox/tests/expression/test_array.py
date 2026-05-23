@@ -4,7 +4,7 @@ import hwl
 import pytest
 
 from hwl_sandbox.common.compare import compare_expression, compare_body
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_array_literal_empty_const(tmp_dir: Path):
@@ -132,35 +132,35 @@ def test_array_slice_errors(tmp_dir: Path):
 
     # single index
     f([1, 2, 3], 1)
-    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+    with diag_error("array index out of bounds"):
         f([1, 2, 3], -1)
-    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+    with diag_error("array index out of bounds"):
         f([1, 2, 3], 4)
 
     # closed slice
     f([1, 2, 3], hwl.Range(1, 3))
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(-1, 3))
-    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+    with diag_error("array slice end out of bounds"):
         f([1, 2, 3], hwl.Range(1, 5))
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(-1, 5))
 
     # (half-)open slice
     f([1, 2, 3], hwl.Range(None, None))
     f([1, 2, 3], hwl.Range(None, 3))
     f([1, 2, 3], hwl.Range(1, 3))
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(-1, None))
-    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+    with diag_error("array slice end out of bounds"):
         f([1, 2, 3], hwl.Range(None, 5))
 
     # extra cursed cases
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(4, None))
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         f([1, 2, 3], hwl.Range(5, None))
-    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+    with diag_error("array slice end out of bounds"):
         f([1, 2, 3], hwl.Range(None, -1))
 
 
@@ -191,11 +191,11 @@ def test_array_index_hw_error():
     src = "module top ports(a: in async [4]bool, x: in async int(0..4)) { comb { a[x]; } }"
     _ = compile_custom(src).resolve("top.top")
 
-    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+    with diag_error("array index out of bounds"):
         src = "module top ports(a: in async [4]bool, x: in async int(0..5)) { comb { a[x]; } }"
         _ = compile_custom(src).resolve("top.top")
 
-    with pytest.raises(hwl.DiagnosticException, match="array index out of bounds"):
+    with diag_error("array index out of bounds"):
         src = "module top ports(a: in async [4]bool, x: in async int(-1..4)) { comb { a[x]; } }"
         _ = compile_custom(src).resolve("top.top")
 
@@ -204,11 +204,11 @@ def test_array_slice_hw_error():
     src = "module top ports(a: in async [4]bool, x: in async int(0..3)) { comb { a[x+..1]; } }"
     _ = compile_custom(src).resolve("top.top")
 
-    with pytest.raises(hwl.DiagnosticException, match="array slice end out of bounds"):
+    with diag_error("array slice end out of bounds"):
         src = "module top ports(a: in async [4]bool, x: in async int(0..5)) { comb { a[x+..1]; } }"
         _ = compile_custom(src).resolve("top.top")
 
-    with pytest.raises(hwl.DiagnosticException, match="array slice start out of bounds"):
+    with diag_error("array slice start out of bounds"):
         src = "module top ports(a: in async [4]bool, x: in async int(-1..3)) { comb { a[x+..1]; } }"
         _ = compile_custom(src).resolve("top.top")
 
@@ -321,7 +321,7 @@ def test_array_spread_non_array(tmp_dir: Path):
     # compile value
     src = "fn f() { return [*false]; }"
     f = compile_custom(src).resolve("top.f")
-    with pytest.raises(hwl.DiagnosticException, match="spread operator requires an array"):
+    with diag_error("type mismatch", has_info="spread operator requires an array"):
         f()
 
     # hardware value
@@ -330,5 +330,5 @@ def test_array_spread_non_array(tmp_dir: Path):
         wire w = [*x];
     }
     """
-    with pytest.raises(hwl.DiagnosticException, match="spread operator requires an array"):
+    with diag_error("type mismatch", has_info="spread operator requires an array"):
         _ = compile_custom(src).resolve("top.top")

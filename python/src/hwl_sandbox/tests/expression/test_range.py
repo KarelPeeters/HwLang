@@ -1,9 +1,6 @@
 from typing import Optional
 
-import hwl
-import pytest
-
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, diag_error
 
 
 def test_range_compile():
@@ -48,7 +45,14 @@ def check_range_compile(a: Optional[int], ty_range: str, b: Optional[int], valid
     if valid:
         f()
     else:
-        with pytest.raises(hwl.DiagnosticException, match="invalid range"):
+        if ty_range == "..":
+            title = "invalid range: open range requires that `start <= end`"
+        elif ty_range == "..=":
+            title = "invalid range: closed range requires that `start <= end_inc + 1`"
+        else:
+            assert False
+
+        with diag_error(title):
             f()
 
 
@@ -67,5 +71,12 @@ def check_range_hardware(ty_a: Optional[str], ty_range: str, ty_b: Optional[str]
     if valid:
         _ = c.resolve("top.foo")
     else:
-        with pytest.raises(hwl.DiagnosticException, match="invalid range"):
+        if ty_range == "..":
+            title = "invalid range: open range requires that `start <= end`"
+        elif ty_range == "..=":
+            title = "invalid range: closed range requires that `start <= end_inc + 1`"
+        else:
+            assert False
+
+        with diag_error(title):
             _ = c.resolve("top.foo")
