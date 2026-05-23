@@ -31,7 +31,7 @@ pub fn assert_format_valid(name: &str, src: &str, settings: &FormatSettings) -> 
     let file = source.add_file(name.to_owned(), src.to_owned());
 
     let Ok(result) = format_file(&diags, &source, settings, file) else {
-        eprintln!("{}", diags_to_string(&source, diags.finish(), true));
+        eprintln!("{}", diags_to_string(&source, &diags.finish(), true));
         panic!("formatting failed");
     };
 

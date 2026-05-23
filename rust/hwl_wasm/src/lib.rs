@@ -122,7 +122,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
 
     // package results
     // TODO lower diagnostics directly to html instead of through ansi first?
-    let compile_diags_ansi = diags_to_string(&source, diags.finish(), true);
+    let compile_diags_ansi = diags_to_string(&source, &diags.finish(), true);
 
     let fallback_error = "/* error */";
     let fallback_empty = "/* empty, no module named `top` */";
@@ -135,7 +135,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
         |lowered| lowered.unwrap_or_else(|| fallback_empty.to_owned()),
     );
 
-    let format_diags_ansi = diags_to_string(&source, diags_format.finish(), true);
+    let format_diags_ansi = diags_to_string(&source, &diags_format.finish(), true);
     let format_debug_str = formatted.map_or_else(String::new, |f| f.unwrap_or_else(|_| fallback_error.to_owned()));
 
     RunAllResult {

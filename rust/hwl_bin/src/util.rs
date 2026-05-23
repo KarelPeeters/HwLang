@@ -133,7 +133,7 @@ pub fn print_diagnostics(source: &SourceDatabase, diags: Diagnostics) -> bool {
     let diags = diags.finish();
     let any_error = !diags.is_empty();
 
-    let result = diags_to_string(source, diags, true);
+    let result = diags_to_string(source, &diags, true);
     eprintln!("{result}");
 
     any_error

@@ -217,9 +217,8 @@ impl DiagnosticStringSettings {
 }
 
 impl Diagnostic {
-    pub fn into_string(self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
-        let Diagnostic { level, content } = self;
-        content.into_string(database, settings, level)
+    pub fn to_string(&self, database: &SourceDatabase, settings: DiagnosticStringSettings) -> String {
+        self.content.to_string(database, settings, self.level)
     }
 
     pub fn sort_key(&self) -> impl Ord + '_ {
@@ -251,9 +250,8 @@ impl DiagnosticContent {
         self.footers.push((kind, message.into()));
     }
 
-    // TODO rename/rework to to_string
-    fn into_string(
-        self,
+    fn to_string(
+        &self,
         database: &SourceDatabase,
         settings: DiagnosticStringSettings,
         level: DiagnosticLevel,
@@ -272,13 +270,13 @@ impl DiagnosticContent {
             by_file
                 .entry(span.file)
                 .or_default()
-                .push((AnnotationKind::Primary, span, label));
+                .push((AnnotationKind::Primary, *span, label.clone()));
         }
         for (span, label) in infos {
             by_file
                 .entry(span.file)
                 .or_default()
-                .push((AnnotationKind::Context, span, label));
+                .push((AnnotationKind::Context, *span, label.clone()));
         }
 
         // Build the group: title, one snippet per file, then footers.
@@ -300,7 +298,7 @@ impl DiagnosticContent {
             group = group.element(snippet);
         }
 
-        for (footer_kind, footer_message) in &footers {
+        for (footer_kind, footer_message) in footers {
             let footer_level = match footer_kind {
                 FooterKind::Info => Level::NOTE,
                 FooterKind::Hint => Level::HELP,
@@ -329,29 +327,29 @@ impl DiagnosticContent {
     }
 }
 
-pub fn diag_to_string(source: &SourceDatabase, diag: Diagnostic, ansi_color: bool) -> String {
+pub fn diag_to_string(source: &SourceDatabase, diag: &Diagnostic, ansi_color: bool) -> String {
     let settings = DiagnosticStringSettings::default(ansi_color);
-    diag.into_string(source, settings)
+    diag.to_string(source, settings)
 }
 
-pub fn diags_to_string(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> String {
+pub fn diags_to_string(source: &SourceDatabase, diags: &[Diagnostic], ansi_color: bool) -> String {
     let settings = DiagnosticStringSettings::default(ansi_color);
 
     let mut s = String::new();
     for diag in diags {
-        s.push_str(&diag.into_string(source, settings));
+        s.push_str(&diag.to_string(source, settings));
         s.push('\n');
         s.push('\n');
     }
     s
 }
 
-pub fn diags_to_string_vec(source: &SourceDatabase, diags: Vec<Diagnostic>, ansi_color: bool) -> Vec<String> {
+pub fn diags_to_string_vec(source: &SourceDatabase, diags: &[Diagnostic], ansi_color: bool) -> Vec<String> {
     let settings = DiagnosticStringSettings::default(ansi_color);
 
     let mut s = vec![];
     for diag in diags {
-        s.push(diag.into_string(source, settings));
+        s.push(diag.to_string(source, settings));
     }
     s
 }

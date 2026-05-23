@@ -24,15 +24,15 @@ pub fn check_diags(py: Python, source: &RustSourceDatabase, diags: &Diagnostics)
                 title: diag.content.title.clone(),
                 messages: diag.content.messages.iter().map(|(_, s)| s.clone()).collect_vec(),
                 infos: diag.content.infos.iter().map(|(_, s)| s.clone()).collect_vec(),
-                full_string: diag_to_string(source, diag.clone(), false),
-                full_string_colored: diag_to_string(source, diag.clone(), true),
+                full_string: diag_to_string(source, diag, false),
+                full_string_colored: diag_to_string(source, diag, true),
             }
         });
 
         let exc = DiagnosticException {
             diagnostics: PyList::new(py, py_diagnostics)?.unbind(),
-            combined_string: diags_to_string(source, diags.clone(), false),
-            combined_string_colored: diags_to_string(source, diags.clone(), true),
+            combined_string: diags_to_string(source, &diags, false),
+            combined_string_colored: diags_to_string(source, &diags, true),
         };
         Err(exc.into_err(py)?)
     }

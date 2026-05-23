@@ -50,7 +50,7 @@ impl RequestHandler<Formatting> for ServerState {
             }
             Err(FormatError::Internal(e)) => {
                 let _: DiagError = e;
-                let diags = diags_to_string(&source, diags.finish(), false);
+                let diags = diags_to_string(&source, &diags.finish(), false);
                 Err(RequestError::Internal(format!("formatter internal error: {diags}")))
             }
         }
