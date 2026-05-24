@@ -80,27 +80,6 @@ pub enum FunctionBody<'a> {
     },
 }
 
-// // TODO move this into the scope module
-// // TODO avoid repeated hashing of this potentially large type
-// // TODO this Eq is too comprehensive, this can cause duplicate module backend generation.
-// //   We only need to check for captures values that could actually be used
-// //   this is really hard to known in advance,
-// //   but maybe we can a an approximation pre-pass that checks all usages that _could_ happen?
-// //   For now users can do this themselves already with a file-level trampoline function
-// //   that returns a new function that can only capture the outer params, not a full scope.
-// //   As another solution, we could de-duplicate modules after IR generation again.
-// // TODO allow capturing hardware values, eg. for functions defined in module bodies or in hardware blocks
-// // TODO replace this with a general FrozenScope we can also use for struct member items?
-// /// The parent scope is kept separate to avoid a hard dependency on all items that are in scope,
-// ///   now capturing functions still allow graph-based item evaluation.
-// #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-// pub struct CapturedScope {
-//     root_file: FileId,
-//
-//     /// Sorted by name, to get some extra determinism and cache key hits.
-//     captured_values: Vec<(String, DiagResult<Spanned<CapturedValue>>)>,
-// }
-
 #[must_use]
 pub struct ParamArgMacher<'a> {
     // constant initial values
