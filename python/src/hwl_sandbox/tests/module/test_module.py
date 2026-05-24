@@ -378,3 +378,41 @@ def test_module_instance_expand_port_tuple(tmp_dir: Path):
             inst.ports.x.value = v
             inst.step(1)
             assert inst.ports.y.value == v
+
+
+def test_module_duplicate_port_name_simple():
+    src = """
+    module top ports(x: in async bool, x: in async bool) {}
+    """
+
+    with diag_error("identifier `x` declared multiple times"):
+        _ = compile_custom(src).resolve("top.top")
+
+
+def test_module_duplicate_port_name_interface():
+    src = """
+    interface foo { d: uint(4), interface input { d: in } interface output { d: out } }
+    module top ports(y: interface async foo.input, y: interface async foo.output) {}
+    """
+
+    with diag_error("identifier `y` declared multiple times"):
+        compile_custom(src).resolve("top.top")
+
+
+def test_module_duplicate_port_name_instantiate():
+    # this caused an internal compiler error at some point,
+    #   the failed module header elaboration did not stop the instantiation from happening
+    src = """
+    interface foo { d: uint(4), interface input { d: in } interface output { d: out } }
+    module top ports() {
+        wire v: interface foo;
+        wire w: interface foo;
+        instance pass ports(x=v, y=w);
+    }
+    module pass ports(y: interface async foo.input, y: interface async foo.output) {
+        comb { y.d = y.d; }
+    }
+    """
+
+    with diag_error("identifier `y` declared multiple times"):
+        compile_custom(src).resolve("top.top")

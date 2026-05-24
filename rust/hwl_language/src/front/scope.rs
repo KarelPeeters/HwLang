@@ -348,6 +348,17 @@ impl<'p> Scope<'p> {
             },
         }
     }
+
+    pub fn any_declare_key_error(&self) -> DiagResult {
+        for (_, v) in &self.content.borrow().values {
+            match v {
+                DeclaredValue::Once { .. } => {}
+                &DeclaredValue::Multiple { spans: _, err } => return Err(err),
+                &DeclaredValue::Error(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ScopeContent {

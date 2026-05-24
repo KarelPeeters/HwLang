@@ -19,9 +19,9 @@ use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleIn
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
+use crate::util::data::NonEmptyVec;
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
-use indexmap::map::Entry;
 use itertools::{Itertools, enumerate};
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -160,6 +160,7 @@ impl CompileRefs<'_, '_> {
         let mut ctx_ports = ModulePortsContext {
             connectors: &mut connectors,
             ports_ir: &mut ports_ir,
+            any_err: Ok(()),
             port_to_single: IndexMap::new(),
             used_ir_names: IndexMap::new(),
             next_single_index: 0,
@@ -174,6 +175,11 @@ impl CompileRefs<'_, '_> {
             &mut |ctx, scope, flow, port_item| ctx_ports.visit_port_item(ctx, scope, flow, port_item),
         )?;
 
+        // stop elaboration if any port or name errors happened
+        ctx_ports.any_err?;
+        scope_ports.any_declare_key_error()?;
+        ctx_ports.report_duplicate_ir_names(self.diags)?;
+
         Ok((connectors, scope_ports, ports_ir))
     }
 }
@@ -182,10 +188,11 @@ pub struct ModulePortsContext<'a> {
     // results
     connectors: &'a mut ArenaConnectors,
     ports_ir: &'a mut IrPorts,
+    any_err: DiagResult,
 
     // intermediate state
     port_to_single: IndexMap<Port, ConnectorSingle>,
-    used_ir_names: IndexMap<String, Span>,
+    used_ir_names: IndexMap<String, Vec<(Span, bool)>>,
     next_single_index: usize,
 }
 
@@ -222,6 +229,7 @@ impl ModulePortsContext<'_> {
 
                         // record
                         let entry = self.push_connector_single(ctx, id, direction, domain, ty);
+                        self.report_any_err(&entry);
                         scope.declare_root(diags, id.spanned_str(source), entry);
                     }
                     ModulePortSingleKind::Interface {
@@ -255,6 +263,7 @@ impl ModulePortsContext<'_> {
 
                         // record
                         let entry = self.push_connector_interface(ctx, id, domain, interface_view);
+                        self.report_any_err(&entry);
                         scope.declare_root(diags, id.spanned_str(source), entry);
                     }
                 }
@@ -311,6 +320,7 @@ impl ModulePortsContext<'_> {
 
                 // record
                 let entry = self.push_connector_single(ctx, id, direction, domain, ty);
+                self.report_any_err(&entry);
                 scope.declare_root(diags, id.spanned_str(source), entry);
             }
             ModulePortInBlockKind::Interface {
@@ -339,6 +349,7 @@ impl ModulePortsContext<'_> {
 
                 // record
                 let entry = self.push_connector_interface(ctx, id, domain, interface_view);
+                self.report_any_err(&entry);
                 scope.declare_root(diags, id.spanned_str(source), entry);
             }
         }
@@ -352,15 +363,15 @@ impl ModulePortsContext<'_> {
         domain: DiagResult<Spanned<PortDomain<Port>>>,
         ty: DiagResult<Spanned<HardwareType>>,
     ) -> DiagResult<ScopedEntry> {
-        let diags = ctx.refs.diags;
         let source = ctx.refs.fixed.source;
         let elab = &ctx.refs.shared.elaboration_arenas;
 
-        claim_ir_name(diags, &mut self.used_ir_names, id.str(source), id.span)?;
+        let id_str = id.str(source);
+        self.report_ir_name(id_str.to_owned(), id.span, false);
 
         let kind_and_entry = result_pair(domain, ty).map(|(domain, ty)| {
             let ir_port = self.ports_ir.push(IrPortInfo {
-                name: id.str(source).to_owned(),
+                name: id_str.to_owned(),
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
@@ -370,7 +381,7 @@ impl ModulePortsContext<'_> {
 
             let port = ctx.ports.push(PortInfo {
                 span: id.span,
-                name: id.str(source).to_owned(),
+                name: id_str.to_owned(),
                 direction,
                 domain,
                 ty: ty.clone(),
@@ -403,7 +414,6 @@ impl ModulePortsContext<'_> {
         domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
         view: DiagResult<Spanned<ElaboratedInterfaceView>>,
     ) -> DiagResult<ScopedEntry> {
-        let diags = ctx.refs.diags;
         let source = ctx.refs.fixed.source;
         let elab = &ctx.refs.shared.elaboration_arenas;
 
@@ -423,7 +433,8 @@ impl ModulePortsContext<'_> {
                 let port_id_str = port.id.str(source);
                 let name = format!("{id_str}.{port_id_str}");
                 let ir_name = format!("{id_str}_{port_id_str}");
-                claim_ir_name(diags, &mut self.used_ir_names, &ir_name, id.span)?;
+
+                self.report_ir_name(ir_name.clone(), id.span, true);
 
                 let direction = port_dirs[port_index].1;
                 let ty = port.ty.as_ref_ok()?;
@@ -485,29 +496,40 @@ impl ModulePortsContext<'_> {
     fn get_port_single(&self, port: Port) -> ConnectorSingle {
         self.port_to_single.get(&port).copied().unwrap()
     }
-}
 
-// TODO think about this, and maybe expand to include more things (eg. signals, child modules, ...)
-fn claim_ir_name(
-    diags: &Diagnostics,
-    used_ir_names: &mut IndexMap<String, Span>,
-    name: &str,
-    span: Span,
-) -> DiagResult {
-    match used_ir_names.entry(name.to_owned()) {
-        Entry::Vacant(entry) => {
-            entry.insert(span);
-            Ok(())
+    fn report_any_err<T>(&mut self, res: &DiagResult<T>) {
+        if let &Err(e) = res {
+            self.any_err = Err(e);
         }
-        Entry::Occupied(entry) => {
-            let diag = DiagnosticError::new(
-                format!("port with name `{name}` conflicts with earlier port with the same name"),
-                span,
-                "new port defined here",
-            )
-            .add_info(*entry.get(), "previous port defined here")
-            .report(diags);
-            Err(diag)
+    }
+
+    fn report_ir_name(&mut self, name: String, span: Span, intf: bool) {
+        self.used_ir_names.entry(name).or_default().push((span, intf));
+    }
+
+    fn report_duplicate_ir_names(&self, diags: &Diagnostics) -> DiagResult {
+        let mut any_err = Ok(());
+
+        for (name, sites) in &self.used_ir_names {
+            if sites.len() > 1 {
+                let title = format!("port name conflict: `{name}`");
+
+                let messages = sites
+                    .iter()
+                    .map(|&(span, intf)| {
+                        let msg = match intf {
+                            false => "declared here",
+                            true => "declared as part of interface here",
+                        };
+                        (span, msg.to_owned())
+                    })
+                    .collect_vec();
+                let messages = NonEmptyVec::try_from(messages).unwrap();
+
+                any_err = Err(DiagnosticError::new_multiple(title, messages).report(diags));
+            }
         }
+
+        any_err
     }
 }
