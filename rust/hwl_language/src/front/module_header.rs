@@ -127,6 +127,7 @@ impl CompileRefs<'_, '_> {
                 .collect_vec()
         });
 
+        // collect results
         let header = ElaboratedModuleHeader {
             elab_module,
             ast_ref,
@@ -151,8 +152,9 @@ impl CompileRefs<'_, '_> {
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
     ) -> DiagResult<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>)> {
-        let mut scope_ports_root = scope_params.new_child(ports.span.join(Span::empty_at(module_def_span.end())));
+        let mut scope_ports = scope_params.new_child(ports.span.join(Span::empty_at(module_def_span.end())));
 
+        // build context
         let mut connectors: ArenaConnectors = Arena::new();
         let mut ports_ir = Arena::new();
         let mut ctx_ports = ModulePortsContext {
@@ -163,15 +165,16 @@ impl CompileRefs<'_, '_> {
             next_single_index: 0,
         };
 
+        // visit port extra list
         ctx.elaborate_extra_list(
-            &mut scope_ports_root,
+            &mut scope_ports,
             flow,
             &ports.inner,
             true,
             &mut |ctx, scope, flow, port_item| ctx_ports.visit_port_item(ctx, scope, flow, port_item),
         )?;
 
-        Ok((connectors, scope_ports_root, ports_ir))
+        Ok((connectors, scope_ports, ports_ir))
     }
 }
 
@@ -204,6 +207,7 @@ impl ModulePortsContext<'_> {
                 let &ModulePortSingle { span: _, id, ref kind } = port_item;
                 match *kind {
                     ModulePortSingleKind::Port { direction, ref kind } => {
+                        // eval domain and type
                         let (domain, ty) = match *kind {
                             PortSingleKindInner::Clock { span_clock } => (
                                 Ok(Spanned::new(span_clock, PortDomain::Clock)),
@@ -216,6 +220,7 @@ impl ModulePortsContext<'_> {
                             ),
                         };
 
+                        // record
                         let entry = self.push_connector_single(ctx, id, direction, domain, ty);
                         scope.declare_root(diags, id.spanned_str(source), entry);
                     }
@@ -224,7 +229,10 @@ impl ModulePortsContext<'_> {
                         domain,
                         interface,
                     } => {
+                        // eval domain
                         let domain = ctx.eval_port_domain(scope.as_scope(), flow, domain);
+
+                        // eval interface view
                         let interface_view = ctx
                             .eval_expression_as_compile(
                                 scope.as_scope(),
@@ -245,6 +253,7 @@ impl ModulePortsContext<'_> {
                                 }
                             });
 
+                        // record
                         let entry = self.push_connector_interface(ctx, id, domain, interface_view);
                         scope.declare_root(diags, id.spanned_str(source), entry);
                     }
@@ -257,8 +266,10 @@ impl ModulePortsContext<'_> {
                     ref ports,
                 } = port_item;
 
+                // eval domain (shared between all inner ports)
                 let domain = ctx.eval_port_domain(scope.as_scope(), flow, domain);
 
+                // visit inner ports
                 ctx.elaborate_extra_list_block(
                     scope,
                     flow,
@@ -292,9 +303,13 @@ impl ModulePortsContext<'_> {
 
         match *kind {
             ModulePortInBlockKind::Port { direction, ty } => {
+                // map domain
                 let domain = domain.map(|d| d.map_inner(PortDomain::Kind));
+
+                // eval type
                 let ty = ctx.eval_expression_as_ty_hardware(scope.as_scope(), flow, ty, "port");
 
+                // record
                 let entry = self.push_connector_single(ctx, id, direction, domain, ty);
                 scope.declare_root(diags, id.spanned_str(source), entry);
             }
@@ -302,6 +317,7 @@ impl ModulePortsContext<'_> {
                 span_keyword: _,
                 interface,
             } => {
+                // eval interface view
                 let interface_view = ctx
                     .eval_expression_as_compile(
                         scope.as_scope(),
@@ -321,6 +337,7 @@ impl ModulePortsContext<'_> {
                         )),
                     });
 
+                // record
                 let entry = self.push_connector_interface(ctx, id, domain, interface_view);
                 scope.declare_root(diags, id.spanned_str(source), entry);
             }
