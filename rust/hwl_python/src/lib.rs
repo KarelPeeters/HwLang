@@ -882,11 +882,16 @@ impl Module {
                     .arg("-cc")
                     .arg("-CFLAGS")
                     .arg("-fPIC")
-                    // TODO improve backend so these are no longer needed?
-                    .arg("-Wno-widthexpand")
-                    .arg("-Wno-widthtrunc")
-                    .arg("-Wno-unsigned")
-                    .arg("+1364-2001ext+v")
+                    // enforce Verilog 2005 to check that we don't accidentally use newer language features
+                    .arg("--language")
+                    .arg("1364-2005")
+                    // the backend sometimes intentionally uses these
+                    .arg("-Wno-WIDTHTRUNC")
+                    .arg("-Wno-WIDTHEXPAND")
+                    .arg("-Wno-UNSIGNED")
+                    // error on some sketchy constructions
+                    .arg("-Werror-IMPLICIT")
+                    .arg("-Werror-PINMISSING")
                     .arg("--trace")
                     .arg("--top-module")
                     .arg(verilog_name)
