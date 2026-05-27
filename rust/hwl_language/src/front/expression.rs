@@ -962,7 +962,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     )
                     .add_info(
                         operand.span,
-                        format!("operand is has type `{}`", operand.inner.ty().value_string(elab)),
+                        format!("operand has type `{}`", operand.inner.ty().value_string(elab)),
                     )
                     .report(diags);
                     return Err(diag);
