@@ -15,8 +15,11 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdeaUltimate("2026.1.1")
+        intellijIdea("2026.1.1")
+        testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

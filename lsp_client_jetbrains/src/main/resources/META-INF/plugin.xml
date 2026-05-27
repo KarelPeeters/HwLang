@@ -10,7 +10,7 @@
     </description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.modules.ultimate</depends>
+    <depends>com.intellij.modules.lang</depends>
     <depends>com.intellij.modules.lsp</depends>
 
     <extensions defaultExtensionNs="com.intellij">
@@ -20,6 +20,15 @@
                 fieldName="INSTANCE"
                 language="HWLang"
                 extensions="kh"/>
+        <lang.commenter
+                language="HWLang"
+                implementationClass="com.karelpeeters.hwlang.jetbrains.HwlangCommenter"/>
+        <lang.parserDefinition
+                language="HWLang"
+                implementationClass="com.karelpeeters.hwlang.jetbrains.HwlangParserDefinition"/>
+        <lang.syntaxHighlighterFactory
+                language="HWLang"
+                implementationClass="com.karelpeeters.hwlang.jetbrains.HwlangSyntaxHighlighterFactory"/>
         <projectConfigurable
                 id="hwlang.lsp"
                 displayName="HWLang LSP"
@@ -33,4 +42,3 @@
                 implementation="com.karelpeeters.hwlang.jetbrains.HwlangLspServerSupportProvider"/>
     </extensions>
 </idea-plugin>
-
