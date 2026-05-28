@@ -124,9 +124,6 @@ pub enum TypeContainsReason {
     IfCondition(Span),
     MatchPattern(Span),
     WhileCondition(Span),
-    ArrayIndex {
-        span_index: Span,
-    },
     ArrayLen {
         span_len: Span,
     },
@@ -193,9 +190,6 @@ impl TypeContainsReason {
             }
             TypeContainsReason::WhileCondition(span) => {
                 diag.add_info(span, format!("while condition requires type `{target_ty_str}`"))
-            }
-            TypeContainsReason::ArrayIndex { span_index } => {
-                diag.add_info(span_index, format!("array index requires type `{target_ty_str}`"))
             }
             TypeContainsReason::ArrayLen { span_len } => {
                 diag.add_info(span_len, format!("array length requires type `{target_ty_str}`"))
