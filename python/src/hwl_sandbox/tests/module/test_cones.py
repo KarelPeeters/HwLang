@@ -613,3 +613,27 @@ def test_cones_clocked_dyn_index():
     }
     """
     _ = compile_custom(src).resolve_module("top.top")
+
+
+def test_cones_instance_output_port():
+    src = """
+    module top_correct ports() {
+        wire w: async [2]bool;
+        instance child ports(y=w[0]);
+        instance child ports(y=w[1]); 
+    }
+    
+    module top_overlap ports() {
+        wire w: async [2]bool;
+        instance child ports(y=w[0]);
+        instance child ports(y=w[0]);
+        comb { w[1] = false; } 
+    }
+
+    
+    module child ports(y: out async bool) { comb { y = false; }}
+    """
+
+    _ = compile_custom(src).resolve_module("top.top_correct")
+    with diag_error("wire `w` has multiple overlapping drivers"):
+        _ = compile_custom(src).resolve_module("top.top_overlap")

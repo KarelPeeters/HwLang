@@ -1,11 +1,12 @@
+use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
-use crate::front::expression::{LrValue, NamedOrValue};
+use crate::front::expression::LrValue;
 use crate::front::extra::ExtraScope;
-use crate::front::flow::{FlowCompile, FlowHardwareRoot, FlowRoot, HardwareProcessKind, RegisterInfo};
+use crate::front::flow::{Flow, FlowCompile, FlowHardwareRoot, FlowRoot, HardwareProcessKind, RegisterInfo};
 use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::ElaboratedModule;
 use crate::front::module_header::{
@@ -14,8 +15,10 @@ use crate::front::module_header::{
 };
 use crate::front::scope::{NamedValue, Scope, ScopeParent, ScopedEntry};
 use crate::front::signal::{
-    Interface, Polarized, PortOrWire, Signal, WireInfo, WireInfoInInterface, WireInfoSingle, WireInterfaceInfo,
+    Interface, Polarized, PortOrWire, Signal, SignalOrVariable, WireInfo, WireInfoInInterface, WireInfoSingle,
+    WireInterfaceInfo,
 };
+use crate::front::steps::TargetStep;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, MaybeUndefined, SimpleCompileValue, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
@@ -35,7 +38,6 @@ use crate::syntax::parsed::AstRefModuleInternal;
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, VecExt};
-use crate::util::store::ArcOrRef;
 use crate::util::{ResultExt, result_pair};
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
@@ -883,18 +885,19 @@ impl BodyContext {
         let source = refs.fixed.source;
         let elab = &refs.shared.elaboration_arenas;
 
-        let connection_span = connection.span();
-        let &PortConnection {
-            id: connection_id,
-            expr: value_expr,
-        } = &connection;
-
-        let value = value_expr.expr();
-
+        // connector, declared in the module being instantiated
         let ConnectorInfo {
             id: connector_id,
             kind: connector_kind,
         } = &connectors[connector];
+
+        // connection, declared in the instantiation statement
+        let connection_span = connection.span();
+        let &PortConnection {
+            id: connection_id,
+            expr,
+        } = &connection;
+        let expr = expr.expr();
 
         // double-check id match
         let connector_id_str = connector_id.str(source);
@@ -943,13 +946,13 @@ impl BodyContext {
         };
 
         // always try to evaluate as signal for domain replacing purposes
-        let signal = match &refs.get_expr(value) {
-            ExpressionKind::Dummy => ConnectionSignal::Dummy(value.span),
+        let signal = match &refs.get_expr(expr) {
+            ExpressionKind::Dummy => ConnectionSignal::Dummy(expr.span),
             _ => {
                 let mut flow_domain = flow_parent.new_child_isolated();
-                match ctx.try_eval_expression_as_domain_signal(scope, &mut flow_domain, value, |_| ()) {
+                match ctx.try_eval_expression_as_domain_signal(scope, &mut flow_domain, expr, |_| ()) {
                     Ok(signal) => ConnectionSignal::Signal(signal.inner),
-                    Err(Either::Left(())) => ConnectionSignal::Expression(value.span),
+                    Err(Either::Left(())) => ConnectionSignal::Expression(expr.span),
                     Err(Either::Right(e)) => return Err(e),
                 }
             }
@@ -975,10 +978,10 @@ impl BodyContext {
                 let ir_connection = match port_dir.inner {
                     PortDirection::Input => {
                         // better dummy port error message
-                        if let ExpressionKind::Dummy = refs.get_expr(value) {
+                        if let ExpressionKind::Dummy = refs.get_expr(expr) {
                             let diag = DiagnosticError::new(
                                 "dummy connections are only allowed for output ports",
-                                value.span,
+                                expr.span,
                                 "dummy connection used here",
                             )
                             .add_info(port_dir.span, "port declared as input here")
@@ -990,9 +993,9 @@ impl BodyContext {
                         let flow_kind = HardwareProcessKind::InstancePortConnection {
                             span_connection: connection_span,
                         };
-                        let mut flow = FlowHardwareRoot::new(flow_parent, value.span, flow_kind, &mut self.ir_signals);
+                        let mut flow = FlowHardwareRoot::new(flow_parent, expr.span, flow_kind, &mut self.ir_signals);
                         let connection_value =
-                            ctx.eval_expression(scope, &mut flow.as_flow(), &port_ty.inner.as_type(), value)?;
+                            ctx.eval_expression(scope, &mut flow.as_flow(), &port_ty.inner.as_type(), expr)?;
                         let (ir_vars, mut ir_block) = flow.finish();
 
                         // check type
@@ -1031,7 +1034,7 @@ impl BodyContext {
                                 Ok(v.as_hardware_value_unchecked(
                                     refs,
                                     &mut ctx.large,
-                                    value.span,
+                                    expr.span,
                                     port_ty.inner.clone(),
                                 )?
                                 .expr)
@@ -1071,84 +1074,112 @@ impl BodyContext {
                         IrPortConnection::Input(connection_signal_ir)
                     }
                     PortDirection::Output => {
-                        // eval expr as dummy, wire or port
-                        let build_error = || {
-                            diags.report_error_simple(
-                                "output port must be connected to wire or port",
-                                value.span,
-                                "other value",
-                            )
-                        };
-
-                        match refs.get_expr(value) {
+                        match refs.get_expr(expr) {
                             ExpressionKind::Dummy => IrPortConnection::Output(None),
-                            &ExpressionKind::Id(id) => {
-                                let id = ctx.eval_general_id(scope, flow_parent, id)?;
-                                let id = id.as_ref().map_inner(ArcOrRef::as_ref);
-                                let named = ctx.eval_scoped_as_named(scope, id)?;
+                            _ => {
+                                let mut flow = flow_parent.new_child_compile(expr.span, "output port target");
+                                let AssignmentTarget {
+                                    base: target_base,
+                                    steps: target_steps,
+                                } = ctx.eval_expression_as_assign_target(scope, &mut flow, expr)?;
 
-                                let slot_signal_ty;
-                                let (signal_ir, signal_domain, signal_ty) = match named {
-                                    NamedOrValue::Named(NamedValue::Signal(signal)) => match signal {
-                                        Signal::Port(port) => {
-                                            let port_info = &ctx.ports[port];
-                                            (
-                                                IrSignal::Port(port_info.ir),
-                                                port_info.domain.map_inner(ValueDomain::from_port_domain),
-                                                port_info.ty.as_ref(),
-                                            )
+                                // double-check that the steps are compile-time, dynamic steps don't make sense for output ports
+                                for step in &target_steps.steps {
+                                    match &step.inner {
+                                        TargetStep::Compile(_) => {}
+                                        TargetStep::Hardware(_) => {
+                                            // cannot happen, the expr was evaluated in a compile-time context
+                                            let msg = "non-compile step in output port connection";
+                                            return Err(diags.report_error_internal(step.span, msg));
                                         }
-                                        Signal::Wire(wire) => {
-                                            let wire_info = &mut ctx.wires[wire];
+                                    }
+                                }
 
-                                            let wire_domain =
-                                                wire_info.suggest_domain(&mut ctx.wire_interfaces, connector_domain);
-                                            let wire_ty = wire_info.suggest_ty(
+                                // double check that the base is a signal
+                                let target_base_span = target_base.span;
+                                let target_base = match target_base.inner {
+                                    SignalOrVariable::Signal(base) => base,
+                                    SignalOrVariable::Variable(_) => {
+                                        let msg = "variable in output port connection";
+                                        return Err(diags.report_error_internal(expr.span, msg));
+                                    }
+                                };
+
+                                // figure out base info
+                                let (base_domain, base_ty, base_ir) = match target_base {
+                                    Signal::Port(base) => {
+                                        // port has fixed info, just get it
+                                        let port_info = &ctx.ports[base];
+                                        (
+                                            port_info.domain.map_inner(ValueDomain::from_port_domain),
+                                            port_info.ty.clone(),
+                                            IrSignal::Port(port_info.ir),
+                                        )
+                                    }
+                                    Signal::Wire(base) => {
+                                        // wire info can still be suggested
+                                        let wire_info = &mut ctx.wires[base];
+
+                                        let wire_domain =
+                                            wire_info.suggest_domain(&mut ctx.wire_interfaces, connector_domain);
+
+                                        let wire_typed = if target_steps.is_empty() {
+                                            wire_info.suggest_ty(
                                                 refs,
                                                 &ctx.wire_interfaces,
                                                 &mut self.ir_signals.wires,
                                                 port_ty.as_ref(),
-                                            );
+                                            )
+                                        } else {
+                                            wire_info.expect_typed(refs, &ctx.wire_interfaces, target_base_span)
+                                        };
 
-                                            let wire_domain = wire_domain?;
-                                            let wire_ty = wire_ty?;
+                                        let wire_domain = wire_domain?;
+                                        let wire_typed = wire_typed?;
 
-                                            slot_signal_ty = wire_ty.ty.cloned();
-                                            (IrSignal::Wire(wire_ty.ir), wire_domain, slot_signal_ty.as_ref())
-                                        }
-                                    },
-                                    _ => return Err(build_error()),
+                                        (wire_domain, wire_typed.ty.cloned(), IrSignal::Wire(wire_typed.ir))
+                                    }
                                 };
 
                                 // check type
-                                let mut any_err = Ok(());
+                                let no_vars = IrVariables::new();
+                                let (target_ty, steps_ir) = target_steps.apply_to_hardware_type(
+                                    refs,
+                                    &mut ctx.large,
+                                    &self.ir_signals,
+                                    &no_vars,
+                                    Spanned::new(target_base_span, &base_ty.inner),
+                                )?;
+
                                 let reason = TypeContainsReason::InstancePortOutput {
-                                    span_connection_signal_id: value.span,
-                                    span_signal_ty: signal_ty.span,
+                                    span_target: expr.span,
+                                    span_target_ty: base_ty.span,
+                                    span_port_ty: port_ty.span,
                                 };
-                                any_err = any_err.and(check_type_contains_type(
+                                let err_ty = check_type_contains_type(
                                     diags,
                                     elab,
                                     reason,
-                                    &signal_ty.inner.as_type(),
-                                    Spanned {
-                                        span: connection_id.span,
-                                        inner: &port_ty.inner.as_type(),
-                                    },
-                                ));
+                                    &target_ty.as_type(),
+                                    Spanned::new(connection_id.span, &port_ty.inner.as_type()),
+                                );
 
                                 // check domain
-                                any_err = any_err.and(ctx.check_valid_domain_crossing(
+                                let err_domain = ctx.check_valid_domain_crossing(
                                     connection_span,
-                                    signal_domain,
+                                    base_domain,
                                     connector_domain,
                                     "output port connection",
-                                ));
-                                any_err?;
+                                );
 
-                                // if necessary, expand type through intermediate signal
-                                let connection_signal_ir = if signal_ty.inner == &port_ty.inner {
-                                    signal_ir
+                                err_ty?;
+                                err_domain?;
+
+                                // actually create the IR connection
+                                //   if there are any steps or if we need type expansion,
+                                //   create an intermediate combinatorial process
+                                let connection_signal_ir = if steps_ir.is_empty() && base_ty.inner == port_ty.inner {
+                                    base_ir
                                 } else {
                                     // create intermediate wire, with the port type
                                     let wire_raw = self.ir_signals.wires.push(IrWireInfo {
@@ -1168,12 +1199,15 @@ impl BodyContext {
                                         refs,
                                         &mut ctx.large,
                                         connection_span,
-                                        signal_ty.inner,
+                                        &target_ty,
                                     )?;
 
                                     // create combinatorial process that assigns the expanded value to the real target signal
-                                    let stmt =
-                                        IrStatement::Assign(IrAssignmentTarget::simple(signal_ir), value_expanded);
+                                    let target_ir = IrAssignmentTarget {
+                                        base: base_ir.into(),
+                                        steps: steps_ir,
+                                    };
+                                    let stmt = IrStatement::Assign(target_ir, value_expanded);
                                     let process = IrCombinatorialProcess {
                                         variables: IrVariables::new(),
                                         block: IrBlock {
@@ -1189,7 +1223,6 @@ impl BodyContext {
 
                                 IrPortConnection::Output(Some(connection_signal_ir))
                             }
-                            _ => return Err(build_error()),
                         }
                     }
                 };
@@ -1216,13 +1249,13 @@ impl BodyContext {
 
                 // eval expr
                 let mut flow_connection = flow_parent.new_child_isolated();
-                let value_eval = ctx.eval_expression_as_lr(scope, &mut flow_connection, &Type::Any, value)?;
+                let value_eval = ctx.eval_expression_as_lr(scope, &mut flow_connection, &Type::Any, expr)?;
 
                 // expect interface
                 let value_eval = match value_eval {
                     LrValue::LeftInterface(intf) => intf,
                     LrValue::LeftTarget(_) | LrValue::Right(_) => {
-                        let e = DiagnosticError::new("expected interface value", value.span, "got non-interface value")
+                        let e = DiagnosticError::new("expected interface value", expr.span, "got non-interface value")
                             .add_info(connector_id.span, "port defined as interface here")
                             .report(diags);
                         return Err(e);
@@ -1252,7 +1285,7 @@ impl BodyContext {
 
                 // check interface match (including generics)
                 if value_interface.inner != connector_view.inner.interface {
-                    let diag = DiagnosticError::new("interface mismatch", value.span, "got mismatching interface")
+                    let diag = DiagnosticError::new("interface mismatch", expr.span, "got mismatching interface")
                         .add_info(
                             connector_view.span,
                             format!(
@@ -1306,7 +1339,7 @@ impl BodyContext {
                                 "direction mismatch for interface port `{}`",
                                 interface_info.signals[port_index].id.str(source)
                             ),
-                            value.span,
+                            expr.span,
                             format!("got direction `{}`", value_dir.inner.diagnostic_string()),
                         )
                         .add_info(

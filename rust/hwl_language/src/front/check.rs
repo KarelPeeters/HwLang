@@ -110,8 +110,9 @@ pub enum TypeContainsReason {
         span_port_ty: Span,
     },
     InstancePortOutput {
-        span_connection_signal_id: Span,
-        span_signal_ty: Span,
+        span_target: Span,
+        span_target_ty: Span,
+        span_port_ty: Span,
     },
     InterfacePortView(Span),
     InterfaceWire(Span),
@@ -165,16 +166,15 @@ impl TypeContainsReason {
                     span_connection_port_id,
                     format!("input port has type `{target_ty_str}`"),
                 )
-                .add_info(span_port_ty, "port type set here"),
+                .add_info(span_port_ty, "input port type set here"),
             TypeContainsReason::InstancePortOutput {
-                span_connection_signal_id,
-                span_signal_ty,
+                span_target,
+                span_target_ty,
+                span_port_ty,
             } => diag
-                .add_info(
-                    span_connection_signal_id,
-                    format!("target signal has type `{target_ty_str}`"),
-                )
-                .add_info(span_signal_ty, "target signal type set here"),
+                .add_info(span_target, format!("target has type `{target_ty_str}`"))
+                .add_info(span_target_ty, "target type set here")
+                .add_info(span_port_ty, "output port type set here"),
             TypeContainsReason::Return {
                 span_keyword,
                 span_return_ty,

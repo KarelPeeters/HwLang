@@ -416,3 +416,85 @@ def test_module_duplicate_port_name_instantiate():
 
     with diag_error("identifier `y` declared multiple times"):
         compile_custom(src).resolve("top.top")
+
+
+def test_module_instance_output_wrong_type(tmp_dir: Path):
+    src = """
+    module top ports(y: out async bool) {
+        instance child ports(y=y);
+    }
+    module child ports(y: out async uint(4)) {
+        comb { y = 0; }
+    }
+    """
+
+    with diag_error("type mismatch"):
+        compile_custom(src).resolve("top.top")
+
+
+def test_module_instance_output_step(tmp_dir: Path):
+    src = """
+    module top ports(x: in async [2]bool, y: out async [2]bool) {
+        instance child ports(x=x[0], y=y[0]);
+        instance child ports(x=x[1], y=y[1]);
+    }
+    module child ports(x: in async bool, y: out async bool) {
+        comb { y = x; }
+    }
+    """
+
+    top = compile_custom(src).resolve_module("top.top")
+    inst = top.as_verilated(tmp_dir).instance()
+
+    for a in [False, True]:
+        for b in [False, True]:
+            pair = [a, b]
+            inst.ports.x.value = pair
+            inst.step(1)
+            assert inst.ports.y.value == pair
+
+
+def test_module_instance_output_deref(tmp_dir: Path):
+    src = """
+    module top ports(x: in async bool, y: out async bool) {
+        const r = ref(y);
+        instance child ports(x=x, y=deref(r));
+    }
+    module child ports(x: in async bool, y: out async bool) {
+        comb { y = x; }
+    }
+    """
+    top = compile_custom(src).resolve_module("top.top")
+    inst = top.as_verilated(tmp_dir).instance()
+
+    for v in [False, True]:
+        inst.ports.x.value = v
+        inst.step(1)
+        assert inst.ports.y.value == v
+
+
+def test_module_instance_output_step_dyn(tmp_dir: Path):
+    src = """
+    module top ports(x: in async [2]bool, y: out async [2]bool, i: in async int(0..2)) {
+        instance child ports(x=x[0], y=y[i]);
+    }
+    module child ports(x: in async bool, y: out async bool) {
+        comb { y = x; }
+    }
+    """
+    with diag_error("signal evaluation is only allowed in a hardware context"):
+        _ = compile_custom(src).resolve_module("top.top")
+
+
+def test_module_instance_output_cursed_var(tmp_dir: Path):
+    # this does not really test much, just that variables are certainly not accepted
+    src = """
+    module top ports(x: in async bool) {
+        instance child ports(x=x, y=deref({ var v; ref(v) }));
+    }
+    module child ports(x: in async bool, y: out async bool) {
+        comb { y = x; }
+    }
+    """
+    with diag_error("cannot access variable after its scope has ended"):
+        _ = compile_custom(src).resolve_module("top.top")
