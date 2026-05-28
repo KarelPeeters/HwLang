@@ -937,7 +937,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             if !flow.var_still_exists(var) {
                                 let err = DiagnosticError::new(
                                     "cannot access variable after its scope has ended",
-                                    expr.span,
+                                    span_keyword,
                                     "trying to deference here",
                                 )
                                 .add_info(rf.span_decl, "variable declared here")
@@ -957,7 +957,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 } else {
                     let diag = DiagnosticError::new(
                         "cannot dereference non-reference value",
-                        expr.span,
+                        span_keyword,
                         "trying to dereference non-reference here",
                     )
                     .add_info(
