@@ -127,7 +127,7 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
         //   * global context (eg. containing callbacks for print and asserts)
         //   * for clocked blocks: pointers to prev and next state, all including no-alias attributes
         //   * for comb blocks: curr state
-        let fn_type = llvm_context.i8_type().fn_type(&[llvm_context.i8_type().into()], false);
+        let fn_type = llvm_context.void_type().fn_type(&[], false);
         let function = llvm_module.add_function(llvm_function_name, fn_type, None);
         let entry_block = llvm_context.append_basic_block(function, "entry");
         llvm_builder.position_at_end(entry_block);
