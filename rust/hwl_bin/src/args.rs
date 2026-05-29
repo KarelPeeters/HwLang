@@ -41,6 +41,8 @@ pub struct ArgsBuild {
     pub output_verilog: Option<PathBuf>,
     #[arg(long)]
     pub output_cpp: Option<PathBuf>,
+    #[arg(long)]
+    pub output_sim: Option<PathBuf>,
 
     // performance
     // TODO maybe make this a common option?

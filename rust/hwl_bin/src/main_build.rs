@@ -17,6 +17,7 @@ use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
+use hwl_simulator::lower::lower_simulator;
 use hwl_util::io::IoErrorExt;
 use itertools::Itertools;
 use std::process::ExitCode;
@@ -32,6 +33,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         top_only,
         output_verilog,
         output_cpp,
+        output_sim,
         debug_output_ir,
         thread_count,
         debug_profile,
@@ -212,6 +214,13 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
                 }
             }
             time_lower_cpp = Some(start_lower_cpp.elapsed());
+        }
+
+        // output simulator
+        // TODO properly implement this
+        if output_sim.is_some() {
+            assert_eq!(top_modules.len(), 1);
+            lower_simulator(&ir_db.modules, top_modules[0]).unwrap();
         }
     }
 

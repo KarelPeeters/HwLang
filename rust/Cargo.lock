@@ -510,6 +510,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "hwl_language",
+ "hwl_simulator",
  "hwl_util",
  "indexmap",
  "itertools 0.13.0",

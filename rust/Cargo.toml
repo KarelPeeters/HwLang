@@ -20,6 +20,7 @@ rust-version = "1.95.0"
 [workspace.dependencies]
 # internal dependencies
 hwl_language = { path = "hwl_language" }
+hwl_simulator = { path = "hwl_simulator" }
 hwl_std = { path = "hwl_std" }
 hwl_util = { path = "hwl_util" }
 
