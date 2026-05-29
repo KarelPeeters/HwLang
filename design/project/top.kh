@@ -1,14 +1,15 @@
 module top ports(
-//    x: in async bool,
-//    y: out async bool,
+    x: in async bool,
+    y: out async bool,
 ) {
+    wire w;
+    wire d: bool = true;
+
     comb {
-//        y = x;
-        var v: bool = undef;
-        assert(!v);
+        y = x;
     }
 
     comb {
-
+        w = false;
     }
 }
