@@ -1,47 +1,69 @@
+use hwl_language::front::signal::{Port, Wire};
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrModule,
-    IrModuleChild, IrModuleInfo, IrModules, IrSignalOrVariable, IrStatement, IrType, IrVariable, IrVariables,
+    IrModuleChild, IrModuleInfo, IrModules, IrPort, IrSignalOrVariable, IrSignals, IrStatement, IrType, IrVariable,
+    IrVariables, IrWire,
 };
 use hwl_language::mid::steps::IrTargetSteps;
-use hwl_language::try_inner;
+use hwl_language::syntax::pos::Span;
+use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
-use inkwell::OptimizationLevel;
+use inkwell::AddressSpace;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{ArrayType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use itertools::enumerate;
 use std::num::NonZeroU32;
 
-// TODO dedicated error enum
-// TODO should be propagate build results or just unwrap them? these are always implementation errors, not user errors
-pub fn lower_simulator(modules: &IrModules, top: IrModule) -> BuildResult<()> {
+// TODO basics:
+//  * python wrapper for input/output
+//  * process sensitivity lists
+//  * process scheduling
+//
+// TODO optimize:
+//  * parallelize module and maybe even process compilation
+//  * enable process optimization
+//  * fuse sequential processes?
+pub fn lower_simulator(modules: &IrModules, top: IrModule) -> LowerResult {
     // TODO tree walking
     // TODO parallelize compilation
     // TODO optimize
-    lower_module(&modules[top])?;
+    lower_module(&modules[top], 0)?;
 
     Ok(())
 }
 
-fn lower_module(info: &IrModuleInfo) -> BuildResult<()> {
-    println!("{:#?}", info);
-
+fn lower_module(info: &IrModuleInfo, module_index: usize) -> LowerResult {
     let IrModuleInfo {
         signals,
-        large,
+        large: _,
         children,
         debug_info_def_file: _,
-        debug_info_id: _,
+        debug_info_id,
         debug_info_generic_args: _,
     } = info;
 
-    for child in children {
+    let llvm_ctx = Context::create();
+    let llvm_unit = llvm_ctx.create_module("");
+
+    let module_types = create_signal_types(&llvm_ctx, debug_info_id.span, signals)?;
+
+    for (child_index, child) in enumerate(children) {
         match &child.inner {
             IrModuleChild::ClockedProcess(_) => todo!(),
             IrModuleChild::CombinatorialProcess(proc) => {
-                lower_process_comb(info, proc)?;
+                lower_process_comb(
+                    &llvm_ctx,
+                    &llvm_unit,
+                    &module_types,
+                    info,
+                    proc,
+                    module_index,
+                    child_index,
+                )?;
             }
             IrModuleChild::ModuleInternalInstance(_) => todo!(),
             IrModuleChild::ModuleExternalInstance(_) => todo!(),
@@ -51,36 +73,93 @@ fn lower_module(info: &IrModuleInfo) -> BuildResult<()> {
     Ok(())
 }
 
-fn lower_process_comb(info: &IrModuleInfo, proc: &IrCombinatorialProcess) -> BuildResult<()> {
-    let IrCombinatorialProcess { variables, block } = proc;
+#[derive(Debug)]
+struct ModuleSignalTypes<'ctx> {
+    // array of (untyped) pointers, one element per port
+    ports_array_ty: ArrayType<'ctx>,
+    port_indices: IndexMap<IrPort, usize>,
 
-    // TODO better names (all "NAME" instances)
-    // TODO measure context creation cost, does it make sense to share it between multiple processes?
-    let ctx = Context::create();
+    // struct, one field per wire
+    wires_struct_ty: StructType<'ctx>,
+    wire_indices: IndexMap<IrWire, usize>,
+}
 
-    let func_name = "process_comb_func";
-    let builder = ProcessBuilder::new(info, variables, &ctx, "NAME", func_name)?;
+fn create_signal_types<'ctx>(
+    ctx: &'ctx Context,
+    span: Span,
+    signals: &IrSignals,
+) -> Result<ModuleSignalTypes<'ctx>, LowerError> {
+    let IrSignals { ports, wires, ports_named: _ } = signals;
 
-    // TODO check event scheduling reason here? or will we keep that higher-level?
+    // map ports
+    let mut port_indices = IndexMap::new();
+    for (port, _) in ports {
+        port_indices.insert_first(port, port_indices.len());
+    }
+    let port_count = port_indices.len();
+    let port_array_ty = ctx
+        .ptr_type(AddressSpace::default())
+        .array_type(u32::try_from(port_count).map_err(|_| LowerError::IntTooLarge(span, port_count.into()))?);
+
+    // map wires
+    let mut wire_indices = IndexMap::new();
+    let mut wire_types = vec![];
+    for (wire, wire_info) in wires {
+        wire_indices.insert_first(wire, wire_indices.len());
+
+        let ty = map_ty(ctx, &wire_info.ty);
+        wire_types.push(ty);
+    }
+    let wires_struct_ty = ctx.struct_type(&wire_types, false);
+
+    Ok(ModuleSignalTypes {
+        ports_array_ty: port_array_ty,
+        port_indices,
+        wires_struct_ty,
+        wire_indices: Default::default(),
+    })
+}
+
+fn lower_process_comb<'ctx>(
+    llvm_ctx: &'ctx Context,
+    llvm_unit: &Module<'ctx>,
+    llvm_module_types: &ModuleSignalTypes<'ctx>,
+    ir_module: &IrModuleInfo,
+    ir_proc: &IrCombinatorialProcess,
+    module_index: usize,
+    child_index: usize,
+) -> BuildResult<()> {
+    let IrCombinatorialProcess { variables, block } = ir_proc;
+
+    let func_name = format!("module_{module_index}_child_{child_index}_comb");
+    let builder = ProcessBuilder::new(
+        llvm_ctx,
+        llvm_unit,
+        &func_name,
+        &llvm_module_types,
+        ir_module,
+        variables,
+    )?;
+
     builder.lower_block(block)?;
     builder.llvm_builder.build_return(None)?;
 
-    println!("{}", builder.llvm_module.to_string());
+    println!("{}", builder.llvm_unit.to_string());
 
-    let execution_engine = builder
-        .llvm_module
-        .create_jit_execution_engine(OptimizationLevel::None)
-        .unwrap();
-
-    let func = unsafe {
-        type Func = unsafe extern "C" fn();
-        execution_engine.get_function::<Func>(func_name).unwrap()
-    };
-
-    // TODO stop calling stuff here
-    unsafe {
-        func.call();
-    }
+    // let execution_engine = builder
+    //     .llvm_module
+    //     .create_jit_execution_engine(OptimizationLevel::None)
+    //     .unwrap();
+    //
+    // let func = unsafe {
+    //     type Func = unsafe extern "C" fn();
+    //     execution_engine.get_function::<Func>(&func_name).unwrap()
+    // };
+    //
+    // // TODO stop calling stuff here
+    // unsafe {
+    //     func.call();
+    // }
 
     // TODO actually return something
     Ok(())
@@ -88,57 +167,52 @@ fn lower_process_comb(info: &IrModuleInfo, proc: &IrCombinatorialProcess) -> Bui
 
 type BuildResult<T> = Result<T, BuilderError>;
 
-struct ProcessBuilder<'ctx, 'ir> {
+struct ProcessBuilder<'ir, 'ctx, 'm> {
     // ir
     ir_module: &'ir IrModuleInfo,
     ir_vars: &'ir IrVariables,
 
     // llvm
     llvm_context: &'ctx Context,
-    llvm_module: Module<'ctx>,
+    llvm_unit: &'m Module<'ctx>,
     llvm_builder: Builder<'ctx>,
 
     // state
     function: FunctionValue<'ctx>,
-    ir_var_to_alloca: IndexMap<IrVariable, Result<PointerValue<'ctx>, ZeroSize>>,
+    ir_var_to_alloca: IndexMap<IrVariable, PointerValue<'ctx>>,
 }
-
-#[derive(Debug, Copy, Clone)]
-struct ZeroSize;
 
 struct MappedSteps {
     gep: (),
     slice_len: NonZeroU32,
 }
 
-impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
+impl<'ir, 'ctx, 'm> ProcessBuilder<'ir, 'ctx, 'm> {
     fn new(
+        llvm_ctx: &'ctx Context,
+        llvm_unit: &'m Module<'ctx>,
+        llvm_function_name: &str,
+        llvm_module_types: &ModuleSignalTypes<'ctx>,
         ir_module: &'ir IrModuleInfo,
         ir_vars: &'ir IrVariables,
-        llvm_context: &'ctx Context,
-        llvm_module_name: &str,
-        llvm_function_name: &str,
-    ) -> BuildResult<ProcessBuilder<'ctx, 'ir>> {
-        let llvm_module = llvm_context.create_module(llvm_module_name);
-        let llvm_builder = llvm_context.create_builder();
-
+    ) -> BuildResult<ProcessBuilder<'ir, 'ctx, 'm>> {
         // create function and entry
         // TODO add some args:
         //   * global context (eg. containing callbacks for print and asserts)
         //   * for clocked blocks: pointers to prev and next state, all including no-alias attributes
         //   * for comb blocks: curr state
-        let fn_type = llvm_context.void_type().fn_type(&[], false);
-        let function = llvm_module.add_function(llvm_function_name, fn_type, None);
-        let entry_block = llvm_context.append_basic_block(function, "entry");
+        let fn_type = llvm_ctx.void_type().fn_type(&[], false);
+        let function = llvm_unit.add_function(llvm_function_name, fn_type, None);
+        let entry_block = llvm_ctx.append_basic_block(function, "entry");
+
+        let llvm_builder = llvm_ctx.create_builder();
         llvm_builder.position_at_end(entry_block);
 
         // allocate variables
         let mut ir_var_to_alloca = IndexMap::new();
         for (var, var_info) in ir_vars {
-            let alloca = match map_ty(llvm_context, &var_info.ty) {
-                Ok(ty) => Ok(llvm_builder.build_alloca(ty, "")?),
-                Err(ZeroSize) => Err(ZeroSize),
-            };
+            let ty = map_ty(llvm_ctx, &var_info.ty);
+            let alloca = llvm_builder.build_alloca(ty, "")?;
             ir_var_to_alloca.insert_first(var, alloca);
         }
 
@@ -146,8 +220,8 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
             ir_module,
             ir_vars,
 
-            llvm_context,
-            llvm_module,
+            llvm_context: llvm_ctx,
+            llvm_unit,
             llvm_builder,
 
             function,
@@ -190,13 +264,6 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
 
         let base = self.get_named_ptr(base);
         let value = self.eval_expr(value)?;
-
-        let (base, value) = match (base, value) {
-            (Ok(base), Ok(value)) => (base, value),
-            (Err(ZeroSize), Err(ZeroSize)) => return Ok(()),
-            _ => unreachable!(),
-        };
-
         self.llvm_builder.build_store(base, value)?;
 
         Ok(())
@@ -210,7 +277,7 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
         } = stmt;
 
         // eval condition
-        let condition = self.eval_expr(condition)?.unwrap().into_int_value();
+        let condition = self.eval_expr(condition)?.into_int_value();
 
         // remember start block
         let start_block = self.llvm_builder.get_insert_block().unwrap();
@@ -248,14 +315,14 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
         Ok(())
     }
 
-    fn eval_expr(&self, value: &IrExpression) -> BuildResult<Result<BasicValueEnum<'ctx>, ZeroSize>> {
+    fn eval_expr(&self, value: &IrExpression) -> BuildResult<BasicValueEnum<'ctx>> {
         let result: BasicValueEnum = match *value {
             IrExpression::Bool(value) => self.llvm_context.bool_type().const_int(value as u64, false).into(),
             IrExpression::Int(_) => todo!(),
             IrExpression::Signal(_) => todo!(),
             IrExpression::Variable(var) => {
-                let ty = try_inner!(self.map_ty(var.ty(&self.ir_vars)));
-                let ptr = try_inner!(self.get_named_ptr(var));
+                let ty = self.map_ty(var.ty(&self.ir_vars));
+                let ptr = self.get_named_ptr(var);
                 self.llvm_builder.build_load(ty, ptr.clone(), "")?
             }
             IrExpression::Large(value) => match &self.ir_module.large[value] {
@@ -268,36 +335,36 @@ impl<'ctx, 'ir> ProcessBuilder<'ctx, 'ir> {
                     self.llvm_context.bool_type().const_zero().into()
                 }
                 IrExpressionLarge::BoolNot(inner) => {
-                    let inner = try_inner!(self.eval_expr(inner)?).into_int_value();
+                    let inner = self.eval_expr(inner)?.into_int_value();
                     self.llvm_builder.build_not(inner, "")?.into()
                 }
                 _ => todo!("{value:?}"),
             },
         };
 
-        Ok(Ok(result))
+        Ok(result)
     }
 
-    fn eval_steps(&self, ty: &IrType, steps: &IrTargetSteps) -> BuildResult<Result<MappedSteps, ZeroSize>> {
+    fn eval_steps(&self, ty: &IrType, steps: &IrTargetSteps) -> BuildResult<MappedSteps> {
         todo!()
     }
 
-    fn get_named_ptr(&self, target: impl Into<IrSignalOrVariable>) -> Result<PointerValue<'ctx>, ZeroSize> {
+    fn get_named_ptr(&self, target: impl Into<IrSignalOrVariable>) -> PointerValue<'ctx> {
         match target.into() {
             IrSignalOrVariable::Signal(_) => todo!(),
             IrSignalOrVariable::Variable(var) => *self.ir_var_to_alloca.get(&var).unwrap(),
         }
     }
 
-    fn map_ty(&self, ty: &IrType) -> Result<BasicTypeEnum<'ctx>, ZeroSize> {
+    fn map_ty(&self, ty: &IrType) -> BasicTypeEnum<'ctx> {
         map_ty(self.llvm_context, ty)
     }
 }
 
-fn map_ty<'ctx>(ctx: &'ctx Context, ty: &IrType) -> Result<BasicTypeEnum<'ctx>, ZeroSize> {
+fn map_ty<'ctx>(ctx: &'ctx Context, ty: &IrType) -> BasicTypeEnum<'ctx> {
     // TODO cache these? maybe that's even necessary for struct types
     match ty {
-        IrType::Bool => Ok(BasicTypeEnum::IntType(ctx.bool_type())),
+        IrType::Bool => BasicTypeEnum::IntType(ctx.bool_type()),
         IrType::Int(_) => todo!(),
         IrType::Array(_, _) => todo!(),
         IrType::Tuple(_) => todo!(),
@@ -306,15 +373,16 @@ fn map_ty<'ctx>(ctx: &'ctx Context, ty: &IrType) -> Result<BasicTypeEnum<'ctx>, 
     }
 }
 
-trait ResultZeroExt {
-    type T;
-    fn unwrap_non_zero_size(self) -> Self::T;
+#[derive(Debug)]
+pub enum LowerError {
+    BuilderError(BuilderError),
+    IntTooLarge(Span, BigUint),
 }
 
-impl<T> ResultZeroExt for Result<T, ZeroSize> {
-    type T = T;
+pub type LowerResult<T = ()> = Result<T, LowerError>;
 
-    fn unwrap_non_zero_size(self) -> T {
-        self.unwrap()
+impl From<BuilderError> for LowerError {
+    fn from(error: BuilderError) -> Self {
+        LowerError::BuilderError(error)
     }
 }

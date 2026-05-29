@@ -7,4 +7,8 @@ module top ports(
         var v: bool = undef;
         assert(!v);
     }
+
+    comb {
+
+    }
 }
