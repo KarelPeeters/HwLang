@@ -3,7 +3,7 @@ use hwl_language::back::lower_verilog::lower_to_verilog;
 use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::item::ElaboratedModule;
-use hwl_language::front::print::{CollectPrintHandler, StdoutPrintHandler};
+use hwl_language::front::print::CollectPrintHandler;
 use hwl_language::front::value::{CompileValue, SimpleCompileValue};
 use hwl_language::syntax::collect::add_std_sources;
 use hwl_language::syntax::format::{FormatError, FormatSettings, format_file};
@@ -72,7 +72,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
             diags: &diags,
             fixed,
             shared: &shared,
-            print_handler: &StdoutPrintHandler,
+            print_handler: &print_handler,
             should_stop: &should_stop,
         };
 
