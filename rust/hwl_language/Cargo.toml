@@ -37,6 +37,7 @@ strum.workspace = true
 toml = { workspace = true, features = ["preserve_order"] }
 unwrap-match.workspace = true
 yastl.workspace = true
+inkwell.workspace = true
 
 [build-dependencies]
 lalrpop.workspace = true

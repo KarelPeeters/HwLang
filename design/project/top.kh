@@ -1,26 +1,8 @@
-const N = 1024 * 1024;
-
-//module top ports(
-//    i: in async int(0..2),
-//    b: in async bool,
-//    d: in async [N]bool,
-//) {
-//    wire w: async [N]bool;
-//    comb {
-//        w[..N / 2] = d[..N / 2];
-//    }
-//    comb {
-//        w[N / 2..] = d[N / 2..];
-//    }
-//}
-
-//module top ports(x: in async bool, y: out async bool) {
-//    wire w: async [2]bool;
-//    comb {
-//        y = w[0];
-//        w[1] = x;
-//    }
-//    comb {
-//        w[0] = x;
-//    }
-//}
+module top ports(
+    x: in async bool,
+    y: out async bool,
+) {
+    comb {
+        y = x;
+    }
+}
