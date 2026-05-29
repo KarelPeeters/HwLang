@@ -582,6 +582,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hwl_simulator"
+version = "0.1.0"
+dependencies = [
+ "hwl_language",
+ "hwl_util",
+ "indexmap",
+ "inkwell",
+ "itertools 0.13.0",
+ "num_cpus",
+]
+
+[[package]]
 name = "hwl_std"
 version = "0.1.0"
 dependencies = [

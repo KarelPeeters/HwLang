@@ -3,7 +3,6 @@
 pub mod back;
 pub mod front;
 pub mod mid;
-pub mod simulator;
 pub mod syntax;
 pub mod util;
 

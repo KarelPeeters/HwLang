@@ -1,0 +1,17 @@
+[package]
+name = "hwl_simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hwl_language.workspace = true
+hwl_util.workspace = true
+
+indexmap = { workspace = true, features = ["serde"] }
+itertools.workspace = true
+num_cpus.workspace = true
+inkwell.workspace = true

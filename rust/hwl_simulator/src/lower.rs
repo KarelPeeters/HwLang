@@ -1,11 +1,10 @@
-use crate::mid::ir::{
+use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrModule,
     IrModuleChild, IrModuleInfo, IrModules, IrSignalOrVariable, IrStatement, IrType, IrVariable, IrVariables,
 };
-use crate::mid::steps::IrTargetSteps;
-use crate::try_inner;
-use crate::util::ResultExt;
-use crate::util::data::IndexMapExt;
+use hwl_language::mid::steps::IrTargetSteps;
+use hwl_language::try_inner;
+use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use inkwell::OptimizationLevel;
 use inkwell::builder::{Builder, BuilderError};

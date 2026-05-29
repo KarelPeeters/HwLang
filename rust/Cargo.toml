@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "hwl_language",
+    "hwl_simulator",
     "hwl_std",
     "hwl_util",
     "hwl_bin",

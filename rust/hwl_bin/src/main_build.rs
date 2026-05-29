@@ -7,7 +7,6 @@ use hwl_language::front::diagnostic::{DiagError, Diagnostics};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
 use hwl_language::front::value::{CompileValue, SimpleCompileValue};
-use hwl_language::simulator::lower::lower_simulator;
 use hwl_language::syntax::collect::collect_source_from_manifest;
 use hwl_language::syntax::hierarchy::HierarchyNode;
 use hwl_language::syntax::manifest::Manifest;
@@ -16,10 +15,8 @@ use hwl_language::syntax::pos::Spanned;
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
-use hwl_language::util::data::VecExt;
-use hwl_language::util::iter::IterExt;
 use hwl_language::util::pool::ThreadPool;
-use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
 use hwl_util::io::IoErrorExt;
 use itertools::Itertools;
 use std::process::ExitCode;
@@ -177,10 +174,6 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     let mut outputs = vec![];
 
     if let Ok(ir_db) = ir_db {
-        // output LLVM
-        // TODO (re)move
-        lower_simulator(&ir_db.modules, top_modules[0]).unwrap();
-
         // output debug ir
         if let Some(output_ir) = debug_output_ir {
             let start_lower_ir = Instant::now();
