@@ -585,18 +585,18 @@ impl IrAssignmentTarget {
 }
 
 impl IrExpression {
-    pub fn ty(&self, large: &IrLargeArena, signals: &IrSignals, variables: &IrVariables) -> IrType {
+    pub fn ty(&self, large: &IrLargeArena, signals: &IrSignals, vars: &IrVariables) -> IrType {
         match self {
             IrExpression::Bool(_) => IrType::Bool,
             IrExpression::Int(v) => IrType::Int(ClosedNonEmptyRange::single(v.clone())),
 
             &IrExpression::Signal(signal) => signal.ty(signals).clone(),
-            &IrExpression::Variable(var) => variables[var].ty.clone(),
+            &IrExpression::Variable(var) => var.ty(vars).clone(),
 
             &IrExpression::Large(expr) => match &large[expr] {
                 IrExpressionLarge::Undefined(ty) => ty.clone(),
                 IrExpressionLarge::BoolNot(_) => IrType::Bool,
-                IrExpressionLarge::BoolBinary(_, left, _) => left.ty(large, signals, variables),
+                IrExpressionLarge::BoolBinary(_, left, _) => left.ty(large, signals, vars),
                 IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
                 IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
@@ -604,21 +604,21 @@ impl IrExpression {
                     IrType::Array(Box::new(ty_inner.clone()), len.clone())
                 }
                 IrExpressionLarge::TupleLiteral(v) => {
-                    IrType::Tuple(v.iter().map(|x| x.ty(large, signals, variables)).collect())
+                    IrType::Tuple(v.iter().map(|x| x.ty(large, signals, vars)).collect())
                 }
                 IrExpressionLarge::StructLiteral(ty, _) => IrType::Struct(ty.clone()),
                 IrExpressionLarge::EnumLiteral(ty, _, _) => IrType::Enum(ty.clone()),
 
                 IrExpressionLarge::Steps { base, steps } => {
-                    let base_ty = base.ty(large, signals, variables);
+                    let base_ty = base.ty(large, signals, vars);
                     steps.apply_to_type(base_ty).unwrap()
                 }
                 IrExpressionLarge::EnumTag { base } => {
-                    let base_ty = base.ty(large, signals, variables).unwrap_enum();
+                    let base_ty = base.ty(large, signals, vars).unwrap_enum();
                     IrType::Int(base_ty.tag_range())
                 }
                 &IrExpressionLarge::EnumPayload { ref base, variant } => {
-                    let base_ty = base.ty(large, signals, variables).unwrap_enum();
+                    let base_ty = base.ty(large, signals, vars).unwrap_enum();
                     base_ty.variants[variant]
                         .as_ref()
                         .expect("cannot get payload of non-payload variant")
@@ -900,6 +900,12 @@ impl IrExpression {
     }
 }
 
+impl IrVariable {
+    pub fn ty(self, vars: &IrVariables) -> &IrType {
+        &vars[self].ty
+    }
+}
+
 impl IrSignal {
     pub fn ty(self, signals: &IrSignals) -> &IrType {
         match self {
@@ -963,10 +969,10 @@ impl IrPort {
 }
 
 impl IrSignalOrVariable {
-    pub fn ty<'a>(self, signals: &'a IrSignals, variables: &'a IrVariables) -> &'a IrType {
+    pub fn ty<'a>(self, signals: &'a IrSignals, vars: &'a IrVariables) -> &'a IrType {
         match self {
             IrSignalOrVariable::Signal(signal) => signal.ty(signals),
-            IrSignalOrVariable::Variable(var) => &variables[var].ty,
+            IrSignalOrVariable::Variable(var) => var.ty(vars),
         }
     }
 

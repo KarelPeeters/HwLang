@@ -1,8 +1,10 @@
 module top ports(
-    x: in async bool,
-    y: out async bool,
+//    x: in async bool,
+//    y: out async bool,
 ) {
     comb {
-        y = x;
+//        y = x;
+        var v: bool = undef;
+        assert(!v);
     }
 }

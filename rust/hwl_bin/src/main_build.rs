@@ -17,6 +17,7 @@ use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::data::VecExt;
+use hwl_language::util::iter::IterExt;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
@@ -177,7 +178,8 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
 
     if let Ok(ir_db) = ir_db {
         // output LLVM
-        lower_simulator(&ir_db.modules, top_modules.single().unwrap());
+        // TODO (re)move
+        lower_simulator(&ir_db.modules, top_modules[0]).unwrap();
 
         // output debug ir
         if let Some(output_ir) = debug_output_ir {
