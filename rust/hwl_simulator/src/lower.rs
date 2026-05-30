@@ -11,6 +11,7 @@ use indexmap::IndexMap;
 use inkwell::AddressSpace;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
+use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Module;
 use inkwell::types::{ArrayType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -23,14 +24,21 @@ pub struct SimulatorCompiled {
 
     #[borrows(llvm_context)]
     #[not_covariant]
-    llvm_unit: Module<'this>,
-    // #[borrows(llvm_context)]
-    // #[covariant]
-    // llvm_execution_engine: ExecutionEngine<'this>,
+    inner: SimulatorCompiledInner<'this>,
 }
 
+#[allow(dead_code)]
+struct SimulatorCompiledInner<'ctx> {
+    llvm_unit: Module<'ctx>,
+    llvm_execution_engine: ExecutionEngine<'ctx>,
+    // TODO store these in a more structured way so we can actually use them
+    llvm_functions: Vec<FunctionValue<'ctx>>,
+}
+
+#[allow(dead_code)]
 pub struct SimulatorInstance {
     compiled: Arc<SimulatorCompiled>,
+    // TODO actual state, at least prev/next buffers
 }
 
 // TODO basics:
@@ -43,19 +51,36 @@ pub struct SimulatorInstance {
 //  * parallelize module and maybe even process compilation
 //  * enable process optimization
 //  * fuse sequential processes?
-pub fn lower_simulator(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
+//  * on-disk compilation cache
+//  * allow simulator save/restore
+pub fn compile_simulator(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
     // TODO tree walking
     // TODO parallelize compilation
     // TODO optimize
     SimulatorCompiledTryBuilder {
         llvm_context: Context::create(),
-        llvm_unit_builder: |llvm_ctx| {
-            let llvm_unit = llvm_ctx.create_module("");
-            lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
-            Ok(llvm_unit)
-        },
+        inner_builder: |llvm_ctx| compile_simulator_inner(modules, top, llvm_ctx),
     }
     .try_build()
+}
+
+fn compile_simulator_inner<'ctx>(
+    modules: &IrModules,
+    top: IrModule,
+    llvm_ctx: &'ctx Context,
+) -> LowerResult<SimulatorCompiledInner<'ctx>> {
+    let llvm_unit = llvm_ctx.create_module("");
+    lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
+
+    let execution_engine = llvm_unit
+        .create_execution_engine()
+        .map_err(|e| LowerError::FailedToCreateExecutionEngine(e.to_string()))?;
+
+    Ok(SimulatorCompiledInner {
+        llvm_unit,
+        llvm_execution_engine: execution_engine,
+        llvm_functions: vec![],
+    })
 }
 
 fn lower_module<'ctx>(
@@ -73,7 +98,7 @@ fn lower_module<'ctx>(
         debug_info_generic_args: _,
     } = info;
 
-    let module_signal_types = build_module_signal_types(&llvm_ctx, debug_info_id.span, signals)?;
+    let module_signal_types = build_module_signal_types(llvm_ctx, debug_info_id.span, signals)?;
 
     for (child_index, child) in enumerate(children) {
         match &child.inner {
@@ -470,6 +495,7 @@ pub type LowerResult<T = ()> = Result<T, LowerError>;
 #[derive(Debug)]
 pub enum LowerError {
     BuilderError(BuilderError),
+    FailedToCreateExecutionEngine(String),
     IntTooLarge(Span, BigUint),
 }
 
