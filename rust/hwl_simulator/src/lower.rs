@@ -8,13 +8,31 @@ use hwl_language::syntax::pos::Span;
 use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
-use inkwell::AddressSpace;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
+use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Module;
 use inkwell::types::{ArrayType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::{AddressSpace, OptimizationLevel};
 use itertools::enumerate;
+use std::sync::Arc;
+
+#[ouroboros::self_referencing]
+pub struct SimulatorCompiled {
+    llvm_context: Context,
+
+    #[borrows(llvm_context)]
+    #[covariant]
+    llvm_unit: Module<'this>,
+    // #[borrows(llvm_context)]
+    // #[covariant]
+    // llvm_execution_engine: ExecutionEngine<'this>,
+}
+
+pub struct SimulatorInstance {
+    compiled: Arc<SimulatorCompiled>,
+}
 
 // TODO basics:
 //  * python wrapper for input/output
@@ -26,16 +44,24 @@ use itertools::enumerate;
 //  * parallelize module and maybe even process compilation
 //  * enable process optimization
 //  * fuse sequential processes?
-pub fn lower_simulator(modules: &IrModules, top: IrModule) -> LowerResult {
+pub fn lower_simulator(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
     // TODO tree walking
     // TODO parallelize compilation
     // TODO optimize
-    lower_module(&modules[top], 0)?;
+    let llvm_ctx = Context::create();
+    let llvm_unit = llvm_ctx.create_module("");
+
+    lower_module(&llvm_ctx, &llvm_unit, &modules[top], 0)?;
 
     Ok(())
 }
 
-fn lower_module(info: &IrModuleInfo, module_index: usize) -> LowerResult {
+fn lower_module<'ctx>(
+    llvm_ctx: &'ctx Context,
+    llvm_unit: &Module<'ctx>,
+    info: &IrModuleInfo,
+    module_index: usize,
+) -> LowerResult {
     let IrModuleInfo {
         signals,
         large: _,
@@ -44,9 +70,6 @@ fn lower_module(info: &IrModuleInfo, module_index: usize) -> LowerResult {
         debug_info_id,
         debug_info_generic_args: _,
     } = info;
-
-    let llvm_ctx = Context::create();
-    let llvm_unit = llvm_ctx.create_module("");
 
     let module_signal_types = build_module_signal_types(&llvm_ctx, debug_info_id.span, signals)?;
 
@@ -62,8 +85,8 @@ fn lower_module(info: &IrModuleInfo, module_index: usize) -> LowerResult {
             }
             IrModuleChild::CombinatorialProcess(proc) => {
                 lower_process_comb(
-                    &llvm_ctx,
-                    &llvm_unit,
+                    llvm_ctx,
+                    llvm_unit,
                     &module_signal_types,
                     info,
                     proc,
@@ -168,20 +191,17 @@ fn lower_process_comb<'ctx>(
     builder.lower_block(block)?;
     builder.llvm_builder.build_return(None)?;
 
-    // let execution_engine = builder
-    //     .llvm_module
-    //     .create_jit_execution_engine(OptimizationLevel::None)
-    //     .unwrap();
-    //
-    // let func = unsafe {
-    //     type Func = unsafe extern "C" fn();
-    //     execution_engine.get_function::<Func>(&func_name).unwrap()
-    // };
-    //
-    // // TODO stop calling stuff here
-    // unsafe {
-    //     func.call();
-    // }
+    let execution_engine = llvm_unit.create_jit_execution_engine(OptimizationLevel::None).unwrap();
+
+    let func = unsafe {
+        type Func = unsafe extern "C" fn();
+        execution_engine.get_function::<Func>(&func_name).unwrap()
+    };
+
+    // TODO stop calling stuff here
+    unsafe {
+        func.call();
+    }
 
     // TODO actually return something
     Ok(())
@@ -434,6 +454,9 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
 
 fn map_ty<'ctx>(ctx: &'ctx Context, ty: &IrType) -> BasicTypeEnum<'ctx> {
     // TODO cache these? maybe that's even necessary for struct types
+    // TODO optimizations:
+    //   for structs and tuples, re-order to minimize size?
+    //   for all compound types: bit pack? careful about multithreading!
     match ty {
         IrType::Bool => BasicTypeEnum::IntType(ctx.bool_type()),
         IrType::Int(_) => todo!(),

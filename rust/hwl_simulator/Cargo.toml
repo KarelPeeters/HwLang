@@ -12,6 +12,7 @@ hwl_language.workspace = true
 hwl_util.workspace = true
 
 indexmap = { workspace = true, features = ["serde"] }
+inkwell.workspace = true
 itertools.workspace = true
 num_cpus.workspace = true
-inkwell.workspace = true
+ouroboros.workspace = true
