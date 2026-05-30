@@ -8,13 +8,12 @@ use hwl_language::syntax::pos::Span;
 use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
+use inkwell::AddressSpace;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
-use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Module;
 use inkwell::types::{ArrayType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use inkwell::{AddressSpace, OptimizationLevel};
 use itertools::enumerate;
 use std::sync::Arc;
 
@@ -23,7 +22,7 @@ pub struct SimulatorCompiled {
     llvm_context: Context,
 
     #[borrows(llvm_context)]
-    #[covariant]
+    #[not_covariant]
     llvm_unit: Module<'this>,
     // #[borrows(llvm_context)]
     // #[covariant]
@@ -48,12 +47,15 @@ pub fn lower_simulator(modules: &IrModules, top: IrModule) -> LowerResult<Simula
     // TODO tree walking
     // TODO parallelize compilation
     // TODO optimize
-    let llvm_ctx = Context::create();
-    let llvm_unit = llvm_ctx.create_module("");
-
-    lower_module(&llvm_ctx, &llvm_unit, &modules[top], 0)?;
-
-    Ok(())
+    SimulatorCompiledTryBuilder {
+        llvm_context: Context::create(),
+        llvm_unit_builder: |llvm_ctx| {
+            let llvm_unit = llvm_ctx.create_module("");
+            lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
+            Ok(llvm_unit)
+        },
+    }
+    .try_build()
 }
 
 fn lower_module<'ctx>(
@@ -190,18 +192,6 @@ fn lower_process_comb<'ctx>(
 
     builder.lower_block(block)?;
     builder.llvm_builder.build_return(None)?;
-
-    let execution_engine = llvm_unit.create_jit_execution_engine(OptimizationLevel::None).unwrap();
-
-    let func = unsafe {
-        type Func = unsafe extern "C" fn();
-        execution_engine.get_function::<Func>(&func_name).unwrap()
-    };
-
-    // TODO stop calling stuff here
-    unsafe {
-        func.call();
-    }
 
     // TODO actually return something
     Ok(())
