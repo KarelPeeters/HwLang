@@ -9,6 +9,7 @@ use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
 use inkwell::AddressSpace;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
 use inkwell::execution_engine::ExecutionEngine;
@@ -71,6 +72,10 @@ fn compile_simulator_inner<'ctx>(
 ) -> LowerResult<SimulatorCompiledInner<'ctx>> {
     let llvm_unit = llvm_ctx.create_module("");
     lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
+
+    llvm_unit
+        .verify()
+        .map_err(|e| LowerError::VerificationFailed(e.to_string()))?;
 
     let execution_engine = llvm_unit
         .create_execution_engine()
@@ -283,7 +288,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         })
     }
 
-    fn lower_block(&self, block: &IrBlock) -> LowerResult {
+    fn lower_block(&self, block: &IrBlock) -> LowerResult<BasicBlock<'ctx>> {
         let IrBlock { statements } = block;
         for stmt in statements {
             let stmt_span = stmt.span;
@@ -305,7 +310,12 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                 }
             }
         }
-        Ok(())
+
+        // block lowering must leave the builder in a valid block that has not yet been terminated
+        // we return that block here for caller convenience
+        let block_end = self.llvm_builder.get_insert_block().unwrap();
+        assert!(block_end.get_terminator().is_none());
+        Ok(block_end)
     }
 
     fn lower_statement_assign(&self, span: Span, target: &IrAssignmentTarget, value: &IrExpression) -> LowerResult {
@@ -336,38 +346,43 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         let condition = self.eval_expr(span, condition)?.into_int_value();
 
         // remember start block
-        let start_block = self.llvm_builder.get_insert_block().unwrap();
+        let bb_cond_end = self.llvm_builder.get_insert_block().unwrap();
+        self.llvm_builder.clear_insertion_position();
 
         // lower then branch
-        let then_basic = self.llvm_context.append_basic_block(self.function, "if.then");
-        self.llvm_builder.position_at_end(then_basic);
-        self.lower_block(then_block)?;
+        let bb_then_start = self.llvm_context.append_basic_block(self.function, "if.then");
+        self.llvm_builder.position_at_end(bb_then_start);
+        let bb_then_end = self.lower_block(then_block)?;
 
         // lower else branch
-        let else_basic = if let Some(else_block) = else_block {
-            let else_basic = self.llvm_context.append_basic_block(self.function, "if.else");
-            self.llvm_builder.position_at_end(else_basic);
-            self.lower_block(else_block)?;
-            Some(else_basic)
+        let bb_else_start_end = if let Some(else_block) = else_block {
+            let bb_else_start = self.llvm_context.append_basic_block(self.function, "if.else");
+            self.llvm_builder.position_at_end(bb_else_start);
+            let bb_else_end = self.lower_block(else_block)?;
+            Some((bb_else_start, bb_else_end))
         } else {
             None
         };
 
         // connect branches
-        let end_basic = self.llvm_context.append_basic_block(self.function, "if.end");
-        self.llvm_builder.position_at_end(start_block);
-        self.llvm_builder
-            .build_conditional_branch(condition, then_basic, else_basic.unwrap_or(end_basic))?;
+        let bb_end = self.llvm_context.append_basic_block(self.function, "if.end");
 
-        self.llvm_builder.position_at_end(then_basic);
-        self.llvm_builder.build_unconditional_branch(end_basic)?;
+        self.llvm_builder.position_at_end(bb_cond_end);
+        self.llvm_builder.build_conditional_branch(
+            condition,
+            bb_then_start,
+            bb_else_start_end.map_or(bb_end, |(bb_else_start, _)| bb_else_start),
+        )?;
 
-        if let Some(else_basic) = else_basic {
-            self.llvm_builder.position_at_end(else_basic);
-            self.llvm_builder.build_unconditional_branch(end_basic)?;
+        self.llvm_builder.position_at_end(bb_then_end);
+        self.llvm_builder.build_unconditional_branch(bb_end)?;
+
+        if let Some((_, bb_else_end)) = bb_else_start_end {
+            self.llvm_builder.position_at_end(bb_else_end);
+            self.llvm_builder.build_unconditional_branch(bb_end)?;
         }
 
-        self.llvm_builder.position_at_end(end_basic);
+        self.llvm_builder.position_at_end(bb_end);
         Ok(())
     }
 
@@ -495,6 +510,7 @@ pub type LowerResult<T = ()> = Result<T, LowerError>;
 #[derive(Debug)]
 pub enum LowerError {
     BuilderError(BuilderError),
+    VerificationFailed(String),
     FailedToCreateExecutionEngine(String),
     IntTooLarge(Span, BigUint),
 }
