@@ -16,3 +16,4 @@ inkwell.workspace = true
 itertools.workspace = true
 num_cpus.workspace = true
 ouroboros.workspace = true
+unwrap-match .workspace = true

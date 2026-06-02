@@ -605,6 +605,7 @@ dependencies = [
  "itertools 0.13.0",
  "num_cpus",
  "ouroboros",
+ "unwrap-match",
 ]
 
 [[package]]

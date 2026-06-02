@@ -1,10 +1,15 @@
+use hwl_language::front::check::{TypeContainsReason, check_type_contains_value};
+use hwl_language::front::diagnostic::{DiagResult, Diagnostics};
+use hwl_language::front::item::ElaborationArenas;
+use hwl_language::front::value::{CompileValue, SimpleCompileValue};
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrModule,
-    IrModuleChild, IrModuleInfo, IrModules, IrPort, IrSignal, IrSignalOrVariable, IrSignals, IrStatement, IrType,
-    IrVariable, IrVariables, IrWire,
+    IrModuleChild, IrModuleInfo, IrModules, IrPort, IrPorts, IrSignal, IrSignalOrVariable, IrSignals, IrStatement,
+    IrType, IrVariable, IrVariables, IrWire,
 };
 use hwl_language::mid::steps::IrTargetSteps;
-use hwl_language::syntax::pos::Span;
+use hwl_language::syntax::ast::PortDirection;
+use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
@@ -22,6 +27,7 @@ use std::alloc::{self, Layout};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use unwrap_match::unwrap_match;
 
 // TODO basics:
 //  * python wrapper for input/output
@@ -37,6 +43,11 @@ use std::sync::Arc;
 //  * fuse sequential processes?
 //  * on-disk compilation cache
 //  * allow simulator save/restore
+//
+// TODO fancy features:
+//  * add accessors and force override for intermediate signals
+//  * add GUI
+//
 pub struct SimulatorCompiled {
     inner: SimulatorCompiledInner,
 }
@@ -63,26 +74,22 @@ impl SimulatorCompiled {
 
 impl SimulatorInstance {
     pub fn new(compiled: Arc<SimulatorCompiled>) -> LowerResult<SimulatorInstance> {
-        let (module_types, llvm_engine) = compiled
+        let (top_module_types, llvm_engine) = compiled
             .inner
-            .with_inner(|inner| (&inner.module_types, &inner.llvm_engine));
+            .with_inner(|inner| (&inner.top_module_types, &inner.llvm_engine));
 
         let target = llvm_engine.get_target_data();
-        let ports_next = Buffer::new(target, &module_types.ports_struct_ty)?;
-        let wires_next = Buffer::new(target, &module_types.wires_struct_ty)?;
-        let ports_next_ptrs = Buffer::new(target, &module_types.ports_array_ty)?;
+        let ports_next = Buffer::new(target, &top_module_types.ports_struct_ty)?;
+        let wires_next = Buffer::new(target, &top_module_types.wires_struct_ty)?;
+        let ports_next_ptrs = Buffer::new(target, &top_module_types.ports_array_ty)?;
 
         // fill ports_next_ptrs with pointers into ports_next
-        {
-            for port_index in 0..module_types.port_indices.len() {
-                let port_offset = target
-                    .offset_of_element(&module_types.ports_struct_ty, port_index as u32)
-                    .unwrap();
-                unsafe {
-                    let port_ptr_ptr = (ports_next_ptrs.as_ptr() as *mut *mut c_void).add(port_index);
-                    let port_ptr = ports_next.as_ptr().add(port_offset as usize);
-                    std::ptr::write(port_ptr_ptr, port_ptr);
-                }
+        for port_index in 0..top_module_types.port_indices.len() {
+            let port_offset = target
+                .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
+                .unwrap() as usize;
+            unsafe {
+                ports_next_ptrs.write(port_index, ports_next.as_ptr().add(port_offset));
             }
         }
 
@@ -103,9 +110,96 @@ impl SimulatorInstance {
 
         for _ in 0..16 {
             for f_comb in all_comb_functions {
-                unsafe { f_comb.call(self.ports_next.as_ptr(), self.wires_next.as_ptr()) };
+                unsafe { f_comb.call(self.ports_next_ptrs.as_ptr(), self.wires_next.as_ptr()) };
             }
         }
+    }
+
+    pub fn get_port(&self, port: IrPort) -> CompileValue {
+        // extract inner
+        let (top_module_ports, top_module_types, llvm_engine) = self
+            .compiled
+            .inner
+            .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
+
+        // gather port info
+        let port_info = &top_module_ports[port];
+        let port_index = *top_module_types.port_indices.get(&port).unwrap();
+
+        // figure out port offset
+        let target = llvm_engine.get_target_data();
+        let port_offset = target
+            .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
+            .unwrap() as usize;
+
+        // actually get value
+        match &port_info.ty {
+            IrType::Bool => {
+                let value = unsafe { self.ports_next.read::<u8>(port_offset) };
+
+                match value {
+                    0 => CompileValue::new_bool(false),
+                    1 => CompileValue::new_bool(true),
+                    _ => todo!("err"),
+                }
+            }
+            IrType::Int(_) => todo!(),
+            IrType::Array(_, _) => todo!(),
+            IrType::Tuple(_) => todo!(),
+            IrType::Struct(_) => todo!(),
+            IrType::Enum(_) => todo!(),
+        }
+    }
+
+    pub fn set_port(
+        &mut self,
+        diags: &Diagnostics,
+        elab: &ElaborationArenas,
+        port: IrPort,
+        value: Spanned<&CompileValue>,
+    ) -> DiagResult {
+        // extract inner
+        let (top_module_ports, top_module_types, llvm_engine) = self
+            .compiled
+            .inner
+            .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
+
+        // gather port info
+        let port_info = &top_module_ports[port];
+        let port_index = *top_module_types.port_indices.get(&port).unwrap();
+
+        // check direction and type
+        match port_info.direction {
+            PortDirection::Input => {}
+            PortDirection::Output => todo!("err, cannot assign output port"),
+        }
+
+        let reason = TypeContainsReason::Assignment {
+            span_target: port_info.debug_span,
+            span_target_ty: port_info.debug_info_ty.span,
+        };
+        check_type_contains_value(diags, elab, reason, &port_info.ty.as_type_hw().as_type(), value)?;
+
+        // figure out port offset
+        let target = llvm_engine.get_target_data();
+        let port_offset = target
+            .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
+            .unwrap() as usize;
+
+        // actually set value
+        match &port_info.ty {
+            IrType::Bool => {
+                let value = unwrap_match!(value.inner, &CompileValue::Simple(SimpleCompileValue::Bool(value)) => value);
+                unsafe { self.ports_next.write::<u8>(port_offset, value as u8) };
+            }
+            IrType::Int(_) => todo!(),
+            IrType::Array(_, _) => todo!(),
+            IrType::Tuple(_) => todo!(),
+            IrType::Struct(_) => todo!(),
+            IrType::Enum(_) => todo!(),
+        }
+
+        Ok(())
     }
 }
 
@@ -123,7 +217,9 @@ struct SimulatorCompiledReferencing<'ctx> {
     llvm_unit: Module<'ctx>,
     llvm_engine: ExecutionEngine<'ctx>,
 
-    module_types: ModuleSignalTypes<'ctx>,
+    top_module_types: ModuleSignalTypes<'ctx>,
+    top_module_ports: IrPorts,
+
     all_comb_functions: Vec<JitFunction<'ctx, FunctionCombinatorialProcess>>,
 }
 
@@ -134,7 +230,8 @@ fn compile_simulator_inner<'ctx>(
 ) -> LowerResult<SimulatorCompiledReferencing<'ctx>> {
     let llvm_unit = llvm_ctx.create_module("");
 
-    let (module_types, module_functions) = lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
+    let top_module_info = &modules[top];
+    let (top_module_types, top_module_functions) = lower_module(llvm_ctx, &llvm_unit, top_module_info, 0)?;
 
     llvm_unit
         .verify()
@@ -145,7 +242,7 @@ fn compile_simulator_inner<'ctx>(
         .map_err(|e| LowerError::FailedToCreateExecutionEngine(e.to_string()))?;
 
     let mut all_comb_functions = vec![];
-    for func_name in module_functions.comb {
+    for func_name in top_module_functions.comb {
         let func = unsafe { execution_engine.get_function(&func_name)? };
         all_comb_functions.push(func);
     }
@@ -153,7 +250,8 @@ fn compile_simulator_inner<'ctx>(
     Ok(SimulatorCompiledReferencing {
         llvm_unit,
         llvm_engine: execution_engine,
-        module_types,
+        top_module_types,
+        top_module_ports: top_module_info.signals.ports.clone(),
         all_comb_functions,
     })
 }
@@ -651,6 +749,14 @@ impl Buffer {
 
     fn as_ptr(&self) -> *mut c_void {
         self.ptr.as_ptr() as *mut c_void
+    }
+
+    unsafe fn read<T>(&self, offset: usize) -> T {
+        unsafe { std::ptr::read::<T>(self.as_ptr().add(offset) as *const T) }
+    }
+
+    unsafe fn write<T>(&self, offset: usize, value: T) {
+        unsafe { std::ptr::write::<T>(self.as_ptr().add(offset) as *mut T, value) }
     }
 }
 
