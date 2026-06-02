@@ -8,44 +8,27 @@ use hwl_language::syntax::pos::Span;
 use hwl_language::util::big_int::BigUint;
 use hwl_language::util::data::IndexMapExt;
 use indexmap::IndexMap;
-use inkwell::AddressSpace;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
-use inkwell::execution_engine::ExecutionEngine;
+use inkwell::execution_engine::{ExecutionEngine, FunctionLookupError, JitFunction};
 use inkwell::module::Module;
-use inkwell::types::{ArrayType, BasicTypeEnum, StructType};
+use inkwell::targets::TargetData;
+use inkwell::types::{AnyType, ArrayType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::{AddressSpace, OptimizationLevel};
 use itertools::enumerate;
+use std::alloc::{self, Layout};
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::Arc;
-
-#[ouroboros::self_referencing]
-pub struct SimulatorCompiled {
-    llvm_context: Context,
-
-    #[borrows(llvm_context)]
-    #[not_covariant]
-    inner: SimulatorCompiledInner<'this>,
-}
-
-#[allow(dead_code)]
-struct SimulatorCompiledInner<'ctx> {
-    llvm_unit: Module<'ctx>,
-    llvm_execution_engine: ExecutionEngine<'ctx>,
-    // TODO store these in a more structured way so we can actually use them
-    llvm_functions: Vec<FunctionValue<'ctx>>,
-}
-
-#[allow(dead_code)]
-pub struct SimulatorInstance {
-    compiled: Arc<SimulatorCompiled>,
-    // TODO actual state, at least prev/next buffers
-}
 
 // TODO basics:
 //  * python wrapper for input/output
 //  * process sensitivity lists
 //  * process scheduling
+//  * implement undef
+//  * document undef semantics (ie. don't assume anything about the value part of things that are marked undef)
 //  * add global context parameter, containing assertion and print callbacks
 //
 // TODO optimize:
@@ -54,38 +37,129 @@ pub struct SimulatorInstance {
 //  * fuse sequential processes?
 //  * on-disk compilation cache
 //  * allow simulator save/restore
-pub fn compile_simulator(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
-    // TODO tree walking
-    // TODO parallelize compilation
-    // TODO optimize
-    SimulatorCompiledTryBuilder {
-        llvm_context: Context::create(),
-        inner_builder: |llvm_ctx| compile_simulator_inner(modules, top, llvm_ctx),
+pub struct SimulatorCompiled {
+    inner: SimulatorCompiledInner,
+}
+
+#[allow(dead_code)]
+pub struct SimulatorInstance {
+    compiled: Arc<SimulatorCompiled>,
+
+    ports_next: Buffer,
+    wires_next: Buffer,
+    ports_next_ptrs: Buffer,
+}
+
+impl SimulatorCompiled {
+    pub fn new(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
+        let builder = SimulatorCompiledInnerTryBuilder {
+            llvm_context: Context::create(),
+            inner_builder: |llvm_ctx| compile_simulator_inner(modules, top, llvm_ctx),
+        };
+        let inner = builder.try_build()?;
+        Ok(SimulatorCompiled { inner })
     }
-    .try_build()
+}
+
+impl SimulatorInstance {
+    pub fn new(compiled: Arc<SimulatorCompiled>) -> LowerResult<SimulatorInstance> {
+        let (module_types, llvm_engine) = compiled
+            .inner
+            .with_inner(|inner| (&inner.module_types, &inner.llvm_engine));
+
+        let target = llvm_engine.get_target_data();
+        let ports_next = Buffer::new(target, &module_types.ports_struct_ty)?;
+        let wires_next = Buffer::new(target, &module_types.wires_struct_ty)?;
+        let ports_next_ptrs = Buffer::new(target, &module_types.ports_array_ty)?;
+
+        // fill ports_next_ptrs with pointers into ports_next
+        {
+            for port_index in 0..module_types.port_indices.len() {
+                let port_offset = target
+                    .offset_of_element(&module_types.ports_struct_ty, port_index as u32)
+                    .unwrap();
+                unsafe {
+                    let port_ptr_ptr = (ports_next_ptrs.as_ptr() as *mut *mut c_void).add(port_index);
+                    let port_ptr = ports_next.as_ptr().add(port_offset as usize);
+                    std::ptr::write(port_ptr_ptr, port_ptr);
+                }
+            }
+        }
+
+        let inst = SimulatorInstance {
+            compiled,
+            ports_next,
+            wires_next,
+            ports_next_ptrs,
+        };
+        Ok(inst)
+    }
+
+    pub fn step(&mut self) {
+        // TODO careful, we're still assuming there is only one module here
+        // TODO use actual schedule, then we can get rid of this best-effort loop
+
+        let all_comb_functions = self.compiled.inner.with_inner(|inner| &inner.all_comb_functions);
+
+        for _ in 0..16 {
+            for f_comb in all_comb_functions {
+                unsafe { f_comb.call(self.ports_next.as_ptr(), self.wires_next.as_ptr()) };
+            }
+        }
+    }
+}
+
+#[ouroboros::self_referencing]
+pub struct SimulatorCompiledInner {
+    llvm_context: Context,
+
+    #[borrows(llvm_context)]
+    #[not_covariant]
+    inner: SimulatorCompiledReferencing<'this>,
+}
+
+#[allow(dead_code)]
+struct SimulatorCompiledReferencing<'ctx> {
+    llvm_unit: Module<'ctx>,
+    llvm_engine: ExecutionEngine<'ctx>,
+
+    module_types: ModuleSignalTypes<'ctx>,
+    all_comb_functions: Vec<JitFunction<'ctx, FunctionCombinatorialProcess>>,
 }
 
 fn compile_simulator_inner<'ctx>(
     modules: &IrModules,
     top: IrModule,
     llvm_ctx: &'ctx Context,
-) -> LowerResult<SimulatorCompiledInner<'ctx>> {
+) -> LowerResult<SimulatorCompiledReferencing<'ctx>> {
     let llvm_unit = llvm_ctx.create_module("");
-    lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
+
+    let (module_types, module_functions) = lower_module(llvm_ctx, &llvm_unit, &modules[top], 0)?;
 
     llvm_unit
         .verify()
         .map_err(|e| LowerError::VerificationFailed(e.to_string()))?;
 
     let execution_engine = llvm_unit
-        .create_execution_engine()
+        .create_jit_execution_engine(OptimizationLevel::None)
         .map_err(|e| LowerError::FailedToCreateExecutionEngine(e.to_string()))?;
 
-    Ok(SimulatorCompiledInner {
+    let mut all_comb_functions = vec![];
+    for func_name in module_functions.comb {
+        let func = unsafe { execution_engine.get_function(&func_name)? };
+        all_comb_functions.push(func);
+    }
+
+    Ok(SimulatorCompiledReferencing {
         llvm_unit,
-        llvm_execution_engine: execution_engine,
-        llvm_functions: vec![],
+        llvm_engine: execution_engine,
+        module_types,
+        all_comb_functions,
     })
+}
+
+pub struct ModuleFunctions {
+    comb: Vec<String>,
 }
 
 fn lower_module<'ctx>(
@@ -93,7 +167,7 @@ fn lower_module<'ctx>(
     llvm_unit: &Module<'ctx>,
     info: &IrModuleInfo,
     module_index: usize,
-) -> LowerResult {
+) -> LowerResult<(ModuleSignalTypes<'ctx>, ModuleFunctions)> {
     let IrModuleInfo {
         signals,
         large: _,
@@ -104,6 +178,7 @@ fn lower_module<'ctx>(
     } = info;
 
     let module_signal_types = build_module_signal_types(llvm_ctx, debug_info_id.span, signals)?;
+    let mut module_functions_comb = vec![];
 
     for (child_index, child) in enumerate(children) {
         match &child.inner {
@@ -116,15 +191,9 @@ fn lower_module<'ctx>(
                 todo!()
             }
             IrModuleChild::CombinatorialProcess(proc) => {
-                lower_process_comb(
-                    llvm_ctx,
-                    llvm_unit,
-                    &module_signal_types,
-                    info,
-                    proc,
-                    module_index,
-                    child_index,
-                )?;
+                let func_name = format!("module_{module_index}_child_{child_index}_comb");
+                lower_process_comb(llvm_ctx, llvm_unit, &module_signal_types, info, proc, &func_name)?;
+                module_functions_comb.push(func_name);
             }
             IrModuleChild::ModuleInternalInstance(_) => todo!(),
             IrModuleChild::ModuleExternalInstance(_) => todo!(),
@@ -133,18 +202,26 @@ fn lower_module<'ctx>(
 
     println!("{}", llvm_unit.to_string());
 
-    Ok(())
+    let module_funcs = ModuleFunctions {
+        comb: module_functions_comb,
+    };
+    Ok((module_signal_types, module_funcs))
 }
 
 #[derive(Debug)]
 struct ModuleSignalTypes<'ctx> {
-    // array of (untyped) pointers, one element per port
-    ports_array_ty: ArrayType<'ctx>,
     port_indices: IndexMap<IrPort, usize>,
-
-    // struct, one field per wire
-    wires_struct_ty: StructType<'ctx>,
     wire_indices: IndexMap<IrWire, usize>,
+
+    /// Array of (untyped) pointers, one per port.
+    /// Used for module instances, where each port is a pointer to the right signal in the parent.
+    ports_array_ty: ArrayType<'ctx>,
+    /// Struct type, one field per port.
+    /// Used to store top-level ports.
+    ports_struct_ty: StructType<'ctx>,
+    /// Struct type, one field per wire.
+    /// Used to store module instance wires.
+    wires_struct_ty: StructType<'ctx>,
 }
 
 fn build_module_signal_types<'ctx>(
@@ -156,10 +233,15 @@ fn build_module_signal_types<'ctx>(
 
     // map ports
     let mut port_indices = IndexMap::new();
-    for (port, _) in ports {
+    let mut port_types = vec![];
+    for (port, port_info) in ports {
         port_indices.insert_first(port, port_indices.len());
+
+        let ty = map_ty(ctx, &port_info.ty);
+        port_types.push(ty);
     }
-    let port_array_ty = ctx
+    let ports_struct_ty = ctx.struct_type(&port_types, false);
+    let ports_array_ty = ctx
         .ptr_type(AddressSpace::default())
         .array_type(usize_to_u31(span, port_indices.len())?);
 
@@ -175,11 +257,21 @@ fn build_module_signal_types<'ctx>(
     let wires_struct_ty = ctx.struct_type(&wire_types, false);
 
     Ok(ModuleSignalTypes {
-        ports_array_ty: port_array_ty,
         port_indices,
-        wires_struct_ty,
         wire_indices,
+        ports_array_ty,
+        ports_struct_ty,
+        wires_struct_ty,
     })
+}
+
+/// Type of combinatorial process functions. Signature:
+/// * pointer to next ports
+/// * pointer to next wires
+type FunctionCombinatorialProcess = unsafe extern "C" fn(*mut c_void, *mut c_void) -> ();
+fn build_function_type_combinatorial_process(llvm_ctx: &Context) -> FunctionType<'_> {
+    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
+    llvm_ctx.void_type().fn_type(&[ty_ptr.into(), ty_ptr.into()], false)
 }
 
 fn lower_process_comb<'ctx>(
@@ -188,18 +280,12 @@ fn lower_process_comb<'ctx>(
     module_signal_types: &ModuleSignalTypes<'ctx>,
     ir_module: &IrModuleInfo,
     ir_proc: &IrCombinatorialProcess,
-    module_index: usize,
-    child_index: usize,
-) -> LowerResult {
+    func_name: &str,
+) -> LowerResult<FunctionValue<'ctx>> {
     let IrCombinatorialProcess { variables, block } = ir_proc;
 
-    // signature:
-    // * pointer to next ports
-    // * pointer to next wires
-    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
-    let ty_func = llvm_ctx.void_type().fn_type(&[ty_ptr.into(), ty_ptr.into()], false);
-
-    let func_name = format!("module_{module_index}_child_{child_index}_comb");
+    assert!(llvm_unit.get_function(&func_name).is_none());
+    let ty_func = build_function_type_combinatorial_process(llvm_ctx);
     let function = llvm_unit.add_function(&func_name, ty_func, None);
 
     let param_next_ports = function.get_nth_param(0).unwrap();
@@ -223,8 +309,7 @@ fn lower_process_comb<'ctx>(
     builder.lower_block(block)?;
     builder.llvm_builder.build_return(None)?;
 
-    // TODO actually return something
-    Ok(())
+    Ok(function)
 }
 
 struct ProcessBuilder<'ir, 'ctx, 't> {
@@ -512,11 +597,65 @@ pub enum LowerError {
     BuilderError(BuilderError),
     VerificationFailed(String),
     FailedToCreateExecutionEngine(String),
+    FunctionLookupError(FunctionLookupError),
     IntTooLarge(Span, BigUint),
+    BufferError(BufferError),
 }
 
 impl From<BuilderError> for LowerError {
-    fn from(error: BuilderError) -> Self {
-        LowerError::BuilderError(error)
+    fn from(value: BuilderError) -> Self {
+        LowerError::BuilderError(value)
+    }
+}
+
+impl From<FunctionLookupError> for LowerError {
+    fn from(value: FunctionLookupError) -> Self {
+        LowerError::FunctionLookupError(value)
+    }
+}
+
+impl From<BufferError> for LowerError {
+    fn from(value: BufferError) -> Self {
+        LowerError::BufferError(value)
+    }
+}
+
+struct Buffer {
+    layout: Layout,
+    ptr: NonNull<u8>,
+}
+
+#[derive(Debug)]
+pub enum BufferError {
+    InvalidLayout,
+    AllocationFailed,
+}
+
+impl Buffer {
+    fn new(target: &TargetData, ty: &dyn AnyType) -> Result<Buffer, BufferError> {
+        let size = target
+            .get_store_size(ty)
+            .try_into()
+            .map_err(|_| BufferError::InvalidLayout)?;
+        let align = target
+            .get_abi_alignment(ty)
+            .try_into()
+            .map_err(|_| BufferError::InvalidLayout)?;
+        let layout = Layout::from_size_align(size, align).map_err(|_| BufferError::InvalidLayout)?;
+
+        let ptr = unsafe { alloc::alloc_zeroed(layout) };
+        let ptr = NonNull::new(ptr).ok_or(BufferError::AllocationFailed)?;
+
+        Ok(Buffer { layout, ptr })
+    }
+
+    fn as_ptr(&self) -> *mut c_void {
+        self.ptr.as_ptr() as *mut c_void
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }

@@ -17,7 +17,7 @@ use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
-use hwl_simulator::lower::compile_simulator;
+use hwl_simulator::lower::{SimulatorCompiled, SimulatorInstance};
 use hwl_util::io::IoErrorExt;
 use itertools::Itertools;
 use std::process::ExitCode;
@@ -220,7 +220,8 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         // TODO properly implement this
         if output_sim.is_some() {
             assert_eq!(top_modules.len(), 1);
-            compile_simulator(&ir_db.modules, top_modules[0]).unwrap();
+            let sim = SimulatorCompiled::new(&ir_db.modules, top_modules[0]).unwrap();
+            let _ = SimulatorInstance::new(Arc::new(sim)).unwrap();
         }
     }
 
