@@ -99,6 +99,10 @@ fn component_to_diagnostic(modules: &IrModules, component: NonEmptyVec<IrModule>
     DiagnosticError::new_multiple("cyclic module instantiation", messages)
 }
 
+// TODO change this to:
+//   * not use stack-based recursion, can overflow -> double-check fix on real large project
+//   * return a valid scheduling if no connected components were found
+//   * add some basic and hopefully less basic tests?
 fn find_strongly_connected_components<T: Eq + Hash + Copy, C: IntoIterator<Item = T>>(
     nodes: impl IntoIterator<Item = T>,
     children: impl Fn(T) -> C,
