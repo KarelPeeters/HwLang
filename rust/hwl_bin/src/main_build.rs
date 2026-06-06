@@ -17,7 +17,7 @@ use hwl_language::syntax::token::Tokenizer;
 use hwl_language::util::arena::IndexType;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
-use hwl_simulator::lower::{SimulatorInstance, SimulatorModule};
+use hwl_simulator::simulator::{SimulatorInstance, SimulatorModule};
 use hwl_util::io::IoErrorExt;
 use itertools::Itertools;
 use std::process::ExitCode;

@@ -33,7 +33,7 @@ use hwl_language::util::data::GrowVec;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
-use hwl_simulator::lower::{SimulatorInstance as RustSimulatorInstance, SimulatorModule as RustSimulatorModule};
+use hwl_simulator::simulator::{SimulatorInstance as RustSimulatorInstance, SimulatorModule as RustSimulatorModule};
 use hwl_util::io::IoErrorExt;
 use itertools::{Either, Itertools, enumerate};
 use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
