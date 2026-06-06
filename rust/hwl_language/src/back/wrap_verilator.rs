@@ -3,7 +3,7 @@ use crate::front::diagnostic::{DiagError, Diagnostics};
 use crate::front::item::ElaborationArenas;
 use crate::front::value::CompileValue;
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
-use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
+use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo, IrPorts};
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Spanned;
 use crate::util::arena::{Arena, IndexType};
@@ -67,7 +67,7 @@ struct VerilatedApi {
 pub struct VerilatedLib {
     lib: Arc<Container<VerilatedApi>>,
 
-    ports: Arena<IrPort, IrPortInfo>,
+    ports: IrPorts,
     ports_named: IndexMap<String, IrPort>,
 }
 

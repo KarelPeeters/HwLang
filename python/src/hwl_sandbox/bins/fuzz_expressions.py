@@ -265,8 +265,9 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
     # put through some random values
     for _ in range(sample_count):
         values = [sample_from_range(rng, r) for r, _ in sampled_code.inputs]
-        res_func, res_mod = compiled.eval(values)
-        assert res_func == res_mod, f"Mismatch for code {sampled_code}, values `{values}`: function {res_func} != module {res_mod}"
+        res_func, res_ver, res_sim = compiled.eval(values)
+        assert res_func == res_ver == res_sim, \
+            f"Mismatch for code {sampled_code}, values `{values}`: function {res_func}, verilator {res_ver}, simulator {res_sim}"
 
 
 def main_iteration(build_dir_base: Path, sample_count: int, seed_base: int, i: int):

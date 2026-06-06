@@ -3,9 +3,9 @@ use hwl_language::front::diagnostic::{DiagResult, Diagnostics};
 use hwl_language::front::item::ElaborationArenas;
 use hwl_language::front::value::{CompileValue, SimpleCompileValue};
 use hwl_language::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrCombinatorialProcess, IrExpression, IrExpressionLarge, IrIfStatement, IrModule,
-    IrModuleChild, IrModuleInfo, IrModules, IrPort, IrPorts, IrSignal, IrSignalOrVariable, IrSignals, IrStatement,
-    IrType, IrVariable, IrVariables, IrWire,
+    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
+    IrIfStatement, IrModule, IrModuleChild, IrModuleInfo, IrModules, IrPort, IrPorts, IrSignal, IrSignalOrVariable,
+    IrSignals, IrStatement, IrType, IrVariable, IrVariables, IrWire,
 };
 use hwl_language::mid::steps::IrTargetSteps;
 use hwl_language::syntax::ast::PortDirection;
@@ -25,55 +25,79 @@ use inkwell::{AddressSpace, OptimizationLevel};
 use itertools::enumerate;
 use std::alloc::{self, Layout};
 use std::ffi::c_void;
+use std::fmt::{self, Display, Formatter};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
-// TODO basics:
-//  * python wrapper for input/output
-//  * process sensitivity lists
-//  * process scheduling
-//  * implement undef
-//  * document undef semantics (ie. don't assume anything about the value part of things that are marked undef)
-//  * add global context parameter, containing assertion and print callbacks
-//
-// TODO optimize:
-//  * parallelize module and maybe even process compilation
-//  * enable process optimization
-//  * fuse sequential processes?
-//  * on-disk compilation cache
-//  * allow simulator save/restore
-//
-// TODO fancy features:
-//  * add accessors and force override for intermediate signals
-//  * add GUI
-//
-pub struct SimulatorCompiled {
-    inner: SimulatorCompiledInner,
+/// A fully compiled and prepared simulator module.
+/// This does not contain any simulation state and can be reused between multiple [SimulatorInstance] instances.
+pub struct SimulatorModule {
+    inner: SimulatorModuleInner,
 }
 
+/// A simulation instance. This consists of a [SimulatorModule] plus any necessary simulation state.
 #[allow(dead_code)]
 pub struct SimulatorInstance {
-    compiled: Arc<SimulatorCompiled>,
+    module: Arc<SimulatorModule>,
+
+    curr_time: u64,
 
     ports_next: Buffer,
     wires_next: Buffer,
     ports_next_ptrs: Buffer,
 }
 
-impl SimulatorCompiled {
-    pub fn new(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorCompiled> {
-        let builder = SimulatorCompiledInnerTryBuilder {
+/// Inner content of [SimulatorModule].
+/// Uses [ouroboros] to allow the LLVM state to refer to the 'ctx lifetime, .
+#[ouroboros::self_referencing]
+struct SimulatorModuleInner {
+    llvm_context: Context,
+
+    #[borrows(llvm_context)]
+    #[not_covariant]
+    inner: SimulatorCompiledReferencing<'this>,
+}
+
+/// Inner content of [SimulatorModule].
+/// This contains everything except the [Contex], which needs to be outside of this struct for lifetime reasons.
+#[allow(dead_code)]
+struct SimulatorCompiledReferencing<'ctx> {
+    llvm_unit: Module<'ctx>,
+    llvm_engine: ExecutionEngine<'ctx>,
+
+    top_module_types: ModuleSignalTypes<'ctx>,
+    top_module_ports: IrPorts,
+    top_module_ports_named: IndexMap<String, IrPort>,
+
+    all_comb_functions: Vec<JitFunction<'ctx, FunctionCombinatorialProcess>>,
+}
+
+/// [SimulatorModule] is an immutable compiled module, should not have any cross-thread synchronization concerns.
+unsafe impl Send for SimulatorModule {}
+unsafe impl Sync for SimulatorModule {}
+
+impl SimulatorModule {
+    pub fn new(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorModule> {
+        let builder = SimulatorModuleInnerTryBuilder {
             llvm_context: Context::create(),
             inner_builder: |llvm_ctx| compile_simulator_inner(modules, top, llvm_ctx),
         };
         let inner = builder.try_build()?;
-        Ok(SimulatorCompiled { inner })
+        Ok(SimulatorModule { inner })
+    }
+
+    pub fn ports(&self) -> &IrPorts {
+        self.inner.with_inner(|inner| &inner.top_module_ports)
+    }
+
+    pub fn ports_named(&self) -> &IndexMap<String, IrPort> {
+        self.inner.with_inner(|inner| &inner.top_module_ports_named)
     }
 }
 
 impl SimulatorInstance {
-    pub fn new(compiled: Arc<SimulatorCompiled>) -> LowerResult<SimulatorInstance> {
+    pub fn new(compiled: Arc<SimulatorModule>) -> LowerResult<SimulatorInstance> {
         let (top_module_types, llvm_engine) = compiled
             .inner
             .with_inner(|inner| (&inner.top_module_types, &inner.llvm_engine));
@@ -85,16 +109,18 @@ impl SimulatorInstance {
 
         // fill ports_next_ptrs with pointers into ports_next
         for port_index in 0..top_module_types.port_indices.len() {
+            let port_ptr_offset = port_index * (target.get_pointer_byte_size(None) as usize);
             let port_offset = target
                 .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
                 .unwrap() as usize;
             unsafe {
-                ports_next_ptrs.write(port_index, ports_next.as_ptr().add(port_offset));
+                ports_next_ptrs.write(port_ptr_offset, ports_next.as_ptr().add(port_offset));
             }
         }
 
         let inst = SimulatorInstance {
-            compiled,
+            module: compiled,
+            curr_time: 0,
             ports_next,
             wires_next,
             ports_next_ptrs,
@@ -102,15 +128,26 @@ impl SimulatorInstance {
         Ok(inst)
     }
 
-    pub fn step(&mut self) {
+    pub fn module(&self) -> &SimulatorModule {
+        &self.module
+    }
+
+    pub fn step(&mut self, increment_time: u64) {
         // TODO careful, we're still assuming there is only one module here
         // TODO use actual schedule, then we can get rid of this best-effort loop
+        const ITER_COUNT: usize = 16;
 
-        let all_comb_functions = self.compiled.inner.with_inner(|inner| &inner.all_comb_functions);
+        let _ = increment_time;
 
-        for _ in 0..16 {
+        let all_comb_functions = self.module.inner.with_inner(|inner| &inner.all_comb_functions);
+        for _ in 0..ITER_COUNT {
             for f_comb in all_comb_functions {
-                unsafe { f_comb.call(self.ports_next_ptrs.as_ptr(), self.wires_next.as_ptr()) };
+                unsafe {
+                    f_comb.call(
+                        self.ports_next_ptrs.as_ptr() as *mut *mut c_void,
+                        self.wires_next.as_ptr(),
+                    )
+                };
             }
         }
     }
@@ -118,7 +155,7 @@ impl SimulatorInstance {
     pub fn get_port(&self, port: IrPort) -> CompileValue {
         // extract inner
         let (top_module_ports, top_module_types, llvm_engine) = self
-            .compiled
+            .module
             .inner
             .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
 
@@ -140,7 +177,7 @@ impl SimulatorInstance {
                 match value {
                     0 => CompileValue::new_bool(false),
                     1 => CompileValue::new_bool(true),
-                    _ => todo!("err"),
+                    _ => todo!("internal err"),
                 }
             }
             IrType::Int(_) => todo!(),
@@ -160,7 +197,7 @@ impl SimulatorInstance {
     ) -> DiagResult {
         // extract inner
         let (top_module_ports, top_module_types, llvm_engine) = self
-            .compiled
+            .module
             .inner
             .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
 
@@ -203,26 +240,6 @@ impl SimulatorInstance {
     }
 }
 
-#[ouroboros::self_referencing]
-pub struct SimulatorCompiledInner {
-    llvm_context: Context,
-
-    #[borrows(llvm_context)]
-    #[not_covariant]
-    inner: SimulatorCompiledReferencing<'this>,
-}
-
-#[allow(dead_code)]
-struct SimulatorCompiledReferencing<'ctx> {
-    llvm_unit: Module<'ctx>,
-    llvm_engine: ExecutionEngine<'ctx>,
-
-    top_module_types: ModuleSignalTypes<'ctx>,
-    top_module_ports: IrPorts,
-
-    all_comb_functions: Vec<JitFunction<'ctx, FunctionCombinatorialProcess>>,
-}
-
 fn compile_simulator_inner<'ctx>(
     modules: &IrModules,
     top: IrModule,
@@ -252,6 +269,7 @@ fn compile_simulator_inner<'ctx>(
         llvm_engine: execution_engine,
         top_module_types,
         top_module_ports: top_module_info.signals.ports.clone(),
+        top_module_ports_named: top_module_info.signals.ports_named.clone(),
         all_comb_functions,
     })
 }
@@ -327,7 +345,11 @@ fn build_module_signal_types<'ctx>(
     span: Span,
     signals: &IrSignals,
 ) -> Result<ModuleSignalTypes<'ctx>, LowerError> {
-    let IrSignals { ports, wires, ports_named: _ } = signals;
+    let IrSignals {
+        ports,
+        wires,
+        ports_named: _,
+    } = signals;
 
     // map ports
     let mut port_indices = IndexMap::new();
@@ -363,10 +385,8 @@ fn build_module_signal_types<'ctx>(
     })
 }
 
-/// Type of combinatorial process functions. Signature:
-/// * pointer to next ports
-/// * pointer to next wires
-type FunctionCombinatorialProcess = unsafe extern "C" fn(*mut c_void, *mut c_void) -> ();
+/// Type of combinatorial process functions
+type FunctionCombinatorialProcess = unsafe extern "C" fn(next_ports: *mut *mut c_void, next_wires: *mut c_void) -> ();
 fn build_function_type_combinatorial_process(llvm_ctx: &Context) -> FunctionType<'_> {
     let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
     llvm_ctx.void_type().fn_type(&[ty_ptr.into(), ty_ptr.into()], false)
@@ -596,6 +616,15 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                     let inner = self.eval_expr(span, inner)?.into_int_value();
                     self.llvm_builder.build_not(inner, "")?.into()
                 }
+                IrExpressionLarge::BoolBinary(op, lhs, rhs) => {
+                    let lhs = self.eval_expr(span, lhs)?.into_int_value();
+                    let rhs = self.eval_expr(span, rhs)?.into_int_value();
+                    match op {
+                        IrBoolBinaryOp::And => self.llvm_builder.build_and(lhs, rhs, "")?.into(),
+                        IrBoolBinaryOp::Or => self.llvm_builder.build_or(lhs, rhs, "")?.into(),
+                        IrBoolBinaryOp::Xor => self.llvm_builder.build_xor(lhs, rhs, "")?.into(),
+                    }
+                }
                 // TODO for steps, don't just evaluate the base first, immediately apply the steps
                 _ => todo!("{value:?}"),
             },
@@ -617,11 +646,11 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
 
                 match sig {
                     IrSignal::Port(port) => {
-                        let wire_index = *self.module_signal_types.port_indices.get(&port).unwrap();
+                        let port_index = *self.module_signal_types.port_indices.get(&port).unwrap();
 
                         let gep_indices = &[
                             ty_i32.const_zero(),
-                            ty_i32.const_int(usize_to_u31(span, wire_index)?.into(), false),
+                            ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false),
                         ];
                         let port_ptr_ptr = unsafe {
                             self.llvm_builder.build_gep(
@@ -700,24 +729,6 @@ pub enum LowerError {
     BufferError(BufferError),
 }
 
-impl From<BuilderError> for LowerError {
-    fn from(value: BuilderError) -> Self {
-        LowerError::BuilderError(value)
-    }
-}
-
-impl From<FunctionLookupError> for LowerError {
-    fn from(value: FunctionLookupError) -> Self {
-        LowerError::FunctionLookupError(value)
-    }
-}
-
-impl From<BufferError> for LowerError {
-    fn from(value: BufferError) -> Self {
-        LowerError::BufferError(value)
-    }
-}
-
 struct Buffer {
     layout: Layout,
     ptr: NonNull<u8>,
@@ -751,17 +762,59 @@ impl Buffer {
         self.ptr.as_ptr() as *mut c_void
     }
 
-    unsafe fn read<T>(&self, offset: usize) -> T {
-        unsafe { std::ptr::read::<T>(self.as_ptr().add(offset) as *const T) }
+    unsafe fn read<T>(&self, offset_bytes: usize) -> T {
+        unsafe { std::ptr::read::<T>(self.as_ptr().add(offset_bytes) as *const T) }
     }
 
-    unsafe fn write<T>(&self, offset: usize, value: T) {
-        unsafe { std::ptr::write::<T>(self.as_ptr().add(offset) as *mut T, value) }
+    unsafe fn write<T>(&self, offset_bytes: usize, value: T) {
+        unsafe { std::ptr::write::<T>(self.as_ptr().add(offset_bytes) as *mut T, value) }
     }
 }
 
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+    }
+}
+
+impl From<BuilderError> for LowerError {
+    fn from(value: BuilderError) -> Self {
+        LowerError::BuilderError(value)
+    }
+}
+
+impl From<FunctionLookupError> for LowerError {
+    fn from(value: FunctionLookupError) -> Self {
+        LowerError::FunctionLookupError(value)
+    }
+}
+
+impl From<BufferError> for LowerError {
+    fn from(value: BufferError) -> Self {
+        LowerError::BufferError(value)
+    }
+}
+
+impl Display for LowerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            LowerError::BuilderError(e) => write!(f, "builder error: {e}"),
+            LowerError::VerificationFailed(e) => write!(f, "verification failed: {e}"),
+            LowerError::FailedToCreateExecutionEngine(e) => write!(f, "failed to create execution engine: {e}"),
+            LowerError::FunctionLookupError(e) => {
+                write!(f, "function lookup error: {e}")
+            }
+            LowerError::IntTooLarge(_, i) => write!(f, "int too large: {i}"),
+            LowerError::BufferError(e) => write!(f, "buffer error: {e:?}"),
+        }
+    }
+}
+
+impl Display for BufferError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            BufferError::InvalidLayout => write!(f, "invalid layout"),
+            BufferError::AllocationFailed => write!(f, "allocation failed"),
+        }
     }
 }

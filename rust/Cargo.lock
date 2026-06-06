@@ -588,6 +588,7 @@ name = "hwl_python"
 version = "0.1.0"
 dependencies = [
  "hwl_language",
+ "hwl_simulator",
  "hwl_util",
  "itertools 0.13.0",
  "num-bigint",

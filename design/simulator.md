@@ -1,0 +1,33 @@
+# Basics
+
+* python wrapper for input/output
+* process sensitivity lists
+* process scheduling
+* implement undef
+* document undef semantics (ie. don't assume anything about the value part of things that are marked undef)
+* add global context parameter, containing assertion and print callbacks
+
+# Optimization
+
+* parallelize module and maybe even process compilation
+* enable process optimization
+* fuse sequential processes?
+* on-disk compilation cache
+* allow simulator save/restore
+* first run with un-optimized functions, then gradually swap them in as they complete
+* PGO and re-optimize?
+* implement rare things (X/Z/assertions/prints?) with a callback to Rust to reduce code size?
+
+# Fancy features
+
+* add accessors and force override for intermediate signals
+* add GUI
+* add backdoor read: pretty simple, just read the right bits in the state buffer
+* add backdoor write (force): additional stage after every signal that writes to forced signals,
+  that re-sets the value to the forced one
+
+# Resources
+
+* https://llvm.org/devmtg/2023-10/slides/techtalks/Erhart-Arcilator-FastAndCycleAccurateHardwareSimulationInCIRCT.pdf
+* https://rcor.me/papers/cgo22rolag.pdf
+* https://github.com/verilator/verilator

@@ -7,7 +7,6 @@ import hwl
 from hwl_sandbox.common.util import compile_custom
 
 
-# TODO also include the result of the C++ backend once that's properly integrated
 @dataclass
 class CompiledCompare:
     input_count: int
@@ -16,28 +15,37 @@ class CompiledCompare:
 
     eval_func: hwl.Value
     eval_mod: hwl.Module
-    eval_mod_inst: hwl.VerilatedInstance
+    eval_mod_inst_ver: hwl.VerilatedInstance
+    eval_mod_inst_sim: hwl.SimulatorInstance
 
-    def eval(self, values: List[object]) -> Tuple[object, object]:
+    def eval(self, values: List[object]) -> Tuple[object, object, object]:
         assert len(values) == self.input_count, \
             f"Input value count mismatch, expected {self.input_count}, got {len(values)}"
 
         # eval func
-        val_res_func = self.eval_func(*values)
+        result_func = self.eval_func(*values)
 
-        # eval module
-        ports = self.eval_mod_inst.ports
-        for p_name, v in zip(ports, values):
-            ports[p_name].value = v
-        self.eval_mod_inst.step(1)
-        val_res_mod = ports.p_res.value
+        # eval verilator
+        ports_ver = self.eval_mod_inst_ver.ports
+        for p_name, v in zip(ports_ver, values):
+            ports_ver[p_name].value = v
+        self.eval_mod_inst_ver.step(1)
+        result_mod_ver = ports_ver.p_res.value
 
-        return val_res_func, val_res_mod
+        # eval llvm sim
+        ports_sim = self.eval_mod_inst_sim.ports
+        for p_name, v in zip(ports_sim, values):
+            ports_sim[p_name].value = v
+        self.eval_mod_inst_sim.step(1)
+        result_mod_sim = ports_sim.p_res.value
+
+        return result_func, result_mod_ver, result_mod_sim
 
     def eval_assert(self, values: List[object], expected: object):
-        val_res_func, val_res_mod = self.eval(values)
-        assert val_res_func == expected, f"Function result {val_res_func} != expected {expected}"
-        assert val_res_mod == expected, f"Module result {val_res_mod} != expected {expected}"
+        result_func, result_mod_ver, result_mod_sim = self.eval(values)
+        assert result_func == expected, f"Function result {result_func} != expected {expected}"
+        assert result_mod_ver == expected, f"Verilator result {result_mod_ver} != expected {expected}"
+        assert result_mod_sim == expected, f"LLVM sim result {result_mod_sim} != expected {expected}"
 
 
 def compare_codegen(ty_inputs: List[str], ty_res: str, body: str, prefix: str) -> hwl.Compile:
@@ -94,14 +102,16 @@ def compare_body(
     print(eval_mod.as_verilog().source)
 
     build_dir.mkdir(parents=True, exist_ok=True)
-    eval_mod_inst = eval_mod.as_verilated(build_dir).instance()
+    eval_mod_inst_ver = eval_mod.as_verilated(build_dir).instance()
+    eval_mod_inst_sim = eval_mod.as_simulator().instance()
 
     return CompiledCompare(
         input_count=len(ty_inputs),
         compile=c,
         eval_func=eval_func,
         eval_mod=eval_mod,
-        eval_mod_inst=eval_mod_inst
+        eval_mod_inst_ver=eval_mod_inst_ver,
+        eval_mod_inst_sim=eval_mod_inst_sim,
     )
 
 
