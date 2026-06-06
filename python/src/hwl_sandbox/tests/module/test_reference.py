@@ -1,11 +1,9 @@
-from pathlib import Path
-
 import hwl
 
-from hwl_sandbox.common.util import compile_custom, diag_error
+from hwl_sandbox.common.util import BuildSim, compile_custom, diag_error
 
 
-def test_ref_port_read(tmp_dir: Path):
+def test_ref_port_read(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(8)) {
         comb {
@@ -15,14 +13,14 @@ def test_ref_port_read(tmp_dir: Path):
     }
     """
     top: hwl.Module = compile_custom(src).resolve("top.top")
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
     for v in [0, 4]:
         inst.ports.x.value = v
         inst.step(1)
         assert inst.ports.y.value == v
 
 
-def test_ref_port_write(tmp_dir: Path):
+def test_ref_port_write(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(8)) {
         comb {
@@ -32,7 +30,7 @@ def test_ref_port_write(tmp_dir: Path):
     }
     """
     top: hwl.Module = compile_custom(src).resolve("top.top")
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
     for v in [0, 4]:
         inst.ports.x.value = v
         inst.step(1)

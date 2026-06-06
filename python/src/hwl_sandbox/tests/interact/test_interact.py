@@ -2,7 +2,6 @@ from pathlib import Path
 
 import hwl
 import pytest
-from hwl.hwl import DiagnosticException
 
 from hwl_sandbox.common.util import compile_custom, diag_error
 
@@ -81,7 +80,7 @@ def test_call_type():
     assert str(uint(8)) == "int(0..256)"
 
 
-def test_interact_struct(tmp_dir: Path):
+def test_interact_struct():
     src = """
     struct Pair { x: uint(8), y: bool }
     fn f(x: uint(8), y: bool) -> Pair {

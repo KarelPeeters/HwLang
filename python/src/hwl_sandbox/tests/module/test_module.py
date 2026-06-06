@@ -2,10 +2,10 @@ from pathlib import Path
 
 import hwl
 
-from hwl_sandbox.common.util import compile_custom, diag_error
+from hwl_sandbox.common.util import compile_custom, diag_error, BuildSim
 
 
-def test_port_reg_name(tmpdir: Path):
+def test_port_reg_name(build_sim: BuildSim):
     src = """
     module foo ports(clk: in clock, a: out sync(clk) bool) {
         clocked(clk) {
@@ -17,10 +17,10 @@ def test_port_reg_name(tmpdir: Path):
 
     c = compile_custom(src)
     m: hwl.Module = c.resolve("top.foo")
-    m.as_verilated(tmpdir)
+    _ = build_sim(m)
 
 
-def test_module_instance_simple(tmp_dir: Path):
+def test_module_instance_simple(build_sim: BuildSim):
     src = """
     module parent ports(x: in async bool, y: out async bool) { instance child ports(x, y); }
     module child ports(x: in async bool, y: out async bool) { comb { y = x; } }
@@ -29,8 +29,8 @@ def test_module_instance_simple(tmp_dir: Path):
     c = compile_custom(src)
     parent: hwl.Module = c.resolve("top.parent")
     print(parent.as_verilog().source)
-    parent_verilated: hwl.ModuleVerilated = parent.as_verilated(tmp_dir)
-    parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
+    parent_verilated = build_sim(parent)
+    parent_inst = parent_verilated.instance()
 
     for v in [False, True, False, True]:
         parent_inst.ports.x.value = v
@@ -38,7 +38,7 @@ def test_module_instance_simple(tmp_dir: Path):
         assert parent_inst.ports.y.value == v
 
 
-def test_module_instance_generic(tmp_dir: Path):
+def test_module_instance_generic(build_sim: BuildSim):
     src = """
     module parent ports(x: in async uint(4), y: out async uint(4)) { instance child(N=4) ports(x, y); }
     module child(N: uint) ports(x: in async uint(N), y: out async uint(N)) { comb { y = x; } }
@@ -47,8 +47,8 @@ def test_module_instance_generic(tmp_dir: Path):
     c = compile_custom(src)
     parent: hwl.Module = c.resolve("top.parent")
     print(parent.as_verilog().source)
-    parent_verilated: hwl.ModuleVerilated = parent.as_verilated(tmp_dir)
-    parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
+    parent_verilated = build_sim(parent)
+    parent_inst = parent_verilated.instance()
 
     for v in range(2 ** 4):
         parent_inst.ports.x.value = v
@@ -56,7 +56,7 @@ def test_module_instance_generic(tmp_dir: Path):
         assert parent_inst.ports.y.value == v
 
 
-def test_wire_driven_by_child(tmp_dir: Path):
+def test_wire_driven_by_child(build_sim: BuildSim):
     src = """
     module parent ports(y: out const bool) {
         wire w: bool;
@@ -69,14 +69,14 @@ def test_wire_driven_by_child(tmp_dir: Path):
     c = compile_custom(src)
     parent: hwl.Module = c.resolve("top.parent")
     print(parent.as_verilog().source)
-    parent_verilated: hwl.ModuleVerilated = parent.as_verilated(tmp_dir)
-    parent_inst: hwl.VerilatedInstance = parent_verilated.instance()
+    parent_verilated = build_sim(parent)
+    parent_inst = parent_verilated.instance()
 
     parent_inst.step(1)
     assert parent_inst.ports.y.value is True
 
 
-def test_interface_access(tmp_dir: Path):
+def test_interface_access(build_sim: BuildSim):
     src = """
     interface Foo {
         x: bool,
@@ -92,8 +92,8 @@ def test_interface_access(tmp_dir: Path):
     c = compile_custom(src)
     top: hwl.Module = c.resolve("top.top")
     print(top.as_verilog().source)
-    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir)
-    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+    top_verilated = build_sim(top)
+    top_inst = top_verilated.instance()
 
     for v in [False, True, False, True]:
         top_inst.ports.a_x.value = v
@@ -102,6 +102,8 @@ def test_interface_access(tmp_dir: Path):
 
 
 def test_instantiate_external_module(tmp_dir: Path):
+    """This test only supports verilator for now, the builtin simulator does not support external verilog files yet."""
+
     src = """
     external module external_module(W: natural) ports(x: in async uint(W), y: out async uint(W+1))
     module top ports(x: in async uint(4), y: out async uint(5)) {
@@ -122,7 +124,41 @@ def test_instantiate_external_module(tmp_dir: Path):
         assert top_inst.ports.y.value == v + 1
 
 
-def test_instantiate_zero_width_ports(tmp_dir: Path):
+def test_instantiate_internal_zero_width_ports(build_sim: BuildSim):
+    src = """
+    module top ports(
+        x: in async uint(0),
+        y0: out async uint(0),
+        y1: out async uint(0),
+    ) {
+        instance internal_module ports(x, y0=y0, y1=y1);
+    }
+
+    module internal_module ports(
+        x: in async uint(0),
+        y0: out async uint(0),
+        y1: out async uint(0),
+    ) {
+        comb {
+            y0 = x;
+            y1 = x;
+        }
+    }
+    
+    """
+    c = compile_custom(src)
+    top: hwl.Module = c.resolve("top.top")
+    print(top.as_verilog().source)
+
+    inst = build_sim(top).instance()
+
+    inst.ports.x.value = 0
+    inst.step(1)
+    assert inst.ports.y0.value == 0
+    assert inst.ports.y1.value == 0
+
+
+def test_instantiate_mixed_zero_width_ports(tmp_dir: Path):
     src = """
     module top ports(
         x: in async uint(0),
@@ -155,13 +191,13 @@ def test_instantiate_zero_width_ports(tmp_dir: Path):
     print(top.as_verilog().source)
 
     extra_verilog_files = [Path(__file__).parent / "external.v"]
-    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
-    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+    verilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
+    inst = verilated.instance()
 
-    top_inst.ports.x.value = 0
-    top_inst.step(1)
-    assert top_inst.ports.y0.value == 0
-    assert top_inst.ports.y1.value == 0
+    inst.ports.x.value = 0
+    inst.step(1)
+    assert inst.ports.y0.value == 0
+    assert inst.ports.y1.value == 0
 
 
 def test_instantiate_external_module_no_ports(tmp_dir: Path):
@@ -176,8 +212,8 @@ def test_instantiate_external_module_no_ports(tmp_dir: Path):
     print(top.as_verilog().source)
 
     extra_verilog_files = [Path(__file__).parent / "external.v"]
-    top_verilated: hwl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
-    top_inst: hwl.VerilatedInstance = top_verilated.instance()
+    top_verilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
+    top_inst = top_verilated.instance()
 
     top_inst.step(1)
 
@@ -261,7 +297,7 @@ def test_diamond_instantiation():
     print(m.as_verilog().source)
 
 
-def test_interface_chain(tmp_dir: Path):
+def test_interface_chain(build_sim: BuildSim):
     src = """
     interface foo {
         d: uint(8),
@@ -278,7 +314,7 @@ def test_interface_chain(tmp_dir: Path):
     }
     """
     m: hwl.Module = compile_custom(src).resolve("top.top")
-    inst = m.as_verilated(tmp_dir).instance()
+    inst = build_sim(m).instance()
 
     for v in [0, 1, 2, 3]:
         inst.ports.x_d.value = v
@@ -336,7 +372,7 @@ def test_input_port_no_process():
     assert verilog.count("always @(") == 1
 
 
-def test_module_instance_expand_port_simple(tmp_dir: Path):
+def test_module_instance_expand_port_simple(build_sim: BuildSim):
     # test that port type expansion works correctly
     src = """
     module parent ports(x: in async uint(2), y: out async uint(5)) {
@@ -349,7 +385,7 @@ def test_module_instance_expand_port_simple(tmp_dir: Path):
 
     top = compile_custom(src).resolve_module("top.parent")
     print(top.as_verilog().source)
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for v in range(2 ** 2):
         inst.ports.x.value = v
@@ -357,7 +393,7 @@ def test_module_instance_expand_port_simple(tmp_dir: Path):
         assert inst.ports.y.value == v
 
 
-def test_module_instance_expand_port_tuple(tmp_dir: Path):
+def test_module_instance_expand_port_tuple(build_sim: BuildSim):
     # test that port type expansion works correctly
     src = """
     module parent ports(x: in async Tuple(uint(2), bool), y: out async Tuple(uint(5), bool)) {
@@ -370,7 +406,7 @@ def test_module_instance_expand_port_tuple(tmp_dir: Path):
 
     top = compile_custom(src).resolve_module("top.parent")
     print(top.as_verilog().source)
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for v_i in range(2 ** 2):
         for v_b in [False, True]:
@@ -418,7 +454,7 @@ def test_module_duplicate_port_name_instantiate():
         compile_custom(src).resolve("top.top")
 
 
-def test_module_instance_output_wrong_type(tmp_dir: Path):
+def test_module_instance_output_wrong_type(build_sim: BuildSim):
     src = """
     module top ports(y: out async bool) {
         instance child ports(y=y);
@@ -432,7 +468,7 @@ def test_module_instance_output_wrong_type(tmp_dir: Path):
         compile_custom(src).resolve("top.top")
 
 
-def test_module_instance_output_step(tmp_dir: Path):
+def test_module_instance_output_step(build_sim: BuildSim):
     src = """
     module top ports(x: in async [2]bool, y: out async [2]bool) {
         instance child ports(x=x[0], y=y[0]);
@@ -444,7 +480,7 @@ def test_module_instance_output_step(tmp_dir: Path):
     """
 
     top = compile_custom(src).resolve_module("top.top")
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for a in [False, True]:
         for b in [False, True]:
@@ -454,7 +490,7 @@ def test_module_instance_output_step(tmp_dir: Path):
             assert inst.ports.y.value == pair
 
 
-def test_module_instance_output_deref(tmp_dir: Path):
+def test_module_instance_output_deref(build_sim: BuildSim):
     src = """
     module top ports(x: in async bool, y: out async bool) {
         const r = ref(y);
@@ -465,7 +501,7 @@ def test_module_instance_output_deref(tmp_dir: Path):
     }
     """
     top = compile_custom(src).resolve_module("top.top")
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for v in [False, True]:
         inst.ports.x.value = v
@@ -473,7 +509,7 @@ def test_module_instance_output_deref(tmp_dir: Path):
         assert inst.ports.y.value == v
 
 
-def test_module_instance_output_step_dyn(tmp_dir: Path):
+def test_module_instance_output_step_dyn(build_sim: BuildSim):
     src = """
     module top ports(x: in async [2]bool, y: out async [2]bool, i: in async int(0..2)) {
         instance child ports(x=x[0], y=y[i]);
@@ -486,7 +522,7 @@ def test_module_instance_output_step_dyn(tmp_dir: Path):
         _ = compile_custom(src).resolve_module("top.top")
 
 
-def test_module_instance_output_cursed_var(tmp_dir: Path):
+def test_module_instance_output_cursed_var(build_sim: BuildSim):
     # this does not really test much, just that variables are certainly not accepted
     src = """
     module top ports(x: in async bool) {

@@ -1,6 +1,4 @@
-from pathlib import Path
-
-from hwl_sandbox.common.util import compile_custom, diag_error
+from hwl_sandbox.common.util import BuildSim, compile_custom, diag_error
 
 
 def test_reg_simple():
@@ -80,7 +78,7 @@ def test_reg_domain_different():
         _ = compile_custom(src).resolve("top.top_invalid")
 
 
-def test_reg_decl_in_function(tmp_dir: Path):
+def test_reg_decl_in_function(build_sim: BuildSim):
     src = """
     module top ports(
         clk: in clock,
@@ -113,7 +111,7 @@ def test_reg_decl_in_function(tmp_dir: Path):
     top = compile_custom(src).resolve("top.top")
 
     print(top.as_verilog().source)
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     ports = inst.ports
 

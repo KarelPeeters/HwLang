@@ -1,6 +1,4 @@
-from pathlib import Path
-
-from hwl_sandbox.common.util import compile_custom, diag_error
+from hwl_sandbox.common.util import compile_custom, diag_error, BuildSim
 
 
 def test_member_struct_static():
@@ -178,7 +176,7 @@ def test_member_access_generics():
     assert g(5) == 5
 
 
-def test_member_self_hardware(tmp_dir: Path):
+def test_member_self_hardware(build_sim: BuildSim):
     src = """
     struct Foo {
         x: uint(8),
@@ -197,7 +195,7 @@ def test_member_self_hardware(tmp_dir: Path):
     }
     """
     top = compile_custom(src).resolve("top.top")
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for v in [0, 1, 2, 3]:
         inst.ports.x.value = v

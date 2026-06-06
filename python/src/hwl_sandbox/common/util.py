@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from typing import Callable
 
 import hwl
 
@@ -44,3 +45,6 @@ def diag_general(level: str, title: str, has_message: str | None, has_info: str 
             assert has_info in diag.infos, f"Diagnostic info check failed, expected {has_info}, got {diag.infos}"
 
     assert raised, "Expected diagnostic, got no exception"
+
+
+BuildSim = Callable[[hwl.Module], hwl.ModuleVerilated | hwl.SimulatorModule]

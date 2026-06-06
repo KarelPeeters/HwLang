@@ -1,11 +1,9 @@
-from pathlib import Path
-
 import hwl
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import compile_custom, BuildSim
 
 
-def test_dynamic_id(tmp_dir: Path):
+def test_dynamic_id(build_sim: BuildSim):
     src = """
     module top ports(
         clk: in clock,
@@ -34,7 +32,7 @@ def test_dynamic_id(tmp_dir: Path):
     top: hwl.Module = compile_custom(src).resolve("top.top")
     print(top.as_verilog().source)
 
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     inst.ports.x.value = 4
     inst.step(1)

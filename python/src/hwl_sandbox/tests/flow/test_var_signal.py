@@ -1,11 +1,9 @@
-from pathlib import Path
-
 import hwl
 
-from hwl_sandbox.common.util import compile_custom, diag_error
+from hwl_sandbox.common.util import BuildSim, compile_custom, diag_error
 
 
-def test_read_const_from_signal(tmp_dir: Path):
+def test_read_const_from_signal():
     src = """
     module top ports(clk: in clock, p: out async uint(8)) {
         wire w: uint(8);
@@ -31,7 +29,7 @@ def test_read_const_from_signal(tmp_dir: Path):
     _ = c.resolve("top.top")
 
 
-def test_read_const_from_signal_after_step(tmp_dir: Path):
+def test_read_const_from_signal_after_step():
     src = """
     module top ports(clk: in clock) {
         wire w: [2]uint(8);
@@ -49,7 +47,7 @@ def test_read_const_from_signal_after_step(tmp_dir: Path):
     _ = c.resolve("top.top")
 
 
-def test_read_range_from_signal(tmp_dir: Path):
+def test_read_range_from_signal():
     src = """
     module top ports(p: out async uint(8), q: in async uint(4)) {
         comb {
@@ -92,7 +90,7 @@ def test_read_range_from_signal(tmp_dir: Path):
 #     assert ports.y.value == 255
 
 
-def test_write_after_read_var(tmp_dir: Path):
+def test_write_after_read_var(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
@@ -105,10 +103,10 @@ def test_write_after_read_var(tmp_dir: Path):
         }
     }
     """
-    check_write_after_read(tmp_dir, src)
+    check_write_after_read(build_sim, src)
 
 
-def test_write_after_read_var_array(tmp_dir: Path):
+def test_write_after_read_var_array(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(16)) {
         comb {
@@ -121,10 +119,10 @@ def test_write_after_read_var_array(tmp_dir: Path):
         }
     }
     """
-    check_write_after_read(tmp_dir, src)
+    check_write_after_read(build_sim, src)
 
 
-def test_write_after_read_wire(tmp_dir: Path):
+def test_write_after_read_wire(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(16)) {
         wire w: uint(8);
@@ -138,10 +136,10 @@ def test_write_after_read_wire(tmp_dir: Path):
         }
     }
     """
-    check_write_after_read(tmp_dir, src)
+    check_write_after_read(build_sim, src)
 
 
-def test_write_after_read_wire_array(tmp_dir: Path):
+def test_write_after_read_wire_array(build_sim: BuildSim):
     src = """
     module top ports(x: in async uint(8), y: out async uint(16)) {
         wire w: [1]uint(8);
@@ -155,14 +153,14 @@ def test_write_after_read_wire_array(tmp_dir: Path):
         }
     }
     """
-    check_write_after_read(tmp_dir, src)
+    check_write_after_read(build_sim, src)
 
 
-def check_write_after_read(tmp_dir: Path, src: str):
+def check_write_after_read(build_sim: BuildSim, src: str):
     c = compile_custom(src)
     foo: hwl.Module = c.resolve("top.top")
     print(foo.as_verilog().source)
-    foo_inst = foo.as_verilated(tmp_dir).instance()
+    foo_inst = build_sim(foo).instance()
 
     foo_inst.ports.x.value = 4
     foo_inst.step(1)

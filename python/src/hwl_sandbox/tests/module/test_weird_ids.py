@@ -2,10 +2,10 @@ from pathlib import Path
 
 import hwl
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import BuildSim, compile_custom
 
 
-def test_module_duplicate_child_id(tmp_dir: Path):
+def test_module_duplicate_child_id(build_sim: BuildSim):
     src = """
     module top ports() {
         instance my_name = child ports();
@@ -18,10 +18,10 @@ def test_module_duplicate_child_id(tmp_dir: Path):
     top: hwl.Module = c.resolve("top.top")
 
     print(top.as_verilog().source)
-    _ = top.as_verilated(tmp_dir)
+    _ = build_sim(top)
 
 
-def test_module_collide_port_child(tmp_dir: Path):
+def test_module_collide_port_child(build_sim: BuildSim):
     src = """
     module top ports(my_name: in async bool) {
         instance my_name = child ports();
@@ -33,10 +33,10 @@ def test_module_collide_port_child(tmp_dir: Path):
     top: hwl.Module = c.resolve("top.top")
 
     print(top.as_verilog().source)
-    _ = top.as_verilated(tmp_dir)
+    _ = build_sim(top)
 
 
-def test_module_collide_port_wire(tmp_dir: Path):
+def test_module_collide_port_wire(build_sim: BuildSim):
     src = """
     module top ports(
         my_name: in async bool,
@@ -50,7 +50,7 @@ def test_module_collide_port_wire(tmp_dir: Path):
     top: hwl.Module = c.resolve("top.top")
 
     print(top.as_verilog().source)
-    inst = top.as_verilated(tmp_dir).instance()
+    inst = build_sim(top).instance()
 
     for v in [False, True]:
         inst.ports.my_name.value = v
@@ -58,7 +58,7 @@ def test_module_collide_port_wire(tmp_dir: Path):
         assert inst.ports.y.value == v
 
 
-def test_module_collide_port_process(tmp_dir: Path):
+def test_module_collide_port_process(build_sim: BuildSim):
     src = """
     module top ports(
         clk: in clock,
@@ -79,14 +79,14 @@ def test_module_collide_port_process(tmp_dir: Path):
     top = compile_custom(src).resolve("top.top")
     verilog = top.as_verilog().source
     print(verilog)
-    _ = top.as_verilated(tmp_dir)
+    _ = build_sim(top)
 
     # check that we did indeed push the processes to different names
     assert "always @(*) begin: comb_2" in verilog
     assert "always @(posedge clk) begin: clocked_2" in verilog
 
 
-def test_module_internal_name_keyword(tmp_dir: Path):
+def test_module_internal_name_keyword(build_sim: BuildSim):
     src = """
     module top ports() {
         instance input ports();
@@ -95,7 +95,7 @@ def test_module_internal_name_keyword(tmp_dir: Path):
     """
 
     top = compile_custom(src).resolve("top.top")
-    _ = top.as_verilated(tmp_dir)
+    _ = build_sim(top)
 
 
 def test_module_external_name_keyword(tmp_dir: Path):

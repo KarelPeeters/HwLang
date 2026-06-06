@@ -1,8 +1,6 @@
-from pathlib import Path
-
 import hwl
 
-from hwl_sandbox.common.util import compile_custom
+from hwl_sandbox.common.util import BuildSim, compile_custom
 
 
 def test_print_compile():
@@ -68,7 +66,7 @@ def test_print_hardware():
     print(f.as_verilog().source)
 
 
-def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
+def test_print_hardware_array_length_using_all_bits(build_sim: BuildSim):
     # Check that the generated IR for loop does not become an infinite loop
     src = """
         module f ports(clk: in clock, x: in sync(clk) [4]bool) {
@@ -80,7 +78,7 @@ def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
     c = compile_custom(src)
     f: hwl.Module = c.resolve("top.f")
     print(f.as_verilog().source)
-    inst = f.as_verilated(tmp_dir).instance()
+    inst = build_sim(f).instance()
 
     inst.ports.x.value = [False, True, False, True]
     inst.ports.clk.value = False
