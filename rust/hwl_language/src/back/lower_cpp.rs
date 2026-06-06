@@ -64,7 +64,11 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         debug_info_id: _,
         debug_info_generic_args: _,
     } = module_info;
-    let IrSignals { ports, wires } = signals;
+    let IrSignals {
+        ports,
+        wires,
+        ports_named: _,
+    } = signals;
     let module_index = module.inner().index();
 
     // TODO include module debug name and add generic args as a comment or even in the name

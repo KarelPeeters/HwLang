@@ -55,7 +55,8 @@ impl CompileRefs<'_, '_> {
             debug_info_params,
             ports,
             port_interfaces,
-            ports_ir,
+            ir_ports,
+            ir_ports_named,
             scope_params,
             scope_ports,
             flow_root,
@@ -82,7 +83,8 @@ impl CompileRefs<'_, '_> {
         // elaborate the body
         let mut ctx_body = BodyContext {
             ir_signals: IrSignals {
-                ports: ports_ir,
+                ports: ir_ports,
+                ports_named: ir_ports_named,
                 wires: Arena::new(),
             },
             children: vec![],

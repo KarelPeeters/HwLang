@@ -61,7 +61,8 @@ pub struct ElaboratedModuleHeader<A> {
 
     pub ports: ArenaPorts,
     pub port_interfaces: ArenaPortInterfaces,
-    pub ports_ir: Arena<IrPort, IrPortInfo>,
+    pub ir_ports: IrPorts,
+    pub ir_ports_named: IndexMap<String, IrPort>,
 
     pub scope_params: Arc<FrozenScope>,
     pub scope_ports: ScopeContent,
@@ -107,7 +108,7 @@ impl CompileRefs<'_, '_> {
 
         // elaborate ports
         let scope_params_tmp = &Arc::clone(&scope_params).as_scope();
-        let (connectors, scope_ports, ports_ir) =
+        let (connectors, scope_ports, ir_ports, ir_ports_named) =
             self.elaborate_module_ports_impl(&mut ctx, scope_params_tmp, &mut flow, ports, def_span)?;
 
         // save scope and flow
@@ -134,7 +135,8 @@ impl CompileRefs<'_, '_> {
             debug_info_params,
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
-            ports_ir,
+            ir_ports,
+            ir_ports_named,
 
             scope_params,
             scope_ports,
@@ -151,22 +153,23 @@ impl CompileRefs<'_, '_> {
         flow: &mut FlowCompile,
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
-    ) -> DiagResult<(ArenaConnectors, Scope<'p>, Arena<IrPort, IrPortInfo>)> {
-        let mut scope_ports = scope_params.new_child(ports.span.join(Span::empty_at(module_def_span.end())));
+    ) -> DiagResult<(ArenaConnectors, Scope<'p>, IrPorts, IndexMap<String, IrPort>)> {
+        let diags = self.diags;
 
         // build context
         let mut connectors: ArenaConnectors = Arena::new();
-        let mut ports_ir = Arena::new();
+        let mut ir_ports = Arena::new();
         let mut ctx_ports = ModulePortsContext {
             connectors: &mut connectors,
-            ports_ir: &mut ports_ir,
+            ir_ports: &mut ir_ports,
             any_err: Ok(()),
             port_to_single: IndexMap::new(),
-            used_ir_names: IndexMap::new(),
+            ir_ports_names_used: IndexMap::new(),
             next_single_index: 0,
         };
 
         // visit port extra list
+        let mut scope_ports = scope_params.new_child(ports.span.join(Span::empty_at(module_def_span.end())));
         ctx.elaborate_extra_list(
             &mut scope_ports,
             flow,
@@ -178,21 +181,30 @@ impl CompileRefs<'_, '_> {
         // stop elaboration if any port or name errors happened
         ctx_ports.any_err?;
         scope_ports.any_declare_key_error()?;
-        ctx_ports.report_duplicate_ir_names(self.diags)?;
+        ctx_ports.check_unique_ir_port_names(diags)?;
 
-        Ok((connectors, scope_ports, ports_ir))
+        // we've checked that port names are unique, create the mapping that proves that
+        let mut ir_ports_named = IndexMap::new();
+        for (port, port_info) in &ir_ports {
+            let prev = ir_ports_named.insert(port_info.name.clone(), port);
+            if prev.is_some() {
+                return Err(diags.report_error_internal(module_def_span, "duplicate ir port name"))?;
+            }
+        }
+
+        Ok((connectors, scope_ports, ir_ports, ir_ports_named))
     }
 }
 
 pub struct ModulePortsContext<'a> {
     // results
     connectors: &'a mut ArenaConnectors,
-    ports_ir: &'a mut IrPorts,
+    ir_ports: &'a mut IrPorts,
     any_err: DiagResult,
 
     // intermediate state
     port_to_single: IndexMap<Port, ConnectorSingle>,
-    used_ir_names: IndexMap<String, Vec<(Span, bool)>>,
+    ir_ports_names_used: IndexMap<String, Vec<(Span, bool)>>,
     next_single_index: usize,
 }
 
@@ -367,17 +379,18 @@ impl ModulePortsContext<'_> {
         let elab = &ctx.refs.shared.elaboration_arenas;
 
         let id_str = id.str(source);
-        self.report_ir_name(id_str.to_owned(), id.span, false);
+        self.record_ir_port_name(id_str.to_owned(), id.span, false);
 
         let kind_and_entry = result_pair(domain, ty).map(|(domain, ty)| {
-            let ir_port = self.ports_ir.push(IrPortInfo {
+            let ir_port_info = IrPortInfo {
                 name: id_str.to_owned(),
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span,
                 debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(elab)),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
-            });
+            };
+            let ir_port = self.ir_ports.push(ir_port_info);
 
             let port = ctx.ports.push(PortInfo {
                 span: id.span,
@@ -434,19 +447,21 @@ impl ModulePortsContext<'_> {
                 let name = format!("{id_str}.{port_id_str}");
                 let ir_name = format!("{id_str}_{port_id_str}");
 
-                self.report_ir_name(ir_name.clone(), id.span, true);
+                self.record_ir_port_name(ir_name.clone(), id.span, true);
 
                 let direction = port_dirs[port_index].1;
                 let ty = port.ty.as_ref_ok()?;
 
-                let ir_port = self.ports_ir.push(IrPortInfo {
+                let ir_port_info = IrPortInfo {
                     name: ir_name,
                     direction: direction.inner,
                     ty: ty.inner.as_ir(ctx.refs),
                     debug_span: id.span,
                     debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(elab)),
                     debug_info_domain: domain.inner.diagnostic_string(ctx),
-                });
+                };
+                let ir_port = self.ir_ports.push(ir_port_info);
+
                 let port = ctx.ports.push(PortInfo {
                     span: id.span,
                     name,
@@ -503,14 +518,14 @@ impl ModulePortsContext<'_> {
         }
     }
 
-    fn report_ir_name(&mut self, name: String, span: Span, intf: bool) {
-        self.used_ir_names.entry(name).or_default().push((span, intf));
+    fn record_ir_port_name(&mut self, name: String, span: Span, intf: bool) {
+        self.ir_ports_names_used.entry(name).or_default().push((span, intf));
     }
 
-    fn report_duplicate_ir_names(&self, diags: &Diagnostics) -> DiagResult {
+    fn check_unique_ir_port_names(&self, diags: &Diagnostics) -> DiagResult {
         let mut any_err = Ok(());
 
-        for (name, sites) in &self.used_ir_names {
+        for (name, sites) in &self.ir_ports_names_used {
             if sites.len() > 1 {
                 let title = format!("port name conflict: `{name}`");
 

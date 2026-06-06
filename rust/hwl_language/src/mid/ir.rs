@@ -111,7 +111,6 @@ new_index_type!(pub IrVariable);
 
 #[derive(Debug, Clone)]
 pub struct IrModuleInfo {
-    /// port names must be unique
     pub signals: IrSignals,
     pub large: IrLargeArena,
 
@@ -122,6 +121,9 @@ pub struct IrModuleInfo {
     pub debug_info_id: Spanned<Option<String>>,
     pub debug_info_generic_args: Option<Vec<(String, String)>>,
 }
+
+#[derive(Debug, Copy, Clone)]
+pub struct DuplicatePortName;
 
 impl IrSignals {
     pub fn all_signals(&self) -> impl Iterator<Item = IrSignal> {
@@ -244,6 +246,9 @@ pub type IrVariables = Arena<IrVariable, IrVariableInfo>;
 pub struct IrSignals {
     pub ports: IrPorts,
     pub wires: IrWires,
+
+    // port names must be unique, we enforce that here through this extra map
+    pub ports_named: IndexMap<String, IrPort>,
 }
 
 #[derive(Debug, Clone)]

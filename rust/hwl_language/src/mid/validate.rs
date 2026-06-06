@@ -40,6 +40,23 @@ impl IrModuleInfo {
         let signals = &self.signals;
         let no_variables = &IrVariables::new();
 
+        // validate ports
+        let id_span = self.debug_info_id.span;
+        let IrSignals {
+            ports,
+            wires: _,
+            ports_named,
+        } = signals;
+        if ports.len() != ports_named.len() {
+            return Err(diags.report_error_internal(id_span, "ports_named count mismatch"));
+        }
+        for (port, port_info) in ports {
+            if ports_named.get(&port_info.name) != Some(&port) {
+                return Err(diags.report_error_internal(id_span, "ports_named value mismatch"));
+            }
+        }
+
+        // validate children
         for child in &self.children {
             match &child.inner {
                 IrModuleChild::ClockedProcess(process) => {
