@@ -16,7 +16,7 @@ use crate::syntax::ast::{PortDirection, StringPiece};
 use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
+use crate::util::int_repr::IntRepresentation;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;

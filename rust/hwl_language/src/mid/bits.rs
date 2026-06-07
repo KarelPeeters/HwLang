@@ -1,7 +1,7 @@
 use crate::front::value::{CompileCompoundValue, CompileValue, EnumValue, SimpleCompileValue, StructValue};
 use crate::mid::ir::IrType;
 use crate::util::big_int::BigUint;
-use crate::util::int::IntRepresentation;
+use crate::util::int_repr::IntRepresentation;
 use crate::util::iter::IterExt;
 use itertools::{Either, Itertools, zip_eq};
 use std::sync::Arc;

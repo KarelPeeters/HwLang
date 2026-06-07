@@ -19,6 +19,11 @@ def test_literal_int_basic(tmp_dir: Path, v: int):
     e.eval_assert([], v)
 
 
+def test_literal_int_no_expand(tmp_dir: Path):
+    e = compare_expression([], "int(3..=3)", "3", tmp_dir)
+    e.eval_assert([], 3)
+
+
 def test_literal_int_extra():
     # no need to test the actual simulation here, this is just frontend int parsing
     samples = [
@@ -75,3 +80,6 @@ def test_literal_string():
 
     cst = compile_custom(src).resolve("top.cst")
     assert cst == expected
+
+# TODO test int literals with varying widths, covering a large range
+#   include all edge cases, plus some hardcoded large values

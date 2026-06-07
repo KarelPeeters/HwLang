@@ -17,7 +17,7 @@ use crate::try_inner;
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint, Sign};
 use crate::util::data::{GrowVec, IndexMapExt, VecExt};
-use crate::util::int::{IntRepresentation, Signed};
+use crate::util::int_repr::{IntRepresentation, Signed};
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, ResultExt, separator_non_trailing};

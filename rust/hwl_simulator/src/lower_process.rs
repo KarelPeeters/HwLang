@@ -1,4 +1,4 @@
-use crate::lower_types::{ModuleSignalTypes, lower_ty, usize_to_u31};
+use crate::lower_types::{ModuleSignalTypes, lower_ty, lower_ty_int, usize_to_u31};
 use crate::simulator::LowerResult;
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
@@ -6,15 +6,19 @@ use hwl_language::mid::ir::{
 };
 use hwl_language::mid::steps::IrTargetSteps;
 use hwl_language::syntax::pos::Span;
+use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::IndexMapExt;
+use hwl_language::util::int_repr::IntRepresentation;
+use hwl_language::util::range::ClosedNonEmptyRange;
 use indexmap::IndexMap;
 use inkwell::AddressSpace;
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicTypeEnum, FunctionType};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::{BasicTypeEnum, FunctionType, IntType};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use itertools::enumerate;
 use std::ffi::c_void;
 
 /// Type of combinatorial process functions
@@ -104,7 +108,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         // allocate variables
         let mut ir_var_to_alloca = IndexMap::new();
         for (var, var_info) in ir_vars {
-            let ty = lower_ty(llvm_ctx, &var_info.ty);
+            let ty = lower_ty(llvm_ctx, &var_info.ty)?;
             let alloca = llvm_builder.build_alloca(ty, "")?;
             ir_var_to_alloca.insert_first(var, alloca);
         }
@@ -133,7 +137,9 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                 IrStatement::Assign(target, value) => {
                     self.lower_statement_assign(stmt_span, target, value)?;
                 }
-                IrStatement::Block(_) => todo!(),
+                IrStatement::Block(block) => {
+                    self.lower_block(block)?;
+                }
                 IrStatement::If(stmt) => self.lower_if_statement(stmt_span, stmt)?,
                 IrStatement::For(_) => todo!(),
                 IrStatement::Print(_) => {
@@ -223,20 +229,27 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
     }
 
     fn eval_expr(&self, span: Span, value: &IrExpression) -> LowerResult<BasicValueEnum<'ctx>> {
-        let result: BasicValueEnum = match *value {
-            IrExpression::Bool(value) => self.llvm_context.bool_type().const_int(value as u64, false).into(),
-            IrExpression::Int(_) => todo!(),
-            IrExpression::Signal(sig) => {
-                let ty = self.lower_ty(sig.ty(&self.ir_module.signals));
+        let result: BasicValueEnum = match value {
+            &IrExpression::Bool(value) => {
+                let ty_bool = self.llvm_context.bool_type();
+                ty_bool.const_int(value as u64, false).into()
+            }
+            IrExpression::Int(value) => {
+                let range = ClosedNonEmptyRange::single(value.clone());
+                lower_int_constant(self.llvm_context, range.as_ref(), value, span)?.into()
+            }
+            &IrExpression::Signal(sig) => {
+                let ty = self.lower_ty(sig.ty(&self.ir_module.signals))?;
                 let ptr = self.get_named_ptr(span, sig)?;
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
-            IrExpression::Variable(var) => {
-                let ty = self.lower_ty(var.ty(self.ir_vars));
+            &IrExpression::Variable(var) => {
+                let ty = self.lower_ty(var.ty(self.ir_vars))?;
                 let ptr = self.get_named_ptr(span, var)?;
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
-            IrExpression::Large(value) => match &self.ir_module.large[value] {
+            &IrExpression::Large(value) => match &self.ir_module.large[value] {
+                // TODO match IR definition order
                 IrExpressionLarge::Undefined(ty) => {
                     // TODO actually return undef here here
                     if ty != &IrType::Bool {
@@ -258,8 +271,24 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                         IrBoolBinaryOp::Xor => self.llvm_builder.build_xor(lhs, rhs, "")?.into(),
                     }
                 }
+                IrExpressionLarge::ExpandIntRange(new_range, inner) => {
+                    let (_, new_ty) = self.lower_ty_int(new_range.as_ref())?;
+                    let inner_is_signed = inner
+                        .ty(&self.ir_module.large, &self.ir_module.signals, self.ir_vars)
+                        .unwrap_int()
+                        .start
+                        .is_negative();
+
+                    let inner = self.eval_expr(span, inner)?.into_int_value();
+
+                    if inner_is_signed {
+                        self.llvm_builder.build_int_s_extend(inner, new_ty, "")?.into()
+                    } else {
+                        self.llvm_builder.build_int_z_extend(inner, new_ty, "")?.into()
+                    }
+                }
                 // TODO for steps, don't just evaluate the base first, immediately apply the steps
-                _ => todo!("{value:?}"),
+                value => todo!("{value:?}"),
             },
         };
 
@@ -322,7 +351,45 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         Ok(result)
     }
 
-    fn lower_ty(&self, ty: &IrType) -> BasicTypeEnum<'ctx> {
+    fn lower_ty(&self, ty: &IrType) -> LowerResult<BasicTypeEnum<'ctx>> {
         lower_ty(self.llvm_context, ty)
     }
+
+    fn lower_ty_int(&self, range: ClosedNonEmptyRange<&BigInt>) -> LowerResult<(IntRepresentation, IntType<'ctx>)> {
+        lower_ty_int(self.llvm_context, range)
+    }
+}
+
+fn lower_int_constant<'ctx>(
+    ctx: &'ctx Context,
+    range: ClosedNonEmptyRange<&BigInt>,
+    value: &BigInt,
+    span: Span,
+) -> LowerResult<IntValue<'ctx>> {
+    let (repr, ty) = lower_ty_int(ctx, range)?;
+
+    // special case zero-width integer, it gets represented as a single-bit int
+    if repr.size_bits() == 0 {
+        return Ok(ty.const_zero());
+    }
+
+    // TODO this is really inefficient, make this block-wise
+    // TODO add fast path for small ints?
+    // convert to bits
+    let mut bits = Vec::new();
+    repr.value_to_bits(value, &mut bits);
+
+    // convert to words
+    type W = u64;
+    let num_words = bits.len().div_ceil(W::BITS as usize);
+    let mut words: Vec<W> = vec![0u64; num_words];
+
+    for (i, bit) in enumerate(bits) {
+        if bit {
+            words[i / W::BITS as usize] |= 1 << (i % W::BITS as usize);
+        }
+    }
+
+    // convert to llvm
+    Ok(ty.const_int_arbitrary_precision(&words))
 }

@@ -69,12 +69,32 @@ impl IntRepresentation {
         }
     }
 
+    pub fn value_from_raw_unsigned(self, value: BigUint) -> BigInt {
+        match self {
+            IntRepresentation::Unsigned { width } => {
+                assert!(value.size_bits() <= width);
+                BigInt::from(value)
+            }
+            IntRepresentation::Signed { width_1 } => {
+                let width = width_1 + 1;
+                assert!(value.size_bits() <= width);
+
+                if value.size_bits() <= width_1 {
+                    BigInt::from(value)
+                } else {
+                    value - BigUint::pow_2_to(&BigUint::from(width))
+                }
+            }
+        }
+    }
+
     pub fn value_to_bits(self, value: &BigInt, bits: &mut Vec<bool>) {
         let range = self.range();
         assert!(range.contains(value));
 
         let len_start = bits.len();
 
+        // TODO this is really inefficient, make this block-wise (and also stop storing bool arrays as Vec<bool>)
         match self {
             IntRepresentation::Unsigned { width } => {
                 let value = BigUint::try_from(value).unwrap();
@@ -95,7 +115,7 @@ impl IntRepresentation {
     pub fn value_from_bits(self, bits: &[bool]) -> BigInt {
         assert_eq!(self.size_bits(), bits.len() as u64);
 
-        // TODO this is really inefficient, just construct from bits directly
+        // TODO this is really inefficient, make this block-wise (and also stop storing bool arrays as Vec<bool>)
         let result = match self {
             IntRepresentation::Unsigned { width } => {
                 let mut result = BigUint::ZERO;
@@ -137,8 +157,8 @@ impl IntRepresentation {
 
 #[cfg(test)]
 mod test {
-    use crate::util::big_int::BigInt;
-    use crate::util::int::{IntRepresentation, Signed};
+    use crate::util::big_int::{BigInt, BigUint};
+    use crate::util::int_repr::{IntRepresentation, Signed};
     use crate::util::range::ClosedNonEmptyRange;
     use std::ops::Range;
 
@@ -218,5 +238,32 @@ mod test {
                 test_case(-2i64.pow(w - 1)..(2i64.pow(w - 1) + 1), Signed::Signed, w + 1);
             }
         }
+    }
+
+    #[test]
+    fn test_from_raw() {
+        fn check(repr: &IntRepresentation, a: u8, b: i16) {
+            assert_eq!(repr.value_from_raw_unsigned(BigUint::from(a)), BigInt::from(b));
+        }
+
+        let repr_unsigned = IntRepresentation::Unsigned { width: 3 };
+        check(&repr_unsigned, 0, 0);
+        check(&repr_unsigned, 1, 1);
+        check(&repr_unsigned, 2, 2);
+        check(&repr_unsigned, 3, 3);
+        check(&repr_unsigned, 4, 4);
+        check(&repr_unsigned, 5, 5);
+        check(&repr_unsigned, 6, 6);
+        check(&repr_unsigned, 7, 7);
+
+        let repr_singed = IntRepresentation::Signed { width_1: 2 };
+        check(&repr_singed, 0, 0);
+        check(&repr_singed, 1, 1);
+        check(&repr_singed, 2, 2);
+        check(&repr_singed, 3, 3);
+        check(&repr_singed, 4, -4);
+        check(&repr_singed, 5, -3);
+        check(&repr_singed, 6, -2);
+        check(&repr_singed, 7, -1);
     }
 }

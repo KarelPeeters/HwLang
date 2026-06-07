@@ -13,7 +13,7 @@ use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
 use crate::util::arena::{Idx, IndexType};
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
+use crate::util::int_repr::IntRepresentation;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::{Indent, separator_non_trailing};

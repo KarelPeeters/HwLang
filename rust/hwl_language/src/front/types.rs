@@ -6,7 +6,7 @@ use crate::front::value::{CompileValue, HardwareValue};
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::mid::ir::{IrEnumType, IrExpression, IrExpressionLarge, IrIntCompareOp, IrLargeArena, IrStructType, IrType};
 use crate::util::big_int::{BigInt, BigUint};
-use crate::util::int::IntRepresentation;
+use crate::util::int_repr::IntRepresentation;
 use crate::util::range_multi::{ClosedNonEmptyMultiRange, MultiRange};
 use crate::util::{Never, ResultExt};
 use itertools::{Either, Itertools, zip_eq};

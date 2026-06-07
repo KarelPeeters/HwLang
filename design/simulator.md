@@ -31,3 +31,10 @@
 * https://llvm.org/devmtg/2023-10/slides/techtalks/Erhart-Arcilator-FastAndCycleAccurateHardwareSimulationInCIRCT.pdf
 * https://rcor.me/papers/cgo22rolag.pdf
 * https://github.com/verilator/verilator
+
+# Undef design details
+
+* careful for ints: they can go out of range (if range is not exact binary range)
+* repr: if undef bit is set, value can be anything. This makes impl fast and simple. Implementations of operations have
+  to make sure they accept any (even invalid) values. For arith this is easy, for things like indexing we have to be
+  extra careful. 

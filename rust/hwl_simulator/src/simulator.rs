@@ -1,10 +1,11 @@
+use crate::buffer::{Buffer, BufferError};
 use crate::lower_process::{FunctionCombinatorialProcess, lower_process_comb};
-use crate::lower_types::ModuleSignalTypes;
+use crate::lower_types::{ModuleSignalTypes, read_value_from_buffer, write_value_to_buffer};
 use hwl_language::front::check::{TypeContainsReason, check_type_contains_value};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics};
 use hwl_language::front::item::ElaborationArenas;
-use hwl_language::front::value::{CompileValue, SimpleCompileValue};
-use hwl_language::mid::ir::{IrModule, IrModuleChild, IrModuleInfo, IrModules, IrPort, IrPorts, IrType};
+use hwl_language::front::value::CompileValue;
+use hwl_language::mid::ir::{IrModule, IrModuleChild, IrModuleInfo, IrModules, IrPort, IrPorts};
 use hwl_language::syntax::ast::PortDirection;
 use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigUint;
@@ -14,15 +15,10 @@ use inkwell::builder::BuilderError;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, FunctionLookupError, JitFunction};
 use inkwell::module::Module;
-use inkwell::targets::TargetData;
-use inkwell::types::AnyType;
 use itertools::enumerate;
-use std::alloc::{self, Layout};
 use std::ffi::c_void;
 use std::fmt::{self, Display, Formatter};
-use std::ptr::NonNull;
 use std::sync::Arc;
-use unwrap_match::unwrap_match;
 
 /// A fully compiled and prepared simulator module.
 /// This does not contain any simulation state and can be reused between multiple [SimulatorInstance] instances.
@@ -164,22 +160,7 @@ impl SimulatorInstance {
             .unwrap() as usize;
 
         // actually get value
-        match &port_info.ty {
-            IrType::Bool => {
-                let value = unsafe { self.ports_next.read::<u8>(port_offset) };
-
-                match value {
-                    0 => CompileValue::new_bool(false),
-                    1 => CompileValue::new_bool(true),
-                    _ => todo!("internal err"),
-                }
-            }
-            IrType::Int(_) => todo!(),
-            IrType::Array(_, _) => todo!(),
-            IrType::Tuple(_) => todo!(),
-            IrType::Struct(_) => todo!(),
-            IrType::Enum(_) => todo!(),
-        }
+        unsafe { read_value_from_buffer(&self.ports_next, port_offset, &port_info.ty) }
     }
 
     pub fn set_port(
@@ -218,16 +199,8 @@ impl SimulatorInstance {
             .unwrap() as usize;
 
         // actually set value
-        match &port_info.ty {
-            IrType::Bool => {
-                let value = unwrap_match!(value.inner, &CompileValue::Simple(SimpleCompileValue::Bool(value)) => value);
-                unsafe { self.ports_next.write::<u8>(port_offset, value as u8) };
-            }
-            IrType::Int(_) => todo!(),
-            IrType::Array(_, _) => todo!(),
-            IrType::Tuple(_) => todo!(),
-            IrType::Struct(_) => todo!(),
-            IrType::Enum(_) => todo!(),
+        unsafe {
+            write_value_to_buffer(&mut self.ports_next, port_offset, &port_info.ty, value.inner);
         }
 
         Ok(())
@@ -330,54 +303,6 @@ pub enum LowerError {
     BufferError(BufferError),
 }
 
-struct Buffer {
-    layout: Layout,
-    ptr: NonNull<u8>,
-}
-
-#[derive(Debug)]
-pub enum BufferError {
-    InvalidLayout,
-    AllocationFailed,
-}
-
-impl Buffer {
-    fn new(target: &TargetData, ty: &dyn AnyType) -> Result<Buffer, BufferError> {
-        let size = target
-            .get_store_size(ty)
-            .try_into()
-            .map_err(|_| BufferError::InvalidLayout)?;
-        let align = target
-            .get_abi_alignment(ty)
-            .try_into()
-            .map_err(|_| BufferError::InvalidLayout)?;
-        let layout = Layout::from_size_align(size, align).map_err(|_| BufferError::InvalidLayout)?;
-
-        let ptr = unsafe { alloc::alloc_zeroed(layout) };
-        let ptr = NonNull::new(ptr).ok_or(BufferError::AllocationFailed)?;
-
-        Ok(Buffer { layout, ptr })
-    }
-
-    fn as_ptr(&self) -> *mut c_void {
-        self.ptr.as_ptr() as *mut c_void
-    }
-
-    unsafe fn read<T>(&self, offset_bytes: usize) -> T {
-        unsafe { std::ptr::read::<T>(self.as_ptr().add(offset_bytes) as *const T) }
-    }
-
-    unsafe fn write<T>(&self, offset_bytes: usize, value: T) {
-        unsafe { std::ptr::write::<T>(self.as_ptr().add(offset_bytes) as *mut T, value) }
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
-    }
-}
-
 impl From<BuilderError> for LowerError {
     fn from(value: BuilderError) -> Self {
         LowerError::BuilderError(value)
@@ -407,15 +332,6 @@ impl Display for LowerError {
             }
             LowerError::IntTooLarge(_, i) => write!(f, "int too large: {i}"),
             LowerError::BufferError(e) => write!(f, "buffer error: {e:?}"),
-        }
-    }
-}
-
-impl Display for BufferError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            BufferError::InvalidLayout => write!(f, "invalid layout"),
-            BufferError::AllocationFailed => write!(f, "allocation failed"),
         }
     }
 }

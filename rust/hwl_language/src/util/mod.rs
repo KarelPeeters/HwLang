@@ -6,7 +6,7 @@ pub mod arena;
 pub mod big_int;
 pub mod data;
 pub mod exhaust;
-pub mod int;
+pub mod int_repr;
 pub mod iter;
 pub mod pool;
 pub mod range;
