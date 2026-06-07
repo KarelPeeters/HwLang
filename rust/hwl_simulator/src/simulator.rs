@@ -293,6 +293,10 @@ fn lower_module<'ctx>(
 
 pub type LowerResult<T = ()> = Result<T, LowerError>;
 
+// TODO improve this:
+//  * separate into internal errors (programming bugs), environment issues (eg. llvm jit failed)
+//    and unsupported errors (eg. integer bitwidth too large)
+// TODO check that everything properly propagates errors, no silent casting or unwrapping
 #[derive(Debug)]
 pub enum LowerError {
     BuilderError(BuilderError),
