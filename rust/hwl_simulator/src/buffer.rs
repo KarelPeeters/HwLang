@@ -6,15 +6,15 @@ use std::fmt::{Display, Formatter};
 use std::ptr::NonNull;
 use std::{alloc, fmt};
 
+pub struct Buffer {
+    layout: Layout,
+    ptr: NonNull<u8>,
+}
+
 #[derive(Debug)]
 pub enum BufferError {
     InvalidLayout,
     AllocationFailed,
-}
-
-pub struct Buffer {
-    layout: Layout,
-    ptr: NonNull<u8>,
 }
 
 impl Buffer {
