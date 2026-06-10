@@ -77,9 +77,9 @@ impl Vfs {
     }
 
     pub fn read_maybe_from_disk(&mut self, path: &Path) -> Result<&[u8], VfsError> {
-        // https://github.com/rust-lang/rust/issues/54663
-        if self.files.contains_key(path) {
-            return Ok(self.files.get(path).unwrap());
+        // workaround for https://github.com/rust-lang/rust/issues/54663
+        if let Some(index) = self.files.get_index_of(path) {
+            return Ok(self.files.get_index(index).unwrap().1);
         }
 
         let content = std::fs::read(path).map_err(|e| e.with_path(path))?;
