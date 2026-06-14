@@ -1,6 +1,6 @@
 use crate::util::{Never, ResultNeverExt};
 use indexmap::map::IndexMap;
-use itertools::Itertools;
+use itertools::{Itertools, enumerate};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -189,12 +189,28 @@ impl<K: IndexType, T> Arena<K, T> {
     }
 
     pub fn get_by_index(&self, index: usize) -> Option<(K, &T)> {
-        if index < self.values.len() {
+        if index < self.len() {
+            let (real_index, v) = if self.count_removed == 0 {
+                // simple flat index
+                let v = self.values[index]
+                    .as_ref()
+                    .expect("nothing removed, so there should not be empty slots");
+                (index, v)
+            } else {
+                // linear search, skipping holes
+                // this is slow but hopefully unlikely
+                enumerate(&self.values)
+                    .filter_map(|(i, v)| v.as_ref().map(|v| (i, v)))
+                    .nth(index)
+                    .expect("index is in bounds, so the nth nonempty slot should exist")
+            };
+
             let k = K::new(Idx {
-                index,
+                index: real_index,
                 check: self.check,
             });
-            Some((k, self.values[index].as_ref()?))
+
+            Some((k, v))
         } else {
             None
         }
@@ -211,7 +227,7 @@ impl<K: IndexType, T> Index<K> for Arena<K, T> {
         );
         self.values[index.inner().index]
             .as_ref()
-            .unwrap_or_else(|| panic!("Arena index {index:?} points to removed value"))
+            .expect("Arena index {index:?} points to removed value")
     }
 }
 
@@ -224,7 +240,7 @@ impl<K: IndexType, T> IndexMut<K> for Arena<K, T> {
         );
         self.values[index.inner().index]
             .as_mut()
-            .unwrap_or_else(|| panic!("Arena index {index:?} points to removed value"))
+            .expect("Arena index {index:?} points to removed value")
     }
 }
 
@@ -410,5 +426,26 @@ mod test {
 
         assert_eq!(arena.len(), 1);
         assert_eq!(arena.iter().collect_vec(), vec![(bi, &'b')]);
+    }
+
+    #[test]
+    fn remove_get_by_index() {
+        let mut arena: Arena<TestIdx, char> = Arena::new();
+        let ai = arena.push('a');
+        let bi = arena.push('b');
+        let ci = arena.push('c');
+
+        assert_eq!(arena.get_by_index(0), Some((ai, &'a')));
+        assert_eq!(arena.get_by_index(1), Some((bi, &'b')));
+        assert_eq!(arena.get_by_index(2), Some((ci, &'c')));
+        assert_eq!(arena.get_by_index(3), None);
+
+        arena.remove(bi);
+        assert_eq!(arena[ai], 'a');
+        assert_eq!(arena[ci], 'c');
+
+        assert_eq!(arena.get_by_index(0), Some((ai, &'a')));
+        assert_eq!(arena.get_by_index(1), Some((ci, &'c')));
+        assert_eq!(arena.get_by_index(2), None);
     }
 }
