@@ -1,15 +1,16 @@
+type T = uint(8);
+
 module top ports(
-    x: in async bool,
-    y: out async bool,
-) {
-    wire w;
-    wire d: bool = true;
+    clk: in clock,
+    rst: in async bool,
 
-    comb {
-        y = x;
+    sync(clk, async rst) {
+        x: in T,
+        y: out T,
     }
-
-    comb {
-        w = false;
+) {
+    clocked(clk, async rst) {
+        reg wire y = 255;
+        y = x;
     }
 }

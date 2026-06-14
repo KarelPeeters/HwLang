@@ -1,9 +1,11 @@
 use crate::lower_module::ModuleSignalTypes;
 use crate::lower_type::{lower_ty, lower_ty_int, usize_to_u31};
 use crate::simulator::LowerResult;
+use hwl_language::front::signal::Polarized;
 use hwl_language::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
-    IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrType, IrVariable, IrVariables,
+    IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess,
+    IrExpression, IrExpressionLarge, IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrType,
+    IrVariable, IrVariables,
 };
 use hwl_language::mid::steps::IrTargetSteps;
 use hwl_language::syntax::pos::Span;
@@ -13,33 +15,19 @@ use hwl_language::util::int_repr::IntRepresentation;
 use hwl_language::util::range::ClosedNonEmptyRange;
 use indexmap::IndexMap;
 use inkwell::AddressSpace;
-use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::targets::TargetData;
-use inkwell::types::{BasicTypeEnum, FunctionType, IntType};
+use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use itertools::enumerate;
 use std::ffi::c_void;
 
-/// Type of combinatorial process functions
-pub type FunctionCombinatorialProcess =
+pub type FunctionProcessCombinatorial =
     unsafe extern "C" fn(buffer_next: *mut c_void, ports_offsets: *const usize, wires_offset: usize) -> ();
 
-pub fn build_function_type_combinatorial_process<'ctx>(
-    llvm_ctx: &'ctx Context,
-    target: &TargetData,
-) -> FunctionType<'ctx> {
-    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
-    let ty_usize = llvm_ctx.ptr_sized_int_type(target, None);
-
-    llvm_ctx
-        .void_type()
-        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false)
-}
-
-pub fn lower_process_comb<'ctx>(
+pub fn lower_process_combinatorial<'ctx>(
     llvm_ctx: &'ctx Context,
     llvm_unit: &Module<'ctx>,
     llvm_target: &TargetData,
@@ -48,11 +36,13 @@ pub fn lower_process_comb<'ctx>(
     ir_proc: &IrCombinatorialProcess,
     func_name: &str,
 ) -> LowerResult<FunctionValue<'ctx>> {
-    let IrCombinatorialProcess { variables, block } = ir_proc;
-
     // create function
     assert!(llvm_unit.get_function(func_name).is_none());
-    let ty_func = build_function_type_combinatorial_process(llvm_ctx, llvm_target);
+    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
+    let ty_usize = llvm_ctx.ptr_sized_int_type(llvm_target, None);
+    let ty_func = llvm_ctx
+        .void_type()
+        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false);
     let function = llvm_unit.add_function(func_name, ty_func, None);
 
     // get params
@@ -63,7 +53,8 @@ pub fn lower_process_comb<'ctx>(
     let param_wires_offset = function.get_nth_param(2).unwrap().into_int_value();
     param_wires_offset.set_name("wires_offset");
 
-    // lower block
+    // create builder
+    let IrCombinatorialProcess { variables, block } = ir_proc;
     let builder = ProcessBuilder::new(
         ir_module,
         variables,
@@ -76,7 +67,128 @@ pub fn lower_process_comb<'ctx>(
         param_wires_offset,
     )?;
 
+    // lower process
     builder.lower_block(block)?;
+    builder.llvm_builder.build_return(None)?;
+
+    Ok(function)
+}
+
+pub type FunctionProcessClocked = unsafe extern "C" fn(
+    buffer_prev: *mut c_void,
+    buffer_next: *mut c_void,
+    ports_offsets: *const usize,
+    wires_offset: usize,
+) -> ();
+
+pub fn lower_process_clocked<'ctx>(
+    llvm_ctx: &'ctx Context,
+    llvm_unit: &Module<'ctx>,
+    llvm_target: &TargetData,
+    module_types: &ModuleSignalTypes<'ctx>,
+    ir_module: &IrModuleInfo,
+    ir_proc: &IrClockedProcess,
+    func_name: &str,
+) -> LowerResult<FunctionValue<'ctx>> {
+    // create function
+    assert!(llvm_unit.get_function(func_name).is_none());
+    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
+    let ty_usize = llvm_ctx.ptr_sized_int_type(llvm_target, None);
+    let ty_func = llvm_ctx
+        .void_type()
+        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false);
+    let function = llvm_unit.add_function(func_name, ty_func, None);
+
+    // get params
+    let param_buffer_prev = function.get_nth_param(0).unwrap().into_pointer_value();
+    param_buffer_prev.set_name("buffer_prev");
+    let param_buffer_next = function.get_nth_param(1).unwrap().into_pointer_value();
+    param_buffer_next.set_name("buffer_next");
+    let param_ports_offsets = function.get_nth_param(2).unwrap().into_pointer_value();
+    param_ports_offsets.set_name("ports_offsets");
+    let param_wires_offset = function.get_nth_param(3).unwrap().into_int_value();
+    param_wires_offset.set_name("wires_offset");
+
+    // create builder
+    let IrClockedProcess {
+        registers: _,
+        variables,
+        async_reset,
+        clock_signal,
+        clock_block,
+    } = ir_proc;
+    let builder = ProcessBuilder::new(
+        ir_module,
+        variables,
+        llvm_ctx,
+        llvm_target,
+        module_types,
+        function,
+        param_buffer_next,
+        param_ports_offsets,
+        param_wires_offset,
+    )?;
+
+    // create reset header, pseudocode:
+    //   reset = eval(next, reset_signal)
+    //   if (reset) { /*reset*/; return; }
+    if let Some(async_reset) = async_reset {
+        let IrAsyncResetInfo {
+            signal: reset_signal,
+            resets,
+        } = async_reset;
+
+        // eval reset
+        let reset_value = builder.eval_polarized_signal(param_buffer_next, reset_signal.span, reset_signal.inner)?;
+
+        // build reset if statement
+        let build_reset_body = || {
+            // reset signals
+            for reset in resets {
+                let (target, ref source) = reset.inner;
+                let target_ptr = builder.eval_signal_or_var_ptr(reset.span, target.into())?;
+                let source_value = builder.eval_expr(reset.span, source)?;
+                builder.llvm_builder.build_store(target_ptr, source_value)?;
+            }
+
+            // early return to ensure the rest of the process does not run
+            builder.llvm_builder.build_return(None)?;
+
+            // create dummy block to keep the builder in a valid state
+            let bb_dummy = builder.llvm_ctx.append_basic_block(builder.function, "dummy");
+            builder.llvm_builder.position_at_end(bb_dummy);
+
+            Ok(())
+        };
+
+        builder.build_if_statement(reset_value, build_reset_body, None::<fn() -> _>)?;
+    }
+
+    // create block header, pseudocode:
+    //   clock_edge = !eval(prev, clock_signal) & eval(next, clock_signal)
+    //   if (!clock_edge) { return; }
+    {
+        let clock_prev = builder.eval_polarized_signal(param_buffer_prev, clock_signal.span, clock_signal.inner)?;
+        let clock_next = builder.eval_polarized_signal(param_buffer_next, clock_signal.span, clock_signal.inner)?;
+
+        let clock_prev_not = builder.llvm_builder.build_not(clock_prev, "")?;
+        let clock_edge = builder.llvm_builder.build_and(clock_prev_not, clock_next, "")?;
+
+        // build clock if statement
+        let build_not_clock_body = || {
+            // early return to ensure the rest of the process does not run
+            builder.llvm_builder.build_return(None)?;
+
+            // create dummy block to keep the builder in a valid state
+            let bb_dummy = builder.llvm_ctx.append_basic_block(builder.function, "dummy");
+            builder.llvm_builder.position_at_end(bb_dummy);
+            Ok(())
+        };
+        builder.build_if_statement(clock_edge, build_not_clock_body, None::<fn() -> _>)?;
+    }
+
+    // lower clocked block itself
+    builder.lower_block(clock_block)?;
     builder.llvm_builder.build_return(None)?;
 
     Ok(function)
@@ -151,7 +263,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         })
     }
 
-    fn lower_block(&self, block: &IrBlock) -> LowerResult<BasicBlock<'ctx>> {
+    fn lower_block(&self, block: &IrBlock) -> LowerResult {
         let IrBlock { statements } = block;
         for stmt in statements {
             let stmt_span = stmt.span;
@@ -177,10 +289,9 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         }
 
         // block lowering must leave the builder in a valid block that has not yet been terminated
-        // we return that block here for caller convenience
         let block_end = self.llvm_builder.get_insert_block().unwrap();
         assert!(block_end.get_terminator().is_none());
-        Ok(block_end)
+        Ok(())
     }
 
     fn lower_statement_assign(&self, span: Span, target: &IrAssignmentTarget, value: &IrExpression) -> LowerResult {
@@ -193,9 +304,9 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
             todo!()
         }
 
-        let base = self.get_named_ptr(span, base)?;
+        let base_ptr = self.eval_signal_or_var_ptr(span, base)?;
         let value = self.eval_expr(span, value)?;
-        self.llvm_builder.build_store(base, value)?;
+        self.llvm_builder.build_store(base_ptr, value)?;
 
         Ok(())
     }
@@ -207,38 +318,52 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
             else_block,
         } = stmt;
 
-        // eval condition
-        let condition = self.eval_expr(span, condition)?.into_int_value();
+        let cond = self.eval_expr(span, condition)?.into_int_value();
 
+        let build_block = |block| move || self.lower_block(block);
+        self.build_if_statement(cond, build_block(then_block), else_block.as_ref().map(build_block))
+    }
+
+    /// Build the right basic block layout for an if statement.
+    /// Internally we take some care to construct blocks in an order so they appear nicely in the linear block order.
+    fn build_if_statement(
+        &self,
+        cond: IntValue<'ctx>,
+        build_then: impl FnOnce() -> LowerResult,
+        build_else: Option<impl FnOnce() -> LowerResult>,
+    ) -> LowerResult {
         // remember start block
         let bb_cond_end = self.llvm_builder.get_insert_block().unwrap();
-        self.llvm_builder.clear_insertion_position();
 
         // lower then branch
         let bb_then_start = self.llvm_ctx.append_basic_block(self.function, "if.then");
         self.llvm_builder.position_at_end(bb_then_start);
-        let bb_then_end = self.lower_block(then_block)?;
+        build_then()?;
+        let bb_then_end = self.llvm_builder.get_insert_block().unwrap();
 
         // lower else branch
-        let bb_else_start_end = if let Some(else_block) = else_block {
+        let bb_else_start_end = if let Some(build_else) = build_else {
             let bb_else_start = self.llvm_ctx.append_basic_block(self.function, "if.else");
             self.llvm_builder.position_at_end(bb_else_start);
-            let bb_else_end = self.lower_block(else_block)?;
+            build_else()?;
+            let bb_else_end = self.llvm_builder.get_insert_block().unwrap();
             Some((bb_else_start, bb_else_end))
         } else {
             None
         };
 
-        // connect branches
+        // create end block
         let bb_end = self.llvm_ctx.append_basic_block(self.function, "if.end");
 
+        // create branch instruction
         self.llvm_builder.position_at_end(bb_cond_end);
         self.llvm_builder.build_conditional_branch(
-            condition,
+            cond,
             bb_then_start,
             bb_else_start_end.map_or(bb_end, |(bb_else_start, _)| bb_else_start),
         )?;
 
+        // jump from branches to end block
         self.llvm_builder.position_at_end(bb_then_end);
         self.llvm_builder.build_unconditional_branch(bb_end)?;
 
@@ -263,12 +388,12 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
             }
             &IrExpression::Signal(sig) => {
                 let ty = self.lower_ty(sig.ty(&self.ir_module.signals))?;
-                let ptr = self.get_named_ptr(span, sig)?;
+                let ptr = self.eval_signal_or_var_ptr(span, sig.into())?;
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
             &IrExpression::Variable(var) => {
                 let ty = self.lower_ty(var.ty(self.ir_vars))?;
-                let ptr = self.get_named_ptr(span, var)?;
+                let ptr = self.eval_signal_or_var_ptr(span, var.into())?;
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
             &IrExpression::Large(value) => match &self.ir_module.large[value] {
@@ -323,17 +448,50 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         todo!()
     }
 
-    fn get_named_ptr(&self, span: Span, target: impl Into<IrSignalOrVariable>) -> LowerResult<PointerValue<'ctx>> {
-        let result = match target.into() {
-            IrSignalOrVariable::Signal(sig) => {
-                let ty_i32 = self.llvm_ctx.i32_type();
+    fn eval_polarized_signal(
+        &self,
+        buffer: PointerValue<'ctx>,
+        span: Span,
+        signal: Polarized<IrSignal>,
+    ) -> LowerResult<IntValue<'ctx>> {
+        let Polarized { inverted, signal } = signal;
 
+        let signal_ptr = self.eval_signal_or_var_ptr_buffer(buffer, span, signal.into())?;
+        let signal_value = self
+            .llvm_builder
+            .build_load(self.llvm_ctx.bool_type(), signal_ptr, "")?
+            .into_int_value();
+
+        let result = if inverted {
+            self.llvm_builder.build_not(signal_value, "")?
+        } else {
+            signal_value
+        };
+        Ok(result)
+    }
+
+    fn eval_signal_or_var_ptr(&self, span: Span, target: IrSignalOrVariable) -> LowerResult<PointerValue<'ctx>> {
+        // for most use cases, reads and writes happen on the next buffer.
+        self.eval_signal_or_var_ptr_buffer(self.param_buffer_next, span, target)
+    }
+
+    fn eval_signal_or_var_ptr_buffer(
+        &self,
+        buffer: PointerValue<'ctx>,
+        span: Span,
+        target: IrSignalOrVariable,
+    ) -> LowerResult<PointerValue<'ctx>> {
+        let ty_usize = self.llvm_ctx.ptr_sized_int_type(self.llvm_target, None);
+        let ty_i32 = self.llvm_ctx.i32_type();
+        let ty_i8 = self.llvm_ctx.i8_type();
+
+        let result = match target {
+            IrSignalOrVariable::Signal(sig) => {
                 match sig {
                     IrSignal::Port(port) => {
                         let port_index = *self.module_signal_types.port_indices.get(&port).unwrap();
 
                         // calculate port offset address
-                        let ty_usize = self.llvm_ctx.ptr_sized_int_type(self.llvm_target, None);
                         let port_index = ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false);
                         let port_offset_ptr = unsafe {
                             self.llvm_builder
@@ -347,26 +505,15 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                             .into_int_value();
 
                         // calculate port address from base + offset
-                        unsafe {
-                            self.llvm_builder.build_gep(
-                                self.llvm_ctx.i8_type(),
-                                self.param_buffer_next,
-                                &[port_offset],
-                                "",
-                            )?
-                        }
+                        unsafe { self.llvm_builder.build_gep(ty_i8, buffer, &[port_offset], "")? }
                     }
                     IrSignal::Wire(wire) => {
                         let wire_index = *self.module_signal_types.wire_indices.get(&wire).unwrap();
 
                         // calculate base pointer to the wires of this instance
                         let wires_base = unsafe {
-                            self.llvm_builder.build_gep(
-                                self.llvm_ctx.i8_type(),
-                                self.param_buffer_next,
-                                &[self.param_wires_offset],
-                                "",
-                            )?
+                            self.llvm_builder
+                                .build_gep(ty_i8, buffer, &[self.param_wires_offset], "")?
                         };
 
                         // calculate pointer to the wire itself

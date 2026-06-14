@@ -1,4 +1,4 @@
-use crate::lower_process::lower_process_comb;
+use crate::lower_process::{lower_process_clocked, lower_process_combinatorial};
 use crate::lower_type::lower_ty;
 use crate::simulator::LowerResult;
 use hwl_language::front::signal::PortOrWire;
@@ -33,11 +33,16 @@ pub struct LoweredModuleInfo<'ctx> {
     /// * `children_state_ty`
     pub full_state_ty: StructType<'ctx>,
 
-    /// Information for all child module instances
-    pub child_instances: Vec<LoweredChildModuleInfo>,
+    /// Function name corresponding to each module process.
+    pub process_functions: Vec<ProcessKind<String, String>>,
 
-    /// Combinatorial process functions
-    pub functions_comb: Vec<String>,
+    /// Information for all child module instances.
+    pub child_instances: Vec<LoweredChildModuleInfo>,
+}
+
+pub enum ProcessKind<O, L> {
+    Combinatorial(O),
+    Clocked(L),
 }
 
 pub struct LoweredChildModuleInfo {
@@ -86,23 +91,15 @@ pub fn lower_module<'ctx, 'map>(
     // visit children, allocating new fields as necessary
     let mut dummy_fields: Vec<BasicTypeEnum> = vec![];
     let mut children_state_fields: Vec<BasicTypeEnum> = vec![];
-    let mut child_instances = vec![];
 
-    let mut functions_comb = vec![];
+    let mut process_functions = vec![];
+    let mut child_instances = vec![];
 
     for (child_index, child) in enumerate(children) {
         match &child.inner {
-            IrModuleChild::ClockedProcess(_) => {
-                // TODO be careful about prev/next,
-                //   writes to registers should immediately be visible in the process itself
-                //   or do we want to flip IR semantics back again?
-                //   Actually, maybe we can just read copy prev to next for all driven registers,
-                //      then always read from next for those, and read from prev for other values?
-                todo!()
-            }
-            IrModuleChild::CombinatorialProcess(proc) => {
-                let func_name = format!("module_{module_index}_child_{child_index}_comb");
-                lower_process_comb(
+            IrModuleChild::ClockedProcess(proc) => {
+                let func_name = format!("module_{module_index}_child_{child_index}_clocked");
+                lower_process_clocked(
                     llvm_ctx,
                     llvm_unit,
                     llvm_target,
@@ -111,7 +108,20 @@ pub fn lower_module<'ctx, 'map>(
                     proc,
                     &func_name,
                 )?;
-                functions_comb.push(func_name);
+                process_functions.push(ProcessKind::Clocked(func_name));
+            }
+            IrModuleChild::CombinatorialProcess(proc) => {
+                let func_name = format!("module_{module_index}_child_{child_index}_comb");
+                lower_process_combinatorial(
+                    llvm_ctx,
+                    llvm_unit,
+                    llvm_target,
+                    &signal_types,
+                    module_info,
+                    proc,
+                    &func_name,
+                )?;
+                process_functions.push(ProcessKind::Combinatorial(func_name));
             }
             IrModuleChild::ModuleInternalInstance(inst) => {
                 let &IrModuleInternalInstance {
@@ -177,8 +187,8 @@ pub fn lower_module<'ctx, 'map>(
         dummy_state_ty,
         children_state_ty,
         full_state_ty,
+        process_functions,
         child_instances,
-        functions_comb,
     };
 
     // store into cache

@@ -1,7 +1,7 @@
 use crate::buffer::{Buffer, BufferError};
 use crate::lower_module;
-use crate::lower_module::{LoweredChildModuleInfo, LoweredModuleInfo, SignalOrDummy};
-use crate::lower_process::FunctionCombinatorialProcess;
+use crate::lower_module::{LoweredChildModuleInfo, LoweredModuleInfo, ProcessKind, SignalOrDummy};
+use crate::lower_process::{FunctionProcessClocked, FunctionProcessCombinatorial};
 use crate::lower_type::{lower_ty, read_value_from_buffer, write_value_to_buffer};
 use hwl_language::front::check::{TypeContainsReason, check_type_contains_value};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics};
@@ -36,6 +36,7 @@ pub struct SimulatorInstance {
     module: Arc<SimulatorModule>,
 
     curr_time: u64,
+    state_prev: Buffer,
     state_next: Buffer,
 }
 
@@ -93,15 +94,18 @@ impl SimulatorModule {
 
 impl SimulatorInstance {
     pub fn new(compiled: Arc<SimulatorModule>) -> LowerResult<SimulatorInstance> {
-        let state_next = compiled.inner.with_inner(|inner| {
-            // TODO fill buffers with X for each signal and register, to ensure a clean start
-            let target = inner.llvm_engine.get_target_data();
-            Buffer::new(target, &inner.state_ty)
-        })?;
+        let (target, state_ty) = compiled
+            .inner
+            .with_inner(|inner| (inner.llvm_engine.get_target_data(), &inner.state_ty));
+
+        // TODO fill buffers with undef for each signal and register, to ensure a clean start
+        let state_prev = Buffer::new_zeroed(target, state_ty)?;
+        let state_next = Buffer::new_zeroed(target, state_ty)?;
 
         let inst = SimulatorInstance {
             module: compiled,
             curr_time: 0,
+            state_prev,
             state_next,
         };
         Ok(inst)
@@ -127,10 +131,20 @@ impl SimulatorInstance {
                         offset_instance_wires,
                     } = item;
 
-                    let offsets_instance_ports =
-                        unsafe { inner.port_offsets.as_ptr().add(start_offsets_instance_ports) };
-
-                    unsafe { func.call(self.state_next.as_ptr(), offsets_instance_ports, offset_instance_wires) };
+                    unsafe {
+                        let offsets_instance_ports = inner.port_offsets.as_ptr().add(start_offsets_instance_ports);
+                        match func {
+                            ProcessKind::Combinatorial(func) => {
+                                func.call(self.state_next.as_ptr(), offsets_instance_ports, offset_instance_wires)
+                            }
+                            ProcessKind::Clocked(func) => func.call(
+                                self.state_prev.as_ptr(),
+                                self.state_next.as_ptr(),
+                                offsets_instance_ports,
+                                offset_instance_wires,
+                            ),
+                        }
+                    }
                 }
             }
         });
@@ -211,6 +225,8 @@ fn compile_simulator_inner<'ctx>(
         top,
     )?;
 
+    println!("{}", llvm_unit.to_string());
+
     // compile functions
     llvm_unit
         .verify()
@@ -270,7 +286,7 @@ fn compile_simulator_inner<'ctx>(
 
 struct ScheduleItem<'ctx> {
     // TODO try replacing this with a raw function pointer, this contains a bunch of redundant arcs
-    func: JitFunction<'ctx, FunctionCombinatorialProcess>,
+    func: ProcessKind<JitFunction<'ctx, FunctionProcessCombinatorial>, JitFunction<'ctx, FunctionProcessClocked>>,
     start_offsets_instance_ports: usize,
     offset_instance_wires: usize,
 }
@@ -293,8 +309,17 @@ fn build_schedule_and_offsets<'ctx>(
 
     // record module processes with the right offsets
     let offset_instance_wires = offset_instance_state + info.state_offset_of_wires(llvm_target);
-    for func in &info.functions_comb {
-        let func = unsafe { llvm_engine.get_function::<FunctionCombinatorialProcess>(func).unwrap() };
+    for func in &info.process_functions {
+        let func = match func {
+            ProcessKind::Combinatorial(func) => {
+                let func = unsafe { llvm_engine.get_function::<FunctionProcessCombinatorial>(func) };
+                ProcessKind::Combinatorial(func.unwrap())
+            }
+            ProcessKind::Clocked(func) => {
+                let func = unsafe { llvm_engine.get_function::<FunctionProcessClocked>(func) };
+                ProcessKind::Clocked(func.unwrap())
+            }
+        };
 
         let item = ScheduleItem {
             func,

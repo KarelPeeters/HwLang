@@ -18,7 +18,7 @@ pub enum BufferError {
 }
 
 impl Buffer {
-    pub fn new(target: &TargetData, ty: &dyn AnyType) -> Result<Buffer, BufferError> {
+    pub fn new_zeroed(target: &TargetData, ty: &dyn AnyType) -> Result<Buffer, BufferError> {
         let size = target
             .get_store_size(ty)
             .try_into()

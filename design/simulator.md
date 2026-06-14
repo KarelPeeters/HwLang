@@ -24,6 +24,9 @@
 * PGO and re-optimize?
 * implement rare things (X/Z/assertions/prints?) with a callback to Rust to reduce code size?
 * for writes to large arrays 
+* sparse process calling:
+  * only call clocked blocks if they actually have a reset or clocked edge, this is easy to implement and forms a nice batch
+  * only call comb blocks if one of their inputs changed, this is trickier
 
 # Fancy features
 
