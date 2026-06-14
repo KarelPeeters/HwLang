@@ -1,77 +1,15 @@
 use crate::buffer::Buffer;
 use crate::simulator::{LowerError, LowerResult};
 use hwl_language::front::value::{CompileValue, SimpleCompileValue};
-use hwl_language::mid::ir::{IrPort, IrSignals, IrType, IrWire};
+use hwl_language::mid::ir::IrType;
 use hwl_language::syntax::pos::Span;
 use hwl_language::util::big_int::BigInt;
-use hwl_language::util::data::IndexMapExt;
 use hwl_language::util::int_repr::IntRepresentation;
 use hwl_language::util::range::ClosedNonEmptyRange;
-use indexmap::IndexMap;
-use inkwell::AddressSpace;
 use inkwell::context::Context;
-use inkwell::types::{ArrayType, BasicTypeEnum, IntType, StructType};
+use inkwell::types::{BasicTypeEnum, IntType};
 use std::num::NonZeroU32;
 use unwrap_match::unwrap_match;
-
-#[derive(Debug)]
-pub struct ModuleSignalTypes<'ctx> {
-    pub port_indices: IndexMap<IrPort, usize>,
-    pub wire_indices: IndexMap<IrWire, usize>,
-
-    /// Array of (untyped) pointers, one per port.
-    /// Used for module instances, where each port is a pointer to the right signal in the parent.
-    pub ports_array_ty: ArrayType<'ctx>,
-    /// Struct type, one field per port.
-    /// Used to store top-level ports.
-    pub ports_struct_ty: StructType<'ctx>,
-    /// Struct type, one field per wire.
-    /// Used to store module instance wires.
-    pub wires_struct_ty: StructType<'ctx>,
-}
-
-impl<'ctx> ModuleSignalTypes<'ctx> {
-    pub fn new(ctx: &'ctx Context, span: Span, signals: &IrSignals) -> LowerResult<ModuleSignalTypes<'ctx>> {
-        let IrSignals {
-            ports,
-            wires,
-            ports_named: _,
-        } = signals;
-
-        // map ports
-        let mut port_indices = IndexMap::new();
-        let mut port_types = vec![];
-        for (port, port_info) in ports {
-            port_indices.insert_first(port, port_indices.len());
-
-            let ty = lower_ty(ctx, &port_info.ty)?;
-            port_types.push(ty);
-        }
-        let ports_struct_ty = ctx.struct_type(&port_types, false);
-        let ports_array_ty = ctx
-            .ptr_type(AddressSpace::default())
-            .array_type(usize_to_u31(span, port_indices.len())?);
-
-        // map wires
-        let mut wire_indices = IndexMap::new();
-        let mut wire_types = vec![];
-        for (wire, wire_info) in wires {
-            wire_indices.insert_first(wire, wire_indices.len());
-
-            let ty = lower_ty(ctx, &wire_info.ty)?;
-            wire_types.push(ty);
-        }
-        let wires_struct_ty = ctx.struct_type(&wire_types, false);
-
-        Ok(ModuleSignalTypes {
-            port_indices,
-            wire_indices,
-            ports_array_ty,
-            ports_struct_ty,
-            wires_struct_ty,
-        })
-    }
-}
 
 pub fn lower_ty<'ctx>(ctx: &'ctx Context, ty: &IrType) -> LowerResult<BasicTypeEnum<'ctx>> {
     // TODO cache these? maybe that's even necessary for struct types

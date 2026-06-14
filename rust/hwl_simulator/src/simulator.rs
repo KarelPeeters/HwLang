@@ -1,17 +1,19 @@
 use crate::buffer::{Buffer, BufferError};
 use crate::lower_process::{FunctionCombinatorialProcess, lower_process_comb};
-use crate::lower_types::{ModuleSignalTypes, lower_ty, read_value_from_buffer, write_value_to_buffer};
+use crate::lower_types::{lower_ty, read_value_from_buffer, write_value_to_buffer};
 use hwl_language::front::check::{TypeContainsReason, check_type_contains_value};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics};
 use hwl_language::front::item::ElaborationArenas;
+use hwl_language::front::signal::PortOrWire;
 use hwl_language::front::value::CompileValue;
 use hwl_language::mid::ir::{
     IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPorts,
-    IrSignal, IrWire,
+    IrSignal, IrSignals, IrWire,
 };
 use hwl_language::syntax::ast::PortDirection;
 use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigUint;
+use hwl_language::util::data::IndexMapExt;
 use hwl_language::util::iter::IterExt;
 use indexmap::IndexMap;
 use inkwell::OptimizationLevel;
@@ -19,11 +21,10 @@ use inkwell::builder::BuilderError;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, FunctionLookupError, JitFunction};
 use inkwell::module::Module;
-use inkwell::types::StructType;
-use itertools::{Itertools, enumerate};
-use std::ffi::c_void;
+use inkwell::targets::TargetData;
+use inkwell::types::{BasicTypeEnum, StructType};
+use itertools::enumerate;
 use std::fmt::{self, Display, Formatter};
-use std::ops::Index;
 use std::sync::Arc;
 
 /// A fully compiled and prepared simulator module.
@@ -38,19 +39,16 @@ pub struct SimulatorInstance {
     module: Arc<SimulatorModule>,
 
     curr_time: u64,
-
-    ports_next: Buffer,
-    wires_next: Buffer,
-    ports_next_ptrs: Buffer,
+    state_next: Buffer,
 }
 
 /// Inner content of [SimulatorModule].
 /// Uses [ouroboros] to allow the LLVM state to refer to the 'ctx lifetime, .
 #[ouroboros::self_referencing]
 struct SimulatorModuleInner {
-    llvm_context: Context,
+    llvm_ctx: Context,
 
-    #[borrows(llvm_context)]
+    #[borrows(llvm_ctx)]
     #[not_covariant]
     inner: SimulatorCompiledReferencing<'this>,
 }
@@ -62,11 +60,15 @@ struct SimulatorCompiledReferencing<'ctx> {
     llvm_unit: Module<'ctx>,
     llvm_engine: ExecutionEngine<'ctx>,
 
-    top_module_types: ModuleSignalTypes<'ctx>,
     top_module_ports: IrPorts,
     top_module_ports_named: IndexMap<String, IrPort>,
+    top_module_port_indices: IndexMap<IrPort, usize>,
 
-    all_comb_functions: Vec<JitFunction<'ctx, FunctionCombinatorialProcess>>,
+    state_ty: StructType<'ctx>,
+
+    schedule_items: Vec<ScheduleItem<'ctx>>,
+    // TODO document, the first n indices are the top ports
+    port_offsets: Vec<usize>,
 }
 
 /// [SimulatorModule] is an immutable compiled module, should not have any cross-thread synchronization concerns.
@@ -76,7 +78,7 @@ unsafe impl Sync for SimulatorModule {}
 impl SimulatorModule {
     pub fn new(modules: &IrModules, top: IrModule) -> LowerResult<SimulatorModule> {
         let builder = SimulatorModuleInnerTryBuilder {
-            llvm_context: Context::create(),
+            llvm_ctx: Context::create(),
             inner_builder: |llvm_ctx| compile_simulator_inner(modules, top, llvm_ctx),
         };
         let inner = builder.try_build()?;
@@ -94,33 +96,16 @@ impl SimulatorModule {
 
 impl SimulatorInstance {
     pub fn new(compiled: Arc<SimulatorModule>) -> LowerResult<SimulatorInstance> {
-        let (top_module_types, llvm_engine) = compiled
-            .inner
-            .with_inner(|inner| (&inner.top_module_types, &inner.llvm_engine));
-
-        // TODO fill buffers with X for each signal and register, to ensure a clean start
-        let target = llvm_engine.get_target_data();
-        let ports_next = Buffer::new(target, &top_module_types.ports_struct_ty)?;
-        let wires_next = Buffer::new(target, &top_module_types.wires_struct_ty)?;
-        let ports_next_ptrs = Buffer::new(target, &top_module_types.ports_array_ty)?;
-
-        // fill ports_next_ptrs with pointers into ports_next
-        for port_index in 0..top_module_types.port_indices.len() {
-            let port_ptr_offset = port_index * (target.get_pointer_byte_size(None) as usize);
-            let port_offset = target
-                .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
-                .unwrap() as usize;
-            unsafe {
-                ports_next_ptrs.write(port_ptr_offset, ports_next.as_ptr().add(port_offset));
-            }
-        }
+        let state_next = compiled.inner.with_inner(|inner| {
+            // TODO fill buffers with X for each signal and register, to ensure a clean start
+            let target = inner.llvm_engine.get_target_data();
+            Buffer::new(target, &inner.state_ty)
+        })?;
 
         let inst = SimulatorInstance {
             module: compiled,
             curr_time: 0,
-            ports_next,
-            wires_next,
-            ports_next_ptrs,
+            state_next,
         };
         Ok(inst)
     }
@@ -130,44 +115,42 @@ impl SimulatorInstance {
     }
 
     pub fn step(&mut self, increment_time: u64) {
-        // TODO careful, we're still assuming there is only one module here
-        // TODO use actual schedule, then we can get rid of this best-effort loop
+        // // TODO careful, we're still assuming there is only one module here
+        // // TODO use actual schedule, then we can get rid of this best-effort loop
         const ITER_COUNT: usize = 16;
 
         let _ = increment_time;
 
-        let all_comb_functions = self.module.inner.with_inner(|inner| &inner.all_comb_functions);
-        for _ in 0..ITER_COUNT {
-            for f_comb in all_comb_functions {
-                unsafe {
-                    f_comb.call(
-                        self.ports_next_ptrs.as_ptr() as *mut *mut c_void,
-                        self.wires_next.as_ptr(),
-                    )
-                };
+        self.module.inner.with_inner(|inner| {
+            for _ in 0..ITER_COUNT {
+                for item in &inner.schedule_items {
+                    let &ScheduleItem {
+                        ref func,
+                        start_offsets_instance_ports,
+                        offset_instance_wires,
+                    } = item;
+
+                    let offsets_instance_ports =
+                        unsafe { inner.port_offsets.as_ptr().add(start_offsets_instance_ports) };
+
+                    unsafe { func.call(self.state_next.as_ptr(), offsets_instance_ports, offset_instance_wires) };
+                }
             }
-        }
+        });
     }
 
     pub fn get_port(&self, port: IrPort) -> CompileValue {
-        // extract inner
-        let (top_module_ports, top_module_types, llvm_engine) = self
-            .module
-            .inner
-            .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
-
-        // gather port info
-        let port_info = &top_module_ports[port];
-        let port_index = *top_module_types.port_indices.get(&port).unwrap();
-
-        // figure out port offset
-        let target = llvm_engine.get_target_data();
-        let port_offset = target
-            .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
-            .unwrap() as usize;
+        // get port info
+        // TODO extract utility function
+        let (port_offset, port_ty) = self.module.inner.with_inner(|inner| {
+            let port_info = &inner.top_module_ports[port];
+            let port_index = *inner.top_module_port_indices.get(&port).unwrap();
+            let port_offset = inner.port_offsets[port_index];
+            (port_offset, &port_info.ty)
+        });
 
         // actually get value
-        unsafe { read_value_from_buffer(&self.ports_next, port_offset, &port_info.ty) }
+        unsafe { read_value_from_buffer(&self.state_next, port_offset, port_ty) }
     }
 
     pub fn set_port(
@@ -177,15 +160,13 @@ impl SimulatorInstance {
         port: IrPort,
         value: Spanned<&CompileValue>,
     ) -> DiagResult {
-        // extract inner
-        let (top_module_ports, top_module_types, llvm_engine) = self
-            .module
-            .inner
-            .with_inner(|inner| (&inner.top_module_ports, &inner.top_module_types, &inner.llvm_engine));
-
-        // gather port info
-        let port_info = &top_module_ports[port];
-        let port_index = *top_module_types.port_indices.get(&port).unwrap();
+        // get port info
+        let (port_offset, port_info) = self.module.inner.with_inner(|inner| {
+            let port_info = &inner.top_module_ports[port];
+            let port_index = *inner.top_module_port_indices.get(&port).unwrap();
+            let port_offset = inner.port_offsets[port_index];
+            (port_offset, port_info)
+        });
 
         // check direction and type
         match port_info.direction {
@@ -199,15 +180,9 @@ impl SimulatorInstance {
         };
         check_type_contains_value(diags, elab, reason, &port_info.ty.as_type_hw().as_type(), value)?;
 
-        // figure out port offset
-        let target = llvm_engine.get_target_data();
-        let port_offset = target
-            .offset_of_element(&top_module_types.ports_struct_ty, port_index as u32)
-            .unwrap() as usize;
-
         // actually set value
         unsafe {
-            write_value_to_buffer(&mut self.ports_next, port_offset, &port_info.ty, value.inner);
+            write_value_to_buffer(&mut self.state_next, port_offset, &port_info.ty, value.inner);
         }
 
         Ok(())
@@ -219,53 +194,88 @@ fn compile_simulator_inner<'ctx>(
     top: IrModule,
     llvm_ctx: &'ctx Context,
 ) -> LowerResult<SimulatorCompiledReferencing<'ctx>> {
-    todo!()
+    // create unit and get target data layout
+    let llvm_unit = llvm_ctx.create_module("");
+    let llvm_engine = llvm_unit
+        .create_jit_execution_engine(OptimizationLevel::None)
+        .map_err(|e| LowerError::FailedToCreateExecutionEngine(e.to_string()))?;
+    let llvm_target = llvm_engine.get_target_data();
 
-    // let llvm_unit = llvm_ctx.create_module("");
-    //
-    // let top_module_info = &modules[top];
-    // let (top_module_types, top_module_functions) = lower_module(llvm_ctx, &llvm_unit, top_module_info, 0)?;
-    //
-    // // println!("{}", llvm_unit.to_string());
-    //
-    // llvm_unit
-    //     .verify()
-    //     .map_err(|e| LowerError::VerificationFailed(e.to_string()))?;
-    //
-    // let execution_engine = llvm_unit
-    //     .create_jit_execution_engine(OptimizationLevel::None)
-    //     .map_err(|e| LowerError::FailedToCreateExecutionEngine(e.to_string()))?;
-    //
-    // let mut all_comb_functions = vec![];
-    // for func_name in top_module_functions.comb {
-    //     let func = unsafe { execution_engine.get_function(&func_name)? };
-    //     all_comb_functions.push(func);
-    // }
-    //
-    // Ok(SimulatorCompiledReferencing {
-    //     llvm_unit,
-    //     llvm_engine: execution_engine,
-    //     top_module_types,
-    //     top_module_ports: top_module_info.signals.ports.clone(),
-    //     top_module_ports_named: top_module_info.signals.ports_named.clone(),
-    //     all_comb_functions,
-    // })
-}
+    // lower modules
+    let mut lowered_map = IndexMap::new();
+    let mut next_module_index = 0;
+    let lowered_top_info = lower_module(
+        llvm_ctx,
+        &llvm_unit,
+        &llvm_target,
+        modules,
+        &mut lowered_map,
+        &mut next_module_index,
+        top,
+    )?;
 
-pub struct ModuleFunctions {
-    comb: Vec<String>,
+    // compile functions
+    llvm_unit
+        .verify()
+        .map_err(|e| LowerError::VerificationFailed(e.to_string()))?;
+
+    // create top ports type
+    let top_info = &modules[top];
+    let mut top_port_fields = vec![];
+    for port_info in top_info.signals.ports.values() {
+        top_port_fields.push(lower_ty(llvm_ctx, &port_info.ty)?);
+    }
+    let top_ports_ty = llvm_ctx.struct_type(&top_port_fields, false);
+
+    // create top state ty, with fields:
+    //   * top ports
+    //   * top instance full state
+    let state_ty = llvm_ctx.struct_type(&[top_ports_ty.into(), lowered_top_info.full_state_ty.into()], false);
+    let offset_top_ports = llvm_target.offset_of_element(&state_ty, 0).unwrap() as usize;
+    let offset_top_instance_state = llvm_target.offset_of_element(&state_ty, 1).unwrap() as usize;
+
+    // fill in top port offsets
+    let mut result_port_offsets = vec![];
+    let start_offsets_top_instance_ports = result_port_offsets.len();
+    for port_index in 0..top_info.signals.ports.len() {
+        let offset_port = llvm_target.offset_of_element(&top_ports_ty, port_index as u32).unwrap() as usize;
+        result_port_offsets.push(offset_top_ports + offset_port);
+    }
+
+    // clone out some information to avoid borrow issues later
+    let top_module_port_indices = lowered_top_info.signal_types.port_indices.clone();
+
+    // build schedule
+    let mut result_schedule = vec![];
+    build_schedule_and_offsets(
+        llvm_ctx,
+        llvm_target,
+        &llvm_engine,
+        &lowered_map,
+        top,
+        &mut result_schedule,
+        &mut result_port_offsets,
+        offset_top_instance_state,
+        start_offsets_top_instance_ports,
+    );
+
+    Ok(SimulatorCompiledReferencing {
+        llvm_unit,
+        llvm_engine,
+        top_module_ports: top_info.signals.ports.clone(),
+        top_module_ports_named: top_info.signals.ports_named.clone(),
+        top_module_port_indices,
+        state_ty,
+        schedule_items: result_schedule,
+        port_offsets: result_port_offsets,
+    })
 }
 
 struct LoweredModuleInfo<'ctx> {
     index: usize,
 
-    /// Map from ports to their index
-    port_indices: IndexMap<IrPort, usize>,
-
-    /// Map from wires to their index
-    wire_indices: IndexMap<IrPort, usize>,
-    /// Struct type to store all wires declared in this module
-    wire_state_ty: StructType<'ctx>,
+    /// Module signal type info, including the struct type to store all wires declared in this module
+    signal_types: ModuleSignalTypes<'ctx>,
 
     /// Struct type to store values for all child ports that are otherwise not connected to anything,
     ///   they will need a distinct place to point to.
@@ -281,37 +291,98 @@ struct LoweredModuleInfo<'ctx> {
 
     /// Information for all child module instances
     child_instances: Vec<LoweredChildModuleInfo>,
+
+    /// Combinatorial process functions
+    functions_comb: Vec<String>,
+}
+
+impl LoweredModuleInfo<'_> {
+    // TODO cache (or even just hardcode to zero?)
+    pub fn state_offset_of_wires(&self, target: &TargetData) -> usize {
+        target.offset_of_element(&self.full_state_ty, 0).unwrap() as usize
+    }
+
+    pub fn state_offset_of_wire(&self, target: &TargetData, index: usize) -> usize {
+        let wire_struct_ty = &self.signal_types.wire_struct_ty;
+        let offset_wires = self.state_offset_of_wires(target);
+        let offset_wire = target.offset_of_element(wire_struct_ty, index as u32).unwrap() as usize;
+        offset_wires + offset_wire
+    }
+
+    pub fn state_offset_of_dummy(&self, target: &TargetData, index: usize) -> usize {
+        let offset_dummies = target.offset_of_element(&self.full_state_ty, 1).unwrap() as usize;
+        let offset_dummy = target.offset_of_element(&self.dummy_state_ty, index as u32).unwrap() as usize;
+        offset_dummies + offset_dummy
+    }
+
+    pub fn state_offset_of_child(&self, target: &TargetData, index: usize) -> usize {
+        let offset_children = target.offset_of_element(&self.full_state_ty, 2).unwrap() as usize;
+        let offset_child = target.offset_of_element(&self.children_state_ty, index as u32).unwrap() as usize;
+        offset_children + offset_child
+    }
 }
 
 struct LoweredChildModuleInfo {
-    module: IrModule,
+    child_module: IrModule,
     connections: Vec<SignalOrDummy>,
 }
 
-struct LoweredModuleReturnInfo<'ctx> {
-    full_state_ty: StructType<'ctx>,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum SignalOrDummy {
-    Signal(IrSignal),
+    Signal(PortOrWire<usize, usize>),
     Dummy(usize),
 }
 
-// TODO make this recursive
-// TODO think about what type we actually want to return
-// TODO check cache for already lowered modules
+pub struct ModuleSignalTypes<'ctx> {
+    pub port_indices: IndexMap<IrPort, usize>,
+    pub wire_indices: IndexMap<IrWire, usize>,
+    pub wire_struct_ty: StructType<'ctx>,
+}
+
+impl<'ctx> ModuleSignalTypes<'ctx> {
+    fn new(llvm_ctx: &'ctx Context, signals: &IrSignals) -> LowerResult<Self> {
+        // map ports to indices
+        let port_indices: IndexMap<IrPort, usize> = signals.ports.keys().enumerate().map(|(i, p)| (p, i)).collect();
+
+        // map wires to indices
+        let wire_indices: IndexMap<IrWire, usize> = signals.wires.keys().enumerate().map(|(i, w)| (w, i)).collect();
+
+        // create wire struct
+        let wire_fields = signals
+            .wires
+            .values()
+            .map(|w| lower_ty(llvm_ctx, &w.ty))
+            .try_collect_vec()?;
+        let wire_struct_ty = llvm_ctx.struct_type(&wire_fields, false);
+
+        Ok(ModuleSignalTypes {
+            port_indices,
+            wire_indices,
+            wire_struct_ty,
+        })
+    }
+
+    fn signal_index(&self, signal: IrSignal) -> PortOrWire<usize, usize> {
+        match signal {
+            IrSignal::Port(s) => PortOrWire::Port(*self.port_indices.get(&s).unwrap()),
+            IrSignal::Wire(s) => PortOrWire::Wire(*self.wire_indices.get(&s).unwrap()),
+        }
+    }
+}
+
+// TODO move this to lower_module, instead of top-level in the simulator
 fn lower_module<'ctx, 'map>(
     llvm_ctx: &'ctx Context,
     llvm_unit: &Module<'ctx>,
+    llvm_target: &TargetData,
     modules: &IrModules,
     map: &'map mut IndexMap<IrModule, LoweredModuleInfo<'ctx>>,
     next_module_index: &mut usize,
     module: IrModule,
 ) -> LowerResult<&'map LoweredModuleInfo<'ctx>> {
     // check cache
-    if let Some(prev) = map.get(&module) {
-        return Ok(prev);
+    if let Some(idx) = map.get_index_of(&module) {
+        return Ok(map.get_index(idx).unwrap().1);
     }
 
     // claim index
@@ -329,25 +400,15 @@ fn lower_module<'ctx, 'map>(
         debug_info_generic_args: _,
     } = module_info;
 
-    // map ports to indices
-    let port_indices: IndexMap<IrPort, usize> = signals.ports.keys().enumerate().map(|(i, p)| (p, i)).collect();
-
-    // map wires to indices and create wire struct
-    let wire_indices: IndexMap<IrWire, usize> = signals.wires.keys().enumerate().map(|(i, w)| (w, i)).collect();
-    let wire_fields = signals
-        .wires
-        .values()
-        .map(|w| lower_ty(llvm_ctx, &w.ty))
-        .try_collect_vec()?;
-    let wire_struct = llvm_ctx.struct_type(&&wire_fields, false);
+    // map signal types
+    let signal_types = ModuleSignalTypes::new(llvm_ctx, signals)?;
 
     // visit children, allocating new fields as necessary
-    // let mut dummy_fields = vec![];
-    // let mut child_state_fields = vec![];
-    // let mut child_instance_info = vec![];
+    let mut dummy_fields: Vec<BasicTypeEnum> = vec![];
+    let mut children_state_fields: Vec<BasicTypeEnum> = vec![];
+    let mut child_instances = vec![];
 
-    let module_signal_types = ModuleSignalTypes::new(llvm_ctx, debug_info_id.span, signals)?;
-    let mut module_functions_comb = vec![];
+    let mut functions_comb = vec![];
 
     for (child_index, child) in enumerate(children) {
         match &child.inner {
@@ -361,8 +422,16 @@ fn lower_module<'ctx, 'map>(
             }
             IrModuleChild::CombinatorialProcess(proc) => {
                 let func_name = format!("module_{module_index}_child_{child_index}_comb");
-                lower_process_comb(llvm_ctx, llvm_unit, &module_signal_types, module_info, proc, &func_name)?;
-                module_functions_comb.push(func_name);
+                lower_process_comb(
+                    llvm_ctx,
+                    llvm_unit,
+                    llvm_target,
+                    &signal_types,
+                    module_info,
+                    proc,
+                    &func_name,
+                )?;
+                functions_comb.push(func_name);
             }
             IrModuleChild::ModuleInternalInstance(inst) => {
                 let &IrModuleInternalInstance {
@@ -371,39 +440,142 @@ fn lower_module<'ctx, 'map>(
                     ref port_connections,
                 } = inst;
 
-                // let child_info = lower_module(llvm_ctx, llvm_unit, modules, map, next_module_index, child_module)?;
-                //
-                // // TODO record port offsets somewhere?
-                // // TODO think about the right way to store these
-                // let connections = enumerate(port_connections)
-                //     .map(|(conn_index, conn)| match conn.inner {
-                //         IrPortConnection::Input(signal) => SignalOrDummy::Signal(signal),
-                //         IrPortConnection::Output(signal) => match signal {
-                //             Some(signal) => SignalOrDummy::Signal(signal),
-                //             None => {
-                //
-                //
-                //                 let ty = modules[child_module].signals.ports.get_by_index()
-                //             }
-                //         },
-                //     })
-                //     .collect_vec();
-                //
-                // child_instance_info.push(LoweredChildModuleInfo {
-                //     module: child_module,
-                //     connections,
-                // })
+                let child_module_info = lower_module(
+                    llvm_ctx,
+                    llvm_unit,
+                    llvm_target,
+                    modules,
+                    map,
+                    next_module_index,
+                    child_module,
+                )?;
+                children_state_fields.push(child_module_info.full_state_ty.into());
+
+                let mut connections = Vec::with_capacity(port_connections.len());
+                for (conn_index, conn) in enumerate(port_connections) {
+                    let result = match conn.inner {
+                        IrPortConnection::Input(s) => SignalOrDummy::Signal(signal_types.signal_index(s)),
+                        IrPortConnection::Output(s) => match s {
+                            Some(s) => SignalOrDummy::Signal(signal_types.signal_index(s)),
+                            None => {
+                                let port_info = modules[child_module].signals.ports.get_by_index(conn_index).unwrap().1;
+                                let ty = &port_info.ty;
+
+                                let dummy_index = dummy_fields.len();
+                                dummy_fields.push(lower_ty(llvm_ctx, ty)?);
+                                SignalOrDummy::Dummy(dummy_index)
+                            }
+                        },
+                    };
+                    connections.push(result);
+                }
+
+                child_instances.push(LoweredChildModuleInfo {
+                    child_module,
+                    connections,
+                })
             }
             IrModuleChild::ModuleExternalInstance(_) => todo!(),
         }
     }
 
-    todo!()
-    //
-    // let module_funcs = ModuleFunctions {
-    //     comb: module_functions_comb,
-    // };
-    // Ok((module_signal_types, module_funcs))
+    // build result
+    let dummy_state_ty = llvm_ctx.struct_type(&dummy_fields, false);
+    let children_state_ty = llvm_ctx.struct_type(&children_state_fields, false);
+    let full_state_ty = llvm_ctx.struct_type(
+        &[
+            signal_types.wire_struct_ty.into(),
+            dummy_state_ty.into(),
+            children_state_ty.into(),
+        ],
+        false,
+    );
+
+    let info = LoweredModuleInfo {
+        index: module_index,
+        signal_types,
+        dummy_state_ty,
+        children_state_ty,
+        full_state_ty,
+        child_instances,
+        functions_comb,
+    };
+
+    // store into cache
+    Ok(map.insert_first(module, info))
+}
+
+struct ScheduleItem<'ctx> {
+    // TODO try replacing this with a raw function pointer, this contains a bunch of redundant arcs
+    func: JitFunction<'ctx, FunctionCombinatorialProcess>,
+    start_offsets_instance_ports: usize,
+    offset_instance_wires: usize,
+}
+
+// TODO rename?
+fn build_schedule_and_offsets<'ctx>(
+    llvm_ctx: &'ctx Context,
+    llvm_target: &TargetData,
+    llvm_engine: &ExecutionEngine<'ctx>,
+    map: &IndexMap<IrModule, LoweredModuleInfo<'ctx>>,
+    module: IrModule,
+
+    result: &mut Vec<ScheduleItem<'ctx>>,
+    result_offsets_instance_ports: &mut Vec<usize>,
+
+    offset_instance_state: usize,
+    start_offsets_instance_ports: usize,
+) {
+    let info = map.get(&module).unwrap();
+
+    // record module processes with the right offsets
+    let offset_instance_wires = offset_instance_state + info.state_offset_of_wires(llvm_target);
+    for func in &info.functions_comb {
+        let func = unsafe { llvm_engine.get_function::<FunctionCombinatorialProcess>(func).unwrap() };
+
+        let item = ScheduleItem {
+            func,
+            start_offsets_instance_ports,
+            offset_instance_wires,
+        };
+        result.push(item)
+    }
+
+    // visit the children, with the right offsets
+    for (child_instance_index, child_instance) in enumerate(&info.child_instances) {
+        let &LoweredChildModuleInfo {
+            child_module,
+            ref connections,
+        } = child_instance;
+
+        // build child instance port offsets
+        let child_start_offsets_instance_ports = result_offsets_instance_ports.len();
+        for &conn in connections {
+            let conn_offset = match conn {
+                SignalOrDummy::Signal(signal) => match signal {
+                    PortOrWire::Port(index) => result_offsets_instance_ports[start_offsets_instance_ports + index],
+                    PortOrWire::Wire(index) => offset_instance_state + info.state_offset_of_wire(llvm_target, index),
+                },
+                SignalOrDummy::Dummy(index) => offset_instance_state + info.state_offset_of_dummy(llvm_target, index),
+            };
+            result_offsets_instance_ports.push(conn_offset);
+        }
+
+        // visit child
+        let child_offset_instance_state =
+            offset_instance_state + info.state_offset_of_child(llvm_target, child_instance_index);
+        build_schedule_and_offsets(
+            llvm_ctx,
+            llvm_target,
+            llvm_engine,
+            map,
+            child_module,
+            result,
+            result_offsets_instance_ports,
+            child_offset_instance_state,
+            child_start_offsets_instance_ports,
+        );
+    }
 }
 
 pub type LowerResult<T = ()> = Result<T, LowerError>;
@@ -412,6 +584,7 @@ pub type LowerResult<T = ()> = Result<T, LowerError>;
 //  * separate into internal errors (programming bugs), environment issues (eg. llvm jit failed)
 //    and unsupported errors (eg. integer bitwidth too large)
 // TODO check that everything properly propagates errors, no silent casting or unwrapping
+// TODO go through and check that we never do unsafe int casts
 #[derive(Debug)]
 pub enum LowerError {
     BuilderError(BuilderError),

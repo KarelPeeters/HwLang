@@ -6,10 +6,16 @@
 * implement undef
 * document undef semantics (ie. don't assume anything about the value part of things that are marked undef)
 * add global context parameter, containing assertion and print callbacks
+* record signal changes into convenient database
+  * queryable from python?
+  * will serve as the base for the GUI
 
 # Optimization
 
-* parallelize module and maybe even process compilation
+* parallelize
+  * module lowering
+  * process lowering?
+  * llvm function optimization and compilation
 * enable process optimization
 * fuse sequential processes?
 * on-disk compilation cache
@@ -17,6 +23,7 @@
 * first run with un-optimized functions, then gradually swap them in as they complete
 * PGO and re-optimize?
 * implement rare things (X/Z/assertions/prints?) with a callback to Rust to reduce code size?
+* for writes to large arrays 
 
 # Fancy features
 
@@ -38,3 +45,4 @@
 * repr: if undef bit is set, value can be anything. This makes impl fast and simple. Implementations of operations have
   to make sure they accept any (even invalid) values. For arith this is easy, for things like indexing we have to be
   extra careful. 
+* make make the bit mean "defined", so we can just zero-init everything for the initial setup

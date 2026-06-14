@@ -1,5 +1,5 @@
-use crate::lower_types::{ModuleSignalTypes, lower_ty, lower_ty_int, usize_to_u31};
-use crate::simulator::LowerResult;
+use crate::lower_types::{lower_ty, lower_ty_int, usize_to_u31};
+use crate::simulator::{LowerResult, ModuleSignalTypes};
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrType, IrVariable, IrVariables,
@@ -16,6 +16,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::targets::TargetData;
 use inkwell::types::{BasicTypeEnum, FunctionType, IntType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use itertools::enumerate;
@@ -23,42 +24,55 @@ use std::ffi::c_void;
 
 /// Type of combinatorial process functions
 pub type FunctionCombinatorialProcess =
-    unsafe extern "C" fn(next_ports: *mut *mut c_void, next_wires: *mut c_void) -> ();
-pub fn build_function_type_combinatorial_process(llvm_ctx: &Context) -> FunctionType<'_> {
+    unsafe extern "C" fn(buffer_next: *mut c_void, ports_offsets: *const usize, wires_offset: usize) -> ();
+
+pub fn build_function_type_combinatorial_process<'ctx>(
+    llvm_ctx: &'ctx Context,
+    target: &TargetData,
+) -> FunctionType<'ctx> {
     let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
-    llvm_ctx.void_type().fn_type(&[ty_ptr.into(), ty_ptr.into()], false)
+    let ty_usize = llvm_ctx.ptr_sized_int_type(target, None);
+
+    llvm_ctx
+        .void_type()
+        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false)
 }
 
 pub fn lower_process_comb<'ctx>(
     llvm_ctx: &'ctx Context,
     llvm_unit: &Module<'ctx>,
-    module_signal_types: &ModuleSignalTypes<'ctx>,
+    llvm_target: &TargetData,
+    module_types: &ModuleSignalTypes<'ctx>,
     ir_module: &IrModuleInfo,
     ir_proc: &IrCombinatorialProcess,
     func_name: &str,
 ) -> LowerResult<FunctionValue<'ctx>> {
     let IrCombinatorialProcess { variables, block } = ir_proc;
 
+    // create function
     assert!(llvm_unit.get_function(func_name).is_none());
-    let ty_func = build_function_type_combinatorial_process(llvm_ctx);
+    let ty_func = build_function_type_combinatorial_process(llvm_ctx, llvm_target);
     let function = llvm_unit.add_function(func_name, ty_func, None);
 
-    let param_next_ports = function.get_nth_param(0).unwrap();
-    param_next_ports.set_name("next_ports");
-    let param_next_ports = param_next_ports.into_pointer_value();
+    // get params
+    let param_buffer_next = function.get_nth_param(0).unwrap().into_pointer_value();
+    param_buffer_next.set_name("buffer_next");
+    let param_ports_offsets = function.get_nth_param(1).unwrap().into_pointer_value();
+    param_ports_offsets.set_name("ports_offsets");
+    let param_wires_offset = function.get_nth_param(2).unwrap().into_int_value();
+    param_wires_offset.set_name("wires_offset");
 
-    let param_next_wires = function.get_nth_param(1).unwrap();
-    param_next_wires.set_name("next_wires");
-    let param_next_wires = param_next_wires.into_pointer_value();
-
+    // lower block
     let builder = ProcessBuilder::new(
         ir_module,
         variables,
         llvm_ctx,
-        module_signal_types,
+        llvm_target,
+        module_types,
         function,
-        param_next_ports,
-        param_next_wires,
+        param_buffer_next,
+        param_ports_offsets,
+        param_wires_offset,
     )?;
 
     builder.lower_block(block)?;
@@ -73,16 +87,19 @@ struct ProcessBuilder<'ir, 'ctx, 't> {
     ir_vars: &'ir IrVariables,
 
     // llvm
-    llvm_context: &'ctx Context,
+    llvm_ctx: &'ctx Context,
+    llvm_target: &'t TargetData,
     llvm_builder: Builder<'ctx>,
 
-    // state
-    function: FunctionValue<'ctx>,
-    ir_var_to_alloca: IndexMap<IrVariable, PointerValue<'ctx>>,
+    // module mapping
     module_signal_types: &'t ModuleSignalTypes<'ctx>,
 
-    param_next_ports: PointerValue<'ctx>,
-    param_next_wires: PointerValue<'ctx>,
+    // process mapping
+    function: FunctionValue<'ctx>,
+    ir_var_to_alloca: IndexMap<IrVariable, PointerValue<'ctx>>,
+    param_buffer_next: PointerValue<'ctx>,
+    param_ports_offsets: PointerValue<'ctx>,
+    param_wires_offset: IntValue<'ctx>,
 }
 
 struct MappedSteps {
@@ -95,10 +112,12 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         ir_module: &'ir IrModuleInfo,
         ir_vars: &'ir IrVariables,
         llvm_ctx: &'ctx Context,
+        llvm_target: &'t TargetData,
         module_signal_types: &'t ModuleSignalTypes<'ctx>,
         function: FunctionValue<'ctx>,
-        param_next_ports: PointerValue<'ctx>,
-        param_next_wires: PointerValue<'ctx>,
+        param_buffer_next: PointerValue<'ctx>,
+        param_ports_offsets: PointerValue<'ctx>,
+        param_wires_offset: IntValue<'ctx>,
     ) -> LowerResult<ProcessBuilder<'ir, 'ctx, 't>> {
         // create entry block
         let entry_basic = llvm_ctx.append_basic_block(function, "entry");
@@ -117,14 +136,17 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
             ir_module,
             ir_vars,
 
-            llvm_context: llvm_ctx,
+            llvm_ctx,
+            llvm_target,
             llvm_builder,
+
+            module_signal_types,
 
             function,
             ir_var_to_alloca,
-            module_signal_types,
-            param_next_ports,
-            param_next_wires,
+            param_buffer_next,
+            param_ports_offsets,
+            param_wires_offset,
         })
     }
 
@@ -192,13 +214,13 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         self.llvm_builder.clear_insertion_position();
 
         // lower then branch
-        let bb_then_start = self.llvm_context.append_basic_block(self.function, "if.then");
+        let bb_then_start = self.llvm_ctx.append_basic_block(self.function, "if.then");
         self.llvm_builder.position_at_end(bb_then_start);
         let bb_then_end = self.lower_block(then_block)?;
 
         // lower else branch
         let bb_else_start_end = if let Some(else_block) = else_block {
-            let bb_else_start = self.llvm_context.append_basic_block(self.function, "if.else");
+            let bb_else_start = self.llvm_ctx.append_basic_block(self.function, "if.else");
             self.llvm_builder.position_at_end(bb_else_start);
             let bb_else_end = self.lower_block(else_block)?;
             Some((bb_else_start, bb_else_end))
@@ -207,7 +229,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         };
 
         // connect branches
-        let bb_end = self.llvm_context.append_basic_block(self.function, "if.end");
+        let bb_end = self.llvm_ctx.append_basic_block(self.function, "if.end");
 
         self.llvm_builder.position_at_end(bb_cond_end);
         self.llvm_builder.build_conditional_branch(
@@ -231,12 +253,12 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
     fn eval_expr(&self, span: Span, value: &IrExpression) -> LowerResult<BasicValueEnum<'ctx>> {
         let result: BasicValueEnum = match value {
             &IrExpression::Bool(value) => {
-                let ty_bool = self.llvm_context.bool_type();
+                let ty_bool = self.llvm_ctx.bool_type();
                 ty_bool.const_int(value as u64, false).into()
             }
             IrExpression::Int(value) => {
                 let range = ClosedNonEmptyRange::single(value.clone());
-                lower_int_constant(self.llvm_context, range.as_ref(), value, span)?.into()
+                lower_int_constant(self.llvm_ctx, range.as_ref(), value, span)?.into()
             }
             &IrExpression::Signal(sig) => {
                 let ty = self.lower_ty(sig.ty(&self.ir_module.signals))?;
@@ -256,7 +278,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                         todo!();
                     }
 
-                    self.llvm_context.bool_type().const_zero().into()
+                    self.llvm_ctx.bool_type().const_zero().into()
                 }
                 IrExpressionLarge::BoolNot(inner) => {
                     let inner = self.eval_expr(span, inner)?.into_int_value();
@@ -303,43 +325,56 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
     fn get_named_ptr(&self, span: Span, target: impl Into<IrSignalOrVariable>) -> LowerResult<PointerValue<'ctx>> {
         let result = match target.into() {
             IrSignalOrVariable::Signal(sig) => {
-                let ty_ptr = self.llvm_context.ptr_type(AddressSpace::default());
-                let ty_i32 = self.llvm_context.i32_type();
+                let ty_i32 = self.llvm_ctx.i32_type();
 
                 match sig {
                     IrSignal::Port(port) => {
                         let port_index = *self.module_signal_types.port_indices.get(&port).unwrap();
 
-                        let gep_indices = &[
-                            ty_i32.const_zero(),
-                            ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false),
-                        ];
-                        let port_ptr_ptr = unsafe {
-                            self.llvm_builder.build_gep(
-                                self.module_signal_types.ports_array_ty,
-                                self.param_next_ports,
-                                gep_indices,
-                                "",
-                            )?
+                        // calculate port offset address
+                        let ty_usize = self.llvm_ctx.ptr_sized_int_type(self.llvm_target, None);
+                        let port_index = ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false);
+                        let port_offset_ptr = unsafe {
+                            self.llvm_builder
+                                .build_gep(ty_usize, self.param_ports_offsets, &[port_index], "")?
                         };
 
-                        self.llvm_builder
-                            .build_load(ty_ptr, port_ptr_ptr, "")?
-                            .into_pointer_value()
+                        // load port offset
+                        let port_offset = self
+                            .llvm_builder
+                            .build_load(ty_usize, port_offset_ptr, "")?
+                            .into_int_value();
+
+                        // calculate port address from base + offset
+                        unsafe {
+                            self.llvm_builder.build_gep(
+                                self.llvm_ctx.i8_type(),
+                                self.param_buffer_next,
+                                &[port_offset],
+                                "",
+                            )?
+                        }
                     }
                     IrSignal::Wire(wire) => {
                         let wire_index = *self.module_signal_types.wire_indices.get(&wire).unwrap();
 
-                        let gep_indices = &[
-                            ty_i32.const_zero(),
-                            ty_i32.const_int(usize_to_u31(span, wire_index)?.into(), false),
-                        ];
+                        // calculate base pointer to the wires of this instance
+                        let wires_base = unsafe {
+                            self.llvm_builder.build_gep(
+                                self.llvm_ctx.i8_type(),
+                                self.param_buffer_next,
+                                &[self.param_wires_offset],
+                                "",
+                            )?
+                        };
 
+                        // calculate pointer to the wire itself
+                        let wire_index = ty_i32.const_int(usize_to_u31(span, wire_index)?.into(), false);
                         unsafe {
                             self.llvm_builder.build_gep(
-                                self.module_signal_types.wires_struct_ty,
-                                self.param_next_wires,
-                                gep_indices,
+                                self.module_signal_types.wire_struct_ty,
+                                wires_base,
+                                &[ty_i32.const_zero(), wire_index],
                                 "",
                             )?
                         }
@@ -352,11 +387,11 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
     }
 
     fn lower_ty(&self, ty: &IrType) -> LowerResult<BasicTypeEnum<'ctx>> {
-        lower_ty(self.llvm_context, ty)
+        lower_ty(self.llvm_ctx, ty)
     }
 
     fn lower_ty_int(&self, range: ClosedNonEmptyRange<&BigInt>) -> LowerResult<(IntRepresentation, IntType<'ctx>)> {
-        lower_ty_int(self.llvm_context, range)
+        lower_ty_int(self.llvm_ctx, range)
     }
 }
 
