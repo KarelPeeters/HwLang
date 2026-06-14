@@ -1,5 +1,6 @@
-use crate::lower_types::{lower_ty, lower_ty_int, usize_to_u31};
-use crate::simulator::{LowerResult, ModuleSignalTypes};
+use crate::lower_module::ModuleSignalTypes;
+use crate::lower_type::{lower_ty, lower_ty_int, usize_to_u31};
+use crate::simulator::LowerResult;
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrBlock, IrBoolBinaryOp, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
     IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrType, IrVariable, IrVariables,
