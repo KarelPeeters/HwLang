@@ -1,4 +1,4 @@
-import fp_util.[BF8, F32, bf8_zero, f32_zero];
+import fp_util.[BF8, F32, f32_zero];
 
 // Processing element: pipes data through, does weight*act + psum_in via external FP ops
 external module fp_mul_bf8_f32 ports(
@@ -56,7 +56,6 @@ pub module systolic_array(N: uint) ports(
     wire w_act: sync(clk) [N][N]BF8;
     wire w_psum: sync(clk) [N][N]F32;
 
-    // Routing wires: PE inputs are muxed from boundaries or neighbors
     wire w_wi: sync(clk) [N][N]BF8;
     wire w_ai: sync(clk) [N][N]BF8;
     wire w_pi: sync(clk) [N][N]F32;
@@ -87,7 +86,6 @@ pub module systolic_array(N: uint) ports(
         }
     }
 
-    // PE instances
     for (i in 0..N) {
         for (j in 0..N) {
             instance systolic_pe ports(
@@ -102,7 +100,6 @@ pub module systolic_array(N: uint) ports(
         }
     }
 
-    // Collect results from last row
     clocked(clk) {
         reg wire results = undef;
         for (i in 0..N) {

@@ -46,7 +46,7 @@ pub fn fp_mul(
     val P = (M_val + a.mant) * (M_val + b.mant);
     val in_bias = Float(E, M).bias();
     val out_bias = Float(OutE, OutM).bias();
-    val exp_raw = a.exp + b.exp - in_bias + out_bias;
+    val exp_raw = a.exp + b.exp - 2 * in_bias + out_bias;
 
     if (P >= (1 << (2 * M + 1))) {
         return Float(OutE, OutM).new(
