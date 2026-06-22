@@ -78,7 +78,7 @@ pub module systolic_array(N: uint) ports(
             }
             comb {
                 if (i == 0 || j == 0) {
-                    w_pi[i][j] = unsafe_value_with_domain(F32.zero(), sync(clk));
+                    w_pi[i][j] = unsafe_value_with_domain(F32.ZERO, sync(clk));
                 } else {
                     w_pi[i][j] = w_psum[i-1][j-1];
                 }

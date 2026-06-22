@@ -99,8 +99,8 @@ pub module accelerator(
     wire sa_results: sync(clk) [ARRAY_SIZE]F32;
     comb {
         for (i in 0..ARRAY_SIZE) {
-            sa_weights[i] = unsafe_value_with_domain(BF8.zero(), sync(clk));
-            sa_acts[i] = unsafe_value_with_domain(BF8.zero(), sync(clk));
+            sa_weights[i] = unsafe_value_with_domain(BF8.ZERO, sync(clk));
+            sa_acts[i] = unsafe_value_with_domain(BF8.ZERO, sync(clk));
         }
     }
     instance systolic_array(N=ARRAY_SIZE) ports(

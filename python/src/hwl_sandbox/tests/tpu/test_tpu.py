@@ -98,15 +98,15 @@ def _f32_to_float(v: hwl.Value) -> float:
 class TestFloatStruct:
     def test_zero(self):
         Float = _compile().resolve("fp_util.Float")
-        z = Float(5, 2).zero()
+        z = Float(5, 2).ZERO
         assert z.sign is False
         assert int(z.exp) == 0
         assert int(z.mant) == 0
 
     def test_bias(self):
         Float = _compile().resolve("fp_util.Float")
-        assert Float(5, 2).bias() == 15
-        assert Float(8, 23).bias() == 127
+        assert Float(5, 2).BIAS == 15
+        assert Float(8, 23).BIAS == 127
 
     def test_classify(self):
         assert _bf8(False, 0, 0).is_zero() is True

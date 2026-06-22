@@ -7,38 +7,37 @@ pub struct Float(E: uint, M: uint) {
     exp: uint(E),
     mant: uint(M),
 
-    // -- constants --
+    const BIAS: uint = (1 << (E - 1)) - 1;
+    const EXP_MAX: uint(E) = (1 << E) - 1;
 
-    fn bias() -> uint { return (1 << (E - 1)) - 1; }
-    fn exp_max() -> uint(E) { return (1 << E) - 1; }
-
-    // -- constructors --
-
-    fn zero() -> Float(E, M) { return Float(E, M).new(sign=false, exp=0, mant=0); }
-    fn inf(sign: bool) -> Float(E, M) { return Float(E, M).new(sign=sign, exp=Float(E, M).exp_max(), mant=0); }
-    fn nan() -> Float(E, M) { return Float(E, M).new(sign=false, exp=Float(E, M).exp_max(), mant=1); }
+    const ZERO: Float(E, M) = Float(E, M).new(sign=false, exp=0, mant=0);
+    const NAN: Float(E, M) = Float(E, M).new(sign=false, exp=Float(E, M).EXP_MAX, mant=1);
+    const INF_POS: Float(E, M) = Float(E, M).new(sign=false, exp=Float(E, M).EXP_MAX, mant=0);
+    const INF_NEG: Float(E, M) = Float(E, M).new(sign=true, exp=Float(E, M).EXP_MAX, mant=0);
 
     // -- classification --
 
     fn is_zero(self) -> bool { return self.exp == 0 && self.mant == 0; }
-    fn is_nan(self) -> bool { return self.exp == Float(E, M).exp_max() && self.mant != 0; }
-    fn is_inf(self) -> bool { return self.exp == Float(E, M).exp_max() && self.mant == 0; }
+    fn is_nan(self) -> bool { return self.exp == Float(E, M).EXP_MAX && self.mant != 0; }
+    fn is_inf(self) -> bool { return self.exp == Float(E, M).EXP_MAX && self.mant == 0; }
     fn is_subnormal(self) -> bool { return self.exp == 0 && self.mant != 0; }
 
     // -- multiply: Float(E,M) * Float(E,M) -> Float(OutE, OutM) --
 
     fn mul(OutE: uint, OutM: uint, a: Float(E, M), b: Float(E, M)) -> Float(OutE, OutM) {
-        if (a.is_zero() || b.is_zero()) { return Float(OutE, OutM).zero(); }
-        if (a.is_nan() || b.is_nan())   { return Float(OutE, OutM).nan(); }
-        if (a.is_inf() || b.is_inf())   { return Float(OutE, OutM).inf(a.sign ^ b.sign); }
-        if (a.is_subnormal() || b.is_subnormal()) { return Float(OutE, OutM).zero(); }
+        if (a.is_zero() || b.is_zero()) { return Float(OutE, OutM).ZERO; }
+        if (a.is_nan() || b.is_nan())   { return Float(OutE, OutM).NAN; }
+        if (a.is_inf() || b.is_inf())   {
+            if (a.sign ^ b.sign) { return Float(OutE, OutM).INF_NEG; }
+            else { return Float(OutE, OutM).INF_POS; }
+        }
+        if (a.is_subnormal() || b.is_subnormal()) { return Float(OutE, OutM).ZERO; }
 
         val sign_out = a.sign ^ b.sign;
         val M_val = 1 << M;
         val P = (M_val + a.mant) * (M_val + b.mant);
-        val in_bias = Float(E, M).bias();
-        val out_bias = Float(OutE, OutM).bias();
-        val exp_raw = a.exp + b.exp - 2 * in_bias + out_bias;
+        val out_bias = Float(OutE, OutM).BIAS;
+        val exp_raw = a.exp + b.exp - 2 * Float(E, M).BIAS + out_bias;
 
         if (P >= (1 << (2 * M + 1))) {
             return Float(OutE, OutM).new(
@@ -80,7 +79,10 @@ pub struct Float(E: uint, M: uint) {
                 sum = sum >> 1;
                 sum_e = sum_e + 1;
             }
-            if (sum_e >= Float(E, M).exp_max()) { return Float(E, M).inf(a.sign); }
+            if (sum_e >= Float(E, M).EXP_MAX) {
+                if (a.sign) { return Float(E, M).INF_NEG; }
+                else { return Float(E, M).INF_POS; }
+            }
             return Float(E, M).new(sign=a.sign, exp=sum_e, mant=sum - (1 << M));
         } else {
             if (mant_a >= mant_b) {
@@ -92,7 +94,7 @@ pub struct Float(E: uint, M: uint) {
     }
 
     fn _norm(sign: bool, exp: int, mant: int) -> Float(E, M) {
-        if (mant == 0) { return Float(E, M).zero(); }
+        if (mant == 0) { return Float(E, M).ZERO; }
         var m: int = mant;
         var e: int = exp;
         for (k in 0..M) {
@@ -101,25 +103,27 @@ pub struct Float(E: uint, M: uint) {
                 e = e - 1;
             }
         }
-        if (m >= (1 << M) && e > 0 && e < Float(E, M).exp_max()) {
+        if (m >= (1 << M) && e > 0 && e < Float(E, M).EXP_MAX) {
             return Float(E, M).new(sign=sign, exp=e, mant=m - (1 << M));
         }
-        return Float(E, M).zero();
+        return Float(E, M).ZERO;
     }
 
     // -- convert: Float(E,M) -> Float(OutE, OutM) --
 
     fn convert(OutE: uint, OutM: uint, v: Float(E, M)) -> Float(OutE, OutM) {
-        if (v.is_zero())      { return Float(OutE, OutM).zero(); }
-        if (v.is_inf())       { return Float(OutE, OutM).inf(v.sign); }
-        if (v.is_nan())       { return Float(OutE, OutM).nan(); }
-        if (v.is_subnormal()) { return Float(OutE, OutM).zero(); }
+        if (v.is_zero())      { return Float(OutE, OutM).ZERO; }
+        if (v.is_nan())       { return Float(OutE, OutM).NAN; }
+        if (v.is_subnormal()) { return Float(OutE, OutM).ZERO; }
+        if (v.is_inf())       {
+            if (v.sign) { return Float(OutE, OutM).INF_NEG; }
+            else { return Float(OutE, OutM).INF_POS; }
+        }
 
-        val in_bias = Float(E, M).bias();
-        val out_bias = Float(OutE, OutM).bias();
+        val out_bias = Float(OutE, OutM).BIAS;
         return Float(OutE, OutM).new(
             sign=v.sign,
-            exp=v.exp - in_bias + out_bias,
+            exp=v.exp - Float(E, M).BIAS + out_bias,
             mant=v.mant << (OutM - M),
         );
     }
@@ -127,7 +131,7 @@ pub struct Float(E: uint, M: uint) {
     // -- relu --
 
     fn relu(self) -> Float(E, M) {
-        if (self.sign) { return Float(E, M).zero(); } else { return self; }
+        if (self.sign) { return Float(E, M).ZERO; } else { return self; }
     }
 }
 
