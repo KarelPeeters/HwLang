@@ -1,13 +1,4 @@
-import fp_util.[Float, BF8, F32, f32_zero];
-
-// Generic ReLU: returns 0 if negative, else the value unchanged
-pub fn fp_relu(E: uint, M: uint, x: Float(E, M)) -> Float(E, M) {
-    if (x.sign) {
-        return Float(E, M).zero();
-    } else {
-        return x;
-    }
-}
+import fp_util.Float;
 
 // Parameterizable activation unit for Float(E, M)
 pub module activation_unit(E: uint, M: uint, N: uint) ports(
@@ -18,7 +9,7 @@ pub module activation_unit(E: uint, M: uint, N: uint) ports(
     clocked(clk) {
         reg wire data_out = undef;
         for (i in 0..N) {
-            data_out[i] = fp_relu(E, M, data_in[i]);
+            data_out[i] = data_in[i].relu();
         }
     }
 }

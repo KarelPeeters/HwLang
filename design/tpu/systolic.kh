@@ -1,4 +1,4 @@
-import fp_util.[BF8, F32, f32_zero];
+import fp_util.[BF8, F32];
 
 // Processing element: pipes data through, does weight*act + psum_in via external FP ops
 external module fp_mul_bf8_f32 ports(
@@ -78,7 +78,7 @@ pub module systolic_array(N: uint) ports(
             }
             comb {
                 if (i == 0 || j == 0) {
-                    w_pi[i][j] = unsafe_value_with_domain(f32_zero(), sync(clk));
+                    w_pi[i][j] = unsafe_value_with_domain(F32.zero(), sync(clk));
                 } else {
                     w_pi[i][j] = w_psum[i-1][j-1];
                 }

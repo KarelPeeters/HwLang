@@ -1,5 +1,5 @@
 // Top-level AI accelerator module
-import fp_util.[BF8, F32, bf8_zero, f32_zero];
+import fp_util.[BF8, F32];
 import systolic.systolic_array;
 import activation.activation_unit;
 import dma.[addr_t, data_t, dma_read, dma_write, dma_engine];
@@ -99,8 +99,8 @@ pub module accelerator(
     wire sa_results: sync(clk) [ARRAY_SIZE]F32;
     comb {
         for (i in 0..ARRAY_SIZE) {
-            sa_weights[i] = unsafe_value_with_domain(bf8_zero(), sync(clk));
-            sa_acts[i] = unsafe_value_with_domain(bf8_zero(), sync(clk));
+            sa_weights[i] = unsafe_value_with_domain(BF8.zero(), sync(clk));
+            sa_acts[i] = unsafe_value_with_domain(BF8.zero(), sync(clk));
         }
     }
     instance systolic_array(N=ARRAY_SIZE) ports(

@@ -119,37 +119,37 @@ class TestFloatStruct:
 
 class TestFpMul:
     def test_one_times_one(self):
-        mul = _compile().resolve("fp_util.fp_mul")
-        r = mul(5, 2, 8, 23, _bf8(False, 15, 0), _bf8(False, 15, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(5, 2).mul(8, 23, _bf8(False, 15, 0), _bf8(False, 15, 0))
         assert int(r.exp) == 127
         assert int(r.mant) == 0
 
     def test_two_times_two(self):
-        mul = _compile().resolve("fp_util.fp_mul")
-        r = mul(5, 2, 8, 23, _bf8(False, 16, 0), _bf8(False, 16, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(5, 2).mul(8, 23, _bf8(False, 16, 0), _bf8(False, 16, 0))
         assert int(r.exp) == 129
         assert int(r.mant) == 0
 
     def test_by_zero(self):
-        mul = _compile().resolve("fp_util.fp_mul")
-        r = mul(5, 2, 8, 23, _bf8(False, 15, 0), _bf8(False, 0, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(5, 2).mul(8, 23, _bf8(False, 15, 0), _bf8(False, 0, 0))
         assert r.is_zero() is True
 
     def test_sign(self):
-        mul = _compile().resolve("fp_util.fp_mul")
+        Float = _compile().resolve("fp_util.Float")
         pos = _bf8(False, 15, 0)
         neg = _bf8(True, 15, 0)
-        assert mul(5, 2, 8, 23, pos, neg).sign is True
-        assert mul(5, 2, 8, 23, neg, neg).sign is False
+        assert Float(5, 2).mul(8, 23, pos, neg).sign is True
+        assert Float(5, 2).mul(8, 23, neg, neg).sign is False
 
     def test_numpy_comparison(self):
-        mul = _compile().resolve("fp_util.fp_mul")
+        Float = _compile().resolve("fp_util.Float")
         values = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, -1.0, -2.0, 0.25, 7.0]
         for x in values:
             for y in values:
                 a = _bf8_from_float(x)
                 b = _bf8_from_float(y)
-                r = mul(5, 2, 8, 23, a, b)
+                r = Float(5, 2).mul(8, 23, a, b)
                 hw_f = _f32_to_float(r)
                 expected = _bf8_to_float(a) * _bf8_to_float(b)
                 if abs(expected) < 1e-37:
@@ -163,37 +163,37 @@ class TestFpMul:
 
 class TestFpAdd:
     def test_add_zero(self):
-        add = _compile().resolve("fp_util.fp_add")
-        r = add(8, 23, _f32(False, 127, 0), _f32(False, 0, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(8, 23).add(_f32(False, 127, 0), _f32(False, 0, 0))
         assert int(r.exp) == 127
         assert int(r.mant) == 0
 
     def test_one_plus_one(self):
-        add = _compile().resolve("fp_util.fp_add")
+        Float = _compile().resolve("fp_util.Float")
         one = _f32(False, 127, 0)
-        r = add(8, 23, one, one)
+        r = Float(8, 23).add(one, one)
         assert int(r.exp) == 128
         assert int(r.mant) == 0
 
     def test_opposite_signs(self):
-        add = _compile().resolve("fp_util.fp_add")
-        r = add(8, 23, _f32(False, 127, 0), _f32(True, 127, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(8, 23).add(_f32(False, 127, 0), _f32(True, 127, 0))
         assert r.is_zero() is True
 
     def test_diff_exponents(self):
-        add = _compile().resolve("fp_util.fp_add")
-        r = add(8, 23, _f32(False, 129, 0), _f32(False, 127, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(8, 23).add(_f32(False, 129, 0), _f32(False, 127, 0))
         assert int(r.exp) == 129
         assert int(r.mant) == (1 << 21)
 
     def test_numpy_comparison(self):
-        add = _compile().resolve("fp_util.fp_add")
+        Float = _compile().resolve("fp_util.Float")
         vals = [0.0, 0.5, 1.0, 2.0, 3.0, -1.0, -2.0, 10.0, 100.0, 1.5]
         for x in vals:
             for y in vals:
                 a = _f32_from_float(x)
                 b = _f32_from_float(y)
-                r = add(8, 23, a, b)
+                r = Float(8, 23).add(a, b)
                 hw_f = _f32_to_float(r)
                 expected = x + y
                 if abs(expected) < 1e-37:
@@ -207,18 +207,15 @@ class TestFpAdd:
 
 class TestFpRelu:
     def test_positive(self):
-        relu = _compile().resolve("activation.fp_relu")
-        r = relu(8, 23, _f32_from_float(3.5))
+        r = _f32_from_float(3.5).relu()
         assert _f32_to_float(r) == pytest.approx(3.5)
 
     def test_negative(self):
-        relu = _compile().resolve("activation.fp_relu")
-        r = relu(8, 23, _f32_from_float(-3.5))
+        r = _f32_from_float(-3.5).relu()
         assert _f32_to_float(r) == 0.0
 
     def test_negative_zero(self):
-        relu = _compile().resolve("activation.fp_relu")
-        r = relu(8, 23, _f32(True, 0, 0))
+        r = _f32(True, 0, 0).relu()
         assert r.sign is False
 
 
@@ -226,14 +223,14 @@ class TestFpRelu:
 
 class TestFpConvert:
     def test_one(self):
-        conv = _compile().resolve("fp_util.fp_convert")
-        r = conv(5, 2, 8, 23, _bf8(False, 15, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(5, 2).convert(8, 23, _bf8(False, 15, 0))
         assert int(r.exp) == 127
         assert int(r.mant) == 0
 
     def test_zero(self):
-        conv = _compile().resolve("fp_util.fp_convert")
-        r = conv(5, 2, 8, 23, _bf8(False, 0, 0))
+        Float = _compile().resolve("fp_util.Float")
+        r = Float(5, 2).convert(8, 23, _bf8(False, 0, 0))
         assert r.is_zero() is True
 
 
