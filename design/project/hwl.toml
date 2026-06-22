@@ -2,8 +2,4 @@
 # TODO include manifest version?
 
 [source]
-_ = "."
-
-#std = "std"
-#examples = "examples"
-#top = "top.kh"
+top = "top.kh"

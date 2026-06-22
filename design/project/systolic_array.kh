@@ -1,0 +1,94 @@
+// Systolic array for matrix multiplication
+// N x N grid of processing elements
+// Weights flow from top to bottom, activations from left to right
+// Partial sums accumulate in f32
+
+pub module systolic_pe ports(
+    clk: in clock,
+    weight_in: in sync(clk) fp_util.BF8,
+    act_in: in sync(clk) fp_util.BF8,
+    psum_in: in sync(clk) fp_util.F32,
+    weight_out: out sync(clk) fp_util.BF8,
+    act_out: out sync(clk) fp_util.BF8,
+    psum_out: out sync(clk) fp_util.F32,
+) {
+    clocked(clk) {
+        reg wire weight_out = fp_util.bf8_zero();
+        reg wire act_out = fp_util.bf8_zero();
+        reg wire psum_out = fp_util.f32_zero();
+
+        weight_out = weight_in;
+        act_out = act_in;
+        psum_out = fp_util.f32_add(psum_in, fp_util.bf8_mul(weight_in, act_in));
+    }
+}
+
+// N x N systolic array
+pub module systolic_array(N: uint) ports(
+    clk: in clock,
+    weights_in: in sync(clk) [N]fp_util.BF8,
+    acts_in: in sync(clk) [N]fp_util.BF8,
+    results: out sync(clk) [N]fp_util.F32,
+) {
+    // Weight outputs from each PE (flowing down)
+    wire w_weight: [N][N]fp_util.BF8;
+    // Act outputs from each PE (flowing right)
+    wire w_act: [N][N]fp_util.BF8;
+    // Psum outputs from each PE (flowing diagonally right-down)
+    wire w_psum: [N][N]fp_util.F32;
+
+    // Instantiate N x N PEs with proper connectivity
+    for (i in 0..N) {
+        for (j in 0..N) {
+            // Per-PE input wires to handle boundary vs internal connections
+            pub wire w_wi: fp_util.BF8;
+            pub wire w_ai: fp_util.BF8;
+            pub wire w_pi: fp_util.F32;
+
+            instance systolic_pe ports(
+                clk,
+                weight_in=w_wi,
+                act_in=w_ai,
+                psum_in=w_pi,
+                weight_out=w_weight[i][j],
+                act_out=w_act[i][j],
+                psum_out=w_psum[i][j],
+            );
+
+            // Connect weight input: top boundary or from PE above
+            comb {
+                if (i == 0) {
+                    w_wi = weights_in[j];
+                } else {
+                    w_wi = w_weight[i-1][j];
+                }
+            }
+
+            // Connect act input: left boundary or from PE to the left
+            comb {
+                if (j == 0) {
+                    w_ai = acts_in[i];
+                } else {
+                    w_ai = w_act[i][j-1];
+                }
+            }
+
+            // Connect psum input: zero at top/left boundaries, from PE above-left otherwise
+            comb {
+                if (i == 0 || j == 0) {
+                    w_pi = fp_util.f32_zero();
+                } else {
+                    w_pi = w_psum[i-1][j-1];
+                }
+            }
+        }
+    }
+
+    // Results: collect psum outputs from the bottom edge
+    clocked(clk) {
+        reg wire results = [fp_util.f32_zero()] * N;
+        for (i in 0..N) {
+            results[i] = w_psum[N-1][i];
+        }
+    }
+}

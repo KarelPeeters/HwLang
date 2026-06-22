@@ -1,0 +1,86 @@
+// Control module for the AI accelerator
+// Accepts basic instructions and emits control signals to other units
+
+pub struct MatMulParams {
+    a_addr: uint(32),
+    b_addr: uint(32),
+    c_addr: uint(32),
+    M: uint(16),
+    N: uint(16),
+    K: uint(16),
+    stride_a: uint(16),
+    stride_b: uint(16),
+    stride_c: uint(16),
+}
+
+pub enum Insn {
+    Nop,
+    MatMul(MatMulParams),
+}
+
+// Control unit that accepts instructions and drives the datapath
+pub module control_unit ports(
+    clk: in clock,
+    rst: in async bool,
+
+    // Instruction input
+    insn: in sync(clk) Insn,
+    insn_valid: in sync(clk) bool,
+    done: out sync(clk) bool,
+
+    // DMA control signals
+    dma_a_read_addr: out async uint(32),
+    dma_a_read_req: out async bool,
+    dma_b_read_addr: out async uint(32),
+    dma_b_read_req: out async bool,
+    dma_c_write_addr: out async uint(32),
+    dma_c_write_req: out async bool,
+
+    // Systolic array load/enable
+    load_weights: out sync(clk) bool,
+    load_acts: out sync(clk) bool,
+    compute_en: out sync(clk) bool,
+) {
+    clocked(clk) {
+        reg wire done = false;
+        reg wire load_weights = false;
+        reg wire load_acts = false;
+        reg wire compute_en = false;
+
+        reg wire dma_a_read_req = false;
+        reg wire dma_b_read_req = false;
+        reg wire dma_c_write_req = false;
+
+        reg wire dma_a_read_addr = 0;
+        reg wire dma_b_read_addr = 0;
+        reg wire dma_c_write_addr = 0;
+
+        done = false;
+        load_weights = false;
+        load_acts = false;
+        compute_en = false;
+        dma_a_read_req = false;
+        dma_b_read_req = false;
+        dma_c_write_req = false;
+
+        if (insn_valid) {
+            match (insn) {
+                .Nop => {
+                    done = true;
+                }
+                .MatMul(val params) => {
+                    load_weights = true;
+                    load_acts = true;
+                    compute_en = true;
+                    dma_a_read_addr = params.a_addr;
+                    dma_a_read_req = true;
+                    dma_b_read_addr = params.b_addr;
+                    dma_b_read_req = true;
+                    dma_c_write_addr = params.c_addr;
+                    dma_c_write_req = true;
+                    done = true;
+                }
+            }
+        }
+    }
+}
