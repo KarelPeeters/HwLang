@@ -1,0 +1,112 @@
+// Top-level AI accelerator module
+import fp_util.[BF8, F32, bf8_zero, f32_zero];
+import systolic.systolic_array;
+import activation.activation_unit;
+import dma.[addr_t, data_t, dma_engine];
+import control.[Insn, control_unit];
+
+pub module accelerator(
+    ARRAY_SIZE: uint,
+    MEM_DATA_WIDTH: uint,
+) ports(
+    clk: in clock,
+    rst: in async bool,
+
+    insn: in sync(clk) Insn,
+    insn_valid: in sync(clk) bool,
+    done: out sync(clk, async rst) bool,
+
+    mem_a_read_addr: out sync(clk) addr_t,
+    mem_a_read_valid: out sync(clk) bool,
+    mem_a_read_data: in sync(clk) data_t(MEM_DATA_WIDTH),
+
+    mem_b_read_addr: out sync(clk) addr_t,
+    mem_b_read_valid: out sync(clk) bool,
+    mem_b_read_data: in sync(clk) data_t(MEM_DATA_WIDTH),
+
+    mem_c_write_addr: out sync(clk) addr_t,
+    mem_c_write_data: out sync(clk) data_t(MEM_DATA_WIDTH),
+    mem_c_write_valid: out sync(clk) bool,
+) {
+    // ---- Control unit ----
+    wire cu_dma_a_read_addr: async uint(32);
+    wire cu_dma_a_read_req: async bool;
+    wire cu_dma_b_read_addr: async uint(32);
+    wire cu_dma_b_read_req: async bool;
+    wire cu_dma_c_write_addr: async uint(32);
+    wire cu_dma_c_write_req: async bool;
+
+    instance control_unit ports(
+        clk, rst,
+        insn, insn_valid, done,
+        dma_a_read_addr=cu_dma_a_read_addr, dma_a_read_req=cu_dma_a_read_req,
+        dma_b_read_addr=cu_dma_b_read_addr, dma_b_read_req=cu_dma_b_read_req,
+        dma_c_write_addr=cu_dma_c_write_addr, dma_c_write_req=cu_dma_c_write_req,
+        load_weights=_, load_acts=_, compute_en=_,
+    );
+
+    // ---- DMA engines ----
+    wire dma_a_read_data: sync(clk) data_t(MEM_DATA_WIDTH);
+    instance dma_engine(W=MEM_DATA_WIDTH) ports(
+        clk,
+        read_req_addr=cu_dma_a_read_addr, read_req=cu_dma_a_read_req,
+        read_data=dma_a_read_data,
+        write_req_addr=0, write_req_data=0, write_req=false,
+        mem_read_addr=mem_a_read_addr, mem_read_valid=mem_a_read_valid,
+        mem_read_data=mem_a_read_data,
+        mem_write_addr=_, mem_write_data=_, mem_write_valid=_,
+    );
+
+    wire dma_b_read_data: sync(clk) data_t(MEM_DATA_WIDTH);
+    instance dma_engine(W=MEM_DATA_WIDTH) ports(
+        clk,
+        read_req_addr=cu_dma_b_read_addr, read_req=cu_dma_b_read_req,
+        read_data=dma_b_read_data,
+        write_req_addr=0, write_req_data=0, write_req=false,
+        mem_read_addr=mem_b_read_addr, mem_read_valid=mem_b_read_valid,
+        mem_read_data=mem_b_read_data,
+        mem_write_addr=_, mem_write_data=_, mem_write_valid=_,
+    );
+
+    // ---- Systolic array (inputs driven to zero placeholder) ----
+    wire sa_weights: sync(clk) [ARRAY_SIZE]BF8;
+    wire sa_acts: sync(clk) [ARRAY_SIZE]BF8;
+    wire sa_results: sync(clk) [ARRAY_SIZE]F32;
+
+    comb {
+        for (i in 0..ARRAY_SIZE) {
+            sa_weights[i] = unsafe_value_with_domain(bf8_zero(), sync(clk));
+            sa_acts[i] = unsafe_value_with_domain(bf8_zero(), sync(clk));
+        }
+    }
+
+    instance systolic_array(N=ARRAY_SIZE) ports(
+        clk,
+        weights_in=sa_weights,
+        acts_in=sa_acts,
+        results=sa_results,
+    );
+
+    // ---- Activation unit ----
+    wire au_results: sync(clk) [ARRAY_SIZE]F32;
+    instance activation_unit(N=ARRAY_SIZE) ports(
+        clk,
+        data_in=sa_results,
+        data_out=au_results,
+    );
+
+    // ---- DMA engine C (write results, placeholder driven to zero) ----
+    wire dma_c_write_data: async data_t(MEM_DATA_WIDTH);
+    comb {
+        dma_c_write_data = unsafe_value_with_domain(0, async);
+    }
+    instance dma_engine(W=MEM_DATA_WIDTH) ports(
+        clk,
+        read_req_addr=0, read_req=false, read_data=_,
+        write_req_addr=cu_dma_c_write_addr, write_req_data=dma_c_write_data,
+        write_req=cu_dma_c_write_req,
+        mem_read_addr=_, mem_read_valid=_, mem_read_data=0,
+        mem_write_addr=mem_c_write_addr, mem_write_data=mem_c_write_data,
+        mem_write_valid=mem_c_write_valid,
+    );
+}

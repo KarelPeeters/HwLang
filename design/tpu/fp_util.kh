@@ -1,0 +1,141 @@
+// Generic floating-point implementation.
+// Float is parameterized by exponent width E and mantissa width M.
+// Format: [sign:1] [exp:E] [mant:M]  (total E+M+1 bits)
+// bias = 2^(E-1) - 1, max_exp = 2^E - 1
+
+pub struct Float(E: uint, M: uint) {
+    sign: bool,
+    exp: uint(E),
+    mant: uint(M),
+
+    fn bias() -> uint { return (1 << (E - 1)) - 1; }
+    fn exp_max() -> uint(E) { return (1 << E) - 1; }
+
+    fn zero() -> Float(E, M) { return Float(E, M).new(sign=false, exp=0, mant=0); }
+    fn inf(sign: bool) -> Float(E, M) { return Float(E, M).new(sign=sign, exp=Float(E, M).exp_max(), mant=0); }
+    fn nan() -> Float(E, M) { return Float(E, M).new(sign=false, exp=Float(E, M).exp_max(), mant=1); }
+
+    fn is_zero(self) -> bool { return self.exp == 0 && self.mant == 0; }
+    fn is_nan(self) -> bool { return self.exp == Float(E, M).exp_max() && self.mant != 0; }
+    fn is_inf(self) -> bool { return self.exp == Float(E, M).exp_max() && self.mant == 0; }
+    fn is_subnormal(self) -> bool { return self.exp == 0 && self.mant != 0; }
+}
+
+// Concrete formats
+pub type BF8 = Float(5, 2);
+pub type F32 = Float(8, 23);
+
+// Convenience constructors (callable from hardware context via unsafe_value_with_domain)
+pub fn bf8_zero() -> BF8 { return BF8.zero(); }
+pub fn f32_zero() -> F32 { return F32.zero(); }
+
+// ---- Generic multiply: Float(E,M) * Float(E,M) -> Float(OutE,OutM) ---------
+
+pub fn fp_mul(
+    E: uint, M: uint,
+    OutE: uint, OutM: uint,
+    a: Float(E, M), b: Float(E, M),
+) -> Float(OutE, OutM) {
+    if (a.is_zero() || b.is_zero()) { return Float(OutE, OutM).zero(); }
+    if (a.is_nan() || b.is_nan())   { return Float(OutE, OutM).nan(); }
+    if (a.is_inf() || b.is_inf())   { return Float(OutE, OutM).inf(a.sign ^ b.sign); }
+    if (a.is_subnormal() || b.is_subnormal()) { return Float(OutE, OutM).zero(); }
+
+    val sign_out = a.sign ^ b.sign;
+    val M_val = 1 << M;
+    val P = (M_val + a.mant) * (M_val + b.mant);
+    val in_bias = Float(E, M).bias();
+    val out_bias = Float(OutE, OutM).bias();
+    val exp_raw = a.exp + b.exp - in_bias + out_bias;
+
+    if (P >= (1 << (2 * M + 1))) {
+        return Float(OutE, OutM).new(
+            sign=sign_out,
+            exp=exp_raw + 1,
+            mant=(P - (1 << (2 * M + 1))) << (OutM - 2 * M - 1),
+        );
+    } else {
+        return Float(OutE, OutM).new(
+            sign=sign_out,
+            exp=exp_raw,
+            mant=(P - (1 << (2 * M))) << (OutM - 2 * M),
+        );
+    }
+}
+
+// ---- Generic add: Float(E,M) + Float(E,M) -> Float(E,M) --------------------
+
+pub fn fp_add(E: uint, M: uint, a: Float(E, M), b: Float(E, M)) -> Float(E, M) {
+    if (a.is_zero()) { return b; }
+    if (b.is_zero()) { return a; }
+
+    var mant_a: int = (1 << M) + a.mant;
+    var mant_b: int = (1 << M) + b.mant;
+    var exp_r: int = a.exp;
+
+    // Align to larger exponent; if-narrowing makes diff usable as uint for >>
+    val diff = a.exp - b.exp;
+    if (diff >= 0) {
+        if (diff >= M + 2) { return a; }
+        mant_b = mant_b >> diff;
+        exp_r = a.exp;
+    } else {
+        if (-diff >= M + 2) { return b; }
+        mant_a = mant_a >> (-diff);
+        exp_r = b.exp;
+    }
+
+    if (!(a.sign ^ b.sign)) {
+        var sum: int = mant_a + mant_b;
+        var sum_e: int = exp_r;
+        if (sum >= (1 << (M + 1))) {
+            sum = sum >> 1;
+            sum_e = sum_e + 1;
+        }
+        if (sum_e >= Float(E, M).exp_max()) { return Float(E, M).inf(a.sign); }
+        return Float(E, M).new(sign=a.sign, exp=sum_e, mant=sum - (1 << M));
+    } else {
+        if (mant_a >= mant_b) {
+            return fp_norm(E, M, a.sign, exp_r, mant_a - mant_b);
+        } else {
+            return fp_norm(E, M, b.sign, exp_r, mant_b - mant_a);
+        }
+    }
+}
+
+fn fp_norm(E: uint, M: uint, sign: bool, exp: int, mant: int) -> Float(E, M) {
+    if (mant == 0) { return Float(E, M).zero(); }
+    var m: int = mant;
+    var e: int = exp;
+    for (k in 0..M) {
+        if (m < (1 << M) && e > 0) {
+            m = m << 1;
+            e = e - 1;
+        }
+    }
+    if (m >= (1 << M) && e > 0 && e < Float(E, M).exp_max()) {
+        return Float(E, M).new(sign=sign, exp=e, mant=m - (1 << M));
+    }
+    return Float(E, M).zero();
+}
+
+// ---- Generic convert: Float(E_in,M_in) -> Float(E_out,M_out) ----------------
+
+pub fn fp_convert(
+    E_in: uint, M_in: uint,
+    E_out: uint, M_out: uint,
+    v: Float(E_in, M_in),
+) -> Float(E_out, M_out) {
+    if (v.is_zero())      { return Float(E_out, M_out).zero(); }
+    if (v.is_inf())       { return Float(E_out, M_out).inf(v.sign); }
+    if (v.is_nan())       { return Float(E_out, M_out).nan(); }
+    if (v.is_subnormal()) { return Float(E_out, M_out).zero(); }
+
+    val in_bias = Float(E_in, M_in).bias();
+    val out_bias = Float(E_out, M_out).bias();
+    return Float(E_out, M_out).new(
+        sign=v.sign,
+        exp=v.exp - in_bias + out_bias,
+        mant=v.mant << (M_out - M_in),
+    );
+}

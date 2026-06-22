@@ -1,0 +1,112 @@
+import fp_util.[BF8, F32, bf8_zero, f32_zero];
+
+// Processing element: pipes data through, does weight*act + psum_in via external FP ops
+external module fp_mul_bf8_f32 ports(
+    a: in async BF8,
+    b: in async BF8,
+    r: out async F32,
+)
+external module fp_add_f32 ports(
+    a: in async F32,
+    b: in async F32,
+    r: out async F32,
+)
+
+pub module systolic_pe ports(
+    clk: in clock,
+    weight_in: in sync(clk) BF8,
+    act_in: in sync(clk) BF8,
+    psum_in: in sync(clk) F32,
+    weight_out: out sync(clk) BF8,
+    act_out: out sync(clk) BF8,
+    psum_out: out sync(clk) F32,
+) {
+    wire w_product: async F32;
+    wire w_sum: async F32;
+
+    instance fp_mul_bf8_f32 ports(
+        a=unsafe_value_with_domain(weight_in, async),
+        b=unsafe_value_with_domain(act_in, async),
+        r=w_product,
+    );
+    instance fp_add_f32 ports(
+        a=unsafe_value_with_domain(psum_in, async),
+        b=w_product,
+        r=w_sum,
+    );
+
+    clocked(clk) {
+        reg wire weight_out = undef;
+        reg wire act_out = undef;
+        reg wire psum_out = undef;
+        weight_out = weight_in;
+        act_out = act_in;
+        psum_out = unsafe_value_with_domain(w_sum, sync(clk));
+    }
+}
+
+// Parametrizable N x N systolic array
+pub module systolic_array(N: uint) ports(
+    clk: in clock,
+    weights_in: in sync(clk) [N]BF8,
+    acts_in: in sync(clk) [N]BF8,
+    results: out sync(clk) [N]F32,
+) {
+    wire w_weight: sync(clk) [N][N]BF8;
+    wire w_act: sync(clk) [N][N]BF8;
+    wire w_psum: sync(clk) [N][N]F32;
+
+    // Routing wires: PE inputs are muxed from boundaries or neighbors
+    wire w_wi: sync(clk) [N][N]BF8;
+    wire w_ai: sync(clk) [N][N]BF8;
+    wire w_pi: sync(clk) [N][N]F32;
+
+    for (i in 0..N) {
+        for (j in 0..N) {
+            comb {
+                if (i == 0) {
+                    w_wi[i][j] = weights_in[j];
+                } else {
+                    w_wi[i][j] = w_weight[i-1][j];
+                }
+            }
+            comb {
+                if (j == 0) {
+                    w_ai[i][j] = acts_in[i];
+                } else {
+                    w_ai[i][j] = w_act[i][j-1];
+                }
+            }
+            comb {
+                if (i == 0 || j == 0) {
+                    w_pi[i][j] = unsafe_value_with_domain(f32_zero(), sync(clk));
+                } else {
+                    w_pi[i][j] = w_psum[i-1][j-1];
+                }
+            }
+        }
+    }
+
+    // PE instances
+    for (i in 0..N) {
+        for (j in 0..N) {
+            instance systolic_pe ports(
+                clk,
+                weight_in=w_wi[i][j],
+                act_in=w_ai[i][j],
+                psum_in=w_pi[i][j],
+                weight_out=w_weight[i][j],
+                act_out=w_act[i][j],
+                psum_out=w_psum[i][j],
+            );
+        }
+    }
+
+    // Collect results from last row
+    clocked(clk) {
+        reg wire results = undef;
+        for (i in 0..N) {
+            results[i] = w_psum[N-1][i];
+        }
+    }
+}

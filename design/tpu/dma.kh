@@ -1,0 +1,43 @@
+// Simple 1-cycle-latency DMA engine stub.
+// Passes address/data between control and external memory.
+
+pub type addr_t = uint(32);
+pub type data_t(W: uint) = uint(W);
+
+pub module dma_engine(W: uint) ports(
+    clk: in clock,
+
+    // Slave side: from control unit
+    read_req_addr: in async addr_t,
+    read_req: in async bool,
+    read_data: out sync(clk) data_t(W),
+
+    write_req_addr: in async addr_t,
+    write_req_data: in async data_t(W),
+    write_req: in async bool,
+
+    // Master side: to external memory
+    mem_read_addr: out sync(clk) addr_t,
+    mem_read_valid: out sync(clk) bool,
+    mem_read_data: in sync(clk) data_t(W),
+
+    mem_write_addr: out sync(clk) addr_t,
+    mem_write_data: out sync(clk) data_t(W),
+    mem_write_valid: out sync(clk) bool,
+) {
+    clocked(clk) {
+        reg wire mem_read_addr = undef;
+        reg wire mem_read_valid = undef;
+        reg wire read_data = undef;
+        reg wire mem_write_addr = undef;
+        reg wire mem_write_data = undef;
+        reg wire mem_write_valid = undef;
+
+        mem_read_addr = unsafe_value_with_domain(read_req_addr, sync(clk));
+        mem_read_valid = unsafe_value_with_domain(read_req, sync(clk));
+        read_data = mem_read_data;
+        mem_write_addr = unsafe_value_with_domain(write_req_addr, sync(clk));
+        mem_write_data = unsafe_value_with_domain(write_req_data, sync(clk));
+        mem_write_valid = unsafe_value_with_domain(write_req, sync(clk));
+    }
+}
