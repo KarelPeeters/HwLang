@@ -44,6 +44,7 @@ pub struct LoweredVerilog {
 // TODO avoid a bunch of string allocations
 // TODO should we always shadow output ports with intermediate signals so we can read back from them,
 //   even in old verilog versions?
+// TODO lower signals that are only used within a single process to local variables? might simulate faster!
 pub fn lower_to_verilog(diags: &Diagnostics, db: &IrDatabase, top_modules: &[IrModule]) -> DiagResult<LoweredVerilog> {
     let IrDatabase {
         modules,
