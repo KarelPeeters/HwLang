@@ -4,16 +4,15 @@ use crate::simulator::LowerResult;
 use hwl_language::front::signal::Polarized;
 use hwl_language::mid::ir::{
     IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess, IrCombinatorialProcess,
-    IrExpression, IrExpressionLarge, IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement, IrType,
-    IrVariable, IrVariables,
+    IrExpression, IrExpressionLarge, IrIfStatement, IrModuleInfo, IrSignal, IrSignalOrVariable, IrStatement,
+    IrStringPiece, IrType, IrVariable, IrVariables,
 };
-use hwl_language::mid::steps::IrTargetSteps;
 use hwl_language::syntax::pos::Span;
 use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::IndexMapExt;
 use hwl_language::util::int_repr::IntRepresentation;
 use hwl_language::util::range::ClosedNonEmptyRange;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -24,8 +23,12 @@ use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use itertools::enumerate;
 use std::ffi::c_void;
 
-pub type FunctionProcessCombinatorial =
-    unsafe extern "C" fn(buffer_next: *mut c_void, ports_offsets: *const usize, wires_offset: usize) -> ();
+pub type FunctionProcessCombinatorial = unsafe extern "C" fn(
+    callback_print: *mut c_void,
+    buffer_next: *mut c_void,
+    ports_offsets: *const usize,
+    wires_offset: usize,
+) -> ();
 
 pub fn lower_process_combinatorial<'ctx>(
     llvm_ctx: &'ctx Context,
@@ -36,25 +39,32 @@ pub fn lower_process_combinatorial<'ctx>(
     ir_proc: &IrCombinatorialProcess,
     func_name: &str,
 ) -> LowerResult<FunctionValue<'ctx>> {
+    let IrCombinatorialProcess { variables, block } = ir_proc;
+
     // create function
     assert!(llvm_unit.get_function(func_name).is_none());
     let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
     let ty_usize = llvm_ctx.ptr_sized_int_type(llvm_target, None);
     let ty_func = llvm_ctx
         .void_type()
-        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false);
+        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false);
     let function = llvm_unit.add_function(func_name, ty_func, None);
 
     // get params
-    let param_buffer_next = function.get_nth_param(0).unwrap().into_pointer_value();
+    let param_callback_print = function.get_nth_param(0).unwrap().into_pointer_value();
+    param_callback_print.set_name("callback_print");
+    let param_buffer_next = function.get_nth_param(1).unwrap().into_pointer_value();
     param_buffer_next.set_name("buffer_next");
-    let param_ports_offsets = function.get_nth_param(1).unwrap().into_pointer_value();
+    let param_ports_offsets = function.get_nth_param(2).unwrap().into_pointer_value();
     param_ports_offsets.set_name("ports_offsets");
-    let param_wires_offset = function.get_nth_param(2).unwrap().into_int_value();
+    let param_wires_offset = function.get_nth_param(3).unwrap().into_int_value();
     param_wires_offset.set_name("wires_offset");
 
+    let param_buffers = ProcessBuffers::Combinatorial {
+        next: param_buffer_next,
+    };
+
     // create builder
-    let IrCombinatorialProcess { variables, block } = ir_proc;
     let builder = ProcessBuilder::new(
         ir_module,
         variables,
@@ -62,7 +72,8 @@ pub fn lower_process_combinatorial<'ctx>(
         llvm_target,
         module_types,
         function,
-        param_buffer_next,
+        param_callback_print,
+        param_buffers,
         param_ports_offsets,
         param_wires_offset,
     )?;
@@ -75,6 +86,7 @@ pub fn lower_process_combinatorial<'ctx>(
 }
 
 pub type FunctionProcessClocked = unsafe extern "C" fn(
+    callback_print: *mut c_void,
     buffer_prev: *mut c_void,
     buffer_next: *mut c_void,
     ports_offsets: *const usize,
@@ -90,33 +102,49 @@ pub fn lower_process_clocked<'ctx>(
     ir_proc: &IrClockedProcess,
     func_name: &str,
 ) -> LowerResult<FunctionValue<'ctx>> {
-    // create function
-    assert!(llvm_unit.get_function(func_name).is_none());
-    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
-    let ty_usize = llvm_ctx.ptr_sized_int_type(llvm_target, None);
-    let ty_func = llvm_ctx
-        .void_type()
-        .fn_type(&[ty_ptr.into(), ty_ptr.into(), ty_ptr.into(), ty_usize.into()], false);
-    let function = llvm_unit.add_function(func_name, ty_func, None);
-
-    // get params
-    let param_buffer_prev = function.get_nth_param(0).unwrap().into_pointer_value();
-    param_buffer_prev.set_name("buffer_prev");
-    let param_buffer_next = function.get_nth_param(1).unwrap().into_pointer_value();
-    param_buffer_next.set_name("buffer_next");
-    let param_ports_offsets = function.get_nth_param(2).unwrap().into_pointer_value();
-    param_ports_offsets.set_name("ports_offsets");
-    let param_wires_offset = function.get_nth_param(3).unwrap().into_int_value();
-    param_wires_offset.set_name("wires_offset");
-
-    // create builder
     let IrClockedProcess {
-        registers: _,
+        registers,
         variables,
         async_reset,
         clock_signal,
         clock_block,
     } = ir_proc;
+
+    // create function
+    assert!(llvm_unit.get_function(func_name).is_none());
+    let ty_ptr = llvm_ctx.ptr_type(AddressSpace::default());
+    let ty_usize = llvm_ctx.ptr_sized_int_type(llvm_target, None);
+    let ty_func = llvm_ctx.void_type().fn_type(
+        &[
+            ty_ptr.into(),
+            ty_ptr.into(),
+            ty_ptr.into(),
+            ty_ptr.into(),
+            ty_usize.into(),
+        ],
+        false,
+    );
+    let function = llvm_unit.add_function(func_name, ty_func, None);
+
+    // get params
+    let param_callback_print = function.get_nth_param(0).unwrap().into_pointer_value();
+    param_callback_print.set_name("callback_print");
+    let param_buffer_prev = function.get_nth_param(1).unwrap().into_pointer_value();
+    param_buffer_prev.set_name("buffer_prev");
+    let param_buffer_next = function.get_nth_param(2).unwrap().into_pointer_value();
+    param_buffer_next.set_name("buffer_next");
+    let param_ports_offsets = function.get_nth_param(3).unwrap().into_pointer_value();
+    param_ports_offsets.set_name("ports_offsets");
+    let param_wires_offset = function.get_nth_param(4).unwrap().into_int_value();
+    param_wires_offset.set_name("wires_offset");
+
+    let param_buffers = ProcessBuffers::Clocked {
+        registers,
+        prev: param_buffer_prev,
+        next: param_buffer_next,
+    };
+
+    // create builder
     let builder = ProcessBuilder::new(
         ir_module,
         variables,
@@ -124,7 +152,8 @@ pub fn lower_process_clocked<'ctx>(
         llvm_target,
         module_types,
         function,
-        param_buffer_next,
+        param_callback_print,
+        param_buffers,
         param_ports_offsets,
         param_wires_offset,
     )?;
@@ -146,7 +175,7 @@ pub fn lower_process_clocked<'ctx>(
             // reset signals
             for reset in resets {
                 let (target, ref source) = reset.inner;
-                let target_ptr = builder.eval_signal_or_var_ptr(reset.span, target.into())?;
+                let target_ptr = builder.signal_write_ptr(reset.span, target)?;
                 let source_value = builder.eval_expr(reset.span, source)?;
                 builder.llvm_builder.build_store(target_ptr, source_value)?;
             }
@@ -173,6 +202,7 @@ pub fn lower_process_clocked<'ctx>(
 
         let clock_prev_not = builder.llvm_builder.build_not(clock_prev, "")?;
         let clock_edge = builder.llvm_builder.build_and(clock_prev_not, clock_next, "")?;
+        let clock_edge_not = builder.llvm_builder.build_not(clock_edge, "")?;
 
         // build clock if statement
         let build_not_clock_body = || {
@@ -184,7 +214,7 @@ pub fn lower_process_clocked<'ctx>(
             builder.llvm_builder.position_at_end(bb_dummy);
             Ok(())
         };
-        builder.build_if_statement(clock_edge, build_not_clock_body, None::<fn() -> _>)?;
+        builder.build_if_statement(clock_edge_not, build_not_clock_body, None::<fn() -> _>)?;
     }
 
     // lower clocked block itself
@@ -210,14 +240,22 @@ struct ProcessBuilder<'ir, 'ctx, 't> {
     // process mapping
     function: FunctionValue<'ctx>,
     ir_var_to_alloca: IndexMap<IrVariable, PointerValue<'ctx>>,
-    param_buffer_next: PointerValue<'ctx>,
+
+    param_callback_print: PointerValue<'ctx>,
+    param_buffers: ProcessBuffers<'ctx, 't>,
     param_ports_offsets: PointerValue<'ctx>,
     param_wires_offset: IntValue<'ctx>,
 }
 
-struct MappedSteps {
-    // gep: (),
-    // slice_len: NonZeroU32,
+enum ProcessBuffers<'ctx, 't> {
+    Combinatorial {
+        next: PointerValue<'ctx>,
+    },
+    Clocked {
+        registers: &'t IndexSet<IrSignal>,
+        prev: PointerValue<'ctx>,
+        next: PointerValue<'ctx>,
+    },
 }
 
 impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
@@ -228,7 +266,8 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         llvm_target: &'t TargetData,
         module_signal_types: &'t ModuleSignalTypes<'ctx>,
         function: FunctionValue<'ctx>,
-        param_buffer_next: PointerValue<'ctx>,
+        param_callback_print: PointerValue<'ctx>,
+        param_buffers: ProcessBuffers<'ctx, 't>,
         param_ports_offsets: PointerValue<'ctx>,
         param_wires_offset: IntValue<'ctx>,
     ) -> LowerResult<ProcessBuilder<'ir, 'ctx, 't>> {
@@ -257,7 +296,9 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
 
             function,
             ir_var_to_alloca,
-            param_buffer_next,
+
+            param_callback_print,
+            param_buffers,
             param_ports_offsets,
             param_wires_offset,
         })
@@ -277,9 +318,31 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
                 }
                 IrStatement::If(stmt) => self.lower_if_statement(stmt_span, stmt)?,
                 IrStatement::For(_) => todo!(),
-                IrStatement::Print(_) => {
-                    // TODO actually print stuff
-                    println!("warning: skipped print")
+                IrStatement::Print(s) => {
+                    for p in s {
+                        match p {
+                            IrStringPiece::Literal(p) => {
+                                let ty_usize = self.llvm_ctx.ptr_sized_int_type(self.llvm_target, None);
+                                let ty_ptr = self.llvm_ctx.ptr_type(AddressSpace::default());
+                                let ty_fn = self
+                                    .llvm_ctx
+                                    .void_type()
+                                    .fn_type(&[ty_usize.into(), ty_ptr.into()], false);
+
+                                let arg_len = ty_usize.const_int(p.len() as u64, false);
+                                let arg_data = self.llvm_builder.build_global_string_ptr(p, "")?;
+                                self.llvm_builder.build_indirect_call(
+                                    ty_fn,
+                                    self.param_callback_print,
+                                    &[arg_len.into(), arg_data.as_pointer_value().into()],
+                                    "",
+                                )?;
+                            }
+                            IrStringPiece::Substitute(_) => {
+                                todo!("support string substitution")
+                            }
+                        }
+                    }
                 }
                 IrStatement::AssertFailed => {
                     // TODO actually fail assertion
@@ -299,12 +362,15 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         if !steps.is_empty() {
             // TODO implement steps
             //   for final slice, emit for loop or can just a large array type handle it?
-            let base_ty = base.ty(&self.ir_module.signals, self.ir_vars);
-            let _ = self.eval_steps(base_ty, steps)?;
+            // let base_ty = base.ty(&self.ir_module.signals, self.ir_vars);
+            // let _ = self.eval_steps(base_ty, steps)?;
             todo!()
         }
 
-        let base_ptr = self.eval_signal_or_var_ptr(span, base)?;
+        let base_ptr = match base {
+            IrSignalOrVariable::Signal(signal) => self.signal_write_ptr(span, signal)?,
+            IrSignalOrVariable::Variable(var) => self.var_ptr(var),
+        };
         let value = self.eval_expr(span, value)?;
         self.llvm_builder.build_store(base_ptr, value)?;
 
@@ -384,16 +450,16 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
             }
             IrExpression::Int(value) => {
                 let range = ClosedNonEmptyRange::single(value.clone());
-                lower_int_constant(self.llvm_ctx, range.as_ref(), value, span)?.into()
+                lower_int_constant(self.llvm_ctx, range.as_ref(), value)?.into()
             }
             &IrExpression::Signal(sig) => {
                 let ty = self.lower_ty(sig.ty(&self.ir_module.signals))?;
-                let ptr = self.eval_signal_or_var_ptr(span, sig.into())?;
+                let ptr = self.signal_read_ptr(span, sig)?;
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
             &IrExpression::Variable(var) => {
                 let ty = self.lower_ty(var.ty(self.ir_vars))?;
-                let ptr = self.eval_signal_or_var_ptr(span, var.into())?;
+                let ptr = self.var_ptr(var);
                 self.llvm_builder.build_load(ty, ptr, "")?
             }
             &IrExpression::Large(value) => match &self.ir_module.large[value] {
@@ -443,11 +509,6 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         Ok(result)
     }
 
-    fn eval_steps(&self, ty: &IrType, steps: &IrTargetSteps) -> LowerResult<MappedSteps> {
-        let _ = (ty, steps);
-        todo!()
-    }
-
     fn eval_polarized_signal(
         &self,
         buffer: PointerValue<'ctx>,
@@ -456,7 +517,7 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
     ) -> LowerResult<IntValue<'ctx>> {
         let Polarized { inverted, signal } = signal;
 
-        let signal_ptr = self.eval_signal_or_var_ptr_buffer(buffer, span, signal.into())?;
+        let signal_ptr = self.signal_ptr(buffer, span, signal.into())?;
         let signal_value = self
             .llvm_builder
             .build_load(self.llvm_ctx.bool_type(), signal_ptr, "")?
@@ -470,68 +531,83 @@ impl<'ir, 'ctx, 't> ProcessBuilder<'ir, 'ctx, 't> {
         Ok(result)
     }
 
-    fn eval_signal_or_var_ptr(&self, span: Span, target: IrSignalOrVariable) -> LowerResult<PointerValue<'ctx>> {
-        // for most use cases, reads and writes happen on the next buffer.
-        self.eval_signal_or_var_ptr_buffer(self.param_buffer_next, span, target)
+    fn signal_write_ptr(&self, span: Span, signal: IrSignal) -> LowerResult<PointerValue<'ctx>> {
+        let buf_next = match self.param_buffers {
+            ProcessBuffers::Combinatorial { next } => next,
+            ProcessBuffers::Clocked {
+                registers: _,
+                prev: _,
+                next,
+            } => next,
+        };
+        self.signal_ptr(buf_next, span, signal)
     }
 
-    fn eval_signal_or_var_ptr_buffer(
-        &self,
-        buffer: PointerValue<'ctx>,
-        span: Span,
-        target: IrSignalOrVariable,
-    ) -> LowerResult<PointerValue<'ctx>> {
+    fn signal_read_ptr(&self, span: Span, signal: IrSignal) -> LowerResult<PointerValue<'ctx>> {
+        let buf_next = match self.param_buffers {
+            ProcessBuffers::Combinatorial { next } => next,
+            ProcessBuffers::Clocked { registers, prev, next } => {
+                if registers.contains(&signal) {
+                    next
+                } else {
+                    prev
+                }
+            }
+        };
+        self.signal_ptr(buf_next, span, signal)
+    }
+
+    fn signal_ptr(&self, buffer: PointerValue<'ctx>, span: Span, signal: IrSignal) -> LowerResult<PointerValue<'ctx>> {
         let ty_usize = self.llvm_ctx.ptr_sized_int_type(self.llvm_target, None);
         let ty_i32 = self.llvm_ctx.i32_type();
         let ty_i8 = self.llvm_ctx.i8_type();
 
-        let result = match target {
-            IrSignalOrVariable::Signal(sig) => {
-                match sig {
-                    IrSignal::Port(port) => {
-                        let port_index = *self.module_signal_types.port_indices.get(&port).unwrap();
+        let ptr = match signal {
+            IrSignal::Port(port) => {
+                let port_index = *self.module_signal_types.port_indices.get(&port).unwrap();
 
-                        // calculate port offset address
-                        let port_index = ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false);
-                        let port_offset_ptr = unsafe {
-                            self.llvm_builder
-                                .build_gep(ty_usize, self.param_ports_offsets, &[port_index], "")?
-                        };
+                // calculate port offset address
+                let port_index = ty_i32.const_int(usize_to_u31(span, port_index)?.into(), false);
+                let port_offset_ptr = unsafe {
+                    self.llvm_builder
+                        .build_gep(ty_usize, self.param_ports_offsets, &[port_index], "")?
+                };
 
-                        // load port offset
-                        let port_offset = self
-                            .llvm_builder
-                            .build_load(ty_usize, port_offset_ptr, "")?
-                            .into_int_value();
+                // load port offset
+                let port_offset = self
+                    .llvm_builder
+                    .build_load(ty_usize, port_offset_ptr, "")?
+                    .into_int_value();
 
-                        // calculate port address from base + offset
-                        unsafe { self.llvm_builder.build_gep(ty_i8, buffer, &[port_offset], "")? }
-                    }
-                    IrSignal::Wire(wire) => {
-                        let wire_index = *self.module_signal_types.wire_indices.get(&wire).unwrap();
+                // calculate port address from base + offset
+                unsafe { self.llvm_builder.build_gep(ty_i8, buffer, &[port_offset], "")? }
+            }
+            IrSignal::Wire(wire) => {
+                let wire_index = *self.module_signal_types.wire_indices.get(&wire).unwrap();
 
-                        // calculate base pointer to the wires of this instance
-                        let wires_base = unsafe {
-                            self.llvm_builder
-                                .build_gep(ty_i8, buffer, &[self.param_wires_offset], "")?
-                        };
+                // calculate base pointer to the wires of this instance
+                let wires_base = unsafe {
+                    self.llvm_builder
+                        .build_gep(ty_i8, buffer, &[self.param_wires_offset], "")?
+                };
 
-                        // calculate pointer to the wire itself
-                        let wire_index = ty_i32.const_int(usize_to_u31(span, wire_index)?.into(), false);
-                        unsafe {
-                            self.llvm_builder.build_gep(
-                                self.module_signal_types.wire_struct_ty,
-                                wires_base,
-                                &[ty_i32.const_zero(), wire_index],
-                                "",
-                            )?
-                        }
-                    }
+                // calculate pointer to the wire itself
+                let wire_index = ty_i32.const_int(usize_to_u31(span, wire_index)?.into(), false);
+                unsafe {
+                    self.llvm_builder.build_gep(
+                        self.module_signal_types.wire_struct_ty,
+                        wires_base,
+                        &[ty_i32.const_zero(), wire_index],
+                        "",
+                    )?
                 }
             }
-            IrSignalOrVariable::Variable(var) => *self.ir_var_to_alloca.get(&var).unwrap(),
         };
-        Ok(result)
+        Ok(ptr)
+    }
+
+    fn var_ptr(&self, var: IrVariable) -> PointerValue<'ctx> {
+        *self.ir_var_to_alloca.get(&var).unwrap()
     }
 
     fn lower_ty(&self, ty: &IrType) -> LowerResult<BasicTypeEnum<'ctx>> {
@@ -547,7 +623,6 @@ fn lower_int_constant<'ctx>(
     ctx: &'ctx Context,
     range: ClosedNonEmptyRange<&BigInt>,
     value: &BigInt,
-    span: Span,
 ) -> LowerResult<IntValue<'ctx>> {
     let (repr, ty) = lower_ty_int(ctx, range)?;
 

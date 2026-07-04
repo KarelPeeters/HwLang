@@ -16,6 +16,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use itertools::enumerate;
 
 pub struct LoweredModuleInfo<'ctx> {
+    #[allow(dead_code)]
     pub index: usize,
 
     /// Module signal type info, including the struct type to store all wires declared in this module

@@ -110,10 +110,9 @@ impl IrModuleInfo {
                     // clock
                     let clock_signal_inner_expr = clock_signal_inner.as_expression();
                     clock_signal_inner_expr.validate(diags, self, no_variables, clock_signal.span)?;
-                    check_type_match(
+                    check_type_is_bool(
                         diags,
                         clock_signal.span,
-                        &IrType::Bool,
                         &clock_signal_inner_expr.ty(large, signals, no_variables),
                     )?;
                     clock_block.validate(diags, self, Some(registers), variables)?;

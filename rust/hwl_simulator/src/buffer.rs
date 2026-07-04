@@ -43,8 +43,13 @@ impl Buffer {
         unsafe { std::ptr::read::<T>(self.as_ptr().add(offset_bytes) as *const T) }
     }
 
-    pub unsafe fn write<T>(&self, offset_bytes: usize, value: T) {
+    pub unsafe fn write<T>(&mut self, offset_bytes: usize, value: T) {
         unsafe { std::ptr::write::<T>(self.as_ptr().add(offset_bytes) as *mut T, value) }
+    }
+
+    pub unsafe fn copy_from(&mut self, other: &Buffer) {
+        assert_eq!(self.layout, other.layout);
+        unsafe { self.ptr.copy_from_nonoverlapping(other.ptr, self.layout.size()) }
     }
 }
 

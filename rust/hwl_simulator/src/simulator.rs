@@ -122,6 +122,8 @@ impl SimulatorInstance {
 
         let _ = increment_time;
 
+        let callback_print = callback_print as *mut std::ffi::c_void;
+
         self.module.inner.with_inner(|inner| {
             for _ in 0..ITER_COUNT {
                 for item in &inner.schedule_items {
@@ -134,10 +136,14 @@ impl SimulatorInstance {
                     unsafe {
                         let offsets_instance_ports = inner.port_offsets.as_ptr().add(start_offsets_instance_ports);
                         match func {
-                            ProcessKind::Combinatorial(func) => {
-                                func.call(self.state_next.as_ptr(), offsets_instance_ports, offset_instance_wires)
-                            }
+                            ProcessKind::Combinatorial(func) => func.call(
+                                callback_print,
+                                self.state_next.as_ptr(),
+                                offsets_instance_ports,
+                                offset_instance_wires,
+                            ),
                             ProcessKind::Clocked(func) => func.call(
+                                callback_print,
                                 self.state_prev.as_ptr(),
                                 self.state_next.as_ptr(),
                                 offsets_instance_ports,
@@ -148,6 +154,13 @@ impl SimulatorInstance {
                 }
             }
         });
+
+        // TODO this copy means that the external user cannot observe signal edges, which is a bit sad?
+        //   we do need the copy here to ensure _we_ can see edges, ie. the user modifies and reads next,
+        //   and we can compare those
+        unsafe {
+            self.state_prev.copy_from(&self.state_next);
+        }
     }
 
     pub fn get_port(&self, port: IrPort) -> CompileValue {
@@ -198,6 +211,15 @@ impl SimulatorInstance {
 
         Ok(())
     }
+}
+
+// TODO use print handler
+unsafe extern "C" fn callback_print(len: usize, ptr: *const u8) {
+    let s = unsafe {
+        let buf = std::slice::from_raw_parts(ptr, len);
+        std::str::from_utf8_unchecked(buf)
+    };
+    print!("{s}");
 }
 
 fn compile_simulator_inner<'ctx>(
