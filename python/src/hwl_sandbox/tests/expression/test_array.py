@@ -332,3 +332,15 @@ def test_array_spread_non_array(tmp_dir: Path):
     """
     with diag_error("type mismatch", has_info="spread operator requires an array"):
         _ = compile_custom(src).resolve("top.top")
+
+
+def test_array_large_repeat():
+    src = "fn f(a: int, b: int) -> [a*b]int { return ([0] * a) * b; } "
+    f = compile_custom(src).resolve("top.f")
+
+    assert f(4, 3) == [0] * 12
+
+    with diag_error("array repeat right hand side too large"):
+        f(4, 2 ** 65)
+    with diag_error("array repeat result size too large"):
+        f(2 ** 8, 2 ** (65 - 8))

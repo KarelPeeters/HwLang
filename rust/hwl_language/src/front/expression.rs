@@ -1858,6 +1858,8 @@ pub fn eval_binary_expression(
         BinaryOp::Mul => {
             // TODO do we want to keep using multiplication as the "array repeat" syntax?
             //   if so, maybe allow tuples on the right side for multidimensional repeating
+            // TODO maybe put a general cap on array sizes,
+            //   to avoid memory overflows and different behavior between compile and hardware values?
             let right = check_type_is_int(diags, elab, op_reason, right.map_inner(|e| e.into_value()));
             match left.inner.ty() {
                 Type::Array(left_ty_inner, left_len) => {
@@ -1868,7 +1870,7 @@ pub fn eval_binary_expression(
                         MaybeCompile::Compile(right_inner) => right_inner,
                         MaybeCompile::Hardware(_) => {
                             return Err(diags.report_error_simple(
-                                "array repetition right hand side must be compile-time value",
+                                "array repeat right hand side must be compile-time value",
                                 right_span,
                                 "got non-compile-time value here",
                             ));
@@ -1876,14 +1878,14 @@ pub fn eval_binary_expression(
                     };
                     let right_inner = BigUint::try_from(right_inner).map_err(|right_inner| {
                         diags.report_error_simple(
-                            "array repetition right hand side cannot be negative",
+                            "array repeat right hand side cannot be negative",
                             right_span,
                             format!("got value `{right_inner}`"),
                         )
                     })?;
                     let right_inner = usize::try_from(right_inner).map_err(|right_inner| {
                         diags.report_error_simple(
-                            "array repetition right hand side too large",
+                            "array repeat right hand side too large",
                             right_span,
                             format!("got value `{right_inner}`"),
                         )
@@ -1892,8 +1894,17 @@ pub fn eval_binary_expression(
                     match left.inner.into_value() {
                         Value::Simple(SimpleCompileValue::Array(left_inner)) => {
                             // do the repetition at compile-time
-                            // TODO check for overflow (everywhere)
-                            let mut result = Vec::with_capacity(left_inner.len() * right_inner);
+                            let result_len = usize::try_from(BigUint::from(left_inner.len()) * right_inner).map_err(
+                                |result_len| {
+                                    diags.report_error_simple(
+                                        "array repeat result size too large",
+                                        right_span,
+                                        format!("got value `{result_len}`"),
+                                    )
+                                },
+                            )?;
+
+                            let mut result = Vec::with_capacity(result_len);
                             for _ in 0..right_inner {
                                 result.extend_from_slice(&left_inner);
                             }
