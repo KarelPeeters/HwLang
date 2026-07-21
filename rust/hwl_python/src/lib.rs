@@ -873,7 +873,7 @@ impl Module {
         let name_so = "combined.so";
         let path_so = obj_dir.join(name_so);
 
-        py.allow_threads::<PyResult<()>, _>(|| {
+        py.detach::<PyResult<()>, _>(|| {
             // TODO get everything properly incremental
             // TODO make tracing optional
             // TODO move this compilation process to somewhere else, not in the python create

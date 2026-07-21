@@ -96,14 +96,14 @@ pub fn compile_value_from_py(value: &Bound<PyAny>, expected_compile: Option<&Py<
     if let Ok(value) = value.extract::<String>() {
         return Ok(CompileValue::Compound(CompileCompoundValue::String(Arc::new(value))));
     }
-    if let Ok(value) = value.downcast::<PyTuple>() {
+    if let Ok(value) = value.cast::<PyTuple>() {
         let items: Vec<_> = value
             .iter()
             .map(|v| compile_value_from_py(&v, expected_compile))
             .try_collect()?;
         return Ok(CompileValue::Compound(CompileCompoundValue::Tuple(items)));
     }
-    if let Ok(value) = value.downcast::<PyList>() {
+    if let Ok(value) = value.cast::<PyList>() {
         let items: Vec<_> = value
             .into_iter()
             .map(|v| compile_value_from_py(&v, expected_compile))
@@ -112,14 +112,14 @@ pub fn compile_value_from_py(value: &Bound<PyAny>, expected_compile: Option<&Py<
     }
 
     // convert some python types with obvious equivalents
-    if let Ok(py_type) = value.downcast::<PyType>() {
-        if py_type.is(&py.get_type::<PyBool>()) {
+    if let Ok(py_type) = value.cast::<PyType>() {
+        if py_type.is(py.get_type::<PyBool>()) {
             return Ok(CompileValue::new_ty(RustType::Bool));
         }
-        if py_type.is(&py.get_type::<PyInt>()) {
+        if py_type.is(py.get_type::<PyInt>()) {
             return Ok(CompileValue::new_ty(RustType::Int(MultiRange::from(RustRange::OPEN))));
         }
-        if py_type.is(&py.get_type::<PyAny>()) {
+        if py_type.is(py.get_type::<PyAny>()) {
             return Ok(CompileValue::new_ty(RustType::Any));
         }
     }
