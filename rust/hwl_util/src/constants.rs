@@ -17,7 +17,8 @@ pub const HWL_VERSION: &str = env!("CARGO_PKG_VERSION");
 //   it might also not matter, maybe every platform pre-commits stack space by now
 pub const COMPILE_THREAD_STACK_SIZE: usize = 1024 * 1024 * 1024;
 
-pub const STACK_OVERFLOW_STACK_LIMIT: usize = 1000;
+// wasm has very shallow stacks, so set a low limit
+pub const STACK_OVERFLOW_STACK_LIMIT: usize = if cfg!(target_family = "wasm") { 60 } else { 1000 };
 pub const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 pub const MAX_DRIVER_INFO_PATHS: usize = 20;
