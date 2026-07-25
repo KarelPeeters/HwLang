@@ -1,8 +1,8 @@
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, DiagnosticWarning, Diagnostics};
 use crate::mid::ir::{
-    IrAssignmentTarget, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression, IrExpressionLarge,
-    IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal, IrSignalOrVariable,
-    IrSignals, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariables,
+    IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrCombinatorialProcess, IrExpression,
+    IrExpressionLarge, IrForStatement, IrIfStatement, IrModuleChild, IrModuleInfo, IrPortConnection, IrSignal,
+    IrSignalOrVariable, IrSignals, IrStatement, IrStringPiece, IrStringSubstitution, IrType, IrVariables,
 };
 use crate::mid::mask::IrMask;
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
@@ -20,16 +20,30 @@ use std::ops::ControlFlow;
 use unwrap_match::unwrap_match;
 
 #[derive(Debug)]
-pub struct Cones {
-    // Reads only count if they read values that have not yet been written yet.
+pub struct Drives<'p> {
+    parent: Option<&'p Drives<'p>>,
+    map: IndexMap<IrSignal, IrMask<bool>>,
+}
+
+#[derive(Debug)]
+pub struct ConesCombinatorialProcess {
     reads: IndexMap<IrSignal, IrMask<bool>>,
     drives: IndexMap<IrSignal, IrMask<bool>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
-pub struct Drives<'p> {
-    parent: Option<&'p Drives<'p>>,
-    map: IndexMap<IrSignal, IrMask<bool>>,
+pub struct ConesClockedProcess {
+    reads_comb: IndexMap<IrSignal, IrMask<bool>>,
+    reads_clocked: IndexMap<IrSignal, IrMask<bool>>,
+    drives: IndexMap<IrSignal, IrMask<bool>>,
+}
+
+#[derive(Debug)]
+pub struct ConesBlock {
+    // reads are only counted if they read values that have not yet (certainly) been written
+    reads: IndexMap<IrSignal, IrMask<bool>>,
+    drives: IndexMap<IrSignal, IrMask<bool>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -89,6 +103,7 @@ pub fn compute_and_check_module_cones(diags: &Diagnostics, module: &IrModuleInfo
                 match check_combinatorial_self_loops(diags, signals, child.span, &cones) {
                     Ok(()) => {}
                     Err(e) => {
+                        // TODO don't early-exit here to report multiple errors at once?
                         any_err = Err(e);
                         continue;
                     }
@@ -226,16 +241,34 @@ fn compute_clocked_process_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrClockedProcess,
-) -> DiagResult<Cones> {
+) -> DiagResult<ConesClockedProcess> {
     let IrClockedProcess {
         registers,
         variables,
-        async_reset: _,
-        clock_signal: _,
+        async_reset,
+        clock_signal,
         clock_block,
     } = proc;
 
-    let cones_raw = compute_block_cones(diags, module, ProcessKind::Clocked, variables, clock_block)?;
+    // record reset and clock reads
+    let mut reads_comb = IndexMap::new();
+    if let Some(async_reset) = async_reset {
+        let IrAsyncResetInfo { signal, resets: _ } = async_reset;
+        let signal = signal.inner.signal;
+        let mask_full = IrMask::new(signal.ty(&module.signals), true);
+        reads_comb.insert(signal, mask_full);
+    }
+    {
+        let signal = clock_signal.inner.signal;
+        let mask_full = IrMask::new(signal.ty(&module.signals), true);
+        reads_comb.insert(signal, mask_full);
+    }
+
+    // compute clocked reads from the block
+    let ConesBlock {
+        reads: reads_clocked,
+        drives: _,
+    } = compute_block_cones(diags, module, ProcessKind::Clocked, variables, clock_block)?;
 
     // the actual drives are just all the registers declared by this process
     // TODO should we track more specific drives anyway?
@@ -244,8 +277,9 @@ fn compute_clocked_process_cones(
         .map(|&signal| (signal, IrMask::new(signal.ty(&module.signals), true)))
         .collect();
 
-    Ok(Cones {
-        reads: cones_raw.reads,
+    Ok(ConesClockedProcess {
+        reads_comb,
+        reads_clocked,
         drives,
     })
 }
@@ -254,9 +288,11 @@ fn compute_combinatorial_process_cones(
     diags: &Diagnostics,
     module: &IrModuleInfo,
     proc: &IrCombinatorialProcess,
-) -> DiagResult<Cones> {
+) -> DiagResult<ConesCombinatorialProcess> {
     let IrCombinatorialProcess { variables, block } = proc;
-    compute_block_cones(diags, module, ProcessKind::Combinatorial, variables, block)
+    let ConesBlock { reads, drives } =
+        compute_block_cones(diags, module, ProcessKind::Combinatorial, variables, block)?;
+    Ok(ConesCombinatorialProcess { reads, drives })
 }
 
 fn compute_block_cones(
@@ -265,7 +301,7 @@ fn compute_block_cones(
     process_kind: ProcessKind,
     vars: &IrVariables,
     block: &IrBlock,
-) -> DiagResult<Cones> {
+) -> DiagResult<ConesBlock> {
     let mut signal_errors = IndexMap::new();
     let mut reads = IndexMap::new();
     let mut drives = Drives::root();
@@ -284,7 +320,7 @@ fn compute_block_cones(
     if let Some(&e) = signal_errors.values().next() {
         Err(e)
     } else {
-        Ok(Cones {
+        Ok(ConesBlock {
             reads,
             drives: drives.map,
         })
@@ -611,7 +647,7 @@ fn check_combinatorial_self_loops(
     diags: &Diagnostics,
     signals: &IrSignals,
     proc_span: Span,
-    cones: &Cones,
+    cones: &ConesCombinatorialProcess,
 ) -> DiagResult {
     // find any signals with self loops
     let mut loop_signals = IndexSet::new();
