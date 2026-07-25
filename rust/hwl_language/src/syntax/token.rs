@@ -504,11 +504,17 @@ pub fn parse_token_int_literal_hexadecimal(raw: &str) -> Result<BigUint, FailedT
     parse_token_int_literal_any(raw, "0x", 16)
 }
 
-// TODO avoid allocations
 fn parse_token_int_literal_any(raw: &str, prefix: &str, radix: u32) -> Result<BigUint, FailedTokenParse> {
     raw.strip_prefix(prefix).ok_or(FailedTokenParse).and_then(|body| {
-        let clean = body.replace('_', "");
-        BigUint::from_str_radix(&clean, radix).map_err(|_| FailedTokenParse)
+        // fast path: just try parsing, if there are any '_' this will fail
+        match BigUint::from_str_radix(body, radix) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                // parsing failed, maybe due to '_', try replacing those and parse again to get the final result
+                let clean = body.replace('_', "");
+                BigUint::from_str_radix(&clean, radix).map_err(|_| FailedTokenParse)
+            }
+        }
     })
 }
 
