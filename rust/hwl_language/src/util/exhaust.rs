@@ -62,6 +62,18 @@ impl Exhaust {
         self.choose(2) == 1
     }
 
+    pub fn permute<T>(&mut self, seq: Vec<T>) -> Vec<T> {
+        let mut left = seq;
+        let mut result = Vec::with_capacity(left.len());
+
+        while !left.is_empty() {
+            let index = self.choose(left.len() as u64) as usize;
+            result.push(left.remove(index));
+        }
+
+        result
+    }
+
     pub fn iteration(&self) -> u64 {
         self.iteration
     }
@@ -128,6 +140,22 @@ mod tests {
             vec![2, 0, 1],
             vec![2, 1, 0],
             vec![2, 1, 1],
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn permute() {
+        let mut actual = vec![];
+        exhaust(|ex| actual.push(ex.permute(vec![0, 1, 2])));
+
+        let expected = vec![
+            vec![0, 1, 2],
+            vec![0, 2, 1],
+            vec![1, 0, 2],
+            vec![1, 2, 0],
+            vec![2, 0, 1],
+            vec![2, 1, 0],
         ];
         assert_eq!(actual, expected);
     }

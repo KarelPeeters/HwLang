@@ -166,7 +166,7 @@ impl<T> GrowVec<T> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct NonEmptyVec<T> {
     inner: Vec<T>,
 }
