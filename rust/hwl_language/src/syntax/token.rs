@@ -2,10 +2,11 @@ use crate::front::diagnostic::DiagnosticError;
 use crate::syntax::pos::{Pos, Span};
 use crate::syntax::source::FileId;
 use crate::util::big_int::BigUint;
-use crate::util::iter::IterExt;
+use fnv::FnvBuildHasher;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use strum::EnumIter;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -274,11 +275,7 @@ impl<'s> Tokenizer<'s> {
                 self.skip(1);
                 self.skip_while(|c| matches!(c, pattern_id_continue!()));
                 let id = &start_left_str[..self.curr_byte - start.byte];
-
-                match TokenType::FIXED_TOKENS.iter().find(|info| info.literal == id) {
-                    None => TokenType::Identifier,
-                    Some(info) => info.ty,
-                }
+                IDENTIFIER_TO_KEYWORD.get(id).copied().unwrap_or(TokenType::Identifier)
             }
 
             // int literal
@@ -517,16 +514,10 @@ fn parse_token_int_literal_any(raw: &str, prefix: &str, radix: u32) -> Result<Bi
     })
 }
 
-fn str_is_single_token(s: &str, ty: TokenType) -> bool {
-    let tokenizer = Tokenizer::new(FileId::dummy(), s, false);
-    match tokenizer.into_iter().single() {
-        Some(Ok(token)) => token.ty == ty,
-        Some(Err(_)) | None => false,
-    }
-}
-
 pub fn str_is_valid_identifier(s: &str) -> bool {
-    str_is_single_token(s, TokenType::Identifier)
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else { return false };
+    matches!(first, pattern_id_start!()) && chars.all(|c| matches!(c, pattern_id_continue!()))
 }
 
 pub fn str_is_whitespace_or_empty(s: &str) -> bool {
@@ -762,18 +753,15 @@ pub struct FixedTokenInfo {
 }
 
 lazy_static! {
-    static ref FIXED_TOKENS_GROUPED_BY_LENGTH: Vec<Vec<FixedTokenInfo>> = {
-        let mut result = vec![];
-
-        for &token in TokenType::FIXED_TOKENS {
-            let i = token.literal.len();
-            if i >= result.len() {
-                result.resize_with(i + 1, Vec::new);
+    static ref IDENTIFIER_TO_KEYWORD: HashMap<&'static str, TokenType, FnvBuildHasher> = {
+        let mut map = HashMap::default();
+        for token in TokenType::FIXED_TOKENS {
+            if str_is_valid_identifier(token.literal) {
+                let prev = map.insert(token.literal, token.ty);
+                assert!(prev.is_none());
             }
-            result[i].push(token);
         }
-
-        result
+        map
     };
 }
 
