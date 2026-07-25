@@ -359,12 +359,10 @@ impl<'s> Tokenizer<'s> {
                 TokenType::BlockComment
             }
 
-            // trigram
+            // simple fixed
             ['.', '.', '='] => skip_fixed(3, TokenType::DotDotEq),
             ['+', '.', '.'] => skip_fixed(3, TokenType::PlusDotDot),
             ['.', '.', _] => skip_fixed(2, TokenType::DotDot),
-
-            // simple fixed
             ['=', '=', _] => skip_fixed(2, TokenType::EqEq),
             ['=', '>', _] => skip_fixed(2, TokenType::DoubleArrow),
             ['=', _, _] => skip_fixed(1, TokenType::Eq),
