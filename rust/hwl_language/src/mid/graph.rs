@@ -31,12 +31,12 @@ pub fn ir_modules_topological_sort(modules: &IrModules, top: impl IntoIterator<I
     seen.into_iter().rev().collect_vec()
 }
 
-pub fn ir_modules_check_no_cycles(diags: &Diagnostics, modules: &IrModules) -> DiagResult {
+pub fn ir_modules_check_no_instance_cycles(diags: &Diagnostics, modules: &IrModules) -> DiagResult {
     // find connected components
     let mut components =
         find_strongly_connected_components(modules.keys(), |module| module_child_modules(modules, module));
 
-    // keep only non-trivial components (including self-loops)
+    // keep only non-trivial components and self-loops
     components.retain(|c| {
         if c.len() > 1 {
             return true;

@@ -10,7 +10,7 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
-use crate::mid::graph::ir_modules_check_no_cycles;
+use crate::mid::graph::ir_modules_check_no_instance_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
 use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
@@ -691,7 +691,7 @@ fn finish_ir_database_impl(
     })?;
 
     // check that there are no cycles
-    ir_modules_check_no_cycles(diags, &modules)?;
+    ir_modules_check_no_instance_cycles(diags, &modules)?;
 
     Ok(IrDatabase {
         modules,
