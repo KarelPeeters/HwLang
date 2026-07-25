@@ -1,119 +1,98 @@
 use crate::util::data::NonEmptyVec;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-// TODO should we distinguish between non-self loops and self loops here? all downstream users will care
-// TODO maybe immediately build a scheduling graph at the same time?
+/// Find the set of strongly connected components (SCCs) on the given graph.
+///
+/// The graph is represented by the two parameters:
+/// * `nodes` is a complete list of nodes without any duplicates.
+/// * `children` should be a deterministic function that for each node returns all direct children.
+///
+/// Returns a vector where each item is a SCC.
+///
+/// To match the definition of SCC:
+/// * Nodes that point to themselves don't affect the result in any way.
+///   If identifying self-loops is important, the caller should still check for those separately.
+/// * Nodes that are not part of any loops appear as single-node SCCs.
 pub fn find_strongly_connected_components<T: Eq + Hash + Copy, C: IntoIterator<Item = T>>(
     nodes: impl IntoIterator<Item = T>,
     children: impl Fn(T) -> C,
 ) -> Vec<NonEmptyVec<T>> {
-    // Path-based strong component algorithm (https://en.wikipedia.org/wiki/Path-based_strong_component_algorithm)
+    // Implementation based on [Path-based strong component algorithm][1],
+    //   with the callstack recursion implemented on the heap instead.
+    // [1] Path-based strong component algorithm (https://en.wikipedia.org/wiki/Path-based_strong_component_algorithm)
     let mut node_to_number = HashMap::new();
     let mut node_has_component = HashSet::new();
     let mut component_to_nodes = vec![];
     let mut stack_p = vec![];
     let mut stack_s = vec![];
 
+    // heap-allocated stack to avoid stack overflows on deep graphs
+    let mut stack_frames: Vec<Frame<T, C::IntoIter>> = vec![];
+    struct Frame<T, I> {
+        node: T,
+        children: I,
+    }
+
+    // populate initial stack
     for v in nodes {
-        let _ = find_strongly_connected_components_visit(
-            &children,
-            &mut node_to_number,
-            &mut node_has_component,
-            &mut component_to_nodes,
-            &mut stack_p,
-            &mut stack_s,
-            v,
-        );
+        stack_frames.push(Frame {
+            node: v,
+            children: children(v).into_iter(),
+        });
+    }
+
+    // repeatedly visit top stack frame
+    while let Some(curr_frame) = stack_frames.last_mut() {
+        let curr_node = curr_frame.node;
+
+        // first time we visit this code?
+        {
+            let next_number = node_to_number.len();
+            node_to_number.entry(curr_node).or_insert_with(|| {
+                stack_s.push(curr_node);
+                stack_p.push(curr_node);
+                next_number
+            });
+        }
+
+        if let Some(child_node) = curr_frame.children.next() {
+            // visit next child
+            if !node_to_number.contains_key(&child_node) {
+                stack_frames.push(Frame {
+                    node: child_node,
+                    children: children(child_node).into_iter(),
+                });
+            } else if !node_has_component.contains(&child_node) {
+                let child_number = node_to_number[&child_node];
+                while let Some(&top_p) = stack_p.last() {
+                    let top_p_number = node_to_number[&top_p];
+                    if top_p_number <= child_number {
+                        break;
+                    }
+                    stack_p.pop();
+                }
+            }
+        } else {
+            // all children have been visited, finish this node
+            if stack_p.last() == Some(&curr_node) {
+                let mut component_nodes = vec![];
+                loop {
+                    let node = stack_s.pop().unwrap();
+                    assert!(node_has_component.insert(node));
+                    component_nodes.push(node);
+                    if node == curr_node {
+                        break;
+                    }
+                }
+                component_to_nodes.push(NonEmptyVec::try_from(component_nodes).unwrap());
+                stack_p.pop();
+            }
+            stack_frames.pop();
+        }
     }
 
     component_to_nodes
-}
-
-#[must_use]
-fn find_strongly_connected_components_visit<T: Eq + Hash + Copy, C: IntoIterator<Item = T>>(
-    children: &impl Fn(T) -> C,
-    node_to_number: &mut HashMap<T, usize>,
-    node_has_component: &mut HashSet<T>,
-    component_to_nodes: &mut Vec<NonEmptyVec<T>>,
-    stack_p: &mut Vec<T>,
-    stack_s: &mut Vec<T>,
-    v: T,
-) -> bool {
-    // Set the preorder number of v to C, and increment C.
-    let c = node_to_number.len();
-    match node_to_number.entry(v) {
-        Entry::Occupied(_) => {
-            // this is not the first visit of this node
-            return false;
-        }
-        Entry::Vacant(e) => {
-            e.insert(c);
-        }
-    }
-
-    // Push v onto S and also onto P.
-    stack_s.push(v);
-    stack_p.push(v);
-
-    // For each edge from v to a neighboring vertex w:
-    for w in children(v) {
-        // If the preorder number of w has not yet been assigned (the edge is a tree edge),
-        //   recursively search w;
-        let was_first_visit = find_strongly_connected_components_visit(
-            children,
-            node_to_number,
-            node_has_component,
-            component_to_nodes,
-            stack_p,
-            stack_s,
-            w,
-        );
-
-        // Otherwise, if w has not yet been assigned to a strongly connected component
-        //   (the edge is a forward/back/cross edge):
-        if !was_first_visit && !node_has_component.contains(&w) {
-            // Repeatedly pop vertices from P until the top element of P
-            //   has a preorder number less than or equal to the preorder number of w.
-            let w_number = node_to_number[&w];
-            loop {
-                if let Some(top_p) = stack_p.last() {
-                    let top_p_number = node_to_number[top_p];
-                    if top_p_number <= w_number {
-                        break;
-                    } else {
-                        stack_p.pop();
-                    }
-                }
-            }
-        }
-    }
-
-    // If v is the top element of P:
-    if Some(&v) == stack_p.last() {
-        // Pop vertices from S until v has been popped, and assign the popped vertices to a new component.
-        let mut component_nodes = vec![];
-
-        loop {
-            let w = stack_s.pop().unwrap();
-
-            assert!(node_has_component.insert(w));
-            component_nodes.push(w);
-
-            if w == v {
-                break;
-            }
-        }
-
-        component_to_nodes.push(NonEmptyVec::try_from(component_nodes).unwrap());
-
-        // Pop v from P.
-        stack_p.pop();
-    }
-
-    // this was the first visit of this node
-    true
 }
 
 #[cfg(test)]
