@@ -34,6 +34,14 @@ impl ParsedDatabase {
         let file_content = self[expr.span.file].as_ref().unwrap();
         &file_content.arena_expressions[expr.inner]
     }
+
+    pub fn get_expr_inner(&self, expr: Expression) -> &ExpressionKind {
+        let mut result = self.get_expr(expr);
+        while let &ExpressionKind::Wrapped(inner) = result {
+            result = self.get_expr(inner);
+        }
+        result
+    }
 }
 
 // TODO general way to point back into the ast? should we just switch to actual references with lifetimes?

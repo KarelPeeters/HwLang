@@ -1,6 +1,6 @@
 #![no_main]
 
-use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::compile::{CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::print::IgnorePrintHandler;
 use hwl_language::syntax::hierarchy::SourceHierarchy;
@@ -23,23 +23,25 @@ fn target(data: String) {
         .add_file(&diags, &source, dummy_span, &["dummy".to_owned()], file)
         .unwrap();
 
-    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
-
     let settings = CompileSettings { do_ir_cleanup: true };
-    let fixed = CompileFixed {
+
+    let parsed = ParsedDatabase::new(&diags, &source, &hierarchy);
+    let shared = CompileShared::new(
+        &diags,
+        &source,
+        &hierarchy,
+        &parsed,
+        QueueItems::All,
+        NON_ZERO_USIZE_ONE,
+    );
+    let refs = CompileRefs {
         settings: &settings,
         source: &source,
         hierarchy: &hierarchy,
         parsed: &parsed,
-    };
-
-    let shared = CompileShared::new(&diags, fixed, QueueItems::All, NON_ZERO_USIZE_ONE);
-    let refs = CompileRefs {
-        diags: &diags,
-        fixed,
         shared: &shared,
         print_handler: &IgnorePrintHandler,
         should_stop: &|| false,
     };
-    refs.run_compile_loop(None);
+    refs.run_compile_loop(&diags, None);
 }

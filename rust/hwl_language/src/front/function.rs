@@ -1,7 +1,7 @@
 use crate::front::block::{BlockEnd, EarlyExitKind};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_bool_array};
-use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
-use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
+use crate::front::compile::{CompileItemContext, StackEntry};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
 use crate::front::flow::{Flow, FlowKind, VariableId, VariableInfo};
 use crate::front::implication::ValueWithImplications;
@@ -16,7 +16,7 @@ use crate::front::value::{
     SimpleCompileValue, StructValue, Value, ValueCommon,
 };
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
-use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
+use crate::mid::ir::IrExpressionLarge;
 use crate::syntax::ast::{
     Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, Identifier, MaybeIdentifier, Parameter,
     Parameters,
@@ -81,11 +81,10 @@ pub enum FunctionBody<'a> {
 }
 
 #[must_use]
-pub struct ParamArgMacher<'a> {
+pub struct ParamArgMacher<'a, 'e> {
     // constant initial values
-    refs: CompileRefs<'a, 'a>,
-    args: &'a EvaluatedArgs<'a>,
-    arg_name_to_index: IndexMap<&'a str, usize>,
+    args: &'e EvaluatedArgs<'e>,
+    arg_name_to_index: IndexMap<&'e str, usize>,
     positional_count: usize,
     params_span: Span,
 
@@ -110,16 +109,14 @@ enum NamedRule {
 }
 
 // TODO make generic over the "value", this should be reused for instance connections in the future
-impl<'a> ParamArgMacher<'a> {
+impl<'a, 'e> ParamArgMacher<'a, 'e> {
     fn new(
-        refs: CompileRefs<'a, 'a>,
+        diags: &Diagnostics,
         params_span: Span,
-        args: &'a EvaluatedArgs,
+        args: &'e EvaluatedArgs<'e>,
         args_must_be_compile_without_ref: bool,
         args_must_be_named: NamedRule,
     ) -> DiagResult<Self> {
-        let diags = refs.diags;
-
         // check for duplicate arg names and check that positional args are before named args
         let mut arg_name_to_index: IndexMap<&str, usize> = IndexMap::new();
         let mut first_named_span = None;
@@ -216,8 +213,7 @@ impl<'a> ParamArgMacher<'a> {
         }
         any_err_args?;
 
-        Ok(Self {
-            refs,
+        Ok(ParamArgMacher {
             args,
             positional_count,
             arg_name_to_index,
@@ -231,14 +227,15 @@ impl<'a> ParamArgMacher<'a> {
 
     pub fn resolve_param(
         &mut self,
+        ctx: &mut CompileItemContext<'a, '_, '_>,
         id: Identifier,
         ty: Spanned<&Type>,
         default: Option<Spanned<ValueWithImplications>>,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let diags = ctx.diags;
+        let elab = &ctx.refs.shared.elaboration_arenas;
 
-        let id_str = id.str(self.refs.fixed.source);
+        let id_str = id.str(ctx.refs.source);
 
         let param_index = self.next_param_index;
         self.next_param_index += 1;
@@ -318,8 +315,7 @@ impl<'a> ParamArgMacher<'a> {
         value
     }
 
-    pub fn finish(self) -> DiagResult {
-        let diags = self.refs.diags;
+    pub fn finish(self, diags: &Diagnostics) -> DiagResult {
         self.any_err?;
 
         let mut any_err_used = Ok(());
@@ -341,7 +337,7 @@ impl<'a> ParamArgMacher<'a> {
     }
 }
 
-impl CompileItemContext<'_, '_> {
+impl<'a> CompileItemContext<'a, '_, '_> {
     pub fn call_function(
         &mut self,
         flow: &mut impl Flow,
@@ -351,7 +347,7 @@ impl CompileItemContext<'_, '_> {
         function: &FunctionValue,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let err_infer_any = |kind: &str, span_decl: Span| {
@@ -367,7 +363,7 @@ impl CompileItemContext<'_, '_> {
                 span_call,
                 format!("non-{kind} expected type {:?}", expected_ty.value_string(elab)),
             )
-            .report(self.refs.diags)
+            .report(self.diags)
         };
 
         match function {
@@ -487,15 +483,14 @@ impl CompileItemContext<'_, '_> {
             methods_self: _,
         } = self.refs.shared.elaboration_arenas.struct_info(elab);
 
-        let mut matcher = ParamArgMacher::new(self.refs, span_body, &args, false, NamedRule::OnlyNamed)?;
-
+        let mut matcher = ParamArgMacher::new(self.diags, span_body, &args, false, NamedRule::OnlyNamed)?;
         let mut field_values = vec![];
         for &(field_id, ref field_ty) in fields.values() {
-            if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
+            if let Ok(v) = matcher.resolve_param(self, field_id, field_ty.as_ref(), None) {
                 field_values.push(v.inner.into_value());
             }
         }
-        matcher.finish()?;
+        matcher.finish(self.diags)?;
 
         let result = StructValue {
             ty: elab,
@@ -511,6 +506,8 @@ impl CompileItemContext<'_, '_> {
         variant_index: usize,
         args: &EvaluatedArgs,
     ) -> DiagResult<Value> {
+        let diags = self.diags;
+
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
             id: variant_id,
@@ -525,15 +522,15 @@ impl CompileItemContext<'_, '_> {
                 "calling enum variant here",
             )
             .add_info(variant_id.span, "enum variant declared without payload here")
-            .report(self.refs.diags)
+            .report(diags)
         })?;
 
-        let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
+        let mut matcher = ParamArgMacher::new(diags, span_call, args, false, NamedRule::OnlyPositional)?;
         let payload = matcher
-            .resolve_param(variant_id, payload_ty.as_ref(), None)?
+            .resolve_param(self, variant_id, payload_ty.as_ref(), None)?
             .inner
             .into_value();
-        matcher.finish()?;
+        matcher.finish(diags)?;
 
         let result = EnumValue {
             ty: elab,
@@ -575,9 +572,9 @@ impl CompileItemContext<'_, '_> {
         arg_self: Option<Spanned<Value>>,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
 
-        self.refs.check_should_stop(span_decl)?;
+        self.check_should_stop(span_decl)?;
 
         // recreate captured scope
         let span_scope = params.span.join(body.span);
@@ -600,7 +597,7 @@ impl CompileItemContext<'_, '_> {
             FunctionBody::FunctionBodyBlockOwned { .. } | FunctionBody::FunctionBodyBlockRef { .. } => false,
         };
         let mut matcher = ParamArgMacher::new(
-            self.refs,
+            self.diags,
             params.span,
             &args,
             args_must_be_compile_without_ref,
@@ -630,7 +627,7 @@ impl CompileItemContext<'_, '_> {
                 })
                 .transpose()?;
 
-            let value = matcher.resolve_param(id, ty.as_ref(), default);
+            let value = matcher.resolve_param(slf, id, ty.as_ref(), default);
 
             // record value into vec
             if let Ok(value) = &value {
@@ -639,7 +636,7 @@ impl CompileItemContext<'_, '_> {
 
             // declare param in scope
             let param_var = flow.var_new_immutable_init(
-                slf.refs,
+                slf,
                 param.id.span,
                 VariableId::Id(MaybeIdentifier::Identifier(param.id)),
                 param.id.span,
@@ -647,11 +644,11 @@ impl CompileItemContext<'_, '_> {
             )?;
             let entry = ScopedEntry::Named(NamedValue::Variable(param_var));
 
-            scope.declare_root(diags, param.id.spanned_str(self.refs.fixed.source), Ok(entry));
+            scope.declare_root(diags, param.id.spanned_str(slf.refs.source), Ok(entry));
 
             Ok(())
         })?;
-        matcher.finish()?;
+        matcher.finish(diags)?;
 
         // run the body
         let entry = StackEntry::FunctionRun(span_decl);
@@ -739,7 +736,7 @@ impl CompileItemContext<'_, '_> {
 
         // check end and extract return value
         let return_entry = stack.return_info_option().unwrap();
-        check_function_end(self.refs, flow, &mut self.large, body.span, return_entry, end)
+        check_function_end(self, flow, body.span, return_entry, end)
     }
 
     fn call_bits_function(
@@ -749,7 +746,7 @@ impl CompileItemContext<'_, '_> {
         function: &FunctionBits,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         // check arg is single non-named value
@@ -797,19 +794,16 @@ impl CompileItemContext<'_, '_> {
                         Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(bits_wrapped))))
                     }
                     Err(NotCompile) => {
-                        let value = value.inner.as_hardware_value_unchecked(
-                            self.refs,
-                            &mut self.large,
-                            span_call,
-                            ty_hw.clone(),
-                        )?;
+                        let value = value
+                            .inner
+                            .as_hardware_value_unchecked(self, span_call, ty_hw.clone())?;
 
                         let ty_ir = ty_hw.as_ir(self.refs);
                         let ty_bits = HardwareType::Array(Arc::new(HardwareType::Bool), ty_ir.size_bits());
                         let value_bits = HardwareValue {
                             ty: ty_bits,
                             domain: value.domain,
-                            expr: self.large.push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr)),
+                            expr: self.state.large.push_expr(IrExpressionLarge::ToBits(ty_ir, value.expr)),
                         };
                         Ok(Value::Hardware(value_bits))
                     }
@@ -853,7 +847,10 @@ impl CompileItemContext<'_, '_> {
                         Value::from(result)
                     }
                     MaybeCompile::Hardware(v) => {
-                        let expr = self.large.push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
+                        let expr = self
+                            .state
+                            .large
+                            .push_expr(IrExpressionLarge::FromBits(ty_ir, v.expr.clone()));
                         Value::Hardware(HardwareValue {
                             ty: ty_hw.clone(),
                             domain: v.domain,
@@ -868,15 +865,15 @@ impl CompileItemContext<'_, '_> {
 }
 
 pub fn check_function_return_type_and_set_value(
-    refs: CompileRefs,
+    ctx: &CompileItemContext,
     flow: &mut impl Flow,
     entry: &ReturnEntry,
     span_stmt: Span,
     span_keyword: Span,
     value: Option<Spanned<ValueWithImplications>>,
 ) -> DiagResult {
-    let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
+    let diags = ctx.diags;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     let ty = entry.return_type;
 
@@ -890,7 +887,7 @@ pub fn check_function_return_type_and_set_value(
             let result_ty = check_type_contains_value(diags, elab, reason, ty.inner, value.as_ref());
 
             if let Some(return_var) = entry.return_var {
-                flow.var_set(refs, return_var, span_stmt, result_ty.map(|()| value.inner))?;
+                flow.var_set(ctx, return_var, span_stmt, result_ty.map(|()| value.inner))?;
             }
 
             result_ty?;
@@ -928,15 +925,14 @@ pub fn check_function_return_type_and_set_value(
 }
 
 fn check_function_end(
-    refs: CompileRefs,
+    ctx: &mut CompileItemContext,
     flow: &mut impl Flow,
-    large: &mut IrLargeArena,
     body_span: Span,
     return_entry: &ReturnEntry,
     end: BlockEnd,
 ) -> DiagResult<Value> {
-    let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
+    let diags = ctx.diags;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     // some of these should be impossible, but checking again here is redundant
     let is_certain_return = match end {
@@ -954,7 +950,7 @@ fn check_function_end(
     let value = if is_certain_return {
         if let Some(var) = return_entry.return_var {
             // normal return, get the value
-            flow.var_eval(refs, large, Spanned::new(body_span, var))
+            flow.var_eval(ctx, Spanned::new(body_span, var))
                 .map_err(|_: DiagError| diags.report_error_internal(body_span, "failed to evaluate return value"))?
         } else {
             // normal return with unit return type, return unit

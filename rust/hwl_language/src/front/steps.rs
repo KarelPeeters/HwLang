@@ -111,30 +111,31 @@ impl TargetSteps<TargetStep> {
         Ok(TargetSteps { steps })
     }
 
-    pub fn apply_to_expected_type(&self, refs: CompileRefs, ty: Spanned<Type>) -> DiagResult<Type> {
-        let (ty, _) = self.apply_to_type_impl(refs, ty, IgnoreBuilder)?;
+    pub fn apply_to_expected_type(&self, ctx: &CompileItemContext, ty: Spanned<Type>) -> DiagResult<Type> {
+        let (ty, _) = self.apply_to_type_impl(ctx.refs, ctx.diags, ty, IgnoreBuilder)?;
         Ok(ty)
     }
 
     pub fn apply_to_hardware_type(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         signals: &IrSignals,
         variables: &IrVariables,
         ty: Spanned<&HardwareType>,
     ) -> DiagResult<(HardwareType, IrTargetSteps)> {
-        let diags = refs.diags;
+        let refs = ctx.refs;
+        let diags = ctx.diags;
         let elab = &refs.shared.elaboration_arenas;
 
         // call common utility
         let builder = IrTargetStepsBuilder {
-            large,
+            large: &mut ctx.state.large,
             signals,
             variables,
             steps: IrTargetSteps::new(),
         };
-        let (result_ty, builder) = self.apply_to_type_impl(refs, ty.map_inner(HardwareType::as_type), builder)?;
+        let (result_ty, builder) =
+            self.apply_to_type_impl(refs, diags, ty.map_inner(HardwareType::as_type), builder)?;
 
         // map type back
         let result_ty_hw = result_ty.as_hardware_type(elab).map_err(|_| {
@@ -177,10 +178,10 @@ impl TargetSteps<TargetStep> {
     fn apply_to_type_impl<B: IrStepsBuilder>(
         &self,
         refs: CompileRefs,
+        diags: &Diagnostics,
         ty: Spanned<Type>,
         builder: B,
     ) -> DiagResult<(Type, Result<B, Either<EncounteredAny, EncounteredUnknown>>)> {
-        let diags = refs.diags;
         let TargetSteps { steps } = self;
 
         let mut steps_builder = Ok(builder);
@@ -195,7 +196,7 @@ impl TargetSteps<TargetStep> {
             // map step to IR and get the next type
             let step_span = step.span;
             let check_type_is_array = |step_is_slice: bool| {
-                let (inner, len) = check_type_is_array(refs, curr_ty.as_ref(), step_span, step_is_slice)?;
+                let (inner, len) = check_type_is_array(refs, diags, curr_ty.as_ref(), step_span, step_is_slice)?;
                 let len = Spanned::new(curr_ty.span, len);
                 Ok((inner, len))
             };
@@ -249,7 +250,7 @@ impl TargetSteps<TargetStep> {
                     TargetStepCompile::DotIndexInt(index) => {
                         let fields = match &curr_ty.inner {
                             Type::Tuple(fields) => fields,
-                            _ => return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span)),
+                            _ => return Err(err_expected_tuple(refs, diags, curr_ty.as_ref(), step_span)),
                         };
 
                         match fields {
@@ -264,7 +265,7 @@ impl TargetSteps<TargetStep> {
                     TargetStepCompile::DotIndexId(field) => {
                         let ty = match curr_ty.inner {
                             Type::Struct(ty) => ty,
-                            _ => return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span)),
+                            _ => return Err(err_expected_struct(refs, diags, curr_ty.as_ref(), step_span)),
                         };
                         let ty_info = refs.shared.elaboration_arenas.struct_info(ty);
 
@@ -341,7 +342,7 @@ impl TargetSteps<TargetStep> {
         value: Spanned<ValueWithImplications>,
     ) -> DiagResult<ValueWithImplications> {
         let refs = ctx.refs;
-        let diags = refs.diags;
+        let diags = ctx.diags;
         let elab = &refs.shared.elaboration_arenas;
 
         let TargetSteps { steps } = self;
@@ -386,13 +387,14 @@ impl TargetSteps<TargetStep> {
                                 let result = HardwareValue {
                                     ty: (**curr_inner).clone(),
                                     domain: curr_value.value.domain,
-                                    expr: ctx.large.push_expr(result),
+                                    expr: ctx.state.large.push_expr(result),
                                 };
                                 Value::Hardware(HardwareValueWithImplications::simple(result))
                             }
                             _ => {
                                 let err = err_expected_array(
                                     refs,
+                                    diags,
                                     curr_value.as_ref().map_inner(Value::ty).as_ref(),
                                     step_span,
                                     false,
@@ -449,13 +451,13 @@ impl TargetSteps<TargetStep> {
                                 let result = HardwareValue {
                                     ty: HardwareType::Array(Arc::clone(array_inner), slice_len),
                                     domain: curr_value.value.domain,
-                                    expr: ctx.large.push_expr(result),
+                                    expr: ctx.state.large.push_expr(result),
                                 };
                                 Value::Hardware(HardwareValueWithImplications::simple(result))
                             }
                             _ => {
                                 let curr_ty = curr_value.as_ref().map_inner(Value::ty);
-                                return Err(err_expected_array(refs, curr_ty.as_ref(), step_span, true));
+                                return Err(err_expected_array(refs, diags, curr_ty.as_ref(), step_span, true));
                             }
                         }
                     }
@@ -496,13 +498,13 @@ impl TargetSteps<TargetStep> {
                             let result = HardwareValue {
                                 ty: fields[index].clone(),
                                 domain: curr_value.value.domain,
-                                expr: ctx.large.push_expr(result),
+                                expr: ctx.state.large.push_expr(result),
                             };
                             Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
                         _ => {
                             let curr_ty = curr_value.as_ref().map_inner(Value::ty);
-                            return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
+                            return Err(err_expected_tuple(refs, diags, curr_ty.as_ref(), step_span));
                         }
                     },
                     TargetStepCompile::DotIndexId(field_str) => {
@@ -518,7 +520,7 @@ impl TargetSteps<TargetStep> {
                         TargetStepHardware::ArrayIndex(_) => false,
                         TargetStepHardware::ArraySlice { .. } => true,
                     };
-                    check_type_is_array(refs, Spanned::new(curr_span, &curr_ty), step_span, step_is_slice)?;
+                    check_type_is_array(refs, diags, Spanned::new(curr_span, &curr_ty), step_span, step_is_slice)?;
 
                     // convert value to hardware
                     let curr_ty = curr_ty.as_hardware_type(elab).map_err(|_| {
@@ -534,12 +536,9 @@ impl TargetSteps<TargetStep> {
                         .report(diags)
                     })?;
 
-                    let curr_value = curr_value.inner.as_hardware_value_unchecked(
-                        refs,
-                        &mut ctx.large,
-                        curr_span,
-                        curr_ty.clone(),
-                    )?;
+                    let curr_value = curr_value
+                        .inner
+                        .as_hardware_value_unchecked(ctx, curr_span, curr_ty.clone())?;
                     let (array_inner, array_len) = match curr_value.ty {
                         HardwareType::Array(array_inner, array_len) => (array_inner, array_len),
                         _ => {
@@ -562,7 +561,7 @@ impl TargetSteps<TargetStep> {
                             let result = HardwareValue {
                                 ty: Arc::unwrap_or_clone(array_inner),
                                 domain: curr_value.domain.join(index.domain),
-                                expr: ctx.large.push_expr(result),
+                                expr: ctx.state.large.push_expr(result),
                             };
                             Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
@@ -588,7 +587,7 @@ impl TargetSteps<TargetStep> {
                             let result = HardwareValue {
                                 ty: HardwareType::Array(array_inner, slice_length.clone()),
                                 domain: curr_value.domain.join(slice_start.domain),
-                                expr: ctx.large.push_expr(result),
+                                expr: ctx.state.large.push_expr(result),
                             };
                             Value::Hardware(HardwareValueWithImplications::simple(result))
                         }
@@ -609,14 +608,14 @@ impl TargetSteps<&TargetStepCompile> {
     /// Evaluate the operation `target[steps] = value`, where all operands are compile-time constants.
     pub fn set_compile_value(
         &self,
-        refs: CompileRefs,
+        ctx: &CompileItemContext,
         target: Spanned<&mut CompileValue>,
         assign_op_span: Span,
         source: Spanned<CompileValue>,
     ) -> DiagResult {
         let target_span = target.span;
         let target = Spanned::new(target_span, SetCompileTarget::Scalar(target.inner));
-        set_compile_value_impl(refs, target, &self.steps, assign_op_span, source)
+        set_compile_value_impl(ctx, target, &self.steps, assign_op_span, source)
     }
 
     /// Evaluate the expression `value[steps]`
@@ -625,8 +624,7 @@ impl TargetSteps<&TargetStepCompile> {
         ctx: &mut CompileItemContext,
         base: Spanned<CompileValue>,
     ) -> DiagResult<CompileValue> {
-        let refs = ctx.refs;
-        let diags = refs.diags;
+        let diags = ctx.diags;
 
         // TODO avoid clones
         let self_mapped = TargetSteps {
@@ -658,7 +656,7 @@ fn eval_dot_index_id(
 ) -> DiagResult<ValueWithImplications> {
     // TODO add array.len, type.int_start, type.int_end, type.int_ranges, type.tuple_items, type.struct_fields?
     let refs = ctx.refs;
-    let diags = refs.diags;
+    let diags = ctx.diags;
     let elab = &refs.shared.elaboration_arenas;
 
     // interface views
@@ -863,7 +861,7 @@ fn eval_dot_index_id(
                 let result = HardwareValue {
                     ty: info_hw.fields[field_index].clone(),
                     domain: base_inner.value.domain,
-                    expr: ctx.large.push_expr(result),
+                    expr: ctx.state.large.push_expr(result),
                 };
 
                 Value::Hardware(result)
@@ -928,14 +926,15 @@ impl SetCompileTarget<'_> {
 }
 
 fn set_compile_value_impl(
-    refs: CompileRefs,
+    ctx: &CompileItemContext,
     target: Spanned<SetCompileTarget<'_>>,
     steps: &[Spanned<&TargetStepCompile>],
     assign_op_span: Span,
     source: Spanned<CompileValue>,
 ) -> DiagResult {
-    let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
+    let refs = ctx.refs;
+    let diags = ctx.diags;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     // if done just do the final assignment, otherwise get the next step
     let Some((step, steps)) = steps.split_first() else {
@@ -998,7 +997,7 @@ fn set_compile_value_impl(
     let target_span = target.span;
     let new_target = match &step.inner {
         TargetStepCompile::ArrayIndex(index) => {
-            let target_inner = check_target_is_array(refs, target, step.span, false)?;
+            let target_inner = check_target_is_array(ctx, target, step.span, false)?;
 
             let index = check_range_index_compile(
                 diags,
@@ -1012,7 +1011,7 @@ fn set_compile_value_impl(
             start: slice_start,
             length: slice_len,
         } => {
-            let target_inner = check_target_is_array(refs, target, step.span, true)?;
+            let target_inner = check_target_is_array(ctx, target, step.span, true)?;
 
             let SliceInfo {
                 start: slice_start,
@@ -1034,12 +1033,12 @@ fn set_compile_value_impl(
                     CompileValue::Hardware(never) => never.unreachable(),
                     _ => {
                         let curr_ty = Spanned::new(target_span, target_inner.ty());
-                        return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                        return Err(err_expected_tuple(refs, diags, curr_ty.as_ref(), step.span));
                     }
                 },
                 SetCompileTarget::Slice(_) => {
                     let curr_ty = Spanned::new(target_span, target.inner.ty());
-                    return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                    return Err(err_expected_tuple(refs, diags, curr_ty.as_ref(), step.span));
                 }
             };
 
@@ -1057,12 +1056,12 @@ fn set_compile_value_impl(
                     CompileValue::Hardware(never) => never.unreachable(),
                     _ => {
                         let curr_ty = Spanned::new(target_span, target_inner.ty());
-                        return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                        return Err(err_expected_struct(refs, diags, curr_ty.as_ref(), step.span));
                     }
                 },
                 SetCompileTarget::Slice(_) => {
                     let curr_ty = Spanned::new(target_span, target.inner.ty());
-                    return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                    return Err(err_expected_struct(refs, diags, curr_ty.as_ref(), step.span));
                 }
             };
 
@@ -1077,11 +1076,11 @@ fn set_compile_value_impl(
     };
 
     let new_target = Spanned::new(target_span.join(step.span), new_target);
-    set_compile_value_impl(refs, new_target, steps, assign_op_span, source)
+    set_compile_value_impl(ctx, new_target, steps, assign_op_span, source)
 }
 
 fn check_target_is_array<'a>(
-    refs: CompileRefs,
+    ctx: &CompileItemContext,
     target: Spanned<SetCompileTarget<'a>>,
     step_span: Span,
     op_is_slice: bool,
@@ -1092,7 +1091,8 @@ fn check_target_is_array<'a>(
                 Ok(Arc::make_mut(target_inner).as_mut_slice())
             }
             _ => Err(err_expected_array(
-                refs,
+                ctx.refs,
+                ctx.diags,
                 Spanned::new(target.span, &target_inner.ty()),
                 step_span,
                 op_is_slice,
@@ -1296,17 +1296,24 @@ fn check_tuple_index(
 
 fn check_type_is_array<'t>(
     refs: CompileRefs,
+    diags: &Diagnostics,
     ty: Spanned<&'t Type>,
     step_span: Span,
     step_is_slice: bool,
 ) -> DiagResult<(&'t Arc<Type>, Option<&'t BigUint>)> {
     match &ty.inner {
         Type::Array(ty_inner, len) => Ok((ty_inner, len.as_ref())),
-        _ => Err(err_expected_array(refs, ty, step_span, step_is_slice)),
+        _ => Err(err_expected_array(refs, diags, ty, step_span, step_is_slice)),
     }
 }
 
-fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span, step_is_slice: bool) -> DiagError {
+fn err_expected_array(
+    refs: CompileRefs,
+    diags: &Diagnostics,
+    ty: Spanned<&Type>,
+    step_span: Span,
+    step_is_slice: bool,
+) -> DiagError {
     let op_name = if step_is_slice { "slice" } else { "index" };
 
     DiagnosticError::new(
@@ -1321,10 +1328,10 @@ fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span, st
             ty.inner.value_string(&refs.shared.elaboration_arenas)
         ),
     )
-    .report(refs.diags)
+    .report(diags)
 }
 
-pub fn err_expected_tuple(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagError {
+pub fn err_expected_tuple(refs: CompileRefs, diags: &Diagnostics, ty: Spanned<&Type>, step_span: Span) -> DiagError {
     DiagnosticError::new("cannot tuple index non-tuple type", step_span, "tuple index here")
         .add_info(
             ty.span,
@@ -1333,10 +1340,10 @@ pub fn err_expected_tuple(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span
                 ty.inner.value_string(&refs.shared.elaboration_arenas)
             ),
         )
-        .report(refs.diags)
+        .report(diags)
 }
 
-pub fn err_expected_struct(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span) -> DiagError {
+pub fn err_expected_struct(refs: CompileRefs, diags: &Diagnostics, ty: Spanned<&Type>, step_span: Span) -> DiagError {
     DiagnosticError::new("cannot struct index non-struct type", step_span, "struct index here")
         .add_info(
             ty.span,
@@ -1345,5 +1352,5 @@ pub fn err_expected_struct(refs: CompileRefs, ty: Spanned<&Type>, step_span: Spa
                 ty.inner.value_string(&refs.shared.elaboration_arenas)
             ),
         )
-        .report(refs.diags)
+        .report(diags)
 }

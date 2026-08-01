@@ -18,7 +18,7 @@ use crate::util::range_multi::MultiRange;
 use crate::util::store::ArcOrRef;
 use std::sync::Arc;
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn eval_type_of(
         &mut self,
         scope: &Scope,
@@ -26,7 +26,7 @@ impl CompileItemContext<'_, '_> {
         expr_span: Span,
         args: &Args,
     ) -> DiagResult<Type> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
 
         // check single unnamed arg
         // TODO extract common code, there are probably other users of this pattern
@@ -53,7 +53,7 @@ impl CompileItemContext<'_, '_> {
         };
 
         // eval id
-        let &ExpressionKind::Id(id) = self.refs.get_expr(arg_expr) else {
+        let &ExpressionKind::Id(id) = self.refs.parsed.get_expr(arg_expr) else {
             return Err(diags.report_error_simple(
                 "typeof only works on identifiers, not general expressions",
                 arg_expr.span,
@@ -87,7 +87,7 @@ impl CompileItemContext<'_, '_> {
         target_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         // evaluate the first two arguments as string literals
@@ -165,7 +165,7 @@ impl CompileItemContext<'_, '_> {
                         hardware_print_string(
                             &self.refs.shared.elaboration_arenas,
                             flow,
-                            &mut self.large,
+                            &mut self.state.large,
                             expr_span,
                             &msg,
                         );
@@ -215,7 +215,7 @@ impl CompileItemContext<'_, '_> {
                         hardware_print_string(
                             &self.refs.shared.elaboration_arenas,
                             flow,
-                            &mut self.large,
+                            &mut self.state.large,
                             expr_span,
                             &msg,
                         );

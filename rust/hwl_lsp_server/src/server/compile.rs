@@ -6,7 +6,7 @@ use crate::util::sender::SendErrorOr;
 use crate::util::uri::{
     NormalizeError, abs_path_to_uri, build_watcher_any_file_with_name, path_join_normalized, uri_to_path,
 };
-use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::compile::{CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{
     DiagResult, Diagnostic, DiagnosticContent, DiagnosticLevel, Diagnostics, FooterKind,
 };
@@ -122,25 +122,21 @@ impl ServerState {
                     // we will discard the IR anyway, so no need to spend time cleaning it up
                     do_ir_cleanup: false,
                 };
-                let fixed = CompileFixed {
+                let thread_count = self.pool.as_ref().map_or(NON_ZERO_USIZE_ONE, |p| p.thread_count());
+
+                let shared = CompileShared::new(&diags, source, hierarchy, &parsed, QueueItems::All, thread_count);
+                let refs = CompileRefs {
                     settings: &settings,
                     source,
                     hierarchy,
                     parsed: &parsed,
-                };
-
-                let thread_count = self.pool.as_ref().map_or(NON_ZERO_USIZE_ONE, |p| p.thread_count());
-                let shared = CompileShared::new(&diags, fixed, QueueItems::All, thread_count);
-                let refs = CompileRefs {
-                    diags: &diags,
-                    fixed,
                     shared: &shared,
                     print_handler: &IgnorePrintHandler,
                     should_stop: &should_stop_inner,
                 };
 
                 self.log("compile: start compile loop");
-                refs.run_compile_loop(self.pool.as_ref());
+                refs.run_compile_loop(&diags, self.pool.as_ref());
                 self.log("compile: end compile loop");
 
                 if early_stop.load(Ordering::Relaxed) {

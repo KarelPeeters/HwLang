@@ -1,12 +1,12 @@
 use crate::front::block::EarlyExitKind;
-use crate::front::compile::CompileRefs;
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
 use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
 use crate::front::implication::HardwareValueWithImplications;
 use crate::front::types::{HardwareType, Type, TypeBool};
 use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
-use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
+use crate::mid::ir::{IrBoolBinaryOp, IrType, IrVariableInfo};
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
 
@@ -119,13 +119,11 @@ impl ExitFlag {
 
     pub fn get(
         &self,
-        refs: CompileRefs,
-        diags: &Diagnostics,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         flow: &mut impl Flow,
         span: Span,
     ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
-        match flow.var_eval(refs, large, Spanned::new(span, self.var)) {
+        match flow.var_eval(ctx, Spanned::new(span, self.var)) {
             Ok(value) => {
                 let value = match value {
                     Value::Simple(value) => {
@@ -140,7 +138,9 @@ impl ExitFlag {
                 };
                 Ok(value)
             }
-            Err(_) => Err(diags.report_error_internal(span, "flag evaluation should never fail")),
+            Err(_) => Err(ctx
+                .diags
+                .report_error_internal(span, "flag evaluation should never fail")),
         }
     }
 }
@@ -172,15 +172,18 @@ impl<'r> ExitStack<'r> {
 
     pub fn early_exit_condition(
         &mut self,
-        refs: CompileRefs,
-        diags: &Diagnostics,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         flow: &mut impl Flow,
         span: Span,
     ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
         let mut add_flag = |c: MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>, flag: &ExitFlag| {
-            let flag = flag.get(refs, diags, large, flow, span)?;
-            Ok(eval_binary_bool_typed(large, IrBoolBinaryOp::Or, c, flag))
+            let flag = flag.get(ctx, flow, span)?;
+            Ok(eval_binary_bool_typed(
+                &mut ctx.state.large,
+                IrBoolBinaryOp::Or,
+                c,
+                flag,
+            ))
         };
 
         let mut exit_cond = MaybeCompile::Compile(false);

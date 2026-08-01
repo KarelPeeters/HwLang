@@ -251,9 +251,9 @@ pub struct ElaboratedForHeader {
     pub iter: ForIterator,
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn elaborate_const_block(&mut self, scope: &Scope, flow: &mut impl Flow, block: &ConstBlock) -> DiagResult {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let &ConstBlock {
             span_keyword,
             ref block,
@@ -302,7 +302,7 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         statements: &[BlockStatement],
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let span = if statements.is_empty() {
             return Ok(BlockEnd::Normal);
         } else {
@@ -313,7 +313,7 @@ impl CompileItemContext<'_, '_> {
                 .join(statements.last().unwrap().span())
         };
 
-        let end = match stack.early_exit_condition(self.refs, diags, &mut self.large, flow, span)? {
+        let end = match stack.early_exit_condition(self, flow, span)? {
             MaybeCompile::Compile(exit_cond) => {
                 if exit_cond {
                     return Err(diags
@@ -383,7 +383,7 @@ impl CompileItemContext<'_, '_> {
         stmt: &BlockStatement,
     ) -> DiagResult<BlockEnd> {
         let refs = self.refs;
-        let diags = refs.diags;
+        let diags = self.diags;
         let elab = &refs.shared.elaboration_arenas;
 
         let stmt_span = stmt.span;
@@ -433,11 +433,11 @@ impl CompileItemContext<'_, '_> {
 
                 // store initial value if there is one
                 if let Some(init) = init {
-                    flow.var_set(refs, var, decl.span, Ok(init.inner))?;
+                    flow.var_set(self, var, decl.span, Ok(init.inner))?;
                 }
 
                 // declare entry
-                let id = id.spanned_str(refs.fixed.source);
+                let id = id.spanned_str(refs.source);
                 let entry = ScopedEntry::Named(NamedValue::Variable(var));
                 scope.declare(diags, id, Ok(entry));
 
@@ -519,7 +519,7 @@ impl CompileItemContext<'_, '_> {
                         // check direction
                         match signal {
                             Signal::Port(port) => {
-                                let port_info = &self.ports[port];
+                                let port_info = &self.state.ports[port];
                                 check_port_is_output(
                                     diags,
                                     port_info,
@@ -571,7 +571,7 @@ impl CompileItemContext<'_, '_> {
                             .transpose()?;
 
                         // create new wire
-                        let wire = self.wires.push(WireInfo::Single(WireInfoSingle {
+                        let wire = self.state.wires.push(WireInfo::Single(WireInfoSingle {
                             id: MaybeIdentifier::Identifier(id.map_inner(str::to_owned)),
                             domain: Ok(None),
                             typed: Ok(None),
@@ -579,9 +579,9 @@ impl CompileItemContext<'_, '_> {
 
                         // suggest type
                         if let Some(ty) = ty {
-                            self.wires[wire].suggest_ty(
+                            self.state.wires[wire].suggest_ty(
                                 refs,
-                                &self.wire_interfaces,
+                                &self.state.wire_interfaces,
                                 flow.get_ir_wires_mut(),
                                 ty.as_ref(),
                             )?;
@@ -601,14 +601,14 @@ impl CompileItemContext<'_, '_> {
                 self.check_valid_domain_crossing(span_keyword, domain_signal, domain, "register driving signal")?;
 
                 // eval reset value, possibly suggesting a type
-                let reset_value = match self.refs.get_expr_inner(reset) {
+                let reset_value = match self.refs.parsed.get_expr_inner(reset) {
                     ExpressionKind::Undefined => MaybeUndefined::Undefined,
                     _ => {
                         // figure out expected type
                         let signal_ty = match signal.inner {
-                            Signal::Port(port) => Some(self.ports[port].ty.as_ref()),
-                            Signal::Wire(wire) => self.wires[wire]
-                                .typed_maybe(refs, &self.wire_interfaces)?
+                            Signal::Port(port) => Some(self.state.ports[port].ty.as_ref()),
+                            Signal::Wire(wire) => self.state.wires[wire]
+                                .typed_maybe(refs, &self.state.wire_interfaces)?
                                 .map(|info| info.ty),
                         };
                         let expected_ty = signal_ty.map(|ty| ty.inner.as_type()).unwrap_or(Type::Any);
@@ -650,12 +650,10 @@ impl CompileItemContext<'_, '_> {
                         )?;
 
                         // convert reset value to ir expression
-                        let reset_ir = reset_value.inner.as_ir_expression_unchecked(
-                            refs,
-                            &mut self.large,
-                            reset.span,
-                            &signal_ty.inner,
-                        )?;
+                        let reset_ir =
+                            reset_value
+                                .inner
+                                .as_ir_expression_unchecked(self, reset.span, &signal_ty.inner)?;
                         MaybeUndefined::Defined(reset_ir)
                     }
                 };
@@ -724,7 +722,7 @@ impl CompileItemContext<'_, '_> {
                     .map(|value| self.eval_expression_with_implications(scope, flow, expected_ty, value))
                     .transpose()?;
 
-                check_function_return_type_and_set_value(refs, flow, entry, stmt_span, span_return, value)?;
+                check_function_return_type_and_set_value(self, flow, entry, stmt_span, span_return, value)?;
 
                 BlockEnd::CompileExit(EarlyExitKind::Return)
             }
@@ -758,7 +756,7 @@ impl CompileItemContext<'_, '_> {
         )>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let (initial_if, remaining_ifs) = match ifs {
@@ -819,7 +817,7 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&WhileStatement>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let &WhileStatement {
@@ -897,11 +895,11 @@ impl CompileItemContext<'_, '_> {
         index_value: <ForIterator as Iterator>::Item,
     ) -> DiagResult {
         let refs = self.refs;
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &refs.shared.elaboration_arenas;
 
         // convert index to actual value
-        let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
+        let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.state.large.push_expr(h)));
 
         // typecheck index (if specified)
         if let Some(index_ty) = &index_ty {
@@ -915,7 +913,7 @@ impl CompileItemContext<'_, '_> {
 
         // store index in variable
         let var = flow.var_new_immutable_init(
-            refs,
+            self,
             stmt.index.span(),
             VariableId::Id(stmt.index),
             stmt.span_keyword,
@@ -925,7 +923,7 @@ impl CompileItemContext<'_, '_> {
         // declare variable in scope
         scope.declare(
             diags,
-            stmt.index.spanned_str(self.refs.fixed.source),
+            stmt.index.spanned_str(self.refs.source),
             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
         );
 
@@ -968,7 +966,7 @@ impl CompileItemContext<'_, '_> {
             let mut end_joined = BlockEnd::Normal;
 
             for iter_item in iter {
-                self.refs.check_should_stop(span_keyword)?;
+                self.check_should_stop(span_keyword)?;
 
                 // clear continue flag
                 if let FlowKind::Hardware(flow) = flow.kind_mut() {
@@ -1038,12 +1036,11 @@ impl CompileItemContext<'_, '_> {
                 let (else_flow, else_end) = else_flow_end;
 
                 // join flows
-                let (then_block, else_block) =
-                    flow.join_child_branches_pair(self.refs, &mut self.large, span, (then_flow, else_flow))?;
+                let (then_block, else_block) = flow.join_child_branches_pair(self, span, (then_flow, else_flow))?;
 
                 // build if
                 let ir_if = build_ir_if_statement(
-                    &mut self.large,
+                    &mut self.state.large,
                     cond.inner.value.expr,
                     Some(then_block),
                     Some(else_block),
@@ -1063,10 +1060,7 @@ impl CompileItemContext<'_, '_> {
                 // only one branch is possible, so no need to build an if statement
                 let (case_flow, case_end) = flow_end;
 
-                let block = flow
-                    .join_child_branches(self.refs, &mut self.large, span, vec![case_flow])?
-                    .single()
-                    .unwrap();
+                let block = flow.join_child_branches(self, span, vec![case_flow])?.single().unwrap();
 
                 flow.push_ir_statement(Spanned::new(span, IrStatement::Block(block)));
 
@@ -1089,7 +1083,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         if_stmt: &'a IfStatement<B>,
     ) -> DiagResult<Option<&'a B>> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let IfStatement {

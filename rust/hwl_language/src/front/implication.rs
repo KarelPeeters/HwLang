@@ -1,10 +1,10 @@
-use crate::front::compile::CompileRefs;
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
 use crate::front::flow::ValueVersion;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value, ValueCommon};
-use crate::mid::ir::{IrExpression, IrLargeArena};
+use crate::mid::ir::IrExpression;
 use crate::syntax::pos::Span;
 use crate::util::big_int::BigInt;
 use crate::util::range_multi::MultiRange;
@@ -188,12 +188,11 @@ impl<V> ValueCommon for HardwareValueWithVersion<V, HardwareType, IrExpression> 
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        self.value.as_ir_expression_unchecked(refs, large, span, ty)
+        self.value.as_ir_expression_unchecked(ctx, span, ty)
     }
 }
 
@@ -204,11 +203,10 @@ impl ValueCommon for HardwareValueWithImplications<HardwareType, IrExpression> {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        self.value.as_ir_expression_unchecked(refs, large, span, ty)
+        self.value.as_ir_expression_unchecked(ctx, span, ty)
     }
 }

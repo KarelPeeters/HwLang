@@ -2,7 +2,7 @@ use crate::args::ArgsBuild;
 use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::compile::{CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{DiagError, Diagnostics};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
@@ -119,16 +119,19 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         let should_stop = should_stop.clone();
         ctrlc::set_handler(move || should_stop.store(true, Ordering::Relaxed)).expect("Failed to set Ctrl+C handler");
     }
-    let fixed = CompileFixed {
+    let shared = CompileShared::new(
+        &diags,
+        &source,
+        &hierarchy,
+        &parsed,
+        queue_items,
+        thread_count.unwrap_or(NON_ZERO_USIZE_ONE),
+    );
+    let refs = CompileRefs {
         settings: &settings,
         source: &source,
         hierarchy: &hierarchy,
         parsed: &parsed,
-    };
-    let shared = CompileShared::new(&diags, fixed, queue_items, thread_count.unwrap_or(NON_ZERO_USIZE_ONE));
-    let refs = CompileRefs {
-        diags: &diags,
-        fixed,
         shared: &shared,
         print_handler: &StdoutPrintHandler,
         should_stop: &|| should_stop.load(Ordering::Relaxed),
@@ -138,16 +141,18 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     // find top modules
     // TODO print warning if no top modules selected?
     let start_compile = Instant::now();
-    let top_values = top
-        .iter()
-        .map(|top| {
-            let item = refs.resolve_item_by_path(Spanned::new(manifest_span, top))?;
-            refs.eval_item(item)
-        })
-        .collect_vec();
+    let top_values = {
+        top.iter()
+            .map(|top| {
+                let item = refs.resolve_item_by_path(&diags, Spanned::new(manifest_span, top))?;
+                let mut ctx = CompileItemContext::new(refs, &diags, None, None);
+                ctx.eval_item(item)
+            })
+            .collect_vec()
+    };
 
     // run compilation loop
-    refs.run_compile_loop(thread_pool.as_ref());
+    refs.run_compile_loop(&diags, thread_pool.as_ref());
 
     // filter top modules
     //   we allowed other top values earlier, they could be useful as compilation roots too

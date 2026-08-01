@@ -39,8 +39,12 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     pub fn new() -> Self {
+        Self::from_vec(vec![])
+    }
+
+    pub fn from_vec(diags: Vec<Diagnostic>) -> Self {
         Self {
-            diagnostics: RefCell::new(vec![]),
+            diagnostics: RefCell::new(diags),
         }
     }
 

@@ -42,7 +42,7 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
     }
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn elaborate_extra_list<'a, F: Flow, T>(
         &mut self,
         scope_parent: &mut Scope,
@@ -82,8 +82,7 @@ impl CompileItemContext<'_, '_> {
         common_decl_in_root_scope: bool,
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
-        let refs = self.refs;
-        let diags = refs.diags;
+        let diags = self.diags;
 
         for item in items {
             match item {
@@ -93,8 +92,8 @@ impl CompileItemContext<'_, '_> {
 
                     if let Some(eval) = eval {
                         let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
-                        let id_str = id.spanned_str(self.refs.fixed.source);
-                        let entry = eval.value_into_entry(self.refs, flow)?;
+                        let id_str = id.spanned_str(self.refs.source);
+                        let entry = eval.value_into_entry(self, flow)?;
 
                         if common_decl_in_root_scope {
                             scope.declare_root(diags, id_str, Ok(entry));
@@ -116,7 +115,7 @@ impl CompileItemContext<'_, '_> {
                     let mut scope_child = scope.new_child(&mut scope_child);
 
                     if let Some(declare) = declare {
-                        declare.declare(refs, scope_child.as_scope(), flow)?;
+                        declare.declare(self, scope_child.as_scope(), flow)?;
                     }
 
                     self.elaborate_extra_list_block(&mut scope_child, flow, block, common_decl_in_root_scope, f)?;
@@ -126,7 +125,7 @@ impl CompileItemContext<'_, '_> {
                         self.elaborate_for_statement_header(scope.as_scope(), flow, stmt)?;
 
                     for index_value in iter {
-                        refs.check_should_stop(stmt.span_keyword)?;
+                        self.check_should_stop(stmt.span_keyword)?;
 
                         let mut scope_iter = scope.scope.new_child(stmt.span());
                         let mut scope_iter = scope.new_child(&mut scope_iter);

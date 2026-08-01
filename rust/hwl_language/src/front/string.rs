@@ -163,14 +163,14 @@ impl StringBuilder {
     }
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn eval_string_literal(
         &mut self,
         scope: &Scope,
         flow: &mut impl Flow,
         pieces: &[StringPiece<Span, Expression>],
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let mut builder = StringBuilder::new();
@@ -179,7 +179,7 @@ impl CompileItemContext<'_, '_> {
         for &piece in pieces {
             match piece {
                 StringPiece::Literal(piece_span) => {
-                    let raw = self.refs.fixed.source.span_str(piece_span);
+                    let raw = self.refs.source.span_str(piece_span);
                     let escaped = parse_token_string_middle(raw)
                         .map_err(|_| diags.report_error_internal(piece_span, "failed to parse string token"))?;
 

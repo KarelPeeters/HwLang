@@ -79,7 +79,7 @@ struct InterfaceViewPartialElab {
     pub ports_dirs: Vec<(Identifier, Spanned<PortDirection>)>,
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn elaborate_interface_new(
         &mut self,
         scope_params: &Scope,
@@ -89,8 +89,8 @@ impl CompileItemContext<'_, '_> {
         ast_ref: AstRefInterface,
     ) -> DiagResult<ElaboratedInterfaceInfo> {
         let refs = self.refs;
-        let diags = refs.diags;
-        let source = refs.fixed.source;
+        let diags = self.diags;
+        let source = refs.source;
         let elab = &refs.shared.elaboration_arenas;
 
         let &ItemDefInterface {
@@ -100,7 +100,7 @@ impl CompileItemContext<'_, '_> {
             params: _,
             span_body,
             ref body,
-        } = &refs.fixed.parsed[ast_ref];
+        } = &refs.parsed[ast_ref];
 
         // elaborate extra list, collect signal types and view directions immediately,
         //   then later actually whether the views signals match the actual signals

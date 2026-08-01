@@ -1,18 +1,16 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
-use crate::front::domain::DomainSignal;
+use crate::front::diagnostic::{DiagResult, Diagnostic, DiagnosticError, Diagnostics};
 use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module_header::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
 use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
 use crate::front::signal::{
-    Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Signal, Wire, WireInfo, WireInterface,
-    WireInterfaceInfo,
+    Port, PortInfo, PortInterface, PortInterfaceInfo, Wire, WireInfo, WireInterface, WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_instance_cycles;
-use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
-use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
+use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo};
+use crate::syntax::ast::{self, Identifier, MaybeIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -37,63 +35,42 @@ pub enum ResolveError {
 }
 
 impl<'a, 's> CompileRefs<'a, 's> {
-    pub fn run_compile_loop(self, pool: Option<&ThreadPool>) {
-        if let Some(pool) = pool {
-            let all_thread_diags = pool.broadcast(|| {
-                let thread_diags = Diagnostics::new();
-                let thread_refs = CompileRefs {
-                    diags: &thread_diags,
-
-                    fixed: self.fixed,
-                    shared: self.shared,
-                    print_handler: self.print_handler,
-                    should_stop: self.should_stop,
-                };
-                thread_refs.run_compile_loop_inner();
-                thread_diags
-            });
-
-            // collect and merge diagnostics, sorting to keep them deterministic
-            // TODO some kind of topological sort "as if visited by single thread" might be nicer
-            let mut all_diags: Vec<_> = all_thread_diags.into_iter().flat_map(|d| d.finish()).collect();
-            all_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-            for d in all_diags {
-                self.diags.push(d);
-            }
+    pub fn run_compile_loop(self, diags: &Diagnostics, pool: Option<&ThreadPool>) {
+        let mut diags_raw = if let Some(pool) = pool {
+            // distribute elaboration access the pool
+            let thread_diags = pool.broadcast(|| self.run_compile_loop_thread());
+            thread_diags.into_iter().flatten().collect_vec()
         } else {
             // run elaboration on the current thread
-            let local_diags = Diagnostics::new();
-            let local_refs = CompileRefs {
-                diags: &local_diags,
+            self.run_compile_loop_thread()
+        };
 
-                fixed: self.fixed,
-                shared: self.shared,
-                print_handler: self.print_handler,
-                should_stop: self.should_stop,
-            };
-            local_refs.run_compile_loop_inner();
-
-            // sort diagnostics here too, to match threaded case
-            let mut local_diags = local_diags.finish();
-            local_diags.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-            for d in local_diags {
-                self.diags.push(d);
-            }
+        // TODO rework this once we have a proper query system
+        diags_raw.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        for d in diags_raw {
+            diags.push(d);
         }
     }
 
-    fn run_compile_loop_inner(self) {
+    fn run_compile_loop_thread(self) -> Vec<Diagnostic> {
+        let mut diags_thread = vec![];
+
         while let Some(work_item) = self.shared.work_queue.pop() {
             match work_item {
                 WorkItem::EvaluateItem(item) => {
                     self.shared.item_values.offer_to_compute(item, || {
-                        let mut ctx = CompileItemContext::new_empty(self, Some(item), None);
-                        ctx.eval_item_new(item)
+                        let diags = Diagnostics::new();
+                        let mut ctx = CompileItemContext::new(self, &diags, Some(item), None);
+                        let result = ctx.eval_item_new(item);
+                        diags_thread.extend(diags.finish());
+                        result
                     });
                 }
                 WorkItem::ElaborateModuleBody(header, ir_module) => {
                     // do elaboration
-                    let ir_module_info = self.elaborate_module_body_new(header);
+                    let diags = Diagnostics::new();
+                    let ir_module_info = self.elaborate_module_body_new(&diags, header);
+                    diags_thread.extend(diags.finish());
 
                     // store result
                     let slot = &mut self.shared.ir_database.lock().unwrap().modules[ir_module];
@@ -102,36 +79,20 @@ impl<'a, 's> CompileRefs<'a, 's> {
                 }
             }
         }
+
+        diags_thread
     }
 
-    pub fn check_should_stop(self, span: Span) -> DiagResult {
+    pub fn check_should_stop(&self, diags: &Diagnostics, span: Span) -> DiagResult {
         if (self.should_stop)() {
-            Err(self
-                .diags
-                .report_error_simple("compilation interrupted", span, "while elaborating here"))
+            Err(diags.report_error_simple("compilation interrupted", span, "while elaborating here"))
         } else {
             Ok(())
         }
     }
 
-    pub fn get_expr(self, expr: Expression) -> &'a ExpressionKind {
-        self.fixed.parsed.get_expr(expr)
-    }
-
-    pub fn get_expr_inner(self, expr: Expression) -> &'a ExpressionKind {
-        let mut curr = expr;
-        loop {
-            match self.get_expr(curr) {
-                &ExpressionKind::Wrapped(inner) => curr = inner,
-                kind => break kind,
-            }
-        }
-    }
-
-    pub fn resolve_item_by_path(self, path: Spanned<&str>) -> DiagResult<AstRefItem> {
+    pub fn resolve_item_by_path(&self, diags: &Diagnostics, path: Spanned<&str>) -> DiagResult<AstRefItem> {
         // TODO share code with resolve_import_path
-        let diags = self.diags;
-
         // split path
         let path_split = path.inner.split(".").collect_vec();
         let (&name, steps) = path_split.split_last().ok_or_else(|| {
@@ -143,7 +104,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
         })?;
 
         // follow steps to get node
-        let mut curr_node = self.fixed.hierarchy.root_node();
+        let mut curr_node = self.hierarchy.root_node();
         for &step in steps {
             curr_node = curr_node.children.get(step).ok_or_else(|| {
                 diags.report_error_simple(
@@ -175,20 +136,22 @@ impl<'a, 's> CompileRefs<'a, 's> {
         };
         Ok(item)
     }
-
-    pub fn eval_item(self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
-        let mut ctx = CompileItemContext::new_empty(self, None, None);
-        ctx.eval_item(item)
-    }
 }
 
-/// globally shared, constant state
+// TODO rename to CompileRefs?
 #[derive(Copy, Clone)]
-pub struct CompileFixed<'a> {
+pub struct CompileRefs<'a, 's> {
     pub settings: &'a CompileSettings,
     pub source: &'a SourceDatabase,
     pub hierarchy: &'a SourceHierarchy,
     pub parsed: &'a ParsedDatabase,
+
+    pub shared: &'s CompileShared,
+    // TODO is there a reasonable way to get deterministic prints?
+    //   -> yes, handle these the same way as diagnostics,
+    //   make both use a gated-streaming model in CLI mode
+    pub print_handler: &'a (dyn PrintHandler + Sync),
+    pub should_stop: &'a (dyn Fn() -> bool + Sync),
 }
 
 #[derive(Debug, Clone)]
@@ -224,35 +187,29 @@ pub struct CompileShared {
 
 pub type FileScopes = IndexMap<FileId, DiagResult<Arc<FrozenScope>>>;
 
-#[derive(Copy, Clone)]
-pub struct CompileRefs<'a, 's> {
-    pub diags: &'a Diagnostics,
-    // TODO maybe inline this
-    pub fixed: CompileFixed<'a>,
-    pub shared: &'s CompileShared,
-    // TODO is there a reasonable way to get deterministic prints?
-    pub print_handler: &'a (dyn PrintHandler + Sync),
-    pub should_stop: &'a (dyn Fn() -> bool + Sync),
-}
-
 pub type ArenaPorts = Arena<Port, PortInfo>;
 pub type ArenaPortInterfaces = Arena<PortInterface, PortInterfaceInfo>;
 
-pub struct CompileItemContext<'a, 's> {
-    // TODO maybe inline this
+pub struct CompileItemContext<'a, 's, 'd> {
     pub refs: CompileRefs<'a, 's>,
+    // TODO find a better name for this
+    pub state: CompileItemContextState,
+    pub diags: &'d Diagnostics,
+}
 
-    // TODO all of this should really be part of some kind of CompileModuleContext, instead of CompileItemContext
+#[derive(Debug)]
+pub struct CompileItemContextState {
+    // TODO replace with query
+    pub origin: Option<AstRefItem>,
+    pub call_stack: Vec<StackEntry>,
+
+    // TODO all of this should really be part of optional module-specific state, not always-present fields
+    pub curr_module: Option<ElaboratedModule>,
     pub ports: ArenaPorts,
     pub port_interfaces: Arena<PortInterface, PortInterfaceInfo>,
     pub wires: Arena<Wire, WireInfo>,
     pub wire_interfaces: Arena<WireInterface, WireInterfaceInfo>,
     pub large: IrLargeArena,
-
-    pub curr_module: Option<ElaboratedModule>,
-
-    pub origin: Option<AstRefItem>,
-    pub call_stack: Vec<StackEntry>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -276,62 +233,77 @@ impl StackEntry {
     }
 }
 
-impl<'a, 's> CompileItemContext<'a, 's> {
-    pub fn new_empty(
+impl<'a, 's, 'd> CompileItemContext<'a, 's, 'd> {
+    pub fn new(
         refs: CompileRefs<'a, 's>,
+        diags: &'d Diagnostics,
         origin: Option<AstRefItem>,
         curr_module: Option<ElaboratedModule>,
     ) -> Self {
-        Self::new_restore(refs, origin, curr_module, Arena::new(), Arena::new())
-    }
-
-    pub fn new_restore(
-        refs: CompileRefs<'a, 's>,
-        origin: Option<AstRefItem>,
-        curr_module: Option<ElaboratedModule>,
-        ports: ArenaPorts,
-        port_interfaces: ArenaPortInterfaces,
-    ) -> Self {
-        CompileItemContext {
-            refs,
-            ports,
-            port_interfaces,
+        let state = CompileItemContextState {
+            origin,
+            call_stack: vec![],
+            curr_module,
+            ports: Arena::new(),
+            port_interfaces: Arena::new(),
             wires: Arena::new(),
             wire_interfaces: Arena::new(),
-            large: IrLargeArena::new(),
-            origin,
-            curr_module,
-            call_stack: vec![],
+            large: Arena::new(),
+        };
+        CompileItemContext { refs, diags, state }
+    }
+
+    pub fn restore(fixed: CompileRefs<'a, 's>, diags: &'d Diagnostics, state: CompileItemContextState) -> Self {
+        CompileItemContext {
+            refs: fixed,
+            diags,
+            state,
         }
+    }
+
+    pub fn into_content(self) -> CompileItemContextState {
+        let CompileItemContext {
+            refs: _,
+            diags: _,
+            state,
+        } = self;
+        state
+    }
+
+    pub fn check_should_stop(&self, span: Span) -> DiagResult {
+        self.refs.check_should_stop(self.diags, span)
     }
 
     pub fn recurse<R>(&mut self, entry: StackEntry, f: impl FnOnce(&mut Self) -> R) -> DiagResult<R> {
-        if self.call_stack.len() >= STACK_OVERFLOW_STACK_LIMIT {
-            return Err(stack_overflow_diagnostic(&self.call_stack).report(self.refs.diags));
+        if self.state.call_stack.len() >= STACK_OVERFLOW_STACK_LIMIT {
+            return Err(stack_overflow_diagnostic(&self.state.call_stack).report(self.diags));
         }
 
-        self.call_stack.push(entry);
-        let len = self.call_stack.len();
+        self.state.call_stack.push(entry);
+        let len = self.state.call_stack.len();
 
         let result = f(self);
 
-        assert_eq!(self.call_stack.len(), len);
-        self.call_stack.pop().unwrap();
+        assert_eq!(self.state.call_stack.len(), len);
+        self.state.call_stack.pop().unwrap();
 
         Ok(result)
     }
 
     pub fn eval_item(&mut self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
-        let item_span = self.refs.fixed.parsed[item].info().span_short;
+        let item_span = self.refs.parsed[item].info().span_short;
         let stack_entry = StackEntry::ItemEvaluation(item_span);
 
         self.recurse(stack_entry, |s| {
-            let origin = s.origin.map(|origin| (origin, s.call_stack.clone()));
+            let origin = s.state.origin.map(|origin| (origin, s.state.call_stack.clone()));
             let f_compute = || {
-                let mut ctx = CompileItemContext::new_empty(s.refs, Some(item), None);
+                // TODO change diags propagation here
+                // TODO we're possibly creating a new redundant context here, is that normal?
+                let mut ctx = CompileItemContext::new(s.refs, self.diags, Some(item), None);
                 ctx.eval_item_new(item)
             };
-            let f_cycle = |stack: Vec<&StackEntry>| cycle_diagnostic(stack).report(s.refs.diags);
+            // TODO careful about where cycles get reported!
+            let f_cycle = |stack: Vec<&StackEntry>| cycle_diagnostic(stack).report(s.diags);
             s.refs
                 .shared
                 .item_values
@@ -403,14 +375,12 @@ pub enum CompileStackEntry {
     FunctionRun(AstRefItem, Vec<Value>),
 }
 
-fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
-    let CompileFixed {
-        settings: _,
-        source,
-        hierarchy,
-        parsed,
-    } = fixed;
-
+fn populate_file_scopes(
+    diags: &Diagnostics,
+    source: &SourceDatabase,
+    hierarchy: &SourceHierarchy,
+    parsed: &ParsedDatabase,
+) -> FileScopes {
     // pass 0: add all declared items to the file scope
     let mut file_scopes = IndexMap::new();
     for file in hierarchy.files() {
@@ -574,8 +544,15 @@ fn resolve_import_path(
 }
 
 impl CompileShared {
-    pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_items: QueueItems, thread_count: NonZeroUsize) -> Self {
-        let file_scopes = populate_file_scopes(diags, fixed);
+    pub fn new(
+        diags: &Diagnostics,
+        source: &SourceDatabase,
+        hierarchy: &SourceHierarchy,
+        parsed: &ParsedDatabase,
+        queue_items: QueueItems,
+        thread_count: NonZeroUsize,
+    ) -> Self {
+        let file_scopes = populate_file_scopes(diags, source, hierarchy, parsed);
 
         // pass over all items, to:
         // * collect all non-import items for the compute arena
@@ -583,15 +560,15 @@ impl CompileShared {
         // TODO make also skip trivial items already, eg. functions and generic modules
         let mut items = vec![];
         let mut external_modules: IndexMap<String, Vec<Span>> = IndexMap::new();
-        for file in fixed.hierarchy.files() {
-            if let Ok(file_ast) = &fixed.parsed[file] {
+        for file in hierarchy.files() {
+            if let Ok(file_ast) = &parsed[file] {
                 for (item_ref, item) in file_ast.items_with_ref() {
                     if !matches!(item, ast::Item::Import(_)) {
                         items.push(item_ref);
                     }
                     if let ast::Item::ModuleExternal(module) = item {
                         external_modules
-                            .entry(module.id.str(fixed.source).to_owned())
+                            .entry(module.id.str(source).to_owned())
                             .or_default()
                             .push(module.id.span);
                     }
@@ -697,21 +674,4 @@ fn finish_ir_database_impl(
         modules,
         external_modules,
     })
-}
-
-// TODO move somewhere else
-impl CompileItemContext<'_, '_> {
-    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> DiagResult<Polarized<IrSignal>> {
-        let signal_span = signal.span;
-        signal.inner.try_map_inner(|signal| {
-            let signal_ir = match signal {
-                Signal::Port(port) => IrSignal::Port(self.ports[port].ir),
-                Signal::Wire(wire) => {
-                    let typed = self.wires[wire].expect_typed(self.refs, &self.wire_interfaces, signal_span)?;
-                    IrSignal::Wire(typed.ir)
-                }
-            };
-            Ok(signal_ir)
-        })
-    }
 }

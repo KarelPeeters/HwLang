@@ -34,11 +34,11 @@ enum BlockKind {
     Clocked(Spanned<SyncDomain<DomainSignal>>),
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     // TODO this probably needs yet another refactor, there's a lot of semi-duplicate code here
     pub fn elaborate_assignment(&mut self, scope: &Scope, flow: &mut impl Flow, stmt: &Assignment) -> DiagResult {
         let refs = self.refs;
-        let diags = refs.diags;
+        let diags = self.diags;
         let elab = &refs.shared.elaboration_arenas;
 
         let &Assignment {
@@ -62,9 +62,9 @@ impl CompileItemContext<'_, '_> {
                 // (the expected type still being unknown if fine for now, we can suggest one later)
                 let target_base_ty = match target_base.inner {
                     SignalOrVariable::Signal(target_base) => match target_base {
-                        Signal::Port(port) => Some(self.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
-                        Signal::Wire(wire) => self.wires[wire]
-                            .typed_maybe(refs, &self.wire_interfaces)?
+                        Signal::Port(port) => Some(self.state.ports[port].ty.as_ref().map_inner(HardwareType::as_type)),
+                        Signal::Wire(wire) => self.state.wires[wire]
+                            .typed_maybe(refs, &self.state.wire_interfaces)?
                             .map(|info| info.ty.map_inner(HardwareType::as_type)),
                     },
                     SignalOrVariable::Variable(var) => flow.var_info(Spanned::new(target_base.span, var))?.ty.clone(),
@@ -72,7 +72,7 @@ impl CompileItemContext<'_, '_> {
 
                 let right_expected_ty = target_base_ty
                     .as_ref()
-                    .map(|target_base_ty| target_steps.apply_to_expected_type(refs, target_base_ty.clone()))
+                    .map(|target_base_ty| target_steps.apply_to_expected_type(self, target_base_ty.clone()))
                     .transpose()?;
                 let right_expected_ty = right_expected_ty.as_ref().unwrap_or(&Type::Any);
 
@@ -89,8 +89,7 @@ impl CompileItemContext<'_, '_> {
 
                 // evaluate operation
                 let source_value = eval_binary_expression(
-                    refs,
-                    &mut self.large,
+                    self,
                     stmt.span,
                     Spanned::new(op.span, op_inner.to_binary_op()),
                     left_value,
@@ -109,7 +108,7 @@ impl CompileItemContext<'_, '_> {
                 // check direction
                 match target_base.inner {
                     Signal::Port(port) => {
-                        let port_info = &self.ports[port];
+                        let port_info = &self.state.ports[port];
                         check_port_is_output(
                             diags,
                             port_info,
@@ -154,8 +153,7 @@ impl CompileItemContext<'_, '_> {
                 let (target_base_ty, target_base_ir) = target_base_signal.expect_ty_and_ir(self, target_base.span)?;
                 let target_base_ty = target_base_ty.cloned();
                 let (target_ty, target_steps_ir) = target_steps.apply_to_hardware_type(
-                    refs,
-                    &mut self.large,
+                    self,
                     flow.get_ir_signals(),
                     flow.get_ir_variables(),
                     target_base_ty.as_ref(),
@@ -175,16 +173,14 @@ impl CompileItemContext<'_, '_> {
                     .map_err(|_: NonHardwareType| {
                         diags.report_error_internal(stmt.span, "source type subtype not somehow non-hardware")
                     })?;
-                let source_value_hw = source_value.inner.as_hardware_value_unchecked(
-                    refs,
-                    &mut self.large,
-                    source_value.span,
-                    source_ty_hw,
-                )?;
+                let source_value_hw =
+                    source_value
+                        .inner
+                        .as_hardware_value_unchecked(self, source_value.span, source_ty_hw)?;
 
                 // append store statement
                 let value_hardware_expanded =
-                    source_value_hw.as_hardware_value_unchecked(refs, &mut self.large, source_value.span, target_ty)?;
+                    source_value_hw.as_hardware_value_unchecked(self, source_value.span, target_ty)?;
                 let ir_target = IrAssignmentTarget {
                     base: IrSignalOrVariable::Signal(target_base_ir),
                     steps: target_steps_ir,
@@ -201,7 +197,7 @@ impl CompileItemContext<'_, '_> {
                 {
                     let mut result_value = target_base_value.clone();
                     target_steps.set_compile_value(
-                        refs,
+                        self,
                         Spanned::new(target_base.span, &mut result_value),
                         op.span,
                         Spanned::new(source_value.span, source_value_compile),
@@ -230,7 +226,7 @@ impl CompileItemContext<'_, '_> {
                 // check type
                 let target_base_ty = var_info.ty.clone();
                 if let Some(target_base_ty) = &target_base_ty {
-                    let source_expected_ty = target_steps.apply_to_expected_type(refs, target_base_ty.clone())?;
+                    let source_expected_ty = target_steps.apply_to_expected_type(self, target_base_ty.clone())?;
                     let reason = TypeContainsReason::Assignment {
                         span_target: target_expr.span,
                         span_target_ty: target_base_ty.span,
@@ -241,9 +237,9 @@ impl CompileItemContext<'_, '_> {
                 if target_steps.is_empty() {
                     // simple step-less assignment, just do it
                     // (this is a separate case to avoid evaluating the current value)
-                    flow.var_set(refs, target_base_var, stmt.span, Ok(source_value.inner))?;
+                    flow.var_set(self, target_base_var, stmt.span, Ok(source_value.inner))?;
                 } else {
-                    let target_base_value = flow.var_eval_without_copy(&mut self.large, target_base)?;
+                    let target_base_value = flow.var_eval_without_copy(&mut self.state.large, target_base)?;
 
                     // check if we can do this assignment at compile-time
                     if let Ok(target_base_value_compile) = CompileValue::try_from(&target_base_value)
@@ -252,7 +248,7 @@ impl CompileItemContext<'_, '_> {
                     {
                         let mut result_value = target_base_value_compile.clone();
                         target_steps_compile.set_compile_value(
-                            refs,
+                            self,
                             Spanned::new(target_base.span, &mut result_value),
                             op.span,
                             Spanned::new(source_value.span, source_value_compile),
@@ -292,16 +288,14 @@ impl CompileItemContext<'_, '_> {
 
                         // convert target value to hardware
                         let target_base_value = target_base_value.into_value().as_hardware_value_unchecked(
-                            refs,
-                            &mut self.large,
+                            self,
                             target_base.span,
                             target_base_ty_hw.clone(),
                         )?;
 
                         // decide the source value type
                         let (source_ty_hw, target_steps_ir) = target_steps.apply_to_hardware_type(
-                            refs,
-                            &mut self.large,
+                            self,
                             flow.get_ir_signals(),
                             flow.get_ir_variables(),
                             Spanned::new(target_base.span, &target_base_ty_hw),
@@ -313,12 +307,10 @@ impl CompileItemContext<'_, '_> {
                             span_target_ty: target_base_ty.span,
                         };
                         check_type_contains_value(diags, elab, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
-                        let source_value_hw = source_value.inner.as_hardware_value_unchecked(
-                            refs,
-                            &mut self.large,
-                            source_value.span,
-                            source_ty_hw,
-                        )?;
+                        let source_value_hw =
+                            source_value
+                                .inner
+                                .as_hardware_value_unchecked(self, source_value.span, source_ty_hw)?;
 
                         // determine the result domain
                         let mut result_domain = target_base_value.domain().join(source_value_hw.domain);
@@ -330,11 +322,8 @@ impl CompileItemContext<'_, '_> {
                         let target_base_var_ir = match &target_base_value.expr {
                             &IrExpression::Variable(var) => var,
                             _ => {
-                                let debug_info_id = flow
-                                    .var_info(target_base)?
-                                    .id
-                                    .as_str(refs.fixed.source)
-                                    .map(str::to_owned);
+                                let debug_info_id =
+                                    flow.var_info(target_base)?.id.as_str(refs.source).map(str::to_owned);
                                 flow.store_hardware_value_in_new_ir_variable(
                                     refs,
                                     target_base.span,
@@ -375,7 +364,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut FlowHardware,
         target_base_signal: Spanned<Signal>,
     ) -> DiagResult<BlockKind> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
 
         let block_kind = match flow.process_kind() {
             HardwareProcessKind::CombinatorialProcessBody { span_keyword: _ } => BlockKind::Combinatorial,
@@ -387,8 +376,8 @@ impl CompileItemContext<'_, '_> {
                 if !registers.contains_key(&target_base_signal.inner) {
                     let signal_kind = target_base_signal.inner.kind_str();
                     let signal_decl_span = match target_base_signal.inner {
-                        Signal::Port(signal) => self.ports[signal].span,
-                        Signal::Wire(signal) => self.wires[signal].span_decl(),
+                        Signal::Port(signal) => self.state.ports[signal].span,
+                        Signal::Wire(signal) => self.state.wires[signal].span_decl(),
                     };
 
                     return Err(DiagnosticError::new(

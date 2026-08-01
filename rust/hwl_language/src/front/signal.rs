@@ -1,6 +1,6 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
-use crate::front::domain::{PortDomain, ValueDomain};
+use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
 use crate::front::types::HardwareType;
@@ -94,15 +94,15 @@ pub struct WireInterfaceInfo {
 impl Interface {
     pub fn span_decl(self, ctx: &CompileItemContext) -> Span {
         match self {
-            PortOrWire::Port(intf) => ctx.port_interfaces[intf].id.span,
-            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].id.span(),
+            PortOrWire::Port(intf) => ctx.state.port_interfaces[intf].id.span,
+            PortOrWire::Wire(intf) => ctx.state.wire_interfaces[intf].id.span(),
         }
     }
 
     pub fn elab_interface(self, ctx: &CompileItemContext) -> Spanned<ElaboratedInterface> {
         match self {
-            PortOrWire::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
-            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].interface,
+            PortOrWire::Port(intf) => ctx.state.port_interfaces[intf].view.map_inner(|v| v.interface),
+            PortOrWire::Wire(intf) => ctx.state.wire_interfaces[intf].interface,
         }
     }
 }
@@ -223,12 +223,13 @@ impl WireInfo {
     pub fn expect_typed<'s>(
         &'s mut self,
         refs: CompileRefs<'_, 's>,
+        diags: &Diagnostics,
         wire_interfaces: &Arena<WireInterface, WireInterfaceInfo>,
         use_span: Span,
     ) -> DiagResult<WireInfoTyped<&'s HardwareType>> {
         match self {
             WireInfo::Single(slf) => {
-                get_inferred(refs.diags, "wire", "type", &mut slf.typed, slf.id.span(), use_span).map(|ty| ty.as_ref())
+                get_inferred(diags, "wire", "type", &mut slf.typed, slf.id.span(), use_span).map(|ty| ty.as_ref())
             }
             WireInfo::Interface(slf) => {
                 let wire_interface = &wire_interfaces[slf.interface.inner];
@@ -273,11 +274,12 @@ impl WireInfo {
     pub fn as_hardware_value(
         &mut self,
         refs: CompileRefs,
+        diags: &Diagnostics,
         wire_interfaces: &mut Arena<WireInterface, WireInterfaceInfo>,
         use_span: Span,
     ) -> DiagResult<HardwareValue> {
-        let domain = self.domain(refs.diags, wire_interfaces, use_span)?.inner;
-        let typed = self.expect_typed(refs, wire_interfaces, use_span)?;
+        let domain = self.domain(diags, wire_interfaces, use_span)?.inner;
+        let typed = self.expect_typed(refs, diags, wire_interfaces, use_span)?;
 
         Ok(HardwareValue {
             ty: typed.ty.inner.clone(),
@@ -378,17 +380,17 @@ impl<P, W> PortOrWire<P, W> {
 }
 
 impl Signal {
-    pub fn span_decl(self, s: &CompileItemContext) -> Span {
+    pub fn span_decl(self, ctx: &CompileItemContext) -> Span {
         match self {
-            Signal::Port(port) => s.ports[port].span,
-            Signal::Wire(wire) => s.wires[wire].span_decl(),
+            Signal::Port(port) => ctx.state.ports[port].span,
+            Signal::Wire(wire) => ctx.state.wires[wire].span_decl(),
         }
     }
 
-    pub fn diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
+    pub fn diagnostic_string<'c>(self, ctx: &'c CompileItemContext) -> &'c str {
         match self {
-            Signal::Port(port) => &s.ports[port].name,
-            Signal::Wire(wire) => s.wires[wire].diagnostic_str(),
+            Signal::Port(port) => &ctx.state.ports[port].name,
+            Signal::Wire(wire) => ctx.state.wires[wire].diagnostic_str(),
         }
     }
 
@@ -397,9 +399,10 @@ impl Signal {
         ctx: &mut CompileItemContext,
         suggest_domain: Spanned<ValueDomain>,
     ) -> DiagResult<Spanned<ValueDomain>> {
+        let state = &mut ctx.state;
         match self {
-            Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
-            Signal::Wire(wire) => ctx.wires[wire].suggest_domain(&mut ctx.wire_interfaces, suggest_domain),
+            Signal::Port(port) => Ok(state.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
+            Signal::Wire(wire) => state.wires[wire].suggest_domain(&mut state.wire_interfaces, suggest_domain),
         }
     }
 
@@ -411,17 +414,18 @@ impl Signal {
     ) -> DiagResult<Spanned<&'s HardwareType>> {
         match self {
             Signal::Port(_) => self.expect_ty(ctx, suggest.span),
-            Signal::Wire(wire) => ctx.wires[wire]
-                .suggest_ty(ctx.refs, &ctx.wire_interfaces, ir_wires, suggest)
+            Signal::Wire(wire) => ctx.state.wires[wire]
+                .suggest_ty(ctx.refs, &ctx.state.wire_interfaces, ir_wires, suggest)
                 .map(|typed| typed.ty),
         }
     }
 
     pub fn domain(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<Spanned<ValueDomain>> {
-        let diags = ctx.refs.diags;
+        let diags = ctx.diags;
+        let state = &mut ctx.state;
         match self {
-            Signal::Port(port) => Ok(ctx.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
-            Signal::Wire(wire) => ctx.wires[wire].domain(diags, &mut ctx.wire_interfaces, span),
+            Signal::Port(port) => Ok(state.ports[port].domain.map_inner(ValueDomain::from_port_domain)),
+            Signal::Wire(wire) => state.wires[wire].domain(diags, &mut state.wire_interfaces, span),
         }
     }
 
@@ -433,11 +437,12 @@ impl Signal {
     ) -> DiagResult<(Spanned<&'s HardwareType>, IrSignal)> {
         match self {
             Signal::Port(port) => {
-                let info = &ctx.ports[port];
+                let info = &ctx.state.ports[port];
                 Ok((info.ty.as_ref(), IrSignal::Port(info.ir)))
             }
             Signal::Wire(wire) => {
-                let info = &ctx.wires[wire].expect_typed(ctx.refs, &ctx.wire_interfaces, use_span)?;
+                let info =
+                    &ctx.state.wires[wire].expect_typed(ctx.refs, ctx.diags, &ctx.state.wire_interfaces, use_span)?;
                 Ok((info.ty, IrSignal::Wire(info.ir)))
             }
         }
@@ -456,9 +461,12 @@ impl Signal {
     }
 
     pub fn as_hardware_value(self, ctx: &mut CompileItemContext, span: Span) -> DiagResult<HardwareValue> {
+        let state = &mut ctx.state;
         match self {
-            Signal::Port(port) => Ok(ctx.ports[port].as_hardware_value()),
-            Signal::Wire(wire) => ctx.wires[wire].as_hardware_value(ctx.refs, &mut ctx.wire_interfaces, span),
+            Signal::Port(port) => Ok(state.ports[port].as_hardware_value()),
+            Signal::Wire(wire) => {
+                state.wires[wire].as_hardware_value(ctx.refs, ctx.diags, &mut state.wire_interfaces, span)
+            }
         }
     }
 }
@@ -469,11 +477,11 @@ impl Interface {
 
         let (elab_intf, base_intf_span) = match self {
             Interface::Port(intf) => {
-                let info = &ctx.port_interfaces[intf];
+                let info = &ctx.state.port_interfaces[intf];
                 (info.view.inner.interface, info.view.span)
             }
             Interface::Wire(intf) => {
-                let info = &ctx.wire_interfaces[intf];
+                let info = &ctx.state.wire_interfaces[intf];
                 (info.interface.inner, info.interface.span)
             }
         };
@@ -489,14 +497,35 @@ impl Interface {
             .add_info(base_span, format!("base is instance of `{interface_str}`"))
             .add_info(base_intf_span, "interface set here")
             .add_info(info.id.span(), "interface declared here")
-            .report(refs.diags)
+            .report(ctx.diags)
         })?;
 
         let signal = match self {
-            Interface::Port(intf) => Signal::Port(ctx.port_interfaces[intf].ports[signal_index]),
-            Interface::Wire(intf) => Signal::Wire(ctx.wire_interfaces[intf].wires[signal_index]),
+            Interface::Port(intf) => Signal::Port(ctx.state.port_interfaces[intf].ports[signal_index]),
+            Interface::Wire(intf) => Signal::Wire(ctx.state.wire_interfaces[intf].wires[signal_index]),
         };
         Ok(signal)
+    }
+}
+
+impl CompileItemContext<'_, '_, '_> {
+    pub fn domain_signal_to_ir(&mut self, signal: Spanned<DomainSignal>) -> DiagResult<Polarized<IrSignal>> {
+        let signal_span = signal.span;
+        signal.inner.try_map_inner(|signal| {
+            let signal_ir = match signal {
+                Signal::Port(port) => IrSignal::Port(self.state.ports[port].ir),
+                Signal::Wire(wire) => {
+                    let typed = self.state.wires[wire].expect_typed(
+                        self.refs,
+                        self.diags,
+                        &self.state.wire_interfaces,
+                        signal_span,
+                    )?;
+                    IrSignal::Wire(typed.ir)
+                }
+            };
+            Ok(signal_ir)
+        })
     }
 }
 

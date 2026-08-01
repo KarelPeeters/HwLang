@@ -355,9 +355,9 @@ pub struct EvaluatedDeclaration {
 }
 
 impl EvaluatedDeclaration {
-    pub fn value_into_entry(self, refs: CompileRefs, flow: &mut impl Flow) -> DiagResult<ScopedEntry> {
+    pub fn value_into_entry(self, ctx: &CompileItemContext, flow: &mut impl Flow) -> DiagResult<ScopedEntry> {
         let var = flow.var_new_immutable_init(
-            refs,
+            ctx,
             self.id.span(),
             VariableId::Id(self.id),
             self.span,
@@ -367,12 +367,12 @@ impl EvaluatedDeclaration {
     }
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn eval_item_new(&mut self, item: AstRefItem) -> DiagResult<CompileValue> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
 
-        let item_ast = &self.refs.fixed.parsed[item];
-        self.refs.check_should_stop(item_ast.info().span_short)?;
+        let item_ast = &self.refs.parsed[item];
+        self.check_should_stop(item_ast.info().span_short)?;
 
         let file_scope = self.refs.shared.file_scope(item.file())?;
         let file_scope = Arc::clone(file_scope).as_scope();
@@ -482,7 +482,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         decl: &CommonDeclarationNamedKind,
     ) -> DiagResult<EvaluatedDeclaration> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         match decl {
@@ -567,7 +567,7 @@ impl CompileItemContext<'_, '_> {
                         id,
                         payload,
                     } = variant;
-                    let id_str = id.str(self.refs.fixed.source);
+                    let id_str = id.str(self.refs.source);
 
                     match generic_variants.get(id_str) {
                         None => {
@@ -657,9 +657,9 @@ impl CompileItemContext<'_, '_> {
 
         if let Some(eval) = eval {
             let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
-            let id_str = id.spanned_str(self.refs.fixed.source);
-            let entry = eval.value_into_entry(self.refs, flow)?;
-            scope.declare(self.refs.diags, id_str, Ok(entry));
+            let id_str = id.spanned_str(self.refs.source);
+            let entry = eval.value_into_entry(self, flow)?;
+            scope.declare(self.diags, id_str, Ok(entry));
         }
 
         Ok(())
@@ -711,8 +711,8 @@ impl CompileItemContext<'_, '_> {
         params: Option<Vec<(Identifier, CompileValue)>>,
         body: Spanned<&FunctionItemBody>,
     ) -> DiagResult<CompileValue> {
-        let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
+        let diags = self.diags;
+        let source = self.refs.source;
 
         match *body.inner {
             FunctionItemBody::TypeAliasExpr(expr) => {
@@ -734,8 +734,9 @@ impl CompileItemContext<'_, '_> {
                         let scope_params = scope_params.capture(flow, body.span);
 
                         // elaborate ports
-                        let ast = &refs.fixed.parsed[ast_ref];
+                        let ast = &refs.parsed[ast_ref];
                         let (connectors, header) = refs.elaborate_module_ports_new(
+                            diags,
                             ast_ref,
                             ast.span,
                             ElaboratedModule::Internal(result_id),
@@ -768,7 +769,7 @@ impl CompileItemContext<'_, '_> {
             FunctionItemBody::ModuleExternal(unique, ast_ref) => {
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
-                let ast = &refs.fixed.parsed[ast_ref];
+                let ast = &refs.parsed[ast_ref];
 
                 let (result_id, _) = refs.shared.elaboration_arenas.elaborated_modules_external.elaborate(
                     item_params,
@@ -810,6 +811,7 @@ impl CompileItemContext<'_, '_> {
 
                         // elaborate ports
                         let (connectors, header) = refs.elaborate_module_ports_new(
+                            diags,
                             ast_ref,
                             ast.span,
                             ElaboratedModule::External(result_id),
@@ -820,6 +822,7 @@ impl CompileItemContext<'_, '_> {
 
                         // collect result
                         let ports = header
+                            .ctx
                             .ports
                             .values()
                             .map(|info| (info.name.clone(), info.ty.inner.clone()))
@@ -906,8 +909,8 @@ impl CompileItemContext<'_, '_> {
         generic_info: &'a GenericStructInfo,
         new_elab: ElaboratedStruct,
     ) -> DiagResult<ElaboratedStructInfo> {
-        let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
+        let diags = self.diags;
+        let source = self.refs.source;
         let elab = &self.refs.shared.elaboration_arenas;
         let GenericStructInfo { items } = generic_info;
 
@@ -1035,8 +1038,8 @@ impl CompileItemContext<'_, '_> {
         generic_info: &GenericEnumInfo,
         new_elab: ElaboratedEnum,
     ) -> DiagResult<ElaboratedEnumInfo> {
-        let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
+        let diags = self.diags;
+        let source = self.refs.source;
         let elab = &self.refs.shared.elaboration_arenas;
         let GenericEnumInfo {
             span_body: _,

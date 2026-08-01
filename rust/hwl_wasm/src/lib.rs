@@ -1,6 +1,6 @@
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::compile::{CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::CollectPrintHandler;
@@ -61,36 +61,35 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
         let should_stop = || start.elapsed() >= TIMEOUT;
         let dummy_span = source.full_span(top_file);
 
-        let fixed = CompileFixed {
+        let shared = CompileShared::new(&diags, &source, hierarchy, &parsed, QueueItems::All, NON_ZERO_USIZE_ONE);
+        let refs = CompileRefs {
             settings: &settings,
             source: &source,
             hierarchy,
             parsed: &parsed,
-        };
-        let shared = CompileShared::new(&diags, fixed, QueueItems::All, NON_ZERO_USIZE_ONE);
-        let mut refs = CompileRefs {
-            diags: &diags,
-            fixed,
             shared: &shared,
             print_handler: &print_handler,
             should_stop: &should_stop,
         };
 
         // compile everything with real diagnostics first
-        refs.run_compile_loop(None);
+        refs.run_compile_loop(&diags, None);
         let db = shared.finish_ir_database_ref(&diags, dummy_span)?;
 
         // find top module, use dummy_diags to suppress "path not found" errors
         // (we already did the main compilation, so no real errors will be discarded)
-        let dummy_diags = Diagnostics::new();
-        refs.diags = &dummy_diags;
-        let top_module = if let Ok(top) = refs.resolve_item_by_path(Spanned::new(dummy_span, "top.top"))
-            && let Ok(top) = refs.eval_item(top)
-            && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
-        {
-            Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
-        } else {
-            None
+        let top_module = {
+            let dummy_diags = Diagnostics::new();
+            let mut ctx = CompileItemContext::new(refs, &dummy_diags, None, None);
+
+            if let Ok(top) = refs.resolve_item_by_path(&dummy_diags, Spanned::new(dummy_span, "top.top"))
+                && let Ok(top) = ctx.eval_item(top)
+                && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
+            {
+                Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
+            } else {
+                None
+            }
         };
 
         Ok((db, top_module))

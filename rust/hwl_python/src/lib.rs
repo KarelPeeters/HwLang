@@ -6,9 +6,7 @@ use hwl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use hwl_language::back::wrap_verilator::{
     SimulationFinished, VerilatedInstance as RustVerilatedInstance, VerilatedLib, VerilatorError,
 };
-use hwl_language::front::compile::{
-    CompileFixed, CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems,
-};
+use hwl_language::front::compile::{CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::item::ElaboratedModule;
@@ -384,16 +382,18 @@ impl Parsed {
             let diags = Diagnostics::new();
             let parsed = slf.borrow(py);
             let source = parsed.source.borrow(py);
-            let fixed = CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source: &source.source,
-                hierarchy: &source.hierarchy,
-                parsed: &parsed.parsed,
-            };
 
             // TODO add parameter for queue_all_items, default to true and then set to false for specific tests
             //   then run initial elaboration loop immediately
-            let shared = CompileShared::new(&diags, fixed, QueueItems::None, NON_ZERO_USIZE_ONE);
+            let shared = CompileShared::new(
+                &diags,
+                &source.source,
+                &source.hierarchy,
+                &parsed.parsed,
+                QueueItems::None,
+                NON_ZERO_USIZE_ONE,
+            );
+
             check_diags(py, &source.source, &diags)?;
 
             shared
@@ -480,22 +480,19 @@ impl Compile {
         // TODO release GIL during evaluation
         let print_handler = slf_ref.start_collect_prints();
         let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source,
-                hierarchy,
-                parsed,
-            },
+            settings: &COMPILE_SETTINGS,
+            source,
+            hierarchy,
+            parsed,
             shared,
-            diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
         };
 
         // eval item and elaborate any necessary items
-        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+        let mut item_ctx = CompileItemContext::new(refs, &diags, None, None);
         let value = item_ctx.eval_item(item).cloned();
-        refs.run_compile_loop(None);
+        refs.run_compile_loop(&diags, None);
 
         // build ir database to run final checks
         let ir_database = if value.is_ok() {
@@ -654,19 +651,16 @@ impl Value {
         // prepare context
         let diags = Diagnostics::new();
         let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source,
-                hierarchy,
-                parsed,
-            },
+            settings: &COMPILE_SETTINGS,
+            source,
+            hierarchy,
+            parsed,
             shared,
-            diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
         };
 
-        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+        let mut item_ctx = CompileItemContext::new(refs, &diags, None, None);
         let flow_root = FlowRoot::new(&diags, &shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, dummy_span, "external call");
 
@@ -679,7 +673,7 @@ impl Value {
             Spanned::new(dummy_span, &target),
             Ok(args),
         );
-        refs.run_compile_loop(compile_ref.pool.as_ref());
+        refs.run_compile_loop(&diags, compile_ref.pool.as_ref());
 
         // extract return value
         let returned = returned.and_then(|returned| {
@@ -723,18 +717,15 @@ impl Value {
         let diags = Diagnostics::new();
         let print_handler = compile.start_collect_prints();
         let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source,
-                hierarchy,
-                parsed,
-            },
+            settings: &COMPILE_SETTINGS,
+            source,
+            hierarchy,
+            parsed,
             shared,
-            diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
         };
-        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+        let mut item_ctx = CompileItemContext::new(refs, &diags, None, None);
 
         // evaluate dot index
         // TODO release GIL
@@ -742,7 +733,7 @@ impl Value {
         let step = TargetStepCompile::DotIndexId(Arc::new(attr.to_owned()));
         let steps = TargetSteps::new(vec![Spanned::new(dummy_span, &step)]);
         let result = steps.apply_to_compile_value(&mut item_ctx, base);
-        refs.run_compile_loop(compile.pool.as_ref());
+        refs.run_compile_loop(&diags, compile.pool.as_ref());
 
         // handle result
         let result = match result {

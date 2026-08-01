@@ -1,5 +1,5 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
-use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
+use crate::front::compile::{CompileItemContext, CompileItemContextState, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::PortDomain;
 use crate::front::extra::ExtraScope;
@@ -56,11 +56,9 @@ pub struct ConnectorSingle(usize);
 #[derive(Debug)]
 pub struct ElaboratedModuleHeader<A> {
     pub ast_ref: A,
-    pub elab_module: ElaboratedModule,
     pub debug_info_params: Option<Vec<(String, String)>>,
 
-    pub ports: ArenaPorts,
-    pub port_interfaces: ArenaPortInterfaces,
+    pub ctx: CompileItemContextState,
     pub ir_ports: IrPorts,
     pub ir_ports_named: IndexMap<String, IrPort>,
 
@@ -89,6 +87,7 @@ pub struct ElaboratedModuleExternalInfo {
 impl CompileRefs<'_, '_> {
     pub fn elaborate_module_ports_new<A: AstRefItemKind>(
         self,
+        diags: &Diagnostics,
         ast_ref: A,
         def_span: Span,
         elab_module: ElaboratedModule,
@@ -102,8 +101,8 @@ impl CompileRefs<'_, '_> {
         } = params;
 
         // reconstruct header scope
-        let mut ctx = CompileItemContext::new_empty(self, None, Some(elab_module));
-        let flow_root = FlowRoot::new(self.diags, &self.shared.next_flow_root_id);
+        let mut ctx = CompileItemContext::new(self, diags, None, Some(elab_module));
+        let flow_root = FlowRoot::new(diags, &self.shared.next_flow_root_id);
         let mut flow = FlowCompile::new_root(&flow_root, def_span, "item declaration");
 
         // elaborate ports
@@ -116,7 +115,7 @@ impl CompileRefs<'_, '_> {
         let flow = flow.into_content();
 
         // create params debug info string
-        let source = self.fixed.source;
+        let source = self.source;
         let debug_info_params = debug_info_params.map(|p| {
             p.into_iter()
                 .map(|(k, v)| {
@@ -130,11 +129,9 @@ impl CompileRefs<'_, '_> {
 
         // collect results
         let header = ElaboratedModuleHeader {
-            elab_module,
             ast_ref,
             debug_info_params,
-            ports: ctx.ports,
-            port_interfaces: ctx.port_interfaces,
+            ctx: ctx.into_content(),
             ir_ports,
             ir_ports_named,
 
@@ -154,7 +151,7 @@ impl CompileRefs<'_, '_> {
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
     ) -> DiagResult<(ArenaConnectors, Scope<'p>, IrPorts, IndexMap<String, IrPort>)> {
-        let diags = self.diags;
+        let diags = ctx.diags;
 
         // build context
         let mut connectors: ArenaConnectors = Arena::new();
@@ -217,8 +214,8 @@ impl ModulePortsContext<'_> {
         port_item: &ModulePortItem,
     ) -> DiagResult<()> {
         let refs = ctx.refs;
-        let diags = refs.diags;
-        let source = refs.fixed.source;
+        let diags = ctx.diags;
+        let source = refs.source;
         let elab = &refs.shared.elaboration_arenas;
 
         match port_item {
@@ -316,8 +313,8 @@ impl ModulePortsContext<'_> {
         port_item_in_block: &ModulePortInBlock,
     ) {
         let refs = ctx.refs;
-        let diags = refs.diags;
-        let source = refs.fixed.source;
+        let diags = ctx.diags;
+        let source = refs.source;
         let elab = &refs.shared.elaboration_arenas;
 
         let &ModulePortInBlock { span: _, id, ref kind } = port_item_in_block;
@@ -375,7 +372,7 @@ impl ModulePortsContext<'_> {
         domain: DiagResult<Spanned<PortDomain<Port>>>,
         ty: DiagResult<Spanned<HardwareType>>,
     ) -> DiagResult<ScopedEntry> {
-        let source = ctx.refs.fixed.source;
+        let source = ctx.refs.source;
         let elab = &ctx.refs.shared.elaboration_arenas;
 
         let id_str = id.str(source);
@@ -392,7 +389,7 @@ impl ModulePortsContext<'_> {
             };
             let ir_port = self.ir_ports.push(ir_port_info);
 
-            let port = ctx.ports.push(PortInfo {
+            let port = ctx.state.ports.push(PortInfo {
                 span: id.span,
                 name: id_str.to_owned(),
                 direction,
@@ -427,7 +424,7 @@ impl ModulePortsContext<'_> {
         domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
         view: DiagResult<Spanned<ElaboratedInterfaceView>>,
     ) -> DiagResult<ScopedEntry> {
-        let source = ctx.refs.fixed.source;
+        let source = ctx.refs.source;
         let elab = &ctx.refs.shared.elaboration_arenas;
 
         let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
@@ -462,7 +459,7 @@ impl ModulePortsContext<'_> {
                 };
                 let ir_port = self.ir_ports.push(ir_port_info);
 
-                let port = ctx.ports.push(PortInfo {
+                let port = ctx.state.ports.push(PortInfo {
                     span: id.span,
                     name,
                     direction,
@@ -477,7 +474,7 @@ impl ModulePortsContext<'_> {
                 singles.push(single);
             }
 
-            let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
+            let port_interface = ctx.state.port_interfaces.push(PortInterfaceInfo {
                 id,
                 view,
                 domain,

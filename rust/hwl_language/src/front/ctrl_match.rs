@@ -1,6 +1,6 @@
 use crate::front::block::{BlockEnd, join_block_ends_branches};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_range_compile};
-use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::compile::CompileItemContext;
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning};
 use crate::front::exit::ExitStack;
 use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
@@ -68,17 +68,17 @@ pub struct BranchDeclare<V> {
 }
 
 impl<V: Into<ValueWithImplications>> BranchDeclare<V> {
-    pub fn declare(self, refs: CompileRefs, scope: &mut Scope, flow: &mut impl Flow) -> DiagResult<()> {
+    pub fn declare(self, ctx: &CompileItemContext, scope: &mut Scope, flow: &mut impl Flow) -> DiagResult<()> {
         let BranchDeclare {
             pattern_span,
             id,
             value,
         } = self;
 
-        let var = flow.var_new_immutable_init(refs, id.span(), VariableId::Id(id), pattern_span, Ok(value.into()))?;
+        let var = flow.var_new_immutable_init(ctx, id.span(), VariableId::Id(id), pattern_span, Ok(value.into()))?;
         scope.declare(
-            refs.diags,
-            id.spanned_str(refs.fixed.source),
+            ctx.diags,
+            id.spanned_str(ctx.refs.source),
             Ok(ScopedEntry::Named(NamedValue::Variable(var))),
         );
 
@@ -151,7 +151,7 @@ impl MatchCoverage {
     }
 }
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn elaborate_match_statement(
         &mut self,
         scope: &Scope,
@@ -159,7 +159,7 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: &MatchStatement<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let &MatchStatement {
@@ -199,10 +199,10 @@ impl CompileItemContext<'_, '_> {
 
                 let target_inner = match target.inner {
                     ValueWithImplications::Simple(t) => HardwareValueWithImplications::simple(
-                        t.as_hardware_value_unchecked(self.refs, &mut self.large, target.span, target_ty.clone())?,
+                        t.as_hardware_value_unchecked(self, target.span, target_ty.clone())?,
                     ),
                     ValueWithImplications::Compound(t) => HardwareValueWithImplications::simple(
-                        t.as_hardware_value_unchecked(self.refs, &mut self.large, target.span, target_ty.clone())?,
+                        t.as_hardware_value_unchecked(self, target.span, target_ty.clone())?,
                     ),
                     ValueWithImplications::Hardware(t) => t,
                 };
@@ -272,7 +272,7 @@ impl CompileItemContext<'_, '_> {
         target_ty: &Type,
         pattern: Spanned<&MatchPattern>,
     ) -> DiagResult<EvaluatedMatchPattern> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         match *pattern.inner {
@@ -303,7 +303,7 @@ impl CompileItemContext<'_, '_> {
                 if let &Type::Enum(target_ty) = target_ty {
                     let enum_info = self.refs.shared.elaboration_arenas.enum_info(target_ty);
 
-                    let variant_str = variant.spanned_str(self.refs.fixed.source);
+                    let variant_str = variant.spanned_str(self.refs.source);
                     let variant_index = enum_info.variant_index(diags, variant_str)?;
                     let variant_info = &enum_info.variants[variant_index];
                     let variant_name = &variant_info.debug_info_name;
@@ -370,7 +370,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut scope_branch = scope_parent.new_child(block.span);
         if let Some(declare) = declare {
-            declare.declare(self.refs, &mut scope_branch, flow)?;
+            declare.declare(self, &mut scope_branch, flow)?;
         }
 
         self.elaborate_block(&scope_branch, flow, stack, block)
@@ -382,7 +382,7 @@ impl CompileItemContext<'_, '_> {
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &'a B)>,
     ) -> DiagResult<(Option<BranchDeclare<CompileValue>>, &'a B)> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         // compile-time match, just check each pattern in sequence with early exit
@@ -468,7 +468,7 @@ impl CompileItemContext<'_, '_> {
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
+        let diags = self.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
         let target_version = target.inner.version;
@@ -606,6 +606,7 @@ impl CompileItemContext<'_, '_> {
                                 *rem_false = false;
 
                                 let cond = self
+                                    .state
                                     .large
                                     .push_expr(IrExpressionLarge::BoolNot(target_value.value.expr.clone()));
                                 (cond, target_value.implications.if_false.clone())
@@ -625,7 +626,7 @@ impl CompileItemContext<'_, '_> {
                             let value_range = MultiRange::from(Range::single(value.clone()));
                             *rem_range = rem_range.subtract(&value_range);
 
-                            let cond = self.large.push_expr(IrExpressionLarge::IntCompare(
+                            let cond = self.state.large.push_expr(IrExpressionLarge::IntCompare(
                                 IrIntCompareOp::Eq,
                                 target_value.value.expr.clone(),
                                 IrExpression::Int(value.clone()),
@@ -666,7 +667,7 @@ impl CompileItemContext<'_, '_> {
                         *rem_range = rem_range.subtract(&range_multi);
 
                         let cond =
-                            build_ir_int_in_range(&mut self.large, &target_value.value.expr, range.inner.clone());
+                            build_ir_int_in_range(&mut self.state.large, &target_value.value.expr, range.inner.clone());
 
                         let implications = if let Some(target_version) = target_version {
                             vec![Implication::new_int(target_version, range_multi)]
@@ -720,12 +721,12 @@ impl CompileItemContext<'_, '_> {
                         let enum_info_hw = enum_info.hw.as_ref().unwrap();
 
                         let cond = enum_info_hw.check_tag_matches(
-                            &mut self.large,
+                            &mut self.state.large,
                             target_value.value.expr.clone(),
                             variant_index,
                         );
                         let payload_hw =
-                            enum_info_hw.extract_payload(&mut self.large, &target_value.value, variant_index);
+                            enum_info_hw.extract_payload(&mut self.state.large, &target_value.value, variant_index);
                         let declare = match (payload_id, payload_hw) {
                             (None, None) => None,
                             (Some(payload_id), Some(payload_value)) => Some(BranchDeclare {
@@ -774,7 +775,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             if let Some(declare) = declare {
-                declare.declare(self.refs, &mut branch_scope, &mut branch_flow.as_flow())?;
+                declare.declare(self, &mut branch_scope, &mut branch_flow.as_flow())?;
             }
 
             let branch_end = self.elaborate_block(&branch_scope, &mut branch_flow.as_flow(), stack, branch_block)?;
@@ -813,7 +814,7 @@ impl CompileItemContext<'_, '_> {
         }
 
         // join things
-        let all_blocks = flow_parent.join_child_branches(self.refs, &mut self.large, span_keyword, all_contents)?;
+        let all_blocks = flow_parent.join_child_branches(self, span_keyword, all_contents)?;
         let joined_end = join_block_ends_branches(&all_ends);
 
         // build the if statement

@@ -341,7 +341,7 @@ pub trait Flow: FlowPrivate {
 
     fn var_set(
         &mut self,
-        refs: CompileRefs,
+        ctx: &CompileItemContext,
         var: Variable,
         assignment_span: Span,
         value: DiagResult<ValueWithImplications>,
@@ -350,7 +350,7 @@ pub trait Flow: FlowPrivate {
         let value = value.and_then(|value| {
             value.try_map_hardware(|value| {
                 let var_info = self.var_info(Spanned::new(assignment_span, var))?;
-                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+                let debug_info_id = var_info.id.as_str(ctx.refs.source).map(str::to_owned);
 
                 let flow = self.require_hardware(assignment_span, "assigning hardware value")?;
 
@@ -362,7 +362,7 @@ pub trait Flow: FlowPrivate {
                 let _ = version;
 
                 let value_var =
-                    flow.store_hardware_value_in_new_ir_variable(refs, assignment_span, debug_info_id, value);
+                    flow.store_hardware_value_in_new_ir_variable(ctx.refs, assignment_span, debug_info_id, value);
 
                 Ok(HardwareValueWithImplications {
                     value: value_var,
@@ -421,17 +421,12 @@ pub trait Flow: FlowPrivate {
     ///
     /// The [IrVariable] in the hardware case is already a defensive copy, and can be used by the caller freely.
     /// The flow will not modify it later.
-    fn var_eval(
-        &mut self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
-        var: Spanned<Variable>,
-    ) -> DiagResult<ValueWithImplications> {
-        self.var_eval_without_copy(large, var)?
+    fn var_eval(&mut self, ctx: &mut CompileItemContext, var: Spanned<Variable>) -> DiagResult<ValueWithImplications> {
+        self.var_eval_without_copy(&mut ctx.state.large, var)?
             .try_map_hardware(|value_uncopied| {
                 // store into intermediate variable (copy-on-read)
                 let var_info = self.var_info(var)?;
-                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+                let debug_info_id = var_info.id.as_str(ctx.refs.source).map(str::to_owned);
                 let flow = self.require_hardware(var.span, VAR_EVAL_HW_REASON)?;
 
                 let HardwareValueWithImplications {
@@ -440,7 +435,8 @@ pub trait Flow: FlowPrivate {
                     implications,
                 } = value_uncopied;
 
-                let value = flow.store_hardware_value_in_new_ir_variable(refs, var.span, debug_info_id, value_uncopied);
+                let value =
+                    flow.store_hardware_value_in_new_ir_variable(ctx.refs, var.span, debug_info_id, value_uncopied);
 
                 Ok(HardwareValueWithImplications {
                     value: value.map_expression(IrExpression::Variable),
@@ -535,7 +531,7 @@ pub trait Flow: FlowPrivate {
                     },
                     VariableContent::NotFullyAssigned(kind) => {
                         let var_info = self.var_info(Spanned::new(value.span, var))?;
-                        Err(kind.report_diag(ctx.refs.diags, value.span, var_info))
+                        Err(kind.report_diag(ctx.diags, value.span, var_info))
                     }
                     &VariableContent::Error(e) => Err(e),
                 }
@@ -545,7 +541,7 @@ pub trait Flow: FlowPrivate {
 
     fn var_new_immutable_init(
         &mut self,
-        refs: CompileRefs,
+        ctx: &CompileItemContext,
         span_decl: Span,
         id: VariableId,
         assign_span: Span,
@@ -559,7 +555,7 @@ pub trait Flow: FlowPrivate {
             join_ir_variable: None,
         };
         let var = self.var_new(info);
-        self.var_set(refs, var, assign_span, value)?;
+        self.var_set(ctx, var, assign_span, value)?;
         Ok(var)
     }
 
@@ -661,7 +657,7 @@ pub trait Flow: FlowPrivate {
                     Some(range) => HardwareValue {
                         ty: HardwareType::Int(range.clone()),
                         domain: value_full_raw_without_copy.domain,
-                        expr: ctx.large.push_expr(IrExpressionLarge::ConstrainIntRange(
+                        expr: ctx.state.large.push_expr(IrExpressionLarge::ConstrainIntRange(
                             range.enclosing_range().cloned(),
                             value_full_raw_without_copy.expr,
                         )),
@@ -736,7 +732,7 @@ pub trait Flow: FlowPrivate {
         match base.inner {
             SignalOrVariable::Signal(signal) => self.signal_eval(ctx, Spanned::new(base.span, signal), steps),
             SignalOrVariable::Variable(var) => {
-                let left_base_value = self.var_eval(ctx.refs, &mut ctx.large, Spanned::new(base.span, var))?;
+                let left_base_value = self.var_eval(ctx, Spanned::new(base.span, var))?;
                 steps.apply_to_value(ctx, &Type::Any, Spanned::new(base.span, left_base_value))
             }
         }
@@ -1292,15 +1288,14 @@ impl<'p> FlowHardware<'p> {
 
     pub fn join_child_branches_pair(
         &mut self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span_merge: Span,
         branches: (FlowHardwareBranchContent, FlowHardwareBranchContent),
     ) -> DiagResult<(IrBlock, IrBlock)> {
         let (branch_0, branch_1) = branches;
         let branches = vec![branch_0, branch_1];
 
-        let result = self.join_child_branches(refs, large, span_merge, branches)?;
+        let result = self.join_child_branches(ctx, span_merge, branches)?;
 
         assert_eq!(result.len(), 2);
         let mut result = result.into_iter();
@@ -1311,8 +1306,7 @@ impl<'p> FlowHardware<'p> {
 
     pub fn join_child_branches(
         &mut self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span_merge: Span,
         mut branches: Vec<FlowHardwareBranchContent>,
     ) -> DiagResult<Vec<IrBlock>> {
@@ -1344,8 +1338,7 @@ impl<'p> FlowHardware<'p> {
                 index: var,
             };
 
-            let (merged_content, merged_implied) =
-                merge_branch_variable(refs, large, self, span_merge, var, &mut branches)?;
+            let (merged_content, merged_implied) = merge_branch_variable(ctx, self, span_merge, var, &mut branches)?;
 
             self.var_set_content(var, span_merge, merged_content)?;
             if let Some((version, implied)) = merged_implied {
@@ -1798,15 +1791,14 @@ impl FlowHardwareBranch<'_> {
 }
 
 fn merge_branch_variable(
-    refs: CompileRefs,
-    large: &mut IrLargeArena,
+    ctx: &mut CompileItemContext,
     parent_flow: &mut FlowHardware,
     span_merge: Span,
     var: Variable,
     branches: &mut [FlowHardwareBranchContent],
 ) -> DiagResult<(VariableContent, Option<(ValueVersion, Implied)>)> {
-    let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
+    let diags = ctx.diags;
+    let elab = &ctx.refs.shared.elaboration_arenas;
 
     let var_spanned = Spanned::new(span_merge, var);
     let var_info = parent_flow.var_info(var_spanned)?;
@@ -2067,9 +2059,9 @@ fn merge_branch_variable(
     let var_ir = match var_info.join_ir_variable {
         None => {
             let var_ir_info = IrVariableInfo {
-                ty: ty.as_ir(refs),
+                ty: ty.as_ir(ctx.refs),
                 debug_info_span: var_info.span_decl,
-                debug_info_id: var_info.id.as_str(refs.fixed.source).map(str::to_owned),
+                debug_info_id: var_info.id.as_str(ctx.refs.source).map(str::to_owned),
             };
             parent_flow.new_ir_variable(var_ir_info)
         }
@@ -2089,14 +2081,8 @@ fn merge_branch_variable(
             }
             MaybeUndefined::Defined(assigned) => {
                 let (assigned_domain, assigned_expr) = match &assigned.inner {
-                    Value::Simple(v) => (
-                        v.domain(),
-                        v.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?,
-                    ),
-                    Value::Compound(v) => (
-                        v.domain(),
-                        v.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?,
-                    ),
+                    Value::Simple(v) => (v.domain(), v.as_ir_expression_unchecked(ctx, assigned.span, &ty)?),
+                    Value::Compound(v) => (v.domain(), v.as_ir_expression_unchecked(ctx, assigned.span, &ty)?),
                     Value::Hardware(v) => {
                         // get implied info
                         let version = ValueVersion {
@@ -2109,10 +2095,10 @@ fn merge_branch_variable(
 
                         // no need to take a copy here,
                         //   we're immediately using this value in a store operation and then discarding it
-                        let value = v.as_value_without_copy(large, var, implied);
+                        let value = v.as_value_without_copy(&mut ctx.state.large, var, implied);
 
                         // expand value to result type
-                        let expr = value.as_ir_expression_unchecked(refs, large, assigned.span, &ty)?;
+                        let expr = value.as_ir_expression_unchecked(ctx, assigned.span, &ty)?;
 
                         (value.domain(), expr)
                     }

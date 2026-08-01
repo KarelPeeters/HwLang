@@ -9,7 +9,7 @@ use crate::front::item::{
 use crate::front::scope::FrozenScope;
 use crate::front::signal::{Interface, Signal};
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
-use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
+use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge};
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{FunctionDeclaration, ParameterSelf, StringPiece};
 use crate::syntax::pos::Span;
@@ -155,7 +155,7 @@ impl ReferenceWrapper {
             )
             .add_info(self.span_decl, format!("{kind} declared here"))
             .add_info(self.span_ref, "reference taken here")
-            .report(ctx.refs.diags)
+            .report(ctx.diags)
         };
         match self.inner {
             ReferenceWrapperInner::Variable { flow_id, var: _, ty: _ } => {
@@ -169,7 +169,7 @@ impl ReferenceWrapper {
                 ty: _,
                 ty_hw: _,
             } => {
-                if ctx.curr_module != Some(module) {
+                if ctx.state.curr_module != Some(module) {
                     return Err(build_error("signal", "module"));
                 }
             }
@@ -178,7 +178,7 @@ impl ReferenceWrapper {
                 intf: _,
                 elab: _,
             } => {
-                if ctx.curr_module != Some(module) {
+                if ctx.state.curr_module != Some(module) {
                     return Err(build_error("interface", "module"));
                 }
             }
@@ -302,8 +302,7 @@ pub trait ValueCommon: Typed {
     /// The caller should have checked for type compatibility already, a type mismatch will result in an internal error.
     fn as_hardware_value_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: HardwareType,
     ) -> DiagResult<HardwareValue> {
@@ -313,7 +312,7 @@ pub trait ValueCommon: Typed {
 
         // TODO avoid walking the hierarchy twice?
         let domain = self.domain();
-        let expr = self.as_ir_expression_unchecked(refs, large, span, &ty)?;
+        let expr = self.as_ir_expression_unchecked(ctx, span, &ty)?;
         Ok(HardwareValue { ty, domain, expr })
     }
 
@@ -321,8 +320,7 @@ pub trait ValueCommon: Typed {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression>;
@@ -334,8 +332,7 @@ impl ValueCommon for Never {
     }
     fn as_ir_expression_unchecked(
         &self,
-        _: CompileRefs,
-        _: &mut IrLargeArena,
+        _: &mut CompileItemContext,
         _: Span,
         _: &HardwareType,
     ) -> DiagResult<IrExpression> {
@@ -354,15 +351,14 @@ impl<S: ValueCommon, C: ValueCommon, H: ValueCommon> ValueCommon for Value<S, C,
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
         match self {
-            Value::Simple(v) => v.as_ir_expression_unchecked(refs, large, span, ty),
-            Value::Compound(v) => v.as_ir_expression_unchecked(refs, large, span, ty),
-            Value::Hardware(v) => v.as_ir_expression_unchecked(refs, large, span, ty),
+            Value::Simple(v) => v.as_ir_expression_unchecked(ctx, span, ty),
+            Value::Compound(v) => v.as_ir_expression_unchecked(ctx, span, ty),
+            Value::Hardware(v) => v.as_ir_expression_unchecked(ctx, span, ty),
         }
     }
 }
@@ -374,12 +370,11 @@ impl ValueCommon for SimpleCompileValue {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
+        let err_type = || internal_err_hw_type_mismatch(ctx.refs, span, self, ty).report(ctx.diags);
 
         match self {
             SimpleCompileValue::Type(_) => Err(err_type()),
@@ -391,7 +386,7 @@ impl ValueCommon for SimpleCompileValue {
                 HardwareType::Int(ty) if ty.contains(v) => {
                     let expr =
                         IrExpressionLarge::ExpandIntRange(ty.enclosing_range().cloned(), IrExpression::Int(v.clone()));
-                    Ok(large.push_expr(expr))
+                    Ok(ctx.state.large.push_expr(expr))
                 }
                 _ => Err(err_type()),
             },
@@ -401,11 +396,15 @@ impl ValueCommon for SimpleCompileValue {
                     let result = v
                         .iter()
                         .map(|e| {
-                            e.as_ir_expression_unchecked(refs, large, span, e_ty)
+                            e.as_ir_expression_unchecked(ctx, span, e_ty)
                                 .map(IrArrayLiteralElement::Single)
                         })
                         .try_collect_vec()?;
-                    let expr = large.push_expr(IrExpressionLarge::ArrayLiteral(e_ty.as_ir(refs), len.clone(), result));
+                    let expr = ctx.state.large.push_expr(IrExpressionLarge::ArrayLiteral(
+                        e_ty.as_ir(ctx.refs),
+                        len.clone(),
+                        result,
+                    ));
                     Ok(expr)
                 }
                 _ => Err(err_type()),
@@ -474,34 +473,33 @@ impl ValueCommon for MixedCompoundValue {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
+        let err_type = || internal_err_hw_type_mismatch(ctx.refs, span, self, ty).report(ctx.diags);
 
         match self {
             MixedCompoundValue::Tuple(v) => match &ty {
                 HardwareType::Tuple(ty) if v.len() == ty.len() => {
                     let result = zip_eq(v.iter(), ty.iter())
-                        .map(|(e, e_ty)| e.as_ir_expression_unchecked(refs, large, span, e_ty))
+                        .map(|(e, e_ty)| e.as_ir_expression_unchecked(ctx, span, e_ty))
                         .try_collect_vec()?;
-                    Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+                    Ok(ctx.state.large.push_expr(IrExpressionLarge::TupleLiteral(result)))
                 }
                 _ => Err(err_type()),
             },
             MixedCompoundValue::Struct(v) => match &ty {
                 HardwareType::Struct(ty_hw) if ty_hw.inner() == v.ty => {
-                    let info = refs.shared.elaboration_arenas.struct_info(ty_hw.inner());
+                    let info = ctx.refs.shared.elaboration_arenas.struct_info(ty_hw.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
                     let fields_ir = zip_eq(v.fields.iter(), info_hw.fields.iter())
-                        .map(|(e, e_ty)| e.as_ir_expression_unchecked(refs, large, span, e_ty))
+                        .map(|(e, e_ty)| e.as_ir_expression_unchecked(ctx, span, e_ty))
                         .try_collect_vec()?;
 
                     let result = IrExpressionLarge::StructLiteral(info_hw.ty_ir.clone(), fields_ir);
-                    Ok(large.push_expr(result))
+                    Ok(ctx.state.large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -512,19 +510,19 @@ impl ValueCommon for MixedCompoundValue {
                         variant,
                         ref payload,
                     } = v;
-                    let info = refs.shared.elaboration_arenas.enum_info(ty_hw.inner());
+                    let info = ctx.refs.shared.elaboration_arenas.enum_info(ty_hw.inner());
                     let info_hw = info.hw.as_ref().unwrap();
 
                     let payload_ir = payload
                         .as_ref()
                         .map(|payload| {
                             let (payload_ty, _) = info_hw.payload_types[variant].as_ref().unwrap();
-                            payload.as_ir_expression_unchecked(refs, large, span, payload_ty)
+                            payload.as_ir_expression_unchecked(ctx, span, payload_ty)
                         })
                         .transpose()?;
 
                     let result = IrExpressionLarge::EnumLiteral(info_hw.ty_ir.clone(), variant, payload_ir);
-                    Ok(large.push_expr(result))
+                    Ok(ctx.state.large.push_expr(result))
                 }
                 _ => Err(err_type()),
             },
@@ -582,12 +580,11 @@ impl ValueCommon for CompileCompoundValue {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        MixedCompoundValue::from(self.clone()).as_ir_expression_unchecked(refs, large, span, ty)
+        MixedCompoundValue::from(self.clone()).as_ir_expression_unchecked(ctx, span, ty)
     }
 }
 
@@ -598,12 +595,11 @@ impl ValueCommon for HardwareValue {
 
     fn as_ir_expression_unchecked(
         &self,
-        refs: CompileRefs,
-        large: &mut IrLargeArena,
+        ctx: &mut CompileItemContext,
         span: Span,
         ty: &HardwareType,
     ) -> DiagResult<IrExpression> {
-        let err_type = || internal_err_hw_type_mismatch(refs, span, self, ty).report(refs.diags);
+        let err_type = || internal_err_hw_type_mismatch(ctx.refs, span, self, ty).report(ctx.diags);
 
         if &self.ty == ty {
             return Ok(self.expr.clone());
@@ -613,7 +609,7 @@ impl ValueCommon for HardwareValue {
             (HardwareType::Bool, HardwareType::Bool) => Ok(self.expr.clone()),
             (HardwareType::Int(ty_curr), HardwareType::Int(ty)) => {
                 if ty.contains_multi_range(ty_curr) {
-                    Ok(large.push_expr(IrExpressionLarge::ExpandIntRange(
+                    Ok(ctx.state.large.push_expr(IrExpressionLarge::ExpandIntRange(
                         ty.enclosing_range().cloned(),
                         self.expr.clone(),
                     )))
@@ -641,7 +637,7 @@ impl ValueCommon for HardwareValue {
                 let result = iter
                     .map(|index| {
                         let step = IrTargetStepScalar::ArrayIndex(IrExpression::Int(index.into()));
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::Steps {
+                        let curr_elem_expr = ctx.state.large.push_expr(IrExpressionLarge::Steps {
                             base: self.expr.clone(),
                             steps: IrTargetSteps::single(step),
                         });
@@ -650,13 +646,13 @@ impl ValueCommon for HardwareValue {
                             domain: self.domain,
                             expr: curr_elem_expr,
                         };
-                        let elem_expr = curr_elem_hw.as_ir_expression_unchecked(refs, large, span, ty_inner)?;
+                        let elem_expr = curr_elem_hw.as_ir_expression_unchecked(ctx, span, ty_inner)?;
                         Ok(IrArrayLiteralElement::Single(elem_expr))
                     })
                     .try_collect_vec()?;
 
-                Ok(large.push_expr(IrExpressionLarge::ArrayLiteral(
-                    ty_inner.as_ir(refs),
+                Ok(ctx.state.large.push_expr(IrExpressionLarge::ArrayLiteral(
+                    ty_inner.as_ir(ctx.refs),
                     len.clone(),
                     result,
                 )))
@@ -669,7 +665,7 @@ impl ValueCommon for HardwareValue {
                 let result = (0..ty.len())
                     .map(|i| {
                         let step = IrTargetStepScalar::TupleIndex(i);
-                        let curr_elem_expr = large.push_expr(IrExpressionLarge::Steps {
+                        let curr_elem_expr = ctx.state.large.push_expr(IrExpressionLarge::Steps {
                             base: self.expr.clone(),
                             steps: IrTargetSteps::single(step),
                         });
@@ -678,11 +674,11 @@ impl ValueCommon for HardwareValue {
                             domain: self.domain,
                             expr: curr_elem_expr,
                         };
-                        curr_elem_hw.as_ir_expression_unchecked(refs, large, span, &ty[i])
+                        curr_elem_hw.as_ir_expression_unchecked(ctx, span, &ty[i])
                     })
                     .try_collect_vec()?;
 
-                Ok(large.push_expr(IrExpressionLarge::TupleLiteral(result)))
+                Ok(ctx.state.large.push_expr(IrExpressionLarge::TupleLiteral(result)))
             }
             (HardwareType::Struct(_), HardwareType::Struct(_)) | (HardwareType::Enum(_), HardwareType::Enum(_)) => {
                 // there's no struct or enum subtyping yet, so this is always an error for now

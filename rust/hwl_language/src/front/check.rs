@@ -19,7 +19,7 @@ use crate::util::range_multi::MultiRange;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-impl CompileItemContext<'_, '_> {
+impl CompileItemContext<'_, '_, '_> {
     pub fn check_valid_domain_crossing(
         &self,
         crossing_span: Span,
@@ -27,7 +27,7 @@ impl CompileItemContext<'_, '_> {
         source: Spanned<ValueDomain>,
         required_reason: &str,
     ) -> DiagResult {
-        let diags = self.refs.diags;
+        let diags = self.diags;
 
         let valid = match (target.inner, source.inner) {
             (ValueDomain::Clock, ValueDomain::Clock) => Ok(()),
