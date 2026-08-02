@@ -140,6 +140,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
 
     // find top modules
     // TODO print warning if no top modules selected?
+    // TODO the loop only starts after item evaluation is complete, which potentially wastes time
     let start_compile = Instant::now();
     let top_values = {
         top.iter()

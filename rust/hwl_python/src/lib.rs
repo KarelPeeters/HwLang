@@ -11,7 +11,6 @@ use hwl_language::front::diagnostic::Diagnostics;
 use hwl_language::front::flow::{FlowCompile, FlowRoot};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
-use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::steps::{TargetStepCompile, TargetSteps};
 use hwl_language::front::types::Type as RustType;
 use hwl_language::front::value::{CompileValue as RustCompileValue, NotCompile, Value as RustValue};
@@ -30,9 +29,9 @@ use hwl_language::util::big_int::BigInt;
 use hwl_language::util::data::GrowVec;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::Range as RustRange;
-use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
+use hwl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
 use hwl_util::io::IoErrorExt;
-use itertools::{Either, Itertools, enumerate};
+use itertools::{Either, Itertools};
 use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
 use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
@@ -432,52 +431,8 @@ impl Compile {
         let hierarchy = &source_ref.hierarchy;
         let dummy_span = source_ref.dummy_span;
 
-        // find directory, file and scope
-        if path.is_empty() {
-            return Err(ResolveException::new_err("resolve path cannot be empty"));
-        }
-        let steps: Vec<&str> = path.split('.').collect_vec();
-        let (&item_name, steps) = steps.split_last().unwrap();
-
-        let mut curr_node = hierarchy.root_node();
-        for (i_step, &step) in enumerate(steps) {
-            curr_node = curr_node.children.get(step).ok_or_else(|| {
-                ResolveException::new_err(format!(
-                    "path `{}` does not have child `{}`",
-                    steps[..i_step].iter().join("."),
-                    step
-                ))
-            })?;
-        }
-        let file = curr_node.file.ok_or_else(|| {
-            ResolveException::new_err(format!(
-                "steps `{}` do not point to a file (in full path `{path}`)",
-                steps.iter().join(".")
-            ))
-        })?;
-        let scope = shared.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
-
-        // look up the item
+        // build refs
         let diags = Diagnostics::new();
-        let found = map_diag_error(
-            py,
-            &diags,
-            source,
-            scope.find(&diags, Spanned::new(dummy_span, item_name)),
-        )?;
-        let item = match found.value {
-            ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-            ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
-                let e = diags.report_error_internal(
-                    found.span_decl,
-                    "file scope should only contain items, not named/captured",
-                );
-                return Err(convert_diag_error(py, &diags, source, e));
-            }
-        };
-
-        // evaluate the item
-        // TODO release GIL during evaluation
         let print_handler = slf_ref.start_collect_prints();
         let refs = CompileRefs {
             settings: &COMPILE_SETTINGS,
@@ -489,9 +444,16 @@ impl Compile {
             should_stop: &|| false,
         };
 
-        // eval item and elaborate any necessary items
+        // resolve item
+        let item = refs.resolve_item_by_path(&diags, Spanned::new(dummy_span, path));
+
+        // evaluate item
+        // TODO release GIL during evaluation
+        // TODO the loop only starts after item evaluation is complete, which potentially wastes time
         let mut item_ctx = CompileItemContext::new(refs, &diags, None, None);
-        let value = item_ctx.eval_item(item).cloned();
+        let value = item.and_then(|item| item_ctx.eval_item(item).cloned());
+
+        // run loop
         refs.run_compile_loop(&diags, None);
 
         // build ir database to run final checks
