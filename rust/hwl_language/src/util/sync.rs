@@ -75,6 +75,19 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         }
     }
 
+    /// Get the existing result if any.
+    pub fn get(&self, item: K) -> Option<&V> {
+        if let Some(entry) = self.map.get(&item)
+            && entry.done_atomic.load(Ordering::Acquire)
+        {
+            let state = unsafe { &*entry.state.get() };
+            let value = unwrap_match!(state, ItemState::Done(v) => v);
+            Some(value)
+        } else {
+            None
+        }
+    }
+
     /// Get the result of a computation, computing it or waiting for someone else to compute it if necessary.
     pub fn get_or_compute<E>(
         &self,
@@ -84,11 +97,7 @@ impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K
         f_cycle: impl FnOnce(Vec<&S>) -> E,
     ) -> Result<&V, E> {
         // fast path without any exclusive locking
-        if let Some(entry) = self.map.get(&item)
-            && entry.done_atomic.load(Ordering::Acquire)
-        {
-            let state = unsafe { &*entry.state.get() };
-            let value = unwrap_match!(state, ItemState::Done(v) => v);
+        if let Some(value) = self.get(item) {
             return Ok(value);
         }
 

@@ -134,6 +134,10 @@ impl<'a, 's> CompileRefs<'a, 's> {
                 return Err(diags.report_error_internal(path.span, "file scopes should only contain items"));
             }
         };
+
+        // queue item elaboration
+        self.shared.work_queue.push(WorkItem::EvaluateItem(item));
+
         Ok(item)
     }
 }
@@ -624,6 +628,13 @@ impl CompileShared {
 
     pub fn file_scope(&self, file: FileId) -> DiagResult<&Arc<FrozenScope>> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
+    }
+
+    /// Look up the given item, returning its value if its evaluation has already finished.
+    /// This is useful when the caller expects the item to already have been evaluated,
+    ///   to avoid accidentally queuing up more work.
+    pub fn eval_item_if_complete(&self, item: AstRefItem) -> Option<DiagResult<&CompileValue>> {
+        self.item_values.get(item).map(Result::as_ref_ok)
     }
 
     pub fn finish_ir_database(self, diags: &Diagnostics, dummy_span: Span) -> DiagResult<IrDatabase<IrModuleInfo>> {

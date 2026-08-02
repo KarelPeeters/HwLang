@@ -444,17 +444,11 @@ impl Compile {
             should_stop: &|| false,
         };
 
-        // resolve item
+        // resolve and evaluate item
+        // TODO release GIL
         let item = refs.resolve_item_by_path(&diags, Spanned::new(dummy_span, path));
-
-        // evaluate item
-        // TODO release GIL during evaluation
-        // TODO the loop only starts after item evaluation is complete, which potentially wastes time
-        let mut item_ctx = CompileItemContext::new(refs, &diags, None, None);
-        let value = item.and_then(|item| item_ctx.eval_item(item).cloned());
-
-        // run loop
         refs.run_compile_loop(&diags, None);
+        let value = item.and_then(|item| shared.eval_item_if_complete(item).unwrap().cloned());
 
         // build ir database to run final checks
         let ir_database = if value.is_ok() {

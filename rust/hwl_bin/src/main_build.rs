@@ -2,7 +2,7 @@ use crate::args::ArgsBuild;
 use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
 use hwl_language::back::lower_cpp::lower_to_cpp;
 use hwl_language::back::lower_verilog::lower_to_verilog;
-use hwl_language::front::compile::{CompileItemContext, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use hwl_language::front::compile::{CompileRefs, CompileSettings, CompileShared, QueueItems};
 use hwl_language::front::diagnostic::{DiagError, Diagnostics};
 use hwl_language::front::item::ElaboratedModule;
 use hwl_language::front::print::StdoutPrintHandler;
@@ -138,30 +138,25 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     };
     let thread_pool = thread_count.map(ThreadPool::new);
 
-    // find top modules
+    // find top items
     // TODO print warning if no top modules selected?
-    // TODO the loop only starts after item evaluation is complete, which potentially wastes time
     let start_compile = Instant::now();
-    let top_values = {
-        top.iter()
-            .map(|top| {
-                let item = refs.resolve_item_by_path(&diags, Spanned::new(manifest_span, top))?;
-                let mut ctx = CompileItemContext::new(refs, &diags, None, None);
-                ctx.eval_item(item)
-            })
-            .collect_vec()
-    };
+    let top_items = top
+        .iter()
+        .map(|top| refs.resolve_item_by_path(&diags, Spanned::new(manifest_span, top)))
+        .collect_vec();
 
     // run compilation loop
     refs.run_compile_loop(&diags, thread_pool.as_ref());
 
     // filter top modules
-    //   we allowed other top values earlier, they could be useful as compilation roots too
-    let top_modules = top_values
+    //   we allowed other top items earlier, they could be useful as compilation roots too
+    let top_modules = top_items
         .into_iter()
-        .filter_map(|v| {
-            if let Ok(&CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(v)))) = v {
-                let v_ir = refs.shared.elaboration_arenas.module_internal_info(v).module_ir;
+        .filter_map(|item| {
+            let value = item.and_then(|item| shared.eval_item_if_complete(item).unwrap());
+            if let Ok(&CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(value)))) = value {
+                let v_ir = refs.shared.elaboration_arenas.module_internal_info(value).module_ir;
                 Some(v_ir)
             } else {
                 None
