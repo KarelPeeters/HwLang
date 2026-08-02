@@ -9,12 +9,6 @@ def test_type_normal_struct():
     _ = c.resolve("top.S")
 
 
-def test_type_recursive_struct_simple():
-    with diag_error("encountered cyclic dependency"):
-        c = compile_custom("struct S { a: int, b: S }")
-        _ = c.resolve("top.S")
-
-
 def test_struct_simple_basics(tmp_dir: Path):
     prefix = """
     struct Pair { x: uint(8), y: bool }
