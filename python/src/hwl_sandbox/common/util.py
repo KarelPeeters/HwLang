@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Optional
 
 import hwl
 
@@ -18,15 +20,18 @@ def diag_warning(title: str, has_message: str | None = None, has_info: str | Non
     return diag_general(level="warning", title=title, has_message=has_message, has_info=has_info)
 
 
+@dataclass(frozen=False)
+class DiagnosticBox:
+    diag: Optional[hwl.Diagnostic]
+
+
 @contextmanager
 def diag_general(level: str, title: str, has_message: str | None, has_info: str | None):
-    raised = False
+    box = DiagnosticBox(None)
 
     try:
-        yield
+        yield box
     except hwl.DiagnosticException as e:
-        raised = True
-
         diags = e.diagnostics
         assert len(diags) > 0, "Diagnostic exception should not be empty"
 
@@ -43,4 +48,6 @@ def diag_general(level: str, title: str, has_message: str | None, has_info: str 
         if has_info is not None:
             assert has_info in diag.infos, f"Diagnostic info check failed, expected {has_info}, got {diag.infos}"
 
-    assert raised, "Expected diagnostic, got no exception"
+        box.diag = diag
+
+    assert box.diag is not None, "Expected diagnostic, got no exception"

@@ -20,16 +20,15 @@ def test_cycle_struct_recurse_simple():
         _ = c.resolve("top.S")
 
 
-# TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure
-@pytest.mark.skip
+@pytest.mark.xfail(run=False)
 def test_cycle_struct_recurse_generic():
-    with diag_error("cyclic dependency"):
+    with diag_error("encountered cyclic dependency"):
         c = compile_custom("struct S(T: type) { a: int, b: S(T) }")
         s = c.resolve("top.S")
         _ = s(int)
 
 
-# TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure
+@pytest.mark.xfail(run=False)
 def test_cycle_module_header():
     src = """
     module top ports(
@@ -37,10 +36,45 @@ def test_cycle_module_header():
     ) {}
     """
     c = compile_custom(src)
-    _ = c.resolve(f"top.top")
+    with diag_error("encountered cyclic dependency"):
+        _ = c.resolve("top.top")
 
 
-@pytest.mark.skip
+@pytest.mark.xfail(run=False)
+def test_cycle_mixed():
+    src = """
+    const const_a = type_b;
+    
+    type type_b = struct_c(false);
+    
+    struct struct_c(b: bool) {
+        const _ = module_d;
+    }
+    
+    module module_d ports(
+        const _ = const_a;
+    ) {}
+    """
+    c = compile_custom(src)
+    with diag_error("encountered cyclic dependency") as e:
+        _ = c.resolve("top.const_a")
+
+    # TODO: get indices to pairwise match
+    # TODO: replace "function declared here" with "generic item declared here" if applicable
+    expected_messages = [
+        "[0] item declared here",
+        "[1] item used here",
+        "[2] item declared here",
+        "[3] function call here",
+        "[4] function declared here",
+        "[5] item used here",
+        "[6] item declared here",
+        "[7] item used here",
+    ]
+    assert e.diag.messages == expected_messages
+
+
+@pytest.mark.xfail(run=False)
 def test_chain_struct():
     src = """
     struct S0 {}
@@ -52,6 +86,3 @@ def test_chain_struct():
     c = compile_custom(src)
     s = c.resolve(f"top.S{n}")
     print(s)
-
-# TODO add test for cycle that mixes things:
-#    item that depends on (generic) struct that depends on item again
