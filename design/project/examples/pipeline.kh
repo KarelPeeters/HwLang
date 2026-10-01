@@ -10,16 +10,16 @@ pub module pipeline(N: uint, T: [N + 1]type, F: [N]any) ports(
         const id_prev = "v_{i}";
         const id_next = "v_{i + 1}";
 
-        pub wire id_from_str(id_next): T[i];
+        pub wire ident(id_next): T[i];
 
         clocked(clk) {
-            reg wire id_from_str(id_next) = undef;
-            id_from_str(id_next) = (F[i])(id_from_str(id_prev));
+            reg wire ident(id_next) = undef;
+            ident(id_next) = (F[i])(ident(id_prev));
         }
     }
 
     comb {
-        y = id_from_str("v_{N}");
+        y = ident("v_{N}");
     }
 }
 

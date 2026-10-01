@@ -200,7 +200,7 @@ fn token_category(ty: TokenType) -> Option<Category> {
         | TokenType::As
         | TokenType::Builtin
         | TokenType::UnsafeValueWithDomain
-        | TokenType::IdFromStr => Some(Category::KeywordOther),
+        | TokenType::Ident => Some(Category::KeywordOther),
         // punctuation
         TokenType::Semi
         | TokenType::Colon

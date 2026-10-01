@@ -64,7 +64,7 @@ extern {
         "external" => TokenType::External,
         "__builtin" => TokenType::Builtin,
         "unsafe_value_with_domain" => TokenType::UnsafeValueWithDomain,
-        "id_from_str" => TokenType::IdFromStr,
+        "ident" => TokenType::Ident,
         ";" => TokenType::Semi,
         ":" => TokenType::Colon,
         "," => TokenType::Comma,
@@ -877,12 +877,12 @@ Id: Identifier = {
 
 GeneralId: GeneralIdentifier = {
     Id => GeneralIdentifier::Simple(<>),
-    Spanned<GeneralIdFromString> => GeneralIdentifier::FromString(<>.span, <>.inner),
+    Spanned<GeneralIdentFromStr> => GeneralIdentifier::FromString(<>.span, <>.inner),
 }
 
 // TODO find better syntax for this and use it in more places
-GeneralIdFromString: Expression = {
-    "id_from_str" "(" <Expr> ","? ")",
+GeneralIdentFromStr: Expression = {
+    "ident" "(" <Expr> ","? ")",
 }
 
 MaybeId = MaybeIdImpl<Id>;

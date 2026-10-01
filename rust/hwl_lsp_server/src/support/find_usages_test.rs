@@ -37,9 +37,9 @@ fn find_basic_on_use() {
 
 #[test]
 fn find_general_id() {
-    let src = "const a = \"c\"; module m ports() { wire id_from_str(a) = false; wire w0 = c; wire w1 = a; }";
-    // usages of id_from_str itself
-    test_usages(src, 39, Ok(&[73..74, 86..87]));
-    // usages of identifiers inside id_from_str
-    test_usages(src, 51, Ok(&[51..52, 86..87]));
+    let src = "const a = \"c\"; module m ports() { wire ident(a) = false; wire w0 = c; wire w1 = a; }";
+    // usages of ident itself
+    test_usages(src, 39, Ok(&[67..68, 80..81]));
+    // usages of identifiers inside ident
+    test_usages(src, 51 - 6, Ok(&[45..46, 80..81]));
 }

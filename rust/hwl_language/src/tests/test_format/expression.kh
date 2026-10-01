@@ -10,7 +10,7 @@ const {
     };
 
     name;
-    id_from_str("hello there");
+    ident("hello there");
 
     17;
     0b101;
@@ -58,5 +58,5 @@ type _ = bool;
 
 module foo ports() {
     wire _: bool = undef;
-    wire id_from_str("derp"): bool = undef;
+    wire ident("derp"): bool = undef;
 }

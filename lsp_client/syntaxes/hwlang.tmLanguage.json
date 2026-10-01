@@ -205,8 +205,8 @@
       "match": "\\bunsafe_value_with_domain\\b"
     },
     {
-      "name": "keyword.other.idfromstr.hwlang",
-      "match": "\\bid_from_str\\b"
+      "name": "keyword.other.ident.hwlang",
+      "match": "\\bident\\b"
     },
     {
       "name": "punctuation.semi.hwlang",

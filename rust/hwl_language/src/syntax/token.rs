@@ -690,7 +690,7 @@ declare_tokens! {
         // TODO separate category?
         Builtin(TOKEN_STR_BUILTIN, TC::Keyword),
         UnsafeValueWithDomain(TOKEN_STR_UNSAFE_VALUE_WITH_DOMAIN, TC::Keyword),
-        IdFromStr("id_from_str", TC::Keyword),
+        Ident("ident", TC::Keyword),
 
         // misc symbols
         Semi(";", TC::Symbol),

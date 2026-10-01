@@ -1312,7 +1312,7 @@ impl Context<'_> {
         match id {
             GeneralIdentifier::Simple(id) => self.fmt_id(id),
             GeneralIdentifier::FromString(_span, expr) => {
-                fmt_call_like(token(TT::IdFromStr), &[expr], |&expr| self.fmt_expr(expr))
+                fmt_call_like(token(TT::Ident), &[expr], |&expr| self.fmt_expr(expr))
             }
         }
     }

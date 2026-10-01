@@ -90,20 +90,20 @@ fn resolve_pub_wire_for() {
 
 #[test]
 fn resolve_general_simple() {
-    let src = "module foo ports() { wire id_from_str(\"x\") = false; comb { x; } }";
-    test_resolve(src, 59, Ok(&[26..42]));
+    let src = "module foo ports() { wire ident(\"x\") = false; comb { x; } }";
+    test_resolve(src, 53, Ok(&[26..36]));
 }
 
 #[test]
 fn resolve_simple_general() {
-    let src = "module foo ports() { wire x = false; comb { id_from_str(\"x\"); } }";
+    let src = "module foo ports() { wire x = false; comb { ident(\"x\"); } }";
     test_resolve(src, 44, Ok(&[26..27]));
 }
 
 #[test]
 fn resolve_general_general() {
-    let src = "module foo ports() { wire id_from_str(\"x\") = false; comb { id_from_str(\"x\"); } }";
-    test_resolve(src, 59, Ok(&[26..42]));
+    let src = "module foo ports() { wire ident(\"x\") = false; comb { ident(\"x\"); } }";
+    test_resolve(src, 53, Ok(&[26..36]));
 }
 
 #[test]

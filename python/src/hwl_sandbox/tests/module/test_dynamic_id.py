@@ -16,12 +16,12 @@ def test_dynamic_id(tmp_dir: Path):
         }
     ) {
         for (i in 0..4) {
-            pub wire id_from_str("w{i}");
+            pub wire ident("w{i}");
             comb {
                 if (i == 0) { 
-                    id_from_str("w{i}") = x;
+                    ident("w{i}") = x;
                 } else {
-                    id_from_str("w{i}") = id_from_str("w{i-1}");
+                    ident("w{i}") = ident("w{i-1}");
                 }
             }
         }
