@@ -140,3 +140,60 @@ def test_interact_enum():
     assert str(foo.Empty) == "Foo.Empty"
     assert str(foo.Data(0)) == "Foo.Data(0)"
     assert str(foo.Data(1)) == "Foo.Data(1)"
+
+
+def _verilated_port_test_module(tmp_dir: Path) -> hwl.VerilatedInstance:
+    src = """
+    module top ports(
+        x: in async bool,
+        y: out async bool,
+        n: in async uint(4),
+    ) {
+        comb { y = x; }
+    }
+    """
+    top: hwl.Module = compile_custom(src).resolve("top.top")
+    return top.as_verilated(tmp_dir).instance()
+
+
+def test_port_interaction_errors(tmp_dir: Path):
+    inst = _verilated_port_test_module(tmp_dir)
+
+    # assigning a port directly should point at the correct `.value` syntax
+    with pytest.raises(ValueError, match=r"cannot set port value directly, use `ports\.x\.value = value`"):
+        inst.ports.x = True
+    with pytest.raises(ValueError, match=r'cannot set port value directly, use `ports\["x"\]\.value = value`'):
+        inst.ports["x"] = True
+    with pytest.raises(ValueError, match=r"cannot set port value directly, use `ports\.y\.value = value`"):
+        inst.ports.y = True
+    with pytest.raises(ValueError, match=r'cannot set port value directly, use `ports\["y"\]\.value = value`'):
+        inst.ports["y"] = True
+
+    # accessing a port that does not exist is a plain attribute error
+    with pytest.raises(AttributeError, match="port `missing` not found"):
+        _ = inst.ports.missing
+    with pytest.raises(AttributeError, match="port `missing` not found"):
+        _ = inst.ports["missing"]
+
+    # a port object is not a bool, reading a boolean port requires `.value`
+    with pytest.raises(ValueError, match="cannot be used as a boolean"):
+        bool(inst.ports.x)
+    with pytest.raises(ValueError, match="cannot be used as a boolean"):
+        if inst.ports.x:
+            pass
+
+    # setting a value of the wrong type is reported as a normal compiler diagnostic
+    with diag_error("type mismatch"):
+        inst.ports.x.value = "hello"
+    with diag_error("type mismatch"):
+        inst.ports.n.value = 999
+
+    # output ports cannot be driven from the python side
+    with pytest.raises(hwl.VerilationException, match="Cannot set output port"):
+        inst.ports.y.value = True
+
+    # the correct way to set and read a port works
+    inst.ports.x.value = True
+    inst.step(1)
+    assert inst.ports.y.value is True
+    assert inst.ports["y"].value is True

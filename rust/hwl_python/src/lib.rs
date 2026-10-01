@@ -1063,7 +1063,17 @@ impl VerilatedPorts {
         let _ = self.get_port(attr, py)?;
         let _ = value;
 
-        let msg = format!("cannot set port value directly, use `ports.{attr}.value = value` instead)");
+        let msg = format!("cannot set port value directly, use `ports.{attr}.value = value` instead");
+        Err(PyValueError::new_err(msg))
+    }
+
+    fn __setitem__(&mut self, key: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+        // setting values directly is not actually allowed, but we can return a nicer error message than
+        //   the misleading "object does not support item assignment"
+        let _ = self.get_port(key, py)?;
+        let _ = value;
+
+        let msg = format!("cannot set port value directly, use `ports[\"{key}\"].value = value` instead");
         Err(PyValueError::new_err(msg))
     }
 
@@ -1089,7 +1099,7 @@ impl VerilatedPorts {
             .ports_named()
             .get(name)
             .copied()
-            .ok_or_else(|| PyAttributeError::new_err(format!("port {name} not found")))
+            .ok_or_else(|| PyAttributeError::new_err(format!("port `{name}` not found")))
     }
 }
 
