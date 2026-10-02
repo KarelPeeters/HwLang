@@ -4,8 +4,8 @@ use itertools::Itertools;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::num::NonZeroU16;
 use std::ops::{Index, IndexMut};
+
 // TODO use refcell for all of these data structures?
 //   that would allow users to push new values without worrying about mutability
 //   the trickier functions (that actually allow mutating existing values) would still be behind &mut.
@@ -65,10 +65,19 @@ pub struct Idx {
     check: RandomCheck,
 }
 
-/// Large enough for a really low chance of collision,
-/// small enough to leave room for niche value optimization in containing types.
+/// A sentinel value to protect against accidentally mixing keys from different [Arena]s or similar datastructures.
+///
+/// When debug assertions are enabled, this type contains a random value each time it is constructed.
+/// Values can then be asserted to match.
+///
+/// Without debug assertions, this type becomes zero-sized to avoid any performance impact.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct RandomCheck(NonZeroU16);
+pub struct RandomCheck(RandomCheckInner);
+
+#[cfg(debug_assertions)]
+type RandomCheckInner = std::num::NonZeroU16;
+#[cfg(not(debug_assertions))]
+type RandomCheckInner = ();
 
 #[derive(Clone)]
 pub struct Arena<K: IndexType, T> {
@@ -351,10 +360,6 @@ impl RandomCheck {
     pub fn new() -> Self {
         // TODO check if this is anywhere close to a bottleneck
         Self(rand::random())
-    }
-
-    pub fn inner(&self) -> NonZeroU16 {
-        self.0
     }
 }
 
