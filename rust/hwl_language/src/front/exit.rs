@@ -2,11 +2,12 @@ use crate::front::block::EarlyExitKind;
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::expression::eval_binary_bool_typed;
-use crate::front::flow::{Flow, FlowKind, Variable, VariableId, VariableInfo};
+use crate::front::flow::{Flow, FlowKind, Variable, VariableInfo};
 use crate::front::implication::HardwareValueWithImplications;
 use crate::front::types::{HardwareType, Type, TypeBool};
 use crate::front::value::{MaybeCompile, SimpleCompileValue, Value};
 use crate::mid::ir::{IrBoolBinaryOp, IrLargeArena, IrType, IrVariableInfo};
+use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::pos::{Span, Spanned};
 use unwrap_match::unwrap_match;
 
@@ -59,13 +60,13 @@ pub struct ExitFlag {
 
 impl LoopEntry {
     // TODO use Variable instead of IrVariable to get const prop, implications and joining for free
-    pub fn new(flow: &mut impl Flow, span_keyword: Span) -> DiagResult<LoopEntry> {
+    pub fn new(refs: CompileRefs, flow: &mut impl Flow, span_keyword: Span) -> DiagResult<LoopEntry> {
         match flow.kind_mut() {
             FlowKind::Compile(_) => Ok(LoopEntry::Compile),
             FlowKind::Hardware(flow) => {
                 let entry = LoopEntryHardware {
-                    break_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Break)?,
-                    continue_flag: ExitFlag::new(flow, span_keyword, EarlyExitKind::Continue)?,
+                    break_flag: ExitFlag::new(refs, flow, span_keyword, EarlyExitKind::Break)?,
+                    continue_flag: ExitFlag::new(refs, flow, span_keyword, EarlyExitKind::Continue)?,
                 };
 
                 Ok(LoopEntry::Hardware(entry))
@@ -75,13 +76,14 @@ impl LoopEntry {
 }
 
 impl ExitFlag {
-    pub fn new(flow: &mut impl Flow, span: Span, kind: EarlyExitKind) -> DiagResult<ExitFlag> {
+    pub fn new(refs: CompileRefs, flow: &mut impl Flow, span: Span, kind: EarlyExitKind) -> DiagResult<ExitFlag> {
         // crate variable
         let name = match kind {
             EarlyExitKind::Return => "flag_function_return",
             EarlyExitKind::Break => "flag_loop_break",
             EarlyExitKind::Continue => "flag_loop_continue",
         };
+
         let use_ir_variable = match flow.kind_mut() {
             FlowKind::Compile(_) => None,
             FlowKind::Hardware(flow) => {
@@ -94,9 +96,10 @@ impl ExitFlag {
             }
         };
 
+        let id = MaybeIdentifier::Identifier(refs.shared.interner.push(name));
         let info = VariableInfo {
             span_decl: span,
-            id: VariableId::Custom(name),
+            id,
             mutable: true,
             ty: Some(Spanned::new(span, Type::Bool)),
             join_ir_variable: use_ir_variable,

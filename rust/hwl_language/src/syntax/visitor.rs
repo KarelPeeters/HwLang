@@ -3,15 +3,15 @@ use crate::syntax::ast::{
     BlockStatementKind, ClockedProcess, ClockedProcessReset, CombinatorialProcess, CommonDeclaration,
     CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumBodyItem,
     EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent,
-    ForStatement, FunctionDeclaration, GeneralIdentifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
+    ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
     InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal,
-    ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier,
-    MaybeParameterSelf, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind,
-    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
-    ParameterSelf, ParameterSelfKind, Parameters, PortConnection, PortSingleKindInner, RangeLiteral,
-    RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement,
-    StringPiece, StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
-    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, MaybeParameterSelf,
+    ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelf, ParameterSelfKind,
+    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind,
+    RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement, StringPiece, StructBodyItem, StructDeclaration,
+    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
+    WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
@@ -56,14 +56,14 @@ pub trait SyntaxVisitor {
     //   eg. for declarations it's not that straightforward
     fn should_visit_span(&self, span: Span) -> bool;
 
-    fn report_id_declare(&mut self, id: Either<GeneralIdentifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
+    fn report_id_declare(&mut self, id: Either<Identifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
         let _ = id;
         ControlFlow::Continue(())
     }
 
     fn report_id_use(
         &mut self,
-        id: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        id: Either<Identifier, Spanned<SelfExpression>>,
         scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
         let _ = (id, scope_find_id);
@@ -260,7 +260,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         let mut scope = DeclScope::new_root();
         for item in items {
             if let Some(info) = item.info().declaration {
-                self.scope_declare(&mut scope, Conditional::No, info.id.into())?;
+                self.scope_declare(&mut scope, Conditional::No, info.id)?;
             }
 
             if let Item::Import(item) = item {
@@ -401,7 +401,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                                 id: signal_id,
                                 ty: signal_ty,
                             } = signal;
-                            slf.visitor.report_range(signal_id.span.join(signal_ty.span), None);
+                            slf.visitor.report_range(signal_id.span().join(signal_ty.span), None);
                             slf.visit_expression(scope_body, signal_ty)?;
                             slf.scope_declare(&mut scope_ports, Conditional::No, signal_id.into())?;
                         }
@@ -415,11 +415,11 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                             slf.visitor.report_range(span, Some(FoldRangeKind::Region));
 
                             slf.visit_extra_list(scope_body, port_dirs, &mut |slf, _, &(port_name, port_dir)| {
-                                slf.visitor.report_range(port_name.span.join(port_dir.span), None);
+                                slf.visitor.report_range(port_name.span().join(port_dir.span), None);
                                 all_view_ports.push(port_name);
                                 ControlFlow::Continue(())
                             })?;
-                            slf.scope_declare(&mut scope_views, Conditional::No, id.into())?;
+                            slf.scope_declare(&mut scope_views, Conditional::No, id)?;
                         }
                     }
 
@@ -626,7 +626,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     }
                 };
 
-                self.scope_declare(scope_parent, Conditional::No, id.into())?;
+                self.scope_declare(scope_parent, Conditional::No, id)?;
             }
             CommonDeclaration::ConstBlock(block) => {
                 let ConstBlock { span_keyword: _, block } = block;
@@ -821,7 +821,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             match &pattern.inner {
                 MatchPattern::Wildcard => {}
                 &MatchPattern::WildcardVal(id) => {
-                    self.scope_declare(&mut scope_inner, Conditional::No, id.into())?;
+                    self.scope_declare(&mut scope_inner, Conditional::No, id)?;
                 }
                 &MatchPattern::EqualTo(expr) => {
                     self.visit_expression(scope, expr)?;
@@ -834,7 +834,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     payload_id: payload,
                 } => {
                     if let Some(payload) = payload {
-                        self.scope_declare(&mut scope_inner, Conditional::No, payload.into())?;
+                        self.scope_declare(&mut scope_inner, Conditional::No, payload)?;
                     }
                 }
             }
@@ -868,7 +868,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         }
 
         let mut scope_inner = scope.new_child();
-        self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
+        self.scope_declare(&mut scope_inner, Conditional::No, index)?;
 
         f(self, &mut scope_inner, body)?;
 
@@ -918,7 +918,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 if let Some(init) = init {
                     self.visit_expression(scope, init)?;
                 }
-                self.scope_declare(scope, Conditional::No, id.into())?;
+                self.scope_declare(scope, Conditional::No, id)?;
             }
             BlockStatementKind::RegisterDeclaration(decl) => {
                 let &RegisterDeclaration {
@@ -1233,7 +1233,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                 self.visit_expression(scope, iter)?;
 
                 let mut scope_inner = scope.new_child();
-                self.scope_declare(&mut scope_inner, Conditional::No, index.into())?;
+                self.scope_declare(&mut scope_inner, Conditional::No, index)?;
 
                 self.visit_array_literal_element(&scope_inner, body)?;
             }
@@ -1305,14 +1305,14 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
     // TODO what is the difference between this and visit_id_usage?
     // TODO refactor all id visiting functions, we have a bunch of partially overlapping ones
-    fn visit_id_decl(&mut self, scope: &DeclScope, id: MaybeGeneralIdentifier) -> ControlFlow<V::Break> {
+    fn visit_id_decl(&mut self, scope: &DeclScope, id: MaybeIdentifier) -> ControlFlow<V::Break> {
         self.visitor.report_range(id.span(), None);
 
         match id {
-            MaybeGeneralIdentifier::Dummy { span: _ } => {}
-            MaybeGeneralIdentifier::Identifier(id) => match id {
-                GeneralIdentifier::Simple(_id) => {}
-                GeneralIdentifier::FromString(_span, expr) => {
+            MaybeIdentifier::Dummy { span: _ } => {}
+            MaybeIdentifier::Identifier(id) => match id {
+                Identifier::Simple(_id) => {}
+                Identifier::FromString(_span, expr) => {
                     self.visit_expression(scope, expr)?;
                 }
             },
@@ -1324,7 +1324,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     fn visit_id_usage(
         &mut self,
         scope: &DeclScope,
-        id: Either<MaybeGeneralIdentifier, Spanned<SelfExpression>>,
+        id: Either<MaybeIdentifier, Spanned<SelfExpression>>,
     ) -> ControlFlow<V::Break> {
         let span = id.span();
 
@@ -1334,12 +1334,12 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         let report_id = match id {
             Either::Left(id) => {
                 match id {
-                    MaybeGeneralIdentifier::Dummy { .. } => None,
-                    MaybeGeneralIdentifier::Identifier(id) => {
+                    MaybeIdentifier::Dummy { .. } => None,
+                    MaybeIdentifier::Identifier(id) => {
                         // first visit the inner expressions if any
                         match id {
-                            GeneralIdentifier::Simple(_id) => {}
-                            GeneralIdentifier::FromString(_span, expr) => {
+                            Identifier::Simple(_id) => {}
+                            Identifier::FromString(_span, expr) => {
                                 self.visit_expression(scope, expr)?;
                             }
                         }
@@ -1356,7 +1356,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             self.visitor.report_id_use(report_id, || {
                 let id_eval = match report_id {
                     Either::Left(report_id) => {
-                        let eval_id = eval_general_id(self.source, self.arena_expressions, report_id);
+                        let eval_id = eval_id(self.source, self.arena_expressions, report_id);
                         Either::Left(eval_id)
                     }
                     Either::Right(slf) => Either::Right(slf.inner),
@@ -1372,7 +1372,7 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         &mut self,
         scope: &mut DeclScope,
         cond: Conditional,
-        id: MaybeGeneralIdentifier,
+        id: MaybeIdentifier,
     ) -> ControlFlow<V::Break> {
         self.scope_declare_impl(scope, cond, Either::Left(id))
     }
@@ -1381,16 +1381,16 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
         &mut self,
         scope: &DeclScope,
         cond: Conditional,
-        id: Either<MaybeGeneralIdentifier, ParameterSelf>,
+        id: Either<MaybeIdentifier, ParameterSelf>,
     ) -> ControlFlow<V::Break> {
         match id {
             Either::Left(id) => match id {
-                MaybeGeneralIdentifier::Dummy { .. } => {}
-                MaybeGeneralIdentifier::Identifier(id) => {
+                MaybeIdentifier::Dummy { .. } => {}
+                MaybeIdentifier::Identifier(id) => {
                     self.visitor.report_id_declare(Either::Left(id))?;
 
                     if V::SCOPE_DECLARE {
-                        let id_eval = eval_general_id(self.source, self.arena_expressions, id);
+                        let id_eval = eval_id(self.source, self.arena_expressions, id);
                         scope
                             .content
                             .borrow_mut()
@@ -1414,14 +1414,10 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
     }
 }
 
-fn eval_general_id<'s>(
-    source: &'s SourceDatabase,
-    arena: &ArenaExpressions,
-    id: GeneralIdentifier,
-) -> EvaluatedId<&'s str> {
+fn eval_id<'s>(source: &'s SourceDatabase, arena: &ArenaExpressions, id: Identifier) -> EvaluatedId<&'s str> {
     match id {
-        GeneralIdentifier::Simple(id) => EvaluatedId::Simple(id.str(source)),
-        GeneralIdentifier::FromString(_, expr) => {
+        Identifier::Simple(id) => EvaluatedId::Simple(id.str(source)),
+        Identifier::FromString(_, expr) => {
             // TODO look even further through eg. constants, values, ...
             match &arena[expr.inner] {
                 ExpressionKind::StringLiteral(pieces) => {

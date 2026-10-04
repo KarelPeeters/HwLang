@@ -3,7 +3,7 @@ use crate::front::check::{TypeContainsReason, check_type_contains_value, check_t
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::exit::{ExitFlag, ExitStack, ReturnEntry, ReturnEntryHardware, ReturnEntryKind};
-use crate::front::flow::{Flow, FlowKind, VariableId, VariableInfo};
+use crate::front::flow::{Flow, FlowKind, VariableInfo};
 use crate::front::implication::ValueWithImplications;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedEnumVariantInfo, ElaboratedStruct, ElaboratedStructInfo, FunctionItemBody,
@@ -18,12 +18,12 @@ use crate::front::value::{
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
 use crate::mid::ir::{IrExpressionLarge, IrLargeArena};
 use crate::syntax::ast::{
-    Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, Identifier, MaybeIdentifier, Parameter,
-    Parameters,
+    Arg, Block, BlockStatement, Expression, ExtraList, FunctionDeclaration, MaybeIdentifier, Parameter, Parameters,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultDoubleExt;
 use crate::util::data::VecExt;
+use crate::util::intern::Id;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use itertools::{Either, Itertools, enumerate};
@@ -37,7 +37,7 @@ pub enum FunctionValue {
     StructNew(ElaboratedStruct),
     StructNewInfer(UniqueDeclaration),
     EnumNew(ElaboratedEnum, usize),
-    EnumNewInfer(UniqueDeclaration, Arc<String>),
+    EnumNewInfer(UniqueDeclaration, Id),
 }
 
 #[derive(Debug, Clone)]
@@ -84,22 +84,22 @@ pub enum FunctionBody<'a> {
 pub struct ParamArgMacher<'a> {
     // constant initial values
     refs: CompileRefs<'a, 'a>,
-    args: &'a EvaluatedArgs<'a>,
-    arg_name_to_index: IndexMap<&'a str, usize>,
+    args: &'a EvaluatedArgs,
+    arg_name_to_index: IndexMap<Id, usize>,
     positional_count: usize,
     params_span: Span,
 
     // mutable state
     next_param_index: usize,
     arg_used: Vec<bool>,
-    param_names: IndexMap<&'a str, Span>,
+    param_names: IndexMap<Id, Span>,
 
     any_err: DiagResult,
 }
 
-pub struct EvaluatedArgs<'a> {
+pub struct EvaluatedArgs {
     pub span: Span,
-    pub inner: Vec<Arg<Option<Spanned<&'a str>>, Spanned<ValueWithImplications>>>,
+    pub inner: Vec<Arg<Option<Spanned<Id>>, Spanned<ValueWithImplications>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -121,7 +121,7 @@ impl<'a> ParamArgMacher<'a> {
         let diags = refs.diags;
 
         // check for duplicate arg names and check that positional args are before named args
-        let mut arg_name_to_index: IndexMap<&str, usize> = IndexMap::new();
+        let mut arg_name_to_index: IndexMap<Id, usize> = IndexMap::new();
         let mut first_named_span = None;
         let mut positional_count: usize = 0;
         let mut any_err_args = Ok(());
@@ -231,19 +231,17 @@ impl<'a> ParamArgMacher<'a> {
 
     pub fn resolve_param(
         &mut self,
-        id: Identifier,
+        id: Spanned<Id>,
         ty: Spanned<&Type>,
         default: Option<Spanned<ValueWithImplications>>,
     ) -> DiagResult<Spanned<ValueWithImplications>> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
-
-        let id_str = id.str(self.refs.fixed.source);
 
         let param_index = self.next_param_index;
         self.next_param_index += 1;
 
-        if let Some(prev_span) = self.param_names.insert(id_str, id.span) {
+        if let Some(prev_span) = self.param_names.insert(id.inner, id.span) {
             let e = DiagnosticError::new("duplicate parameter name", id.span, "defined again here")
                 .add_info(prev_span, "previously defined here")
                 .report(diags);
@@ -259,7 +257,7 @@ impl<'a> ParamArgMacher<'a> {
             assert!(!self.arg_used[arg_index]);
 
             // check if there's also a named match to get better error messages
-            if let Some(&other_arg_index) = self.arg_name_to_index.get(id_str) {
+            if let Some(&other_arg_index) = self.arg_name_to_index.get(&id.inner) {
                 let e = DiagnosticError::new(
                     "argument matches positionally but is also passed as named",
                     self.args.inner[other_arg_index].span,
@@ -275,7 +273,7 @@ impl<'a> ParamArgMacher<'a> {
             self.arg_used[arg_index] = true;
             Ok(arg.value.clone())
         } else {
-            match self.arg_name_to_index.get(id_str) {
+            match self.arg_name_to_index.get(&id.inner) {
                 Some(&arg_index) => {
                     // named match
                     let arg = &self.args.inner[arg_index];
@@ -290,6 +288,7 @@ impl<'a> ParamArgMacher<'a> {
                         Ok(default)
                     } else {
                         // nothing matched, report error
+                        let id_str = id.inner.str(&self.refs.shared.interner);
                         let e = DiagnosticError::new(
                             format!("missing argument for parameter `{id_str}`"),
                             self.args.span,
@@ -307,7 +306,7 @@ impl<'a> ParamArgMacher<'a> {
         // check type match
         let value = value.and_then(|value| {
             let reason = TypeContainsReason::Parameter { param_ty: ty.span };
-            check_type_contains_value(diags, elab, reason, ty.inner, value.as_ref())?;
+            check_type_contains_value(refs, reason, ty.inner, value.as_ref())?;
             Ok(value)
         });
 
@@ -351,8 +350,8 @@ impl CompileItemContext<'_, '_> {
         function: &FunctionValue,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         let err_infer_any = |kind: &str, span_decl: Span| {
             error_cannot_infer_generic_params(kind, span_target, span_call, span_decl).report(diags)
@@ -365,7 +364,7 @@ impl CompileItemContext<'_, '_> {
             )
             .add_info(
                 span_call,
-                format!("non-{kind} expected type {:?}", expected_ty.value_string(elab)),
+                format!("non-{kind} expected type {:?}", expected_ty.value_string(refs.shared)),
             )
             .report(self.refs.diags)
         };
@@ -403,13 +402,12 @@ impl CompileItemContext<'_, '_> {
             &FunctionValue::EnumNew(enum_elab, variant_index) => {
                 self.call_enum_new(span_call, enum_elab, variant_index, &args)
             }
-            &FunctionValue::EnumNewInfer(func_unique, ref variant_str) => match expected_ty {
+            &FunctionValue::EnumNewInfer(func_unique, variant_id) => match expected_ty {
                 &Type::Enum(expected_elab) => {
                     let expected_info = self.refs.shared.elaboration_arenas.enum_info(expected_elab);
 
                     if expected_info.unique == func_unique {
-                        let variant_index =
-                            expected_info.variant_index(diags, Spanned::new(span_target, variant_str))?;
+                        let variant_index = expected_info.variant_index(refs, Spanned::new(span_target, variant_id))?;
                         self.call_enum_new(span_call, expected_elab, variant_index, &args)
                     } else {
                         Err(error_unique_mismatch(
@@ -490,8 +488,8 @@ impl CompileItemContext<'_, '_> {
         let mut matcher = ParamArgMacher::new(self.refs, span_body, &args, false, NamedRule::OnlyNamed)?;
 
         let mut field_values = vec![];
-        for &(field_id, ref field_ty) in fields.values() {
-            if let Ok(v) = matcher.resolve_param(field_id, field_ty.as_ref(), None) {
+        for (_, &(field_id_spanned, ref field_ty)) in fields {
+            if let Ok(v) = matcher.resolve_param(field_id_spanned, field_ty.as_ref(), None) {
                 field_values.push(v.inner.into_value());
             }
         }
@@ -514,7 +512,6 @@ impl CompileItemContext<'_, '_> {
         let enum_info = self.refs.shared.elaboration_arenas.enum_info(elab);
         let &ElaboratedEnumVariantInfo {
             id: variant_id,
-            debug_info_name: _,
             ref payload_ty,
         } = &enum_info.variants[variant_index];
 
@@ -524,13 +521,17 @@ impl CompileItemContext<'_, '_> {
                 span_call,
                 "calling enum variant here",
             )
-            .add_info(variant_id.span, "enum variant declared without payload here")
+            .add_info(variant_id.span(), "enum variant declared without payload here")
             .report(self.refs.diags)
         })?;
 
         let mut matcher = ParamArgMacher::new(self.refs, span_call, args, false, NamedRule::OnlyPositional)?;
         let payload = matcher
-            .resolve_param(variant_id, payload_ty.as_ref(), None)?
+            .resolve_param(
+                Spanned::new(variant_id.span(), variant_id.inner),
+                payload_ty.as_ref(),
+                None,
+            )?
             .inner
             .into_value();
         matcher.finish()?;
@@ -575,8 +576,6 @@ impl CompileItemContext<'_, '_> {
         arg_self: Option<Spanned<Value>>,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
-        let diags = self.refs.diags;
-
         self.refs.check_should_stop(span_decl)?;
 
         // recreate captured scope
@@ -589,7 +588,7 @@ impl CompileItemContext<'_, '_> {
 
         if let Some(arg_self) = arg_self {
             scope.declare(
-                diags,
+                self.refs,
                 ScopeKey::Slf(arg_self.span),
                 Ok(ScopedEntry::Value(arg_self.inner)),
             );
@@ -615,6 +614,8 @@ impl CompileItemContext<'_, '_> {
                 default,
             } = param;
 
+            let id_eval = slf.eval_id(scope.as_scope(), flow, id)?;
+
             let ty = slf.eval_expression_as_ty(scope.as_scope(), flow, ty)?;
             let default = default
                 .as_ref()
@@ -630,24 +631,23 @@ impl CompileItemContext<'_, '_> {
                 })
                 .transpose()?;
 
-            let value = matcher.resolve_param(id, ty.as_ref(), default);
+            let value = matcher.resolve_param(id_eval, ty.as_ref(), default);
 
             // record value into vec
             if let Ok(value) = &value {
-                param_values.push((param.id, value.inner.clone()));
+                param_values.push((id_eval, value.inner.clone()));
             }
 
             // declare param in scope
             let param_var = flow.var_new_immutable_init(
                 slf.refs,
-                param.id.span,
-                VariableId::Id(MaybeIdentifier::Identifier(param.id)),
-                param.id.span,
+                MaybeIdentifier::Identifier(id_eval),
+                param.id.span(),
                 value.map(|v| v.inner),
             )?;
             let entry = ScopedEntry::Named(NamedValue::Variable(param_var));
 
-            scope.declare_root(diags, param.id.spanned_str(self.refs.fixed.source), Ok(entry));
+            scope.declare_root(slf.refs, MaybeIdentifier::Identifier(id_eval), Ok(entry));
 
             Ok(())
         })?;
@@ -701,16 +701,17 @@ impl CompileItemContext<'_, '_> {
         let return_entry_kind = match flow.kind_mut() {
             FlowKind::Compile(_) => ReturnEntryKind::Compile,
             FlowKind::Hardware(flow) => {
-                let return_flag = ExitFlag::new(flow, span_decl, EarlyExitKind::Return)?;
+                let return_flag = ExitFlag::new(self.refs, flow, span_decl, EarlyExitKind::Return)?;
                 ReturnEntryKind::Hardware(ReturnEntryHardware { return_flag })
             }
         };
         let return_var = if let Some(return_type) = &return_type
             && !return_type.inner.is_unit()
         {
+            let id_return_value = self.refs.shared.interner.push("return_value");
             let return_var_info = VariableInfo {
                 span_decl,
-                id: VariableId::Custom("return_value"),
+                id: MaybeIdentifier::Identifier(id_return_value),
                 mutable: false,
                 ty: None,
                 join_ir_variable: None,
@@ -749,8 +750,8 @@ impl CompileItemContext<'_, '_> {
         function: &FunctionBits,
         args: EvaluatedArgs,
     ) -> DiagResult<Value> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         // check arg is single non-named value
         // TODO use new common arg-matching machinery
@@ -780,8 +781,7 @@ impl CompileItemContext<'_, '_> {
         match kind {
             FunctionBitsKind::ToBits => {
                 check_type_contains_value(
-                    diags,
-                    elab,
+                    refs,
                     TypeContainsReason::Operator(span_call),
                     &ty_hw.as_type(),
                     value.as_ref(),
@@ -820,8 +820,7 @@ impl CompileItemContext<'_, '_> {
                 let width = ty_ir.size_bits();
 
                 let value = check_type_is_bool_array(
-                    diags,
-                    elab,
+                    refs,
                     TypeContainsReason::Operator(span_call),
                     value.map_inner(|v| v.into_value()),
                     Some(width),
@@ -837,7 +836,10 @@ impl CompileItemContext<'_, '_> {
                                         span_value,
                                         format!("got bits `{:?}`", v),
                                     )
-                                    .add_info(span_target, format!("target type `{}`", ty_hw.value_string(elab)))
+                                    .add_info(
+                                        span_target,
+                                        format!("target type `{}`", ty_hw.value_string(refs.shared)),
+                                    )
                                     .report(diags)
                                 } else {
                                     diags.report_error_internal(
@@ -876,7 +878,6 @@ pub fn check_function_return_type_and_set_value(
     value: Option<Spanned<ValueWithImplications>>,
 ) -> DiagResult {
     let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
 
     let ty = entry.return_type;
 
@@ -887,7 +888,7 @@ pub fn check_function_return_type_and_set_value(
                 span_keyword,
                 span_return_ty: ty.span,
             };
-            let result_ty = check_type_contains_value(diags, elab, reason, ty.inner, value.as_ref());
+            let result_ty = check_type_contains_value(refs, reason, ty.inner, value.as_ref());
 
             if let Some(return_var) = entry.return_var {
                 flow.var_set(refs, return_var, span_stmt, result_ty.map(|()| value.inner))?;
@@ -903,7 +904,10 @@ pub fn check_function_return_type_and_set_value(
             )
             .add_info(
                 ty.span,
-                format!("function return type `{}` declared here", ty.inner.value_string(elab)),
+                format!(
+                    "function return type `{}` declared here",
+                    ty.inner.value_string(refs.shared)
+                ),
             )
             .add_footer_hint("either return a value or remove the return type")
             .report(diags);
@@ -936,7 +940,6 @@ fn check_function_end(
     end: BlockEnd,
 ) -> DiagResult<Value> {
     let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
 
     // some of these should be impossible, but checking again here is redundant
     let is_certain_return = match end {
@@ -972,7 +975,10 @@ fn check_function_end(
                 )
                 .add_info(
                     return_type.span,
-                    format!("return type `{}` declared here", return_type.inner.value_string(elab)),
+                    format!(
+                        "return type `{}` declared here",
+                        return_type.inner.value_string(refs.shared)
+                    ),
                 )
                 .report(diags);
                 return Err(diag);
@@ -993,7 +999,7 @@ impl FunctionValue {
             StructNew(ElaboratedStruct),
             StructNewInfer(UniqueDeclaration),
             EnumNew(ElaboratedEnum, usize),
-            EnumNewInfer(UniqueDeclaration, &'a str),
+            EnumNewInfer(UniqueDeclaration, Id),
         }
 
         match self {
@@ -1014,9 +1020,9 @@ impl FunctionValue {
             }
             FunctionValue::Bits(FunctionBits { ty_hw: ty, kind }) => Key::Bits(ty, *kind),
             FunctionValue::StructNew(elab) => Key::StructNew(*elab),
-            FunctionValue::StructNewInfer(ref_struct) => Key::StructNewInfer(*ref_struct),
+            &FunctionValue::StructNewInfer(ref_struct) => Key::StructNewInfer(ref_struct),
             FunctionValue::EnumNew(elab, index) => Key::EnumNew(*elab, *index),
-            FunctionValue::EnumNewInfer(ref_struct, variant) => Key::EnumNewInfer(*ref_struct, variant),
+            &FunctionValue::EnumNewInfer(ref_struct, variant) => Key::EnumNewInfer(ref_struct, variant),
         }
     }
 }

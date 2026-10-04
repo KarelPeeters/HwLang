@@ -38,6 +38,7 @@ use crate::syntax::parsed::AstRefModuleInternal;
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, VecExt};
+use crate::util::intern::Id;
 use crate::util::{ResultExt, result_pair};
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
@@ -52,6 +53,7 @@ impl CompileRefs<'_, '_> {
         let ElaboratedModuleHeader {
             elab_module: elab,
             ast_ref,
+            unique,
             debug_info_params,
             ports,
             port_interfaces,
@@ -155,7 +157,7 @@ impl CompileRefs<'_, '_> {
             large: ctx.large,
             children: ctx_body.children,
             debug_info_def_file,
-            debug_info_id: def_id.spanned_string(self.fixed.source),
+            debug_info_id: unique.id().spanned_string(&self.shared.interner),
             debug_info_generic_args: debug_info_params,
         };
 
@@ -221,7 +223,7 @@ impl BodyContext {
         let &WireDeclaration {
             vis,
             span_keyword,
-            id,
+            id: wire_id,
             kind,
         } = stmt.inner;
 
@@ -232,10 +234,7 @@ impl BodyContext {
         let scope = scope_extra.as_scope();
 
         // evaluate id
-        let id = ctx.eval_maybe_general_id(scope, flow_parent, id)?;
-        let id_owned = id
-            .as_ref()
-            .map_id(|id| id.as_ref().map_inner(|s| s.as_ref().to_owned()));
+        let wire_id = ctx.eval_maybe_id(scope, flow_parent, wire_id)?;
 
         // evaluate kind: ty/value
         let named_value = match kind {
@@ -245,7 +244,7 @@ impl BodyContext {
             } => {
                 // create wire immediately, we'll fill in the domain and type later
                 let wire = ctx.wires.push(WireInfo::Single(WireInfoSingle {
-                    id: id_owned,
+                    id: wire_id,
                     domain: Ok(None),
                     typed: Ok(None),
                 }));
@@ -323,7 +322,7 @@ impl BodyContext {
                                     let _: NonHardwareType = e;
                                     let err_msg = format!(
                                         "value with type `{}` cannot be represented in hardware",
-                                        value.inner.ty().value_string(elab)
+                                        value.inner.ty().value_string(refs.shared)
                                     );
                                     let diag = DiagnosticError::new(
                                         "cannot assign non-hardware value to wire",
@@ -337,10 +336,10 @@ impl BodyContext {
                             },
                             Some(ty) => {
                                 let reason = TypeContainsReason::Assignment {
-                                    span_target: id.span(),
+                                    span_target: wire_id.span(),
                                     span_target_ty: ty.span,
                                 };
-                                check_type_contains_value(diags, elab, reason, &ty.inner.as_type(), value.as_ref())
+                                check_type_contains_value(refs, reason, &ty.inner.as_type(), value.as_ref())
                                     .map(|()| ty)
                             }
                         };
@@ -406,7 +405,7 @@ impl BodyContext {
                     )
                     .and_then(|interface| {
                         let reason = TypeContainsReason::InterfaceWire(span_keyword);
-                        check_type_contains_value(diags, elab, reason, &Type::Interface, interface.as_ref())?;
+                        check_type_contains_value(refs, reason, &Type::Interface, interface.as_ref())?;
 
                         match interface.inner {
                             CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
@@ -421,7 +420,7 @@ impl BodyContext {
 
                 // create interface wire
                 let wire_interface = ctx.wire_interfaces.push(WireInterfaceInfo {
-                    id: id_owned.clone(),
+                    id: wire_id,
                     domain: Ok(domain),
                     interface,
                     // these will be filled in immediately after this
@@ -430,20 +429,27 @@ impl BodyContext {
                 });
 
                 // create inner wires
-                let interface_info = elab.interface_info(interface.inner);
                 let mut wires = vec![];
                 let mut ir_wires = vec![];
-                for (port_index, (port_name, port_info)) in enumerate(&interface_info.signals) {
-                    let ElaboratedInterfaceSignalInfo { id, ty } = port_info;
-                    let ty = ty.as_ref_ok()?;
 
-                    let diagnostic_str = format!("{}.{}", id_owned.diagnostic_str(), port_name);
-                    let ir_name = format!("{}_{}", id_owned.diagnostic_str(), port_name);
+                let wire_id_str = wire_id.diagnostic_str(&refs.shared.interner);
+                let interface_info = elab.interface_info(interface.inner);
+
+                for (signal_index, (_, signal_info)) in enumerate(&interface_info.signals) {
+                    let ElaboratedInterfaceSignalInfo {
+                        id: signal_id,
+                        ty: signal_ty,
+                    } = signal_info;
+                    let signal_ty = signal_ty.as_ref_ok()?;
+
+                    let signal_id_str = signal_id.inner.str(&refs.shared.interner);
+                    let diagnostic_str = format!("{}.{}", wire_id_str, signal_id_str);
+                    let ir_name = format!("{}_{}", wire_id_str, signal_id_str);
 
                     let wire_ir_info = IrWireInfo {
-                        ty: ty.inner.as_ir(refs),
-                        debug_info_id: Spanned::new(id.span, Some(ir_name)),
-                        debug_info_ty: ty.inner.value_string(elab),
+                        ty: signal_ty.inner.as_ir(refs),
+                        debug_info_id: Spanned::new(wire_id.span(), Some(ir_name)),
+                        debug_info_ty: signal_ty.inner.value_string(refs.shared),
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
@@ -452,7 +458,7 @@ impl BodyContext {
                     let wire_info = WireInfoInInterface {
                         decl_span: stmt.span,
                         interface: Spanned::new(interface.span, wire_interface),
-                        index: port_index,
+                        index: signal_index,
                         diagnostic_string: diagnostic_str,
                         ir: wire_ir,
                     };
@@ -471,11 +477,10 @@ impl BodyContext {
         };
 
         // declare wire in the right scope
-        let id_ref = id.as_ref().map_id(|id| id.as_ref().map_inner(|s| s.as_ref()));
         let entry = ScopedEntry::Named(named_value);
         match vis {
-            Visibility::Public { span: _ } => scope_extra.declare_root(diags, id_ref, Ok(entry)),
-            Visibility::Private => scope_extra.as_scope().declare(diags, id_ref, Ok(entry)),
+            Visibility::Public { span: _ } => scope_extra.declare_root(refs, wire_id, Ok(entry)),
+            Visibility::Private => scope_extra.as_scope().declare(refs, wire_id, Ok(entry)),
         }
 
         Ok(())
@@ -710,7 +715,6 @@ impl BodyContext {
     ) -> DiagResult {
         let refs = ctx.refs;
         let diags = refs.diags;
-        let source = refs.fixed.source;
 
         let &ModuleInstance {
             ref name,
@@ -718,6 +722,9 @@ impl BodyContext {
             module,
             ref port_connections,
         } = stmt.inner;
+
+        // eval name
+        let name = name.map(|name| ctx.eval_id(scope, flow_parent, name)).transpose()?;
 
         // eval module
         let elaborated_module = ctx.eval_expression_as_module(scope, flow_parent, span_keyword, module)?;
@@ -770,9 +777,10 @@ impl BodyContext {
         }
 
         // check that connections are unique
-        let mut id_to_connection_and_used: IndexMap<&str, (&PortConnection, bool)> = IndexMap::new();
+        let mut id_to_connection_and_used: IndexMap<Id, (&PortConnection, bool)> = IndexMap::new();
         for connection in port_connections_eval {
-            match id_to_connection_and_used.entry(connection.id.str(source)) {
+            let connection_id = ctx.eval_id(scope, flow_parent, connection.id)?;
+            match id_to_connection_and_used.entry(connection_id.inner) {
                 Entry::Vacant(entry) => {
                     entry.insert((connection, false));
                 }
@@ -793,8 +801,7 @@ impl BodyContext {
         let mut ir_connections = vec![];
 
         for (connector, connector_info) in connectors {
-            let connector_id_str = connector_info.id.str(source);
-            match id_to_connection_and_used.get_mut(connector_id_str) {
+            match id_to_connection_and_used.get_mut(&connector_info.id.inner) {
                 Some((connection, connection_used)) => {
                     if *connection_used {
                         // this should have already been caught during module header elaboration
@@ -818,12 +825,13 @@ impl BodyContext {
                     }
                 }
                 None => {
+                    let connector_id_str = connector_info.id.inner.str(&refs.shared.interner);
                     let diag = DiagnosticError::new(
                         format!("missing connection for port {connector_id_str}"),
                         Span::empty_at(port_connections.span.end()),
                         "connections here",
                     )
-                    .add_info(connector_info.id.span, "port declared here")
+                    .add_info(connector_info.id.span(), "port declared here")
                     .report(diags);
                     return Err(diag);
                 }
@@ -846,7 +854,7 @@ impl BodyContext {
         any_unused_err?;
 
         // build instance
-        let name = name.as_ref().map(|name| name.str(source).to_owned());
+        let name = name.map(|id| id.inner.str(&ctx.refs.shared.interner).to_owned());
         let ir_instance = match instance_info {
             ElaboratedModule::Internal(module_ir) => IrModuleChild::ModuleInternalInstance(IrModuleInternalInstance {
                 name,
@@ -884,8 +892,6 @@ impl BodyContext {
     ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
         let refs = ctx.refs;
         let diags = refs.diags;
-        let source = refs.fixed.source;
-        let elab = &refs.shared.elaboration_arenas;
 
         // connector, declared in the module being instantiated
         let ConnectorInfo {
@@ -900,12 +906,6 @@ impl BodyContext {
             expr,
         } = &connection;
         let expr = expr.expr();
-
-        // double-check id match
-        let connector_id_str = connector_id.str(source);
-        if connector_id_str != connection_id.str(source) {
-            return Err(diags.report_error_internal(connection_span, "connection name mismatch"));
-        }
 
         // replace signals that are earlier ports with their connected value
         let map_domain_kind = |domain_span: Span, domain: DomainKind<Polarized<ConnectorSingle>>| {
@@ -1002,12 +1002,11 @@ impl BodyContext {
 
                         // check type
                         let reason = TypeContainsReason::InstancePortInput {
-                            span_connection_port_id: connection_id.span,
+                            span_connection_port_id: connection_id.span(),
                             span_port_ty: port_ty.span,
                         };
                         let check_ty = check_type_contains_value(
-                            diags,
-                            elab,
+                            refs,
                             reason,
                             &port_ty.inner.as_type(),
                             connection_value.as_ref(),
@@ -1015,7 +1014,7 @@ impl BodyContext {
 
                         // check domain
                         let target_domain = Spanned {
-                            span: connection_id.span,
+                            span: connection_id.span(),
                             inner: connector_domain.inner,
                         };
                         let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
@@ -1051,8 +1050,9 @@ impl BodyContext {
                         } else {
                             let extra_ir_wire = self.ir_signals.wires.push(IrWireInfo {
                                 ty: port_ty.inner.as_ir(refs),
-                                debug_info_id: connector_id.spanned_string(source).map_inner(Some),
-                                debug_info_ty: port_ty.inner.clone().value_string(elab),
+                                debug_info_id: connector_id
+                                    .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
+                                debug_info_ty: port_ty.inner.clone().value_string(refs.shared),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(ctx),
                             });
 
@@ -1159,11 +1159,10 @@ impl BodyContext {
                                     span_port_ty: port_ty.span,
                                 };
                                 let err_ty = check_type_contains_type(
-                                    diags,
-                                    elab,
+                                    refs,
                                     reason,
                                     &target_ty.as_type(),
-                                    Spanned::new(connection_id.span, &port_ty.inner.as_type()),
+                                    Spanned::new(connection_id.span(), &port_ty.inner.as_type()),
                                 );
 
                                 // check domain
@@ -1186,8 +1185,9 @@ impl BodyContext {
                                     // create intermediate wire, with the port type
                                     let wire_raw = self.ir_signals.wires.push(IrWireInfo {
                                         ty: port_ty.inner.as_ir(refs),
-                                        debug_info_id: Spanned::new(connection_span, Some(connector_id_str.to_owned())),
-                                        debug_info_ty: port_ty.inner.value_string(elab),
+                                        debug_info_id: connector_id
+                                            .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
+                                        debug_info_ty: port_ty.inner.value_string(refs.shared),
                                         debug_info_domain: connector_domain.inner.diagnostic_string(ctx).to_owned(),
                                     });
 
@@ -1258,7 +1258,7 @@ impl BodyContext {
                     LrValue::LeftInterface(intf) => intf,
                     LrValue::LeftTarget(_) | LrValue::Right(_) => {
                         let e = DiagnosticError::new("expected interface value", expr.span, "got non-interface value")
-                            .add_info(connector_id.span, "port defined as interface here")
+                            .add_info(connector_id.span(), "port defined as interface here")
                             .report(diags);
                         return Err(e);
                     }
@@ -1292,14 +1292,14 @@ impl BodyContext {
                             connector_view.span,
                             format!(
                                 "expected interface `{}` set here",
-                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(elab)
+                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(refs.shared)
                             ),
                         )
                         .add_info(
                             value_interface.span,
                             format!(
                                 "actual interface `{}` set here",
-                                SimpleCompileValue::Interface(value_interface.inner).value_string(elab)
+                                SimpleCompileValue::Interface(value_interface.inner).value_string(refs.shared)
                             ),
                         )
                         .report(diags);
@@ -1336,16 +1336,14 @@ impl BodyContext {
                     if let Some(value_dir) = value_dir
                         && connector_dir.inner != value_dir.inner
                     {
+                        let signal_id_str = interface_info.signals[port_index].id.inner.str(&refs.shared.interner);
                         let diag = DiagnosticError::new(
-                            format!(
-                                "direction mismatch for interface port `{}`",
-                                interface_info.signals[port_index].id.str(source)
-                            ),
+                            format!("direction mismatch for interface port `{}`", signal_id_str),
                             expr.span,
                             format!("got direction `{}`", value_dir.inner.diagnostic_string()),
                         )
                         .add_info(
-                            connection_id.span,
+                            connection_id.span(),
                             format!("expected direction `{}`", connector_dir.inner.diagnostic_string()),
                         )
                         .add_info(connector_dir.span, "expected direction set here")

@@ -1,6 +1,6 @@
 use crate::support::PosNotOnIdentifier;
 use crate::support::find_definition::find_definition;
-use hwl_language::syntax::ast::{FileContent, GeneralIdentifier, ParameterSelf};
+use hwl_language::syntax::ast::{FileContent, Identifier, ParameterSelf};
 use hwl_language::syntax::pos::{HasSpan, Pos, Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
@@ -46,7 +46,7 @@ impl SyntaxVisitor for FindDeclaredIdVisitor {
         span.touches_pos(self.pos)
     }
 
-    fn report_id_declare(&mut self, id: Either<GeneralIdentifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
+    fn report_id_declare(&mut self, id: Either<Identifier, ParameterSelf>) -> ControlFlow<Self::Break, ()> {
         let id_span = id.span();
         if id_span.touches_pos(self.pos) {
             ControlFlow::Break(id_span)
@@ -72,7 +72,7 @@ impl SyntaxVisitor for FindUsagesVisitor<'_> {
 
     fn report_id_use(
         &mut self,
-        id: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        id: Either<Identifier, Spanned<SelfExpression>>,
         scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
         for def_span in scope_find_id() {

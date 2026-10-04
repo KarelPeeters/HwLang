@@ -71,7 +71,7 @@ pub struct ConstBlock {
 #[derive(Debug, Clone)]
 pub struct ItemImport {
     pub span: Span,
-    pub parents: Spanned<Vec<Identifier>>,
+    pub parents: Spanned<Vec<SimpleIdentifier>>,
     pub entry: Spanned<ImportFinalKind>,
 }
 
@@ -84,8 +84,8 @@ pub enum ImportFinalKind {
 #[derive(Debug, Clone)]
 pub struct ImportEntry {
     pub span: Span,
-    pub id: Identifier,
-    pub as_: Option<MaybeIdentifier>,
+    pub id: SimpleIdentifier,
+    pub as_: Option<MaybeSimpleIdentifier>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +127,7 @@ pub enum EnumBodyItem {
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub span: Span,
-    pub id: Identifier,
+    pub id: SimpleIdentifier,
     pub payload: Option<Expression>,
 }
 
@@ -155,7 +155,7 @@ pub struct ItemDefModuleExternal {
     pub span: Span,
     pub vis: Visibility,
     pub span_ext: Span,
-    pub id: Identifier,
+    pub id: SimpleIdentifier,
     pub params: Option<Parameters>,
     pub ports: Spanned<ExtraList<ModulePortItem>>,
 }
@@ -537,7 +537,7 @@ pub enum MatchPattern {
         range: Expression,
     },
     IsEnumVariant {
-        variant: Identifier,
+        variant: SimpleIdentifier,
         payload_id: Option<MaybeIdentifier>,
     },
 }
@@ -568,7 +568,7 @@ pub struct ReturnStatement {
 pub struct WireDeclaration {
     pub vis: Visibility,
     pub span_keyword: Span,
-    pub id: MaybeGeneralIdentifier,
+    pub id: MaybeIdentifier,
     pub kind: WireDeclarationKind,
 }
 
@@ -642,7 +642,7 @@ pub struct RegisterDeclarationWire {
 
 #[derive(Debug, Copy, Clone)]
 pub struct RegisterDeclarationNew {
-    pub id: GeneralIdentifier,
+    pub id: Identifier,
     pub ty: Option<Expression>,
 }
 
@@ -767,7 +767,7 @@ pub enum ExpressionKind {
     Wrapped(Expression),
 
     Block(BlockExpression),
-    Id(GeneralIdentifier),
+    Id(Identifier),
 
     // Literals
     IntLiteral(IntLiteral),
@@ -904,17 +904,14 @@ pub enum IntLiteral {
     Hexadecimal { span: Span },
 }
 
-// TODO rename back to Identifier?
 #[derive(Debug, Copy, Clone)]
-pub struct Identifier {
+pub struct SimpleIdentifier {
     pub span: Span,
 }
 
-// TODO intern identifiers!
-// TODO use this almost everywhere, and make the previous id "SimpleId"
 #[derive(Debug, Copy, Clone)]
-pub enum GeneralIdentifier {
-    Simple(Identifier),
+pub enum Identifier {
+    Simple(SimpleIdentifier),
     FromString(Span, Expression),
 }
 
@@ -924,7 +921,7 @@ pub enum MaybeIdentifier<I = Identifier> {
     Identifier(I),
 }
 
-pub type MaybeGeneralIdentifier = MaybeIdentifier<GeneralIdentifier>;
+pub type MaybeSimpleIdentifier = MaybeIdentifier<SimpleIdentifier>;
 
 // TODO move to parser utilities module
 pub fn build_binary_op(
@@ -1007,7 +1004,7 @@ pub enum UnaryOp {
     Not,
 }
 
-impl Identifier {
+impl SimpleIdentifier {
     pub fn str(self, source: &SourceDatabase) -> &str {
         source.span_str(self.span)
     }
@@ -1037,38 +1034,11 @@ impl<I> MaybeIdentifier<I> {
     }
 }
 
-impl MaybeIdentifier<Identifier> {
-    pub fn str(self, source: &SourceDatabase) -> MaybeIdentifier<&str> {
+impl<I, R> MaybeIdentifier<Result<I, R>> {
+    pub fn transpose(self) -> Result<MaybeIdentifier<I>, R> {
         match self {
-            MaybeIdentifier::Dummy { span } => MaybeIdentifier::Dummy { span },
-            MaybeIdentifier::Identifier(id) => MaybeIdentifier::Identifier(id.str(source)),
-        }
-    }
-
-    pub fn spanned_str(self, source: &SourceDatabase) -> MaybeIdentifier<Spanned<&str>> {
-        self.str(source).map_id(|s| Spanned::new(self.span(), s))
-    }
-
-    pub fn spanned_string(self, source: &SourceDatabase) -> Spanned<Option<String>> {
-        match self {
-            MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
-            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.str(source).to_owned())),
-        }
-    }
-}
-
-impl<S: AsRef<str>> MaybeIdentifier<Spanned<S>> {
-    pub fn diagnostic_str(&self) -> &str {
-        match self {
-            MaybeIdentifier::Dummy { span: _ } => "_",
-            MaybeIdentifier::Identifier(id) => id.inner.as_ref(),
-        }
-    }
-
-    pub fn spanned_string(&self) -> Spanned<Option<String>> {
-        match self {
-            &MaybeIdentifier::Dummy { span } => Spanned::new(span, None),
-            MaybeIdentifier::Identifier(id) => Spanned::new(id.span, Some(id.inner.as_ref().to_owned())),
+            MaybeIdentifier::Dummy { span } => Ok(MaybeIdentifier::Dummy { span }),
+            MaybeIdentifier::Identifier(id) => Ok(MaybeIdentifier::Identifier(id?)),
         }
     }
 }
@@ -1115,10 +1085,10 @@ impl Item {
             },
             Item::ModuleExternal(item) => ItemInfo {
                 span_full: item.span,
-                span_short: item.id.span,
+                span_short: item.id.span(),
                 declaration: Some(ItemDeclarationInfo {
                     vis: item.vis,
-                    id: MaybeIdentifier::Identifier(item.id),
+                    id: item.id.into(),
                 }),
             },
             Item::Interface(item) => ItemInfo {
@@ -1274,7 +1244,7 @@ impl<B> IfCondBlockPair<B> {
 }
 
 // TODO this could be reduced a bit with a derive macro, eg. for enums it could automatically combine the branches
-impl_has_span!(Identifier);
+impl_has_span!(SimpleIdentifier);
 impl_has_span!(Parameter);
 impl_has_span!(ModulePortInBlock);
 impl_has_span!(StructField);
@@ -1350,38 +1320,20 @@ impl<V> HasSpan for ArrayLiteralElement<Box<Spanned<V>>> {
     }
 }
 
-impl<T> HasSpan for MaybeIdentifier<Spanned<T>> {
+impl<T: HasSpan> HasSpan for MaybeIdentifier<T> {
     fn span(&self) -> Span {
         match self {
             &MaybeIdentifier::Dummy { span } => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-}
-
-impl HasSpan for MaybeIdentifier<Identifier> {
-    fn span(&self) -> Span {
-        match self {
-            &MaybeIdentifier::Dummy { span } => span,
-            MaybeIdentifier::Identifier(id) => id.span,
-        }
-    }
-}
-
-impl HasSpan for GeneralIdentifier {
-    fn span(&self) -> Span {
-        match self {
-            GeneralIdentifier::Simple(id) => id.span,
-            GeneralIdentifier::FromString(span, _) => *span,
-        }
-    }
-}
-
-impl HasSpan for MaybeIdentifier<GeneralIdentifier> {
-    fn span(&self) -> Span {
-        match self {
-            MaybeIdentifier::Dummy { span } => *span,
             MaybeIdentifier::Identifier(id) => id.span(),
+        }
+    }
+}
+
+impl HasSpan for Identifier {
+    fn span(&self) -> Span {
+        match self {
+            Identifier::Simple(id) => id.span,
+            Identifier::FromString(span, _) => *span,
         }
     }
 }
@@ -1440,7 +1392,7 @@ impl<B: HasSpan> HasSpan for SyncDomain<B> {
 impl HasSpan for DotIndexKind {
     fn span(&self) -> Span {
         match self {
-            DotIndexKind::Id(id) => id.span,
+            DotIndexKind::Id(id) => id.span(),
             &DotIndexKind::Int { span } => span,
         }
     }
@@ -1451,7 +1403,7 @@ impl HasSpan for InterfaceListItem {
         match self {
             InterfaceListItem::Signal(signal) => {
                 let InterfaceSignal { id, ty } = signal;
-                id.span.join(ty.span)
+                id.span().join(ty.span)
             }
             InterfaceListItem::View(view) => view.span,
         }
@@ -1461,34 +1413,31 @@ impl HasSpan for InterfaceListItem {
 impl HasSpan for PortConnection {
     fn span(&self) -> Span {
         let PortConnection { id, expr } = self;
-        id.span.join(expr.expr().span)
+        id.span().join(expr.expr().span)
     }
 }
 
-impl From<Identifier> for GeneralIdentifier {
-    fn from(value: Identifier) -> Self {
-        GeneralIdentifier::Simple(value)
+impl From<SimpleIdentifier> for Identifier {
+    fn from(value: SimpleIdentifier) -> Self {
+        Identifier::Simple(value)
+    }
+}
+
+impl From<SimpleIdentifier> for MaybeIdentifier {
+    fn from(value: SimpleIdentifier) -> Self {
+        MaybeIdentifier::Identifier(Identifier::Simple(value))
+    }
+}
+
+impl From<MaybeSimpleIdentifier> for MaybeIdentifier {
+    fn from(value: MaybeSimpleIdentifier) -> Self {
+        value.map_id(Identifier::Simple)
     }
 }
 
 impl<I> From<I> for MaybeIdentifier<I> {
     fn from(i: I) -> Self {
         MaybeIdentifier::Identifier(i)
-    }
-}
-
-impl From<Identifier> for MaybeGeneralIdentifier {
-    fn from(value: Identifier) -> Self {
-        MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(value))
-    }
-}
-
-impl From<MaybeIdentifier> for MaybeGeneralIdentifier {
-    fn from(value: MaybeIdentifier) -> Self {
-        match value {
-            MaybeIdentifier::Dummy { span } => MaybeGeneralIdentifier::Dummy { span },
-            MaybeIdentifier::Identifier(id) => MaybeGeneralIdentifier::Identifier(GeneralIdentifier::Simple(id)),
-        }
     }
 }
 

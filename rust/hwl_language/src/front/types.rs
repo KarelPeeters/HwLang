@@ -285,7 +285,9 @@ impl HardwareType {
                 let fields_hw = &info.hw.as_ref().unwrap().fields;
 
                 let fields_ir = zip_eq(info.fields.keys(), fields_hw)
-                    .map(|(field_name, field_ty)| (field_name.clone(), field_ty.as_ir(refs)))
+                    .map(|(field_name, field_ty)| {
+                        (field_name.str(&refs.shared.interner).to_owned(), field_ty.as_ir(refs))
+                    })
                     .collect();
                 let info_ty = IrStructType {
                     ty,
@@ -300,7 +302,10 @@ impl HardwareType {
 
                 let variants_ir = zip_eq(info.variants.keys(), &info_hw.payload_types)
                     .map(|(variant_name, payload_ty)| {
-                        (variant_name.clone(), payload_ty.as_ref().map(|(_, t)| t.clone()))
+                        (
+                            variant_name.str(&refs.shared.interner).to_owned(),
+                            payload_ty.as_ref().map(|(_, t)| t.clone()),
+                        )
                     })
                     .collect();
                 let info_ir = IrEnumType {

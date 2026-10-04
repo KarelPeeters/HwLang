@@ -164,7 +164,7 @@ impl CompileItemContext<'_, '_> {
                     span_target: target_expr.span,
                     span_target_ty: target_base_ty.span,
                 };
-                check_type_contains_value(diags, elab, reason, &target_ty.as_type(), source_value.as_ref())?;
+                check_type_contains_value(refs, reason, &target_ty.as_type(), source_value.as_ref())?;
 
                 // convert source to hardware type and value
                 //   (don't expand to the target type yet, then flow could not see the more specific type)
@@ -235,7 +235,7 @@ impl CompileItemContext<'_, '_> {
                         span_target: target_expr.span,
                         span_target_ty: target_base_ty.span,
                     };
-                    check_type_contains_value(diags, elab, reason, &source_expected_ty, source_value.as_ref())?;
+                    check_type_contains_value(refs, reason, &source_expected_ty, source_value.as_ref())?;
                 }
 
                 if target_steps.is_empty() {
@@ -282,7 +282,7 @@ impl CompileItemContext<'_, '_> {
                                         target_base.span,
                                         format!(
                                             "type `{}` is not representable in hardware",
-                                            target_base_ty.inner.value_string(elab)
+                                            target_base_ty.inner.value_string(refs.shared)
                                         ),
                                     )
                                     .add_info(target_base_ty.span, target_base_ty_origin)
@@ -312,7 +312,7 @@ impl CompileItemContext<'_, '_> {
                             span_target: target_expr.span,
                             span_target_ty: target_base_ty.span,
                         };
-                        check_type_contains_value(diags, elab, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
+                        check_type_contains_value(refs, reason, &source_ty_hw.as_type(), source_value.as_ref())?;
                         let source_value_hw = source_value.inner.as_hardware_value_unchecked(
                             refs,
                             &mut self.large,
@@ -333,7 +333,7 @@ impl CompileItemContext<'_, '_> {
                                 let debug_info_id = flow
                                     .var_info(target_base)?
                                     .id
-                                    .as_str(refs.fixed.source)
+                                    .str(&refs.shared.interner)
                                     .map(str::to_owned);
                                 flow.store_hardware_value_in_new_ir_variable(
                                     refs,

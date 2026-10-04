@@ -6,7 +6,7 @@ use hwl_language::front::value::{CompileCompoundValue, CompileValue, SimpleCompi
 use hwl_language::syntax::ast::Arg;
 use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::util::big_int::BigInt;
-use hwl_language::util::data::GrowVec;
+use hwl_language::util::intern::Interner;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::range_multi::MultiRange;
 use hwl_util::constants::HWL_LANGUAGE_NAME_SHORT;
@@ -142,13 +142,13 @@ fn check_same_compile_context(expected: Option<&Py<Compile>>, actual: &Py<Compil
     Ok(())
 }
 
-pub fn convert_python_args_and_kwargs_to_args<'k>(
+pub fn convert_python_args_and_kwargs_to_args(
     compile: &Py<Compile>,
+    interner: &Interner,
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
     dummy_span: Span,
-    key_buffer: &'k GrowVec<String>,
-) -> PyResult<EvaluatedArgs<'k>> {
+) -> PyResult<EvaluatedArgs> {
     let mut args_inner = vec![];
     for value in args {
         let value = compile_value_from_py(&value, Some(compile))?;
@@ -160,11 +160,14 @@ pub fn convert_python_args_and_kwargs_to_args<'k>(
     }
     if let Some(kwargs) = kwargs {
         for (name, value) in kwargs {
-            let name = key_buffer.push(name.extract::<String>()?);
+            let name = name.extract::<String>()?;
+            let id = interner.push_owned(name);
+
             let value = compile_value_from_py(&value, Some(compile))?;
+
             args_inner.push(Arg {
                 span: dummy_span,
-                name: Some(Spanned::new(dummy_span, name.as_str())),
+                name: Some(Spanned::new(dummy_span, id)),
                 value: Spanned::new(dummy_span, ValueWithImplications::from(value)),
             });
         }

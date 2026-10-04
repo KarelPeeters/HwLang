@@ -1,8 +1,7 @@
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, CompileRefs, CompileShared};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
-use crate::front::item::ElaborationArenas;
 use crate::front::signal::PortInfo;
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
@@ -134,8 +133,8 @@ pub enum TypeContainsReason {
 }
 
 impl TypeContainsReason {
-    pub fn add_diag_info(self, elab: &ElaborationArenas, diag: DiagnosticError, target_ty: &Type) -> DiagnosticError {
-        let target_ty_str = target_ty.value_string(elab);
+    pub fn add_diag_info(self, shared: &CompileShared, diag: DiagnosticError, target_ty: &Type) -> DiagnosticError {
+        let target_ty_str = target_ty.value_string(shared);
         match self {
             // TODO improve assignment error message
             TypeContainsReason::Assignment {
@@ -206,24 +205,24 @@ impl TypeContainsReason {
 }
 
 pub fn check_type_contains_value<V: Typed + Debug>(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     target_ty: &Type,
     value: Spanned<&V>,
 ) -> DiagResult {
     // TODO if constant value, use value in message?
     let value_ty = value.map_inner(|v| v.ty());
-    check_type_contains_type(diags, elab, reason, target_ty, value_ty.as_ref())
+    check_type_contains_type(refs, reason, target_ty, value_ty.as_ref())
 }
 
 pub fn check_type_contains_type(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     target_ty: &Type,
     value_ty: Spanned<&Type>,
 ) -> DiagResult {
+    let diags = refs.diags;
+    let shared = &refs.shared;
     if target_ty.contains_type(value_ty.inner) {
         Ok(())
     } else {
@@ -234,21 +233,21 @@ pub fn check_type_contains_type(
             value_ty.span,
             format!(
                 "source value with type `{}` does not fit",
-                value_ty.inner.value_string(elab)
+                value_ty.inner.value_string(shared)
             ),
         );
-        diag = reason.add_diag_info(elab, diag, target_ty);
+        diag = reason.add_diag_info(shared, diag, target_ty);
         Err(diag.report(diags))
     }
 }
 
 pub fn check_type_is_int(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<Value>,
 ) -> DiagResult<MaybeCompile<BigInt, HardwareInt>> {
-    check_type_contains_value(diags, elab, reason, &Type::Int(MultiRange::open()), value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::Int(MultiRange::open()), value.as_ref())?;
 
     let err = || diags.report_error_internal(value.span, "unexpected value kind for int type");
     match value.inner {
@@ -269,16 +268,16 @@ pub fn check_type_is_int(
 }
 
 pub fn check_type_is_uint(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<Value>,
 ) -> DiagResult<MaybeCompile<BigUint, HardwareUInt>> {
+    let diags = refs.diags;
     let ty_uint = Type::Int(MultiRange::from(Range {
         start: Some(BigInt::ZERO),
         end: None,
     }));
-    check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
+    check_type_contains_value(refs, reason, &ty_uint, value.as_ref())?;
 
     let err = || diags.report_error_internal(value.span, "unexpected value kind for uint type");
     match value.inner {
@@ -299,13 +298,13 @@ pub fn check_type_is_uint(
 }
 
 pub fn check_type_is_int_hardware(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<HardwareValue>,
 ) -> DiagResult<HardwareInt> {
+    let diags = refs.diags;
     let value_ty = value.as_ref().map_inner(|value| value.ty.as_type());
-    check_type_contains_type(diags, elab, reason, &Type::Int(MultiRange::open()), value_ty.as_ref())?;
+    check_type_contains_type(refs, reason, &Type::Int(MultiRange::open()), value_ty.as_ref())?;
 
     match value.inner.ty {
         HardwareType::Int(ty) => Ok(HardwareValue {
@@ -318,16 +317,16 @@ pub fn check_type_is_int_hardware(
 }
 
 pub fn check_type_is_uint_compile(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<BigUint> {
+    let diags = refs.diags;
     let ty_uint = Type::Int(MultiRange::from(Range {
         start: Some(BigInt::ZERO),
         end: None,
     }));
-    check_type_contains_value(diags, elab, reason, &ty_uint, value.as_ref())?;
+    check_type_contains_value(refs, reason, &ty_uint, value.as_ref())?;
 
     let err = || diags.report_error_internal(value.span, "expected uint value");
     match value.inner {
@@ -341,12 +340,12 @@ pub fn check_type_is_uint_compile(
 }
 
 pub fn check_type_is_bool(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<ValueWithImplications>,
 ) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
-    check_type_contains_value(diags, elab, reason, &Type::Bool, value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::Bool, value.as_ref())?;
 
     let err = || diags.report_error_internal(value.span, "unexpected value kind for bool type");
     match value.inner {
@@ -363,12 +362,12 @@ pub fn check_type_is_bool(
 }
 
 pub fn check_type_is_bool_compile(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<bool> {
-    check_type_contains_value(diags, elab, reason, &Type::Bool, value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::Bool, value.as_ref())?;
 
     let err = || diags.report_error_internal(value.span, "expected bool value");
     match value.inner {
@@ -382,14 +381,14 @@ pub fn check_type_is_bool_compile(
 }
 
 pub fn check_type_is_bool_array(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<Value>,
     expected_len: Option<BigUint>,
 ) -> DiagResult<MaybeCompile<Vec<bool>, HardwareValue<BigUint>>> {
+    let diags = refs.diags;
     let expected_ty = Type::Array(Arc::new(Type::Bool), expected_len);
-    check_type_contains_value(diags, elab, reason, &expected_ty, value.as_ref())?;
+    check_type_contains_value(refs, reason, &expected_ty, value.as_ref())?;
 
     let err_internal = || diags.report_error_internal(value.span, "expected bool array");
     match value.inner {
@@ -422,12 +421,12 @@ pub fn check_type_is_bool_array(
 }
 
 pub fn check_type_is_string(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<Value>,
 ) -> DiagResult<Arc<MixedString>> {
-    check_type_contains_value(diags, elab, reason, &Type::String, value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::String, value.as_ref())?;
 
     match value.inner {
         Value::Compound(MixedCompoundValue::String(v)) => Ok(v),
@@ -436,12 +435,12 @@ pub fn check_type_is_string(
 }
 
 pub fn check_type_is_string_compile(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<Arc<String>> {
-    check_type_contains_value(diags, elab, reason, &Type::String, value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::String, value.as_ref())?;
 
     match value.inner {
         Value::Compound(CompileCompoundValue::String(v)) => Ok(v),
@@ -449,13 +448,11 @@ pub fn check_type_is_string_compile(
     }
 }
 
-pub fn check_hardware_type_for_bit_operation(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
-    ty: Spanned<&Type>,
-) -> DiagResult<HardwareType> {
-    ty.inner.as_hardware_type(elab).map_err(|_| {
-        let ty_str = ty.inner.value_string(elab);
+pub fn check_hardware_type_for_bit_operation(refs: CompileRefs, ty: Spanned<&Type>) -> DiagResult<HardwareType> {
+    let diags = refs.diags;
+    let shared = &refs.shared;
+    ty.inner.as_hardware_type(&shared.elaboration_arenas).map_err(|_| {
+        let ty_str = ty.inner.value_string(shared);
         DiagnosticError::new(
             "converting to/from bits is only possible for hardware types",
             ty.span,
@@ -466,12 +463,12 @@ pub fn check_hardware_type_for_bit_operation(
 }
 
 pub fn check_type_is_range_compile(
-    diags: &Diagnostics,
-    elab: &ElaborationArenas,
+    refs: CompileRefs,
     reason: TypeContainsReason,
     value: Spanned<CompileValue>,
 ) -> DiagResult<Range<BigInt>> {
-    check_type_contains_value(diags, elab, reason, &Type::Range, value.as_ref())?;
+    let diags = refs.diags;
+    check_type_contains_value(refs, reason, &Type::Range, value.as_ref())?;
 
     match value.inner {
         CompileValue::Compound(CompileCompoundValue::Range(range)) => Ok(range),

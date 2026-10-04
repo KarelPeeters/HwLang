@@ -1,11 +1,11 @@
 use crate::front::block::ElaboratedForHeader;
-use crate::front::compile::CompileItemContext;
-use crate::front::diagnostic::{DiagResult, Diagnostics};
+use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::diagnostic::DiagResult;
 use crate::front::flow::Flow;
-use crate::front::item::EvaluatedDeclaration;
 use crate::front::scope::{Scope, ScopedEntry};
 use crate::syntax::ast::{ExtraList, ExtraListBlock, ExtraListItem, MaybeIdentifier};
 use crate::syntax::pos::{HasSpan, Spanned};
+use crate::util::intern::Id;
 
 pub struct ExtraScope<'a, 'b, 'c, 'd> {
     root_scope: Option<&'a Scope<'b>>,
@@ -24,20 +24,20 @@ impl<'a, 'b, 'c, 'd> ExtraScope<'a, 'b, 'c, 'd> {
         }
     }
 
-    pub fn declare_root<'s>(
+    pub fn declare_root(
         &mut self,
-        diags: &Diagnostics,
-        id: impl Into<MaybeIdentifier<Spanned<&'s str>>>,
+        refs: CompileRefs,
+        id: impl Into<MaybeIdentifier<Spanned<Id>>>,
         entry: DiagResult<ScopedEntry>,
     ) {
         let id = id.into();
 
         // slight code duplication to avoid redundant clone but respect order
         if let Some(root_scope) = self.root_scope {
-            self.scope.declare(diags, id, entry.clone());
-            root_scope.declare_non_mut(diags, id, entry);
+            self.scope.declare(refs, id, entry.clone());
+            root_scope.declare_non_mut(refs, id, entry);
         } else {
-            self.scope.declare(diags, id, entry);
+            self.scope.declare(refs, id, entry);
         }
     }
 }
@@ -83,7 +83,6 @@ impl CompileItemContext<'_, '_> {
         f: &mut impl FnMut(&mut Self, &mut ExtraScope, &mut F, &'a T) -> DiagResult,
     ) -> DiagResult {
         let refs = self.refs;
-        let diags = refs.diags;
 
         for item in items {
             match item {
@@ -92,14 +91,13 @@ impl CompileItemContext<'_, '_> {
                     let eval = self.eval_declaration(scope.as_scope(), flow, decl)?;
 
                     if let Some(eval) = eval {
-                        let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
-                        let id_str = id.spanned_str(self.refs.fixed.source);
+                        let id = eval.id;
                         let entry = eval.value_into_entry(self.refs, flow)?;
 
                         if common_decl_in_root_scope {
-                            scope.declare_root(diags, id_str, Ok(entry));
+                            scope.declare_root(refs, id, Ok(entry));
                         } else {
-                            scope.as_scope().declare(diags, id_str, Ok(entry));
+                            scope.as_scope().declare(refs, id, Ok(entry));
                         }
                     }
                 }
@@ -116,14 +114,17 @@ impl CompileItemContext<'_, '_> {
                     let mut scope_child = scope.new_child(&mut scope_child);
 
                     if let Some(declare) = declare {
-                        declare.declare(refs, scope_child.as_scope(), flow)?;
+                        declare.declare(self, scope_child.as_scope(), flow)?;
                     }
 
                     self.elaborate_extra_list_block(&mut scope_child, flow, block, common_decl_in_root_scope, f)?;
                 }
                 ExtraListItem::For(stmt) => {
-                    let ElaboratedForHeader { index_ty, iter } =
-                        self.elaborate_for_statement_header(scope.as_scope(), flow, stmt)?;
+                    let ElaboratedForHeader {
+                        index_id,
+                        index_ty,
+                        iter,
+                    } = self.elaborate_for_statement_header(scope.as_scope(), flow, stmt)?;
 
                     for index_value in iter {
                         refs.check_should_stop(stmt.span_keyword)?;
@@ -135,6 +136,7 @@ impl CompileItemContext<'_, '_> {
                             scope_iter.as_scope(),
                             flow,
                             stmt,
+                            index_id,
                             &index_ty,
                             index_value,
                         )?;

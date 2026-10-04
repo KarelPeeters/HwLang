@@ -1,5 +1,5 @@
 use crate::support::PosNotOnIdentifier;
-use hwl_language::syntax::ast::{FileContent, GeneralIdentifier};
+use hwl_language::syntax::ast::{FileContent, Identifier};
 use hwl_language::syntax::pos::{Pos, Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase;
 use hwl_language::syntax::visitor::{SelfExpression, SyntaxVisitor, syntax_visit};
@@ -29,7 +29,7 @@ impl SyntaxVisitor for FindDeclarationVisitor {
 
     fn report_id_use(
         &mut self,
-        _: Either<GeneralIdentifier, Spanned<SelfExpression>>,
+        _: Either<Identifier, Spanned<SelfExpression>>,
         scope_find_id: impl Fn() -> Vec<Span>,
     ) -> ControlFlow<Self::Break, ()> {
         ControlFlow::Break(scope_find_id())

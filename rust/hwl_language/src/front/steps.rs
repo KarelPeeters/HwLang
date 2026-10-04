@@ -19,6 +19,7 @@ use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
+use crate::util::intern::Id;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange};
@@ -37,8 +38,7 @@ pub enum TargetStepCompile {
     ArrayIndex(BigUint),
     ArraySlice { start: BigUint, length: Option<BigUint> },
     DotIndexInt(BigUint),
-    // TODO allow non-owned string here
-    DotIndexId(Arc<String>),
+    DotIndexId(Id),
 }
 
 #[derive(Debug, Clone)]
@@ -268,8 +268,7 @@ impl TargetSteps<TargetStep> {
                         };
                         let ty_info = refs.shared.elaboration_arenas.struct_info(ty);
 
-                        let field_str = Spanned::new(step_span, field.as_str());
-                        let field_index = ty_info.field_index(diags, curr_ty.span, field_str)?;
+                        let field_index = ty_info.field_index(refs, curr_ty.span, Spanned::new(step_span, *field))?;
 
                         let step_ir = IrTargetStep::Scalar(IrTargetStepScalar::StructField(field_index));
                         let field_ty = ty_info.fields[field_index].1.inner.clone();
@@ -469,7 +468,10 @@ impl TargetSteps<TargetStep> {
                                 )
                                 .add_info(
                                     curr_span,
-                                    format!("target resolved to type `{}`", Type::Tuple(None).value_string(elab)),
+                                    format!(
+                                        "target resolved to type `{}`",
+                                        Type::Tuple(None).value_string(refs.shared)
+                                    ),
                                 )
                                 .report(diags)
                             })?;
@@ -505,10 +507,15 @@ impl TargetSteps<TargetStep> {
                             return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                         }
                     },
-                    TargetStepCompile::DotIndexId(field_str) => {
+                    TargetStepCompile::DotIndexId(field) => {
                         let expr_span = curr_span.join(step_span);
-                        let field_str = Spanned::new(step_span, field_str.as_str());
-                        eval_dot_index_id(ctx, curr_expected_ty, expr_span, curr_value, field_str)?
+                        eval_dot_index_id(
+                            ctx,
+                            curr_expected_ty,
+                            expr_span,
+                            curr_value,
+                            Spanned::new(step_span, *field),
+                        )?
                     }
                 },
                 TargetStep::Hardware(step) => {
@@ -527,7 +534,7 @@ impl TargetSteps<TargetStep> {
                             curr_span,
                             format!(
                                 "this array target needs to have a hardware type, has type `{}`",
-                                curr_ty.value_string(elab)
+                                curr_ty.value_string(refs.shared)
                             ),
                         )
                         .add_info(step_span, "for this hardware array access operation")
@@ -654,12 +661,13 @@ fn eval_dot_index_id(
     expected_ty: &Type,
     expr_span: Span,
     base: Spanned<ValueWithImplications>,
-    index: Spanned<&str>,
+    index: Spanned<Id>,
 ) -> DiagResult<ValueWithImplications> {
     // TODO add array.len, type.int_start, type.int_end, type.int_ranges, type.tuple_items, type.struct_fields?
     let refs = ctx.refs;
     let diags = refs.diags;
-    let elab = &refs.shared.elaboration_arenas;
+
+    let index_str = index.inner.str(&refs.shared.interner);
 
     // interface views
     if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base.inner {
@@ -675,14 +683,14 @@ fn eval_dot_index_id(
 
     // common type attributes
     if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
-        match index.inner {
+        match index_str {
             "size_bits" => {
-                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
                 let width = ty_hw.size_bits(refs);
                 return Ok(Value::new_int(width.into()));
             }
             "to_bits" => {
-                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
                 let func = FunctionBits {
                     ty_hw,
                     kind: FunctionBitsKind::ToBits,
@@ -690,13 +698,16 @@ fn eval_dot_index_id(
                 return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
             }
             "from_bits" => {
-                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
 
                 if !ty_hw.every_bit_pattern_is_valid(refs) {
                     let diag = DiagnosticError::new(
                         "from_bits is only allowed for types where every bit pattern is valid",
                         base.span,
-                        format!("got type `{}` with invalid bit patterns", ty_hw.value_string(elab)),
+                        format!(
+                            "got type `{}` with invalid bit patterns",
+                            ty_hw.value_string(refs.shared)
+                        ),
                     )
                     .add_footer_hint("consider using a target type where every bit pattern is valid")
                     .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe` instead")
@@ -711,7 +722,7 @@ fn eval_dot_index_id(
                 return Ok(Value::Simple(SimpleCompileValue::Function(FunctionValue::Bits(func))));
             }
             "from_bits_unsafe" => {
-                let ty_hw = check_hardware_type_for_bit_operation(diags, elab, Spanned::new(base.span, ty))?;
+                let ty_hw = check_hardware_type_for_bit_operation(refs, Spanned::new(base.span, ty))?;
                 let func = FunctionBits {
                     ty_hw,
                     kind: FunctionBitsKind::FromBits { is_unsafe: true },
@@ -723,7 +734,7 @@ fn eval_dot_index_id(
 
         // array type attributes
         if let Type::Array(ty_inner, ty_len) = ty {
-            match index.inner {
+            match index_str {
                 "inner" => {
                     return Ok(Value::new_ty((**ty_inner).clone()));
                 }
@@ -736,7 +747,7 @@ fn eval_dot_index_id(
                             index.span,
                             "trying to get length here",
                         )
-                        .add_info(base.span, format!("array type is `{}`", ty.value_string(elab)))
+                        .add_info(base.span, format!("array type is `{}`", ty.value_string(refs.shared)))
                         .report(diags);
                         Err(diag)
                     };
@@ -748,13 +759,13 @@ fn eval_dot_index_id(
 
     // struct new, struct static members
     if let &Value::Simple(SimpleCompileValue::Type(Type::Struct(elab))) = &base.inner {
-        if index.inner == "new" {
+        if index_str == "new" {
             let func = FunctionValue::StructNew(elab);
             return Ok(Value::Simple(SimpleCompileValue::Function(func)));
         }
 
         let info = refs.shared.elaboration_arenas.struct_info(elab);
-        if let Some(value) = info.members_static.get(index.inner) {
+        if let Some(value) = info.members_static.get(&index.inner) {
             return Ok(Value::from(value.as_ref_ok()?.clone()));
         }
     }
@@ -767,17 +778,17 @@ fn eval_dot_index_id(
         },
         _ => None,
     };
-    if let Some(&FunctionItemBody::Struct(unique, _)) = base_item_function
-        && index.inner == "new"
+    if let Some(FunctionItemBody::Struct(unique, _)) = base_item_function
+        && index_str == "new"
     {
-        let func = FunctionValue::StructNewInfer(unique);
+        let func = FunctionValue::StructNewInfer(*unique);
         return Ok(Value::Simple(SimpleCompileValue::Function(func)));
     }
 
     // enum variants
     let eval_enum = |elab| {
         let info = refs.shared.elaboration_arenas.enum_info(elab);
-        let variant_index = info.variant_index(diags, index)?;
+        let variant_index = info.variant_index(refs, index)?;
         let variant_info = &info.variants[variant_index];
 
         let result = match &variant_info.payload_ty {
@@ -797,17 +808,17 @@ fn eval_dot_index_id(
     if let &Value::Simple(SimpleCompileValue::Type(Type::Enum(elab))) = &base.inner {
         // enum members
         let info = refs.shared.elaboration_arenas.enum_info(elab);
-        if let Some(value) = info.members_static.get(index.inner) {
+        if let Some(value) = info.members_static.get(&index.inner) {
             return Ok(Value::from(value.as_ref_ok()?.clone()));
         }
 
         // enum variants
         return eval_enum(elab);
     }
-    if let Some(&FunctionItemBody::Enum(unique, ref generic_info)) = base_item_function {
+    if let Some(FunctionItemBody::Enum(unique, generic_info)) = base_item_function {
         return if let &Type::Enum(expected) = expected_ty {
             let expected_info = refs.shared.elaboration_arenas.enum_info(expected);
-            if expected_info.unique == unique {
+            if expected_info.unique == *unique {
                 eval_enum(expected)
             } else {
                 Err(
@@ -816,10 +827,10 @@ fn eval_dot_index_id(
                 )
             }
         } else {
-            let generic_variant = generic_info.find_variant(diags, index)?;
+            let generic_variant = generic_info.find_variant(refs, index)?;
             if generic_variant.has_payload {
                 // delay type inference until payload construction/call time
-                let func = FunctionValue::EnumNewInfer(unique, Arc::new(index.inner.to_owned()));
+                let func = FunctionValue::EnumNewInfer(*unique, index.inner);
                 Ok(Value::Simple(SimpleCompileValue::Function(func)))
             } else {
                 // non-payload variant, we need to know the type now
@@ -835,7 +846,7 @@ fn eval_dot_index_id(
         let info = refs.shared.elaboration_arenas.struct_info(base_ty_struct);
 
         // try method
-        if let Some(method) = info.methods_self.get(index.inner) {
+        if let Some(method) = info.methods_self.get(&index.inner) {
             let bound = BoundMethod {
                 self_type: base_ty,
                 self_value: Box::new(base.inner.into_value()),
@@ -845,7 +856,7 @@ fn eval_dot_index_id(
         }
 
         // try field
-        let field_index = info.field_index(diags, base.span, index)?;
+        let field_index = info.field_index(refs, base.span, index)?;
         let result = match base.inner {
             ValueWithImplications::Compound(MixedCompoundValue::Struct(base_inner)) => {
                 base_inner.fields.get_owned(field_index)
@@ -878,7 +889,7 @@ fn eval_dot_index_id(
         let info = refs.shared.elaboration_arenas.enum_info(base_ty_enum);
 
         // try method
-        if let Some(method) = info.methods_self.get(index.inner) {
+        if let Some(method) = info.methods_self.get(&index.inner) {
             let bound = BoundMethod {
                 self_type: base_ty,
                 self_value: Box::new(base.inner.into_value()),
@@ -890,7 +901,7 @@ fn eval_dot_index_id(
 
     // array length
     if let Type::Array(_, value_len) = &base_ty
-        && index.inner == "len"
+        && index_str == "len"
     {
         return if let Some(value_len) = value_len {
             Ok(Value::new_int(BigInt::from(value_len)))
@@ -903,9 +914,12 @@ fn eval_dot_index_id(
     let diag = DiagnosticError::new(
         "invalid dot index expression",
         index.span,
-        format!("no attribute found with name `{}`", index.inner),
+        format!("no attribute found with name `{index_str}`"),
     )
-    .add_info(base.span, format!("base has type `{}`", base_ty.value_string(elab)))
+    .add_info(
+        base.span,
+        format!("base has type `{}`", base_ty.value_string(refs.shared)),
+    )
     .report(diags);
     Err(diag)
 }
@@ -983,7 +997,7 @@ fn set_compile_value_impl(
                             source.span,
                             format!(
                                 "non-array value with type `{}` here",
-                                source.inner.ty().value_string(elab)
+                                source.inner.ty().value_string(refs.shared)
                             ),
                         )
                         .add_info(target.span, "target is a slice assignment")
@@ -1068,8 +1082,7 @@ fn set_compile_value_impl(
 
             // get field index
             let ty_info = elab.struct_info(target_inner.ty);
-            let field_str = Spanned::new(step.span, field.as_str());
-            let field_index = ty_info.field_index(diags, target_span, field_str)?;
+            let field_index = ty_info.field_index(refs, target_span, Spanned::new(step.span, *field))?;
 
             // build new target
             SetCompileTarget::Scalar(&mut target_inner.fields[field_index])
@@ -1318,7 +1331,7 @@ fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span, st
         ty.span,
         format!(
             "on non-array value with type `{}` here",
-            ty.inner.value_string(&refs.shared.elaboration_arenas)
+            ty.inner.value_string(refs.shared)
         ),
     )
     .report(refs.diags)
@@ -1330,7 +1343,7 @@ pub fn err_expected_tuple(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span
             ty.span,
             format!(
                 "on non-tuple value with type `{}` here",
-                ty.inner.value_string(&refs.shared.elaboration_arenas)
+                ty.inner.value_string(refs.shared)
             ),
         )
         .report(refs.diags)
@@ -1342,7 +1355,7 @@ pub fn err_expected_struct(refs: CompileRefs, ty: Spanned<&Type>, step_span: Spa
             ty.span,
             format!(
                 "on non-struct value with type `{}` here",
-                ty.inner.value_string(&refs.shared.elaboration_arenas)
+                ty.inner.value_string(refs.shared)
             ),
         )
         .report(refs.diags)

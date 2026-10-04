@@ -3,13 +3,13 @@ use crate::syntax::ast::{
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
     CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
     ConstDeclaration, DomainKind, DotIndexKind, EnumBodyItem, EnumDeclaration, EnumVariant, Expression, ExpressionKind,
-    ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, GeneralIdentifier,
-    Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem,
-    InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport,
-    MatchBranch, MatchPattern, MatchStatement, MaybeGeneralIdentifier, MaybeIdentifier, MaybeParameterSelf,
-    MaybeVisibility, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
-    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelfKind,
-    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegisterDeclaration,
+    ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, Identifier,
+    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceSignal,
+    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch,
+    MatchPattern, MatchStatement, MaybeIdentifier, MaybeParameterSelf, MaybeVisibility, ModuleInstance,
+    ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
+    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelfKind, Parameters,
+    PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegisterDeclaration,
     RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement, StringPiece,
     StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility,
     WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
@@ -80,14 +80,7 @@ impl Context<'_> {
                         ref params,
                         ref ports,
                     } = decl;
-                    self.fmt_module_decl(
-                        vis,
-                        true,
-                        MaybeIdentifier::Identifier(id),
-                        params.as_ref(),
-                        &ports.inner,
-                        None,
-                    )
+                    self.fmt_module_decl(vis, true, id.into(), params.as_ref(), &ports.inner, None)
                 }
                 Item::Interface(decl) => self.fmt_interface_decl(decl),
             };
@@ -151,7 +144,7 @@ impl Context<'_> {
             nodes.push(HNode::Space);
             nodes.push(token(TT::As));
             nodes.push(HNode::Space);
-            nodes.push(self.fmt_maybe_id(as_));
+            nodes.push(self.fmt_id(as_));
         }
         HNode::Sequence(nodes)
     }
@@ -251,7 +244,7 @@ impl Context<'_> {
                             ref params,
                             body,
                         } = decl;
-                        let mut seq = vec![token(TT::Type), HNode::Space, self.fmt_maybe_id(id)];
+                        let mut seq = vec![token(TT::Type), HNode::Space, self.fmt_id(id)];
                         if let Some(params) = params {
                             seq.push(self.fmt_parameters(params));
                         }
@@ -263,7 +256,7 @@ impl Context<'_> {
                     }
                     CommonDeclarationNamedKind::Const(decl) => {
                         let &ConstDeclaration { span: _, id, ty, value } = decl;
-                        self.fmt_variable_decl(token(TT::Const), self.fmt_maybe_id(id), ty, Some(value))
+                        self.fmt_variable_decl(token(TT::Const), self.fmt_id(id), ty, Some(value))
                     }
                     CommonDeclarationNamedKind::Struct(decl) => {
                         let &StructDeclaration {
@@ -274,7 +267,7 @@ impl Context<'_> {
                             ref items,
                         } = decl;
 
-                        let mut seq = vec![token(TT::Struct), HNode::Space, self.fmt_maybe_id(id)];
+                        let mut seq = vec![token(TT::Struct), HNode::Space, self.fmt_id(id)];
                         if let Some(params) = params {
                             seq.push(self.fmt_parameters(params));
                         }
@@ -303,7 +296,7 @@ impl Context<'_> {
                             ref items,
                         } = decl;
 
-                        let mut seq = vec![token(TT::Enum), HNode::Space, self.fmt_maybe_id(id)];
+                        let mut seq = vec![token(TT::Enum), HNode::Space, self.fmt_id(id)];
                         if let Some(params) = params {
                             seq.push(self.fmt_parameters(params));
                         }
@@ -375,7 +368,7 @@ impl Context<'_> {
 
         seq.push(token(TT::Module));
         seq.push(HNode::Space);
-        seq.push(self.fmt_maybe_id(id));
+        seq.push(self.fmt_id(id));
 
         if let Some(params) = params {
             seq.push(self.fmt_parameters(params));
@@ -415,7 +408,7 @@ impl Context<'_> {
         fmt_visibility(&mut seq, vis);
         seq.push(token(TT::Interface));
         seq.push(HNode::Space);
-        seq.push(self.fmt_maybe_id(id));
+        seq.push(self.fmt_id(id));
 
         if let Some(params) = params {
             seq.push(self.fmt_parameters(params));
@@ -470,7 +463,7 @@ impl Context<'_> {
             HNode::ForceWrap,
             token(TT::Interface),
             HNode::Space,
-            self.fmt_maybe_id(view_id),
+            self.fmt_id(view_id),
             HNode::Space,
             token_ports,
             HNode::AlwaysNewline,
@@ -489,7 +482,7 @@ impl Context<'_> {
         let mut nodes = vec![
             token(TT::Fn),
             HNode::Space,
-            self.fmt_maybe_id(id),
+            self.fmt_id(id),
             self.fmt_parameters(params),
         ];
 
@@ -630,7 +623,7 @@ impl Context<'_> {
 
                 seq.push(token(TT::Wire));
                 seq.push(HNode::Space);
-                seq.push(self.fmt_maybe_general_id(id));
+                seq.push(self.fmt_id(id));
 
                 match kind {
                     WireDeclarationKind::Normal {
@@ -784,7 +777,7 @@ impl Context<'_> {
                     init,
                 } = decl;
                 let kind = if mutable { TT::Var } else { TT::Val };
-                self.fmt_variable_decl(token(kind), self.fmt_maybe_id(id), ty, init)
+                self.fmt_variable_decl(token(kind), self.fmt_id(id), ty, init)
             }
             BlockStatementKind::RegisterDeclaration(decl) => {
                 let &RegisterDeclaration {
@@ -807,7 +800,7 @@ impl Context<'_> {
                     }
                     RegisterDeclarationKind::New(kind) => {
                         let RegisterDeclarationNew { id, ty } = kind;
-                        (token(TT::Reg), self.fmt_general_id(id), ty)
+                        (token(TT::Reg), self.fmt_id(id), ty)
                     }
                 };
 
@@ -935,9 +928,7 @@ impl Context<'_> {
 
             let pattern_node = match pattern.inner {
                 MatchPattern::Wildcard => token(TT::Underscore),
-                MatchPattern::WildcardVal(id) => {
-                    HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_maybe_id(id)])
-                }
+                MatchPattern::WildcardVal(id) => HNode::Sequence(vec![token(TT::Val), HNode::Space, self.fmt_id(id)]),
                 MatchPattern::EqualTo(value) => self.fmt_expr(value),
                 MatchPattern::InRange { span_in: _, range } => {
                     HNode::Sequence(vec![token(TT::In), HNode::Space, self.fmt_expr(range)])
@@ -993,7 +984,7 @@ impl Context<'_> {
             ref body,
         } = stmt;
 
-        let mut seq = vec![self.fmt_maybe_id(index)];
+        let mut seq = vec![self.fmt_id(index)];
         if let Some(index_ty) = index_ty {
             seq.push(wrapping_type(self.fmt_expr(index_ty)));
         }
@@ -1069,7 +1060,7 @@ impl Context<'_> {
                 } = expr;
                 self.fmt_block_ext(statements, Some(expression))
             }
-            &ExpressionKind::Id(id) => self.fmt_general_id(id),
+            &ExpressionKind::Id(id) => self.fmt_id(id),
             ExpressionKind::IntLiteral(literal) => {
                 let tt = match literal {
                     IntLiteral::Binary { span: _ } => TT::IntLiteralBinary,
@@ -1159,7 +1150,7 @@ impl Context<'_> {
                     HNode::Space,
                     token(TT::For),
                     HNode::Space,
-                    self.fmt_maybe_id(index),
+                    self.fmt_id(index),
                     HNode::Space,
                     token(TT::In),
                     HNode::Space,
@@ -1301,32 +1292,16 @@ impl Context<'_> {
         }
     }
 
-    fn fmt_maybe_general_id(&self, id: MaybeGeneralIdentifier) -> HNode {
-        match id {
-            MaybeGeneralIdentifier::Dummy { span: _ } => token(TT::Underscore),
-            MaybeGeneralIdentifier::Identifier(id) => self.fmt_general_id(id),
-        }
-    }
-
-    fn fmt_general_id(&self, id: GeneralIdentifier) -> HNode {
-        match id {
-            GeneralIdentifier::Simple(id) => self.fmt_id(id),
-            GeneralIdentifier::FromString(_span, expr) => {
-                fmt_call_like(token(TT::Ident), &[expr], |&expr| self.fmt_expr(expr))
-            }
-        }
-    }
-
-    fn fmt_maybe_id(&self, id: MaybeIdentifier) -> HNode {
-        match id {
+    fn fmt_id(&self, id: impl Into<MaybeIdentifier>) -> HNode {
+        match id.into() {
             MaybeIdentifier::Dummy { span: _ } => token(TT::Underscore),
-            MaybeIdentifier::Identifier(id) => self.fmt_id(id),
+            MaybeIdentifier::Identifier(id) => match id {
+                Identifier::Simple(_id) => token(TT::Identifier),
+                Identifier::FromString(_span, expr) => {
+                    fmt_call_like(token(TT::Ident), &[expr], |&expr| self.fmt_expr(expr))
+                }
+            },
         }
-    }
-
-    fn fmt_id(&self, id: Identifier) -> HNode {
-        let _ = id;
-        token(TT::Identifier)
     }
 }
 

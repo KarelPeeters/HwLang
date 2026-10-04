@@ -15,6 +15,7 @@ use crate::syntax::ast::{FunctionDeclaration, ParameterSelf, StringPiece};
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
+use crate::util::intern::Id;
 use crate::util::iter::IterExt;
 use crate::util::range::Range;
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
@@ -275,7 +276,7 @@ pub struct BoundMethod<V> {
 #[derive(Debug)]
 pub struct MethodInfo {
     pub scope: Arc<FrozenScope>,
-    pub name: String,
+    pub name: Id,
     // TODO replace with AstRef
     pub func_decl: FunctionDeclaration<ParameterSelf>,
 }
@@ -738,11 +739,10 @@ fn internal_err_hw_type_mismatch(
     value: &impl Typed,
     target_ty: &HardwareType,
 ) -> DiagnosticError {
-    let elab = &refs.shared.elaboration_arenas;
     let title = format!(
         "wrong type when converting value with type {} to hardware value with type {}",
-        value.ty().value_string(elab),
-        target_ty.value_string(elab)
+        value.ty().value_string(refs.shared),
+        target_ty.value_string(refs.shared)
     );
     DiagnosticError::new_internal_compiler_error(title, span)
 }

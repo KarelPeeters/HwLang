@@ -1,11 +1,11 @@
 use crate::front::block::{BlockEnd, join_block_ends_branches};
 use crate::front::check::{TypeContainsReason, check_type_contains_value, check_type_is_range_compile};
-use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::compile::{CompileItemContext, CompileShared};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, DiagnosticWarning};
 use crate::front::exit::ExitStack;
-use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction, VariableId};
+use crate::front::flow::{Flow, FlowHardware, ImplicationContradiction};
 use crate::front::implication::{HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::{ElaboratedEnum, ElaborationArenas, HardwareChecked};
+use crate::front::item::{ElaboratedEnum, HardwareChecked};
 use crate::front::scope::{NamedValue, Scope, ScopedEntry};
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileCompoundValue, CompileValue, NotCompile, SimpleCompileValue, Value, ValueCommon};
@@ -68,26 +68,23 @@ pub struct BranchDeclare<V> {
 }
 
 impl<V: Into<ValueWithImplications>> BranchDeclare<V> {
-    pub fn declare(self, refs: CompileRefs, scope: &mut Scope, flow: &mut impl Flow) -> DiagResult<()> {
+    pub fn declare(self, ctx: &mut CompileItemContext, scope: &mut Scope, flow: &mut impl Flow) -> DiagResult<()> {
         let BranchDeclare {
             pattern_span,
             id,
             value,
         } = self;
 
-        let var = flow.var_new_immutable_init(refs, id.span(), VariableId::Id(id), pattern_span, Ok(value.into()))?;
-        scope.declare(
-            refs.diags,
-            id.spanned_str(refs.fixed.source),
-            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
-        );
+        let id_eval = ctx.eval_maybe_id(scope, flow, id)?;
+        let var = flow.var_new_immutable_init(ctx.refs, id_eval, pattern_span, Ok(value.into()))?;
+        scope.declare(ctx.refs, id_eval, Ok(ScopedEntry::Named(NamedValue::Variable(var))));
 
         Ok(())
     }
 }
 
 impl MatchCoverage {
-    fn as_diagnostic_string(&self, elab: &ElaborationArenas) -> String {
+    fn as_diagnostic_string(&self, shared: &CompileShared) -> String {
         match self {
             &MatchCoverage::Bool { rem_false, rem_true } => {
                 let mut parts = vec![];
@@ -109,10 +106,9 @@ impl MatchCoverage {
                     .enumerate()
                     .filter_map(|(i, &x)| {
                         if x {
-                            Some(format!(
-                                ".{}",
-                                elab.enum_info(target_ty.inner()).variants[i].debug_info_name
-                            ))
+                            let variant_info = &shared.elaboration_arenas.enum_info(target_ty.inner()).variants[i];
+                            let variant_name = variant_info.id.inner.str(&shared.interner);
+                            Some(format!(".{}", variant_name))
                         } else {
                             None
                         }
@@ -159,6 +155,7 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: &MatchStatement<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
+        let refs = self.refs;
         let diags = self.refs.diags;
         let elab = &self.refs.shared.elaboration_arenas;
 
@@ -193,7 +190,10 @@ impl CompileItemContext<'_, '_> {
                     diags.report_error_simple(
                         "failed to fully convert non-compile match target to hardware",
                         target.span,
-                        format!("match target has non-hardware type `{}`", target_ty.value_string(elab)),
+                        format!(
+                            "match target has non-hardware type `{}`",
+                            target_ty.value_string(refs.shared)
+                        ),
                     )
                 })?;
 
@@ -272,8 +272,8 @@ impl CompileItemContext<'_, '_> {
         target_ty: &Type,
         pattern: Spanned<&MatchPattern>,
     ) -> DiagResult<EvaluatedMatchPattern> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         match *pattern.inner {
             MatchPattern::Wildcard => Ok(EvaluatedMatchPattern::Wildcard),
@@ -296,17 +296,17 @@ impl CompileItemContext<'_, '_> {
                     range,
                     Spanned::new(pattern.span, "match branch"),
                 )?;
-                let value = check_type_is_range_compile(diags, elab, TypeContainsReason::Operator(span_in), value)?;
+                let value = check_type_is_range_compile(refs, TypeContainsReason::Operator(span_in), value)?;
                 Ok(EvaluatedMatchPattern::InRange(Spanned::new(range.span, value)))
             }
             MatchPattern::IsEnumVariant { variant, payload_id } => {
                 if let &Type::Enum(target_ty) = target_ty {
                     let enum_info = self.refs.shared.elaboration_arenas.enum_info(target_ty);
 
-                    let variant_str = variant.spanned_str(self.refs.fixed.source);
-                    let variant_index = enum_info.variant_index(diags, variant_str)?;
+                    let variant_id = self.eval_simple_id(variant);
+                    let variant_name = variant_id.inner.str(&refs.shared.interner);
+                    let variant_index = enum_info.variant_index(refs, variant_id)?;
                     let variant_info = &enum_info.variants[variant_index];
-                    let variant_name = &variant_info.debug_info_name;
 
                     match (payload_id, &variant_info.payload_ty) {
                         (None, None) | (Some(_), Some(_)) => {}
@@ -330,7 +330,7 @@ impl CompileItemContext<'_, '_> {
                                 payload.span(),
                                 "pattern with a payload here",
                             )
-                            .add_info(variant_info.id.span, "variant declared without a payload here")
+                            .add_info(variant_info.id.span(), "variant declared without a payload here")
                             .add_footer_hint(format!("remove the payload from the pattern: `.{variant_name}`"))
                             .report(diags);
                             return Err(diag);
@@ -349,7 +349,7 @@ impl CompileItemContext<'_, '_> {
                     )
                     .add_info(
                         target_span,
-                        format!("target has type `{}`", target_ty.value_string(elab)),
+                        format!("target has type `{}`", target_ty.value_string(refs.shared)),
                     )
                     .report(diags))
                 }
@@ -370,7 +370,7 @@ impl CompileItemContext<'_, '_> {
 
         let mut scope_branch = scope_parent.new_child(block.span);
         if let Some(declare) = declare {
-            declare.declare(self.refs, &mut scope_branch, flow)?;
+            declare.declare(self, &mut scope_branch, flow)?;
         }
 
         self.elaborate_block(&scope_branch, flow, stack, block)
@@ -382,8 +382,8 @@ impl CompileItemContext<'_, '_> {
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &'a B)>,
     ) -> DiagResult<(Option<BranchDeclare<CompileValue>>, &'a B)> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         // compile-time match, just check each pattern in sequence with early exit
         for (pattern, branch) in branches {
@@ -453,7 +453,7 @@ impl CompileItemContext<'_, '_> {
         )
         .add_info(
             target.span,
-            format!("target value `{}`", target.inner.value_string(elab)),
+            format!("target value `{}`", target.inner.value_string(refs.shared)),
         )
         .report(diags))
     }
@@ -468,8 +468,10 @@ impl CompileItemContext<'_, '_> {
         pos_end: Pos,
         branches: Vec<(Spanned<EvaluatedMatchPattern>, &Block<BlockStatement>)>,
     ) -> DiagResult<BlockEnd> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let shared = refs.shared;
+        let elab = &shared.elaboration_arenas;
 
         let target_version = target.inner.version;
         let target_value = target.inner;
@@ -496,7 +498,7 @@ impl CompileItemContext<'_, '_> {
                     target.span,
                     format!(
                         "hardware matching for target type `{}`",
-                        target_value.value.ty.value_string(elab)
+                        target_value.value.ty.value_string(shared)
                     ),
                 ));
             }
@@ -517,7 +519,7 @@ impl CompileItemContext<'_, '_> {
                 let message_footer = if coverage_remaining.any() {
                     format!(
                         "the remaining uncovered patterns are: `{}`",
-                        coverage_remaining.as_diagnostic_string(elab)
+                        coverage_remaining.as_diagnostic_string(shared)
                     )
                 } else {
                     "all possible patterns are already covered".to_owned()
@@ -526,7 +528,7 @@ impl CompileItemContext<'_, '_> {
                 DiagnosticWarning::new("unreachable match branch", span, message_branch)
                     .add_info(
                         target.span,
-                        format!("target type `{}`", target_value.value.ty.value_string(elab)),
+                        format!("target type `{}`", target_value.value.ty.value_string(shared)),
                     )
                     .add_footer_info(message_footer)
                     .report(diags);
@@ -566,8 +568,7 @@ impl CompileItemContext<'_, '_> {
                 }
                 EvaluatedMatchPattern::EqualTo(value) => {
                     check_type_contains_value(
-                        diags,
-                        elab,
+                        refs,
                         TypeContainsReason::MatchPattern(value.span),
                         &target_value.value.ty.as_type(),
                         value.as_ref(),
@@ -688,7 +689,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type `{}`", target_value.value.ty.value_string(elab)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(shared)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -703,10 +704,11 @@ impl CompileItemContext<'_, '_> {
                         rem_variants,
                     } => {
                         if !rem_variants[variant_index] {
-                            let branch_pattern_string = format!(
-                                ".{}",
-                                elab.enum_info(target_ty.inner()).variants[variant_index].debug_info_name
-                            );
+                            let variant_name = elab.enum_info(target_ty.inner()).variants[variant_index]
+                                .id
+                                .inner
+                                .str(&shared.interner);
+                            let branch_pattern_string = format!(".{variant_name}",);
                             warn_unreachable_branch(
                                 branch_pattern.span,
                                 &coverage_remaining,
@@ -752,7 +754,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type `{}`", target_value.value.ty.value_string(elab)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(shared)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -774,7 +776,7 @@ impl CompileItemContext<'_, '_> {
             };
 
             if let Some(declare) = declare {
-                declare.declare(self.refs, &mut branch_scope, &mut branch_flow.as_flow())?;
+                declare.declare(self, &mut branch_scope, &mut branch_flow.as_flow())?;
             }
 
             let branch_end = self.elaborate_block(&branch_scope, &mut branch_flow.as_flow(), stack, branch_block)?;
@@ -792,12 +794,12 @@ impl CompileItemContext<'_, '_> {
                 Span::empty_at(pos_end),
                 format!(
                     "patterns not covered: `{}`",
-                    coverage_remaining.as_diagnostic_string(elab)
+                    coverage_remaining.as_diagnostic_string(shared)
                 ),
             )
             .add_info(
                 target.span,
-                format!("target type `{}`", target_value.value.ty.value_string(elab)),
+                format!("target type `{}`", target_value.value.ty.value_string(shared)),
             );
 
             if let MatchCoverage::Enum { target_ty, .. } = &coverage_remaining {

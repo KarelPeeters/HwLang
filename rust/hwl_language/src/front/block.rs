@@ -8,7 +8,7 @@ use crate::front::domain::ValueDomain;
 use crate::front::exit::{ExitStack, LoopEntry, ReturnEntryKind};
 use crate::front::expression::ForIterator;
 use crate::front::flow::{
-    Flow, FlowHardware, FlowKind, HardwareProcessKind, ImplicationContradiction, RegisterInfo, VariableId, VariableInfo,
+    Flow, FlowHardware, FlowKind, HardwareProcessKind, ImplicationContradiction, RegisterInfo, VariableInfo,
 };
 use crate::front::function::check_function_return_type_and_set_value;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
@@ -24,6 +24,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::data::{IndexMapExt, VecExt};
+use crate::util::intern::Id;
 use indexmap::IndexMap;
 use itertools::{Either, enumerate};
 use unwrap_match::unwrap_match;
@@ -247,6 +248,7 @@ impl ExitMask<1> {
 }
 
 pub struct ElaboratedForHeader {
+    pub index_id: MaybeIdentifier<Spanned<Id>>,
     pub index_ty: Option<Spanned<Type>>,
     pub iter: ForIterator,
 }
@@ -401,6 +403,9 @@ impl CompileItemContext<'_, '_> {
                     init,
                 } = decl;
 
+                // eval id
+                let id_eval = self.eval_maybe_id(scope, flow, id)?;
+
                 // eval ty
                 let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
@@ -418,13 +423,13 @@ impl CompileItemContext<'_, '_> {
                         span_target: id.span(),
                         span_target_ty: ty.span,
                     };
-                    check_type_contains_value(diags, elab, reason, &ty.inner, init.as_ref())?;
+                    check_type_contains_value(refs, reason, &ty.inner, init.as_ref())?;
                 }
 
                 // build variable
                 let info = VariableInfo {
                     span_decl: id.span(),
-                    id: VariableId::Id(id),
+                    id: id_eval.map_id(|id| id.inner),
                     mutable,
                     ty,
                     join_ir_variable: None,
@@ -437,9 +442,8 @@ impl CompileItemContext<'_, '_> {
                 }
 
                 // declare entry
-                let id = id.spanned_str(refs.fixed.source);
                 let entry = ScopedEntry::Named(NamedValue::Variable(var));
-                scope.declare(diags, id, Ok(entry));
+                scope.declare(refs, id_eval, Ok(entry));
 
                 BlockEnd::Normal
             }
@@ -549,8 +553,7 @@ impl CompileItemContext<'_, '_> {
                         let RegisterDeclarationNew { id, ty } = new;
 
                         // eval id
-                        let id = self.eval_general_id(scope, flow, id)?;
-                        let id = id.as_ref().map_inner(|id| id.as_ref());
+                        let id = self.eval_id(scope, flow, id)?;
 
                         // warning if declaring register with same name as signal
                         // TODO improve, only warn if the entry is actually a signal?
@@ -572,7 +575,7 @@ impl CompileItemContext<'_, '_> {
 
                         // create new wire
                         let wire = self.wires.push(WireInfo::Single(WireInfoSingle {
-                            id: MaybeIdentifier::Identifier(id.map_inner(str::to_owned)),
+                            id: MaybeIdentifier::Identifier(id),
                             domain: Ok(None),
                             typed: Ok(None),
                         }));
@@ -589,7 +592,7 @@ impl CompileItemContext<'_, '_> {
 
                         // declare in scope
                         let entry = ScopedEntry::Named(NamedValue::Signal(wire.into()));
-                        scope.declare(diags, MaybeIdentifier::Identifier(id), Ok(entry));
+                        scope.declare(refs, MaybeIdentifier::Identifier(id), Ok(entry));
 
                         Spanned::new(id.span, Signal::Wire(wire))
                     }
@@ -625,7 +628,7 @@ impl CompileItemContext<'_, '_> {
                                 diags.report_error_simple(
                                     "register reset value must be representable in hardware",
                                     reset_value.span,
-                                    format!("got type `{}`", reset_ty.value_string(elab)),
+                                    format!("got type `{}`", reset_ty.value_string(refs.shared)),
                                 )
                             })?;
                             signal.inner.suggest_ty(
@@ -641,13 +644,7 @@ impl CompileItemContext<'_, '_> {
                             span_target: signal.span,
                             span_target_ty: signal_ty.span,
                         };
-                        check_type_contains_value(
-                            diags,
-                            elab,
-                            reason,
-                            &signal_ty.inner.as_type(),
-                            reset_value.as_ref(),
-                        )?;
+                        check_type_contains_value(refs, reason, &signal_ty.inner.as_type(), reset_value.as_ref())?;
 
                         // convert reset value to ir expression
                         let reset_ir = reset_value.inner.as_ir_expression_unchecked(
@@ -758,8 +755,7 @@ impl CompileItemContext<'_, '_> {
         )>,
         final_else: &Option<Block<BlockStatement>>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let refs = self.refs;
 
         let (initial_if, remaining_ifs) = match ifs {
             Some(p) => p,
@@ -784,7 +780,7 @@ impl CompileItemContext<'_, '_> {
         let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
         let reason = TypeContainsReason::IfCondition(span_if);
-        let cond = check_type_is_bool(diags, elab, reason, cond)?;
+        let cond = check_type_is_bool(refs, reason, cond)?;
 
         match cond {
             // evaluate the if at compile-time
@@ -819,8 +815,8 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&WhileStatement>,
     ) -> DiagResult<BlockEnd> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let refs = self.refs;
+        let diags = refs.diags;
 
         let &WhileStatement {
             span_keyword,
@@ -845,7 +841,7 @@ impl CompileItemContext<'_, '_> {
 
                 // typecheck condition
                 let reason = TypeContainsReason::WhileCondition(span_keyword);
-                check_type_contains_value(diags, elab, reason, &Type::Bool, cond.as_ref())?;
+                check_type_contains_value(refs, reason, &Type::Bool, cond.as_ref())?;
                 let cond = match &cond.inner {
                     &CompileValue::Simple(SimpleCompileValue::Bool(b)) => b,
                     _ => {
@@ -874,18 +870,23 @@ impl CompileItemContext<'_, '_> {
     ) -> DiagResult<ElaboratedForHeader> {
         let &ForStatement {
             span_keyword: _,
-            index: _,
+            index,
             index_ty,
             iter,
             body: _,
         } = stmt;
 
+        let index_id = self.eval_maybe_id(scope, flow, index)?;
         let index_ty = index_ty
             .map(|index_ty| self.eval_expression_as_ty(scope, flow, index_ty))
             .transpose()?;
         let iter = self.eval_expression_as_for_iterator(scope, flow, iter)?;
 
-        Ok(ElaboratedForHeader { index_ty, iter })
+        Ok(ElaboratedForHeader {
+            index_id,
+            index_ty,
+            iter,
+        })
     }
 
     pub fn elaborate_for_statement_iteration<B: HasSpan>(
@@ -893,12 +894,11 @@ impl CompileItemContext<'_, '_> {
         scope: &mut Scope,
         flow: &mut impl Flow,
         stmt: &ForStatement<B>,
+        index_id: MaybeIdentifier<Spanned<Id>>,
         index_ty: &Option<Spanned<Type>>,
         index_value: <ForIterator as Iterator>::Item,
     ) -> DiagResult {
         let refs = self.refs;
-        let diags = self.refs.diags;
-        let elab = &refs.shared.elaboration_arenas;
 
         // convert index to actual value
         let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
@@ -910,24 +910,19 @@ impl CompileItemContext<'_, '_> {
                 inner: &index_value,
             };
             let reason = TypeContainsReason::ForIndexType(index_ty.span);
-            check_type_contains_value(diags, elab, reason, &index_ty.inner, curr_spanned)?;
+            check_type_contains_value(refs, reason, &index_ty.inner, curr_spanned)?;
         }
 
         // store index in variable
         let var = flow.var_new_immutable_init(
             refs,
-            stmt.index.span(),
-            VariableId::Id(stmt.index),
+            index_id,
             stmt.span_keyword,
             Ok(ValueWithImplications::simple(index_value)),
         )?;
 
         // declare variable in scope
-        scope.declare(
-            diags,
-            stmt.index.spanned_str(self.refs.fixed.source),
-            Ok(ScopedEntry::Named(NamedValue::Variable(var))),
-        );
+        scope.declare(refs, index_id, Ok(ScopedEntry::Named(NamedValue::Variable(var))));
 
         Ok(())
     }
@@ -939,8 +934,11 @@ impl CompileItemContext<'_, '_> {
         stack: &mut ExitStack,
         stmt: Spanned<&ForStatement<Block<BlockStatement>>>,
     ) -> DiagResult<BlockEnd> {
-        let ElaboratedForHeader { index_ty, iter } =
-            self.elaborate_for_statement_header(scope_parent, flow, stmt.inner)?;
+        let ElaboratedForHeader {
+            index_id,
+            index_ty,
+            iter,
+        } = self.elaborate_for_statement_header(scope_parent, flow, stmt.inner)?;
 
         self.elaborate_loop(
             flow,
@@ -949,7 +947,14 @@ impl CompileItemContext<'_, '_> {
             iter,
             |slf, flow, stack, index_value| {
                 let mut scope_body = scope_parent.new_child(stmt.span);
-                slf.elaborate_for_statement_iteration(&mut scope_body, flow, stmt.inner, &index_ty, index_value)?;
+                slf.elaborate_for_statement_iteration(
+                    &mut scope_body,
+                    flow,
+                    stmt.inner,
+                    index_id,
+                    &index_ty,
+                    index_value,
+                )?;
                 slf.elaborate_block(&scope_body, flow, stack, &stmt.inner.body)
             },
         )
@@ -963,7 +968,7 @@ impl CompileItemContext<'_, '_> {
         iter: impl Iterator<Item = T>,
         mut body: impl FnMut(&mut Self, &mut F, &mut ExitStack, T) -> DiagResult<BlockEnd>,
     ) -> DiagResult<BlockEnd> {
-        let entry = LoopEntry::new(flow, span_keyword)?;
+        let entry = LoopEntry::new(self.refs, flow, span_keyword)?;
         stack.with_loop_entry(entry, |stack| {
             let mut end_joined = BlockEnd::Normal;
 
@@ -1089,8 +1094,7 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         if_stmt: &'a IfStatement<B>,
     ) -> DiagResult<Option<&'a B>> {
-        let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
+        let refs = self.refs;
 
         let IfStatement {
             span: _,
@@ -1116,7 +1120,7 @@ impl CompileItemContext<'_, '_> {
             )?;
 
             let reason = TypeContainsReason::IfCondition(span_if);
-            let cond = check_type_is_bool_compile(diags, elab, reason, cond)?;
+            let cond = check_type_is_bool_compile(refs, reason, cond)?;
 
             if cond { Ok(Some(block)) } else { Ok(None) }
         };

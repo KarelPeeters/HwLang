@@ -1,4 +1,4 @@
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::ast::*;
 use crate::syntax::parser::ParseContext;
 use crate::syntax::token::{TokenType, TokenError};
@@ -121,7 +121,7 @@ pub FileItems: Vec<Item> = {
 
 // items
 Item: Item = {
-    <start:@L> "import" <parents:Spanned<(<Id> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
+    <start:@L> "import" <parents:Spanned<(<SimpleId> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
         => Item::Import(ItemImport { parents, entry, span: ctx.span(start, end) }),
 
     <decl:Spanned<CommonDeclaration<Vis>>>
@@ -141,7 +141,7 @@ Item: Item = {
         })
     },
     <start:@L>
-        <vis:Vis> <span_ext:Span<"external">> "module" <id:Id>
+        <vis:Vis> <span_ext:Span<"external">> "module" <id:SimpleId>
         <params:(<Parameters>)?>
         <ports:ModulePorts>
     <end:@R> => {
@@ -180,12 +180,12 @@ ImportFinalKind: ImportFinalKind = {
 }
 
 ImportEntry: ImportEntry = {
-    <start:@L> <id:Id> <as_:("as" <MaybeId>)?> <end:@R>
+    <start:@L> <id:SimpleId> <as_:("as" <MaybeSimpleId>)?> <end:@R>
         => ImportEntry { id, as_, span: ctx.span(start, end) },
 }
 
 EnumVariant: EnumBodyItem = {
-    <start:@L> <id:Id> <payload:("(" <Expr> ")")?> <end:@R>
+    <start:@L> <id:SimpleId> <payload:("(" <Expr> ")")?> <end:@R>
         => EnumBodyItem::Variant(EnumVariant { id, payload, span: ctx.span(start, end) }),
 }
 EnumMemberFunction: EnumBodyItem = {
@@ -220,7 +220,7 @@ ModuleStatementKind: ModuleStatementKind = {
     ! => ModuleStatementKind::ParseError(ctx.push_error(<>)),
 
     // declarations
-    <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeGeneralId> <kind:WireDeclarationKind> ";" => {
+    <vis:Vis> <span_keyword:Span<"wire">> <id:MaybeId> <kind:WireDeclarationKind> ";" => {
         let decl = WireDeclaration { vis, span_keyword, id, kind };
         ModuleStatementKind::WireDeclaration(decl)
     },
@@ -275,8 +275,8 @@ PortConnection: PortConnection = {
     <id:Id> <expr:("=" <Expr>)?> => {
         let expr = match expr {
             None => {
-                let kind = ExpressionKind::Id(GeneralIdentifier::Simple(id.clone()));
-                let expr = Spanned::new(id.span, arena_expr.push(kind));
+                let kind = ExpressionKind::Id(id);
+                let expr = Spanned::new(id.span(), arena_expr.push(kind));
                 PortConnectionExpression::FakeId(expr)
             },
             Some(expr) => PortConnectionExpression::Real(expr),
@@ -305,7 +305,7 @@ BlockStatementKind: BlockStatementKind = {
         let decl = RegisterDeclaration { span_keyword, kind, reset };
         BlockStatementKind::RegisterDeclaration(decl)
     },
-    <span_keyword:Span<"reg">> <id:GeneralId> <ty:(":" <Expr>)?> "=" <reset:Expr> ";" => {
+    <span_keyword:Span<"reg">> <id:Id> <ty:(":" <Expr>)?> "=" <reset:Expr> ";" => {
         let kind = RegisterDeclarationKind::New(RegisterDeclarationNew { id, ty });
         let decl = RegisterDeclaration { span_keyword, kind, reset };
         BlockStatementKind::RegisterDeclaration(decl)
@@ -386,7 +386,7 @@ MatchPattern: MatchPattern = {
     },
     "val" <id:MaybeId> => MatchPattern::WildcardVal(id),
     <span_in:Span<"in">> <range:Expr> => MatchPattern::InRange { span_in, range },
-    "." <variant:Id> <payload_id:("(" <MaybeValId> ")")?> => MatchPattern::IsEnumVariant { variant, payload_id },
+    "." <variant:SimpleId> <payload_id:("(" <MaybeValId> ")")?> => MatchPattern::IsEnumVariant { variant, payload_id },
 }
 
 MaybeValId: MaybeIdentifier = {
@@ -841,7 +841,7 @@ ExprLevelAtomic<allow_block>: ExpressionKind = {
     "{" <statements:BlockStatement*> <expression:Expr> "}" if allow_block == "true"
         => ExpressionKind::Block(BlockExpression { statements, expression }),
     // misc
-    <id:GeneralId> => ExpressionKind::Id(id),
+    <id:Id> => ExpressionKind::Id(id),
     "type" => ExpressionKind::Type,
     // TODO this should maybe not be an expression kind after all, there's only a few specific places it's allowed in
     "_" => ExpressionKind::Dummy,
@@ -866,18 +866,18 @@ StringPiece: StringPiece<Span, Expression> = {
 }
 
 //Path: Path = {
-//    <start:@L> <steps: Spanned<(<Id> ".")*>> <id: Id> <end:@R>
+//    <start:@L> <steps: Spanned<(<SimpleId> ".")*>> <id: SimpleId> <end:@R>
 //        => Path { span: ctx.span(start, end), steps, id }
 //}
 
 // terminals
-Id: Identifier = {
-    <span:Span<TokenIdentifier>> => Identifier { span },
+SimpleId: SimpleIdentifier = {
+    <span:Span<TokenIdentifier>> => SimpleIdentifier { span },
 }
 
-GeneralId: GeneralIdentifier = {
-    Id => GeneralIdentifier::Simple(<>),
-    Spanned<GeneralIdentFromStr> => GeneralIdentifier::FromString(<>.span, <>.inner),
+Id: Identifier = {
+    SimpleId => Identifier::Simple(<>),
+    Spanned<GeneralIdentFromStr> => Identifier::FromString(<>.span, <>.inner),
 }
 
 // TODO find better syntax for this and use it in more places
@@ -885,8 +885,8 @@ GeneralIdentFromStr: Expression = {
     "ident" "(" <Expr> ","? ")",
 }
 
+MaybeSimpleId = MaybeIdImpl<SimpleId>;
 MaybeId = MaybeIdImpl<Id>;
-MaybeGeneralId = MaybeIdImpl<GeneralId>;
 
 MaybeIdImpl<I>: MaybeIdentifier<I> = {
     <span:Span<"_">> => MaybeIdentifier::Dummy { span },

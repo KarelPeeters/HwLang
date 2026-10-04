@@ -12,13 +12,14 @@ use crate::front::signal::{
 use crate::front::value::{CompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_instance_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
-use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, Visibility};
+use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, SimpleIdentifier, Visibility};
 use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
+use crate::util::intern::{Id, Interner};
 use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
@@ -131,6 +132,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
     pub fn resolve_item_by_path(self, path: Spanned<&str>) -> DiagResult<AstRefItem> {
         // TODO share code with resolve_import_path
         let diags = self.diags;
+        let interner = &self.shared.interner;
 
         // split path
         let path_split = path.inner.split(".").collect_vec();
@@ -166,7 +168,8 @@ impl<'a, 's> CompileRefs<'a, 's> {
 
         // get item in scope
         // TODO check public?
-        let entry = scope.find(diags, Spanned::new(path.span, name))?;
+        let name = interner.push(name);
+        let entry = scope.find(diags, interner, Spanned::new(path.span, name))?;
         let item = match entry.value {
             ScopedEntry::Item(item) => item,
             ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
@@ -213,6 +216,8 @@ pub struct CompileShared {
     pub file_scopes: FileScopes,
 
     pub work_queue: SharedQueue<WorkItem>,
+
+    pub interner: Interner,
 
     pub item_values: ComputeOnceArena<AstRefItem, DiagResult<CompileValue>, StackEntry>,
     pub elaboration_arenas: ElaborationArenas,
@@ -403,7 +408,7 @@ pub enum CompileStackEntry {
     FunctionRun(AstRefItem, Vec<Value>),
 }
 
-fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes {
+fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Interner) -> FileScopes {
     let CompileFixed {
         settings: _,
         source,
@@ -414,14 +419,28 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     // pass 0: add all declared items to the file scope
     let mut file_scopes = IndexMap::new();
     for file in hierarchy.files() {
-        let scope = parsed[file].as_ref_ok().map(|ast| {
+        let scope = parsed[file].as_ref_ok().and_then(|ast| {
             let mut scope = FrozenScope::new(ast.span);
+            let mut any_id_err = Ok(());
+
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
-                    scope.declare(diags, info.id.spanned_str(source), Ok(ScopedEntry::Item(ast_item_ref)));
+                    let id = require_maybe_simple_id(diags, info.id, "top-level item");
+                    match id {
+                        Ok(id) => {
+                            let id = id.map_id(|id| id.spanned_str(source).map_inner(|id| interner.push(id)));
+                            scope.declare(diags, interner, id, Ok(ScopedEntry::Item(ast_item_ref)));
+                        }
+                        Err(e) => {
+                            any_id_err = Err(e);
+                        }
+                    }
                 }
             }
-            scope
+
+            // TODO we don't really need to abandon the whole scope,
+            //   if scopes supported reporting that there is an unknown id defined
+            any_id_err.map(|()| scope)
         });
 
         file_scopes.insert_first(file, scope);
@@ -429,7 +448,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
 
     // pass 1: resolve all imports and collect the imported items
     // (don't immediately add them, then then would already be visible for later imports from other files)
-    let mut file_imported_items: Vec<Vec<(MaybeIdentifier, DiagResult<ScopedEntry>)>> = vec![];
+    let mut file_imported_items: Vec<Vec<(MaybeIdentifier<Spanned<Id>>, DiagResult<ScopedEntry>)>> = vec![];
     for target_file in hierarchy.files() {
         let mut curr_imported_items = vec![];
 
@@ -453,9 +472,15 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                     for entry in entries {
                         let &ast::ImportEntry { span: _, id, as_ } = entry;
 
+                        // eval ids
+                        let id_str = id.str(source);
+                        let id = Spanned::new(id.span, interner.push(id_str));
+                        let as_ =
+                            as_.map(|as_| as_.map_id(|as_| Spanned::new(as_.span, interner.push(as_.str(source)))));
+
                         // TODO suggest alternatives, like for parent imports
                         let source_value = source_scope
-                            .and_then(|source_scope| source_scope.find(diags, id.spanned_str(source)))
+                            .and_then(|source_scope| source_scope.find(diags, interner, id))
                             .map(|found| found.value);
 
                         // check visibility, but still proceed as if the import succeeded
@@ -465,7 +490,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                                 Visibility::Public { span: _ } => {}
                                 Visibility::Private => {
                                     let _ = DiagnosticError::new(
-                                        format!("cannot access identifier `{}`", id.str(source)),
+                                        format!("cannot access identifier `{}`", id_str),
                                         id.span,
                                         "not accessible here",
                                     )
@@ -476,7 +501,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
                             }
                         }
 
-                        let target_id: MaybeIdentifier = match as_ {
+                        let target_id = match as_ {
                             Some(as_) => as_,
                             None => MaybeIdentifier::Identifier(id),
                         };
@@ -493,7 +518,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     for (target_file, items) in zip_eq(hierarchy.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
-                scope.declare(diags, target_id.spanned_str(source), value);
+                scope.declare(diags, interner, target_id, value);
             }
         }
     }
@@ -501,7 +526,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     // pass 3: add prelude items to all files scopes
     // TODO this silently does nothing if there is no std library, is that okay?
     // TODO this causes errors if there are duplicate identifiers
-    let mut prelude_imported_items: Vec<(String, DeclaredValueSingle)> = vec![];
+    let mut prelude_imported_items: Vec<(Id, DeclaredValueSingle)> = vec![];
     for std_file in ["types", "util", "math"] {
         let file = hierarchy
             .root_node()
@@ -515,7 +540,7 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
             if let Ok(scope) = scope {
                 scope.for_each_immediate_entry(|name, value| {
                     if let ScopeKey::Id(name) = name {
-                        prelude_imported_items.push((name.to_owned(), value.cloned()));
+                        prelude_imported_items.push((name, value.cloned()));
                     }
                 });
             }
@@ -523,9 +548,9 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     }
     for file in hierarchy.files() {
         if let Ok(scope) = file_scopes.get_mut(&file).unwrap() {
-            for (name, value) in &prelude_imported_items {
-                if !scope.has_immediate_entry(ScopeKey::Id(name.as_str())) {
-                    scope.declare_already_checked(name.clone(), value.clone());
+            for &(name, ref value) in &prelude_imported_items {
+                if !scope.has_immediate_entry(name) {
+                    scope.declare_already_checked(name, value.clone());
                 }
             }
         }
@@ -534,11 +559,28 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed) -> FileScopes 
     file_scopes.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect()
 }
 
+fn require_maybe_simple_id(
+    diags: &Diagnostics,
+    id: MaybeIdentifier<Identifier>,
+    reason: &str,
+) -> DiagResult<MaybeIdentifier<SimpleIdentifier>> {
+    match id {
+        MaybeIdentifier::Dummy { span } => Ok(MaybeIdentifier::Dummy { span }),
+        MaybeIdentifier::Identifier(id) => match id {
+            Identifier::Simple(id) => Ok(MaybeIdentifier::Identifier(id)),
+            Identifier::FromString(span, _) => {
+                let msg = format!("{reason} must have a simple identifier");
+                Err(diags.report_error_simple(msg, span, "`ident` used here"))
+            }
+        },
+    }
+}
+
 fn resolve_import_path(
     diags: &Diagnostics,
     source: &SourceDatabase,
     hierarchy: &SourceHierarchy,
-    path: &Spanned<Vec<Identifier>>,
+    path: &Spanned<Vec<SimpleIdentifier>>,
 ) -> DiagResult<FileId> {
     // TODO the current path design does not allow private sub-modules
     //   are they really necessary? if all inner items are private it's effectively equivalent
@@ -575,12 +617,12 @@ fn resolve_import_path(
 
 impl CompileShared {
     pub fn new(diags: &Diagnostics, fixed: CompileFixed, queue_items: QueueItems, thread_count: NonZeroUsize) -> Self {
-        let file_scopes = populate_file_scopes(diags, fixed);
+        let interner = Interner::new(thread_count);
+        let file_scopes = populate_file_scopes(diags, fixed, &interner);
 
         // pass over all items, to:
         // * collect all non-import items for the compute arena
         // * find all external modules
-        // TODO make also skip trivial items already, eg. functions and generic modules
         let mut items = vec![];
         let mut external_modules: IndexMap<String, Vec<Span>> = IndexMap::new();
         for file in fixed.hierarchy.files() {
@@ -637,6 +679,7 @@ impl CompileShared {
             work_queue,
             item_values,
             elaboration_arenas: ElaborationArenas::new(),
+            interner,
             ir_database: Mutex::new(IrDatabase {
                 modules: Arena::new(),
                 external_modules,

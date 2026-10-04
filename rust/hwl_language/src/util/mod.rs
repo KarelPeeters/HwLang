@@ -8,13 +8,13 @@ pub mod connected_components;
 pub mod data;
 pub mod exhaust;
 pub mod int;
+pub mod intern;
 pub mod iter;
 pub mod pool;
 pub mod range;
 pub mod range_multi;
 pub mod regex;
 pub mod sparse_change_array;
-pub mod store;
 pub mod sync;
 
 pub const NON_ZERO_USIZE_ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();

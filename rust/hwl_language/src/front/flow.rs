@@ -16,12 +16,12 @@ use crate::mid::ir::{
     IrVariable, IrVariableInfo, IrVariables, IrWires,
 };
 use crate::syntax::ast::{MaybeIdentifier, SyncDomain};
-use crate::syntax::pos::{Span, Spanned};
-use crate::syntax::source::SourceDatabase;
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::try_inner;
 use crate::util::arena::RandomCheck;
 use crate::util::big_int::BigInt;
 use crate::util::data::IndexMapExt;
+use crate::util::intern::{Id, MaybeId};
 use crate::util::iter::IterExt;
 use crate::util::range::RangeEmpty;
 use crate::util::range_multi::{ClosedMultiRange, ClosedNonEmptyMultiRange};
@@ -214,7 +214,7 @@ struct VariableIndex(NonZeroUsize);
 #[derive(Debug)]
 pub struct VariableInfo {
     pub span_decl: Span,
-    pub id: VariableId,
+    pub id: MaybeId,
     pub mutable: bool,
     pub ty: Option<Spanned<Type>>,
 
@@ -222,12 +222,6 @@ pub struct VariableInfo {
     /// This only works if all values are guaranteed to have the exact right type for this variable,
     ///   and nothing else will use this variable at any point.
     pub join_ir_variable: Option<IrVariable>,
-}
-
-#[derive(Debug)]
-pub enum VariableId {
-    Id(MaybeIdentifier),
-    Custom(&'static str),
 }
 
 // TODO remove error branch, this actually doesn't really make sense
@@ -350,7 +344,7 @@ pub trait Flow: FlowPrivate {
         let value = value.and_then(|value| {
             value.try_map_hardware(|value| {
                 let var_info = self.var_info(Spanned::new(assignment_span, var))?;
-                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+                let debug_info_id = var_info.id.str(&refs.shared.interner).map(str::to_owned);
 
                 let flow = self.require_hardware(assignment_span, "assigning hardware value")?;
 
@@ -431,7 +425,7 @@ pub trait Flow: FlowPrivate {
             .try_map_hardware(|value_uncopied| {
                 // store into intermediate variable (copy-on-read)
                 let var_info = self.var_info(var)?;
-                let debug_info_id = var_info.id.as_str(refs.fixed.source).map(str::to_owned);
+                let debug_info_id = var_info.id.str(&refs.shared.interner).map(str::to_owned);
                 let flow = self.require_hardware(var.span, VAR_EVAL_HW_REASON)?;
 
                 let HardwareValueWithImplications {
@@ -546,14 +540,13 @@ pub trait Flow: FlowPrivate {
     fn var_new_immutable_init(
         &mut self,
         refs: CompileRefs,
-        span_decl: Span,
-        id: VariableId,
+        id: MaybeIdentifier<Spanned<Id>>,
         assign_span: Span,
         value: DiagResult<ValueWithImplications>,
     ) -> DiagResult<Variable> {
         let info = VariableInfo {
-            span_decl,
-            id,
+            span_decl: id.span(),
+            id: id.map_id(|id| id.inner),
             mutable: false,
             ty: None,
             join_ir_variable: None,
@@ -1989,7 +1982,7 @@ fn merge_branch_variable(
             match branch_ty.as_hardware_type(elab) {
                 Ok(ty) => Ok(ty),
                 Err(NonHardwareType) => {
-                    let ty_str = branch_ty.value_string(elab);
+                    let ty_str = branch_ty.value_string(refs.shared);
                     branch_errors.entry(branch_value.span).or_insert(ty_str);
                     Err(NonHardwareType)
                 }
@@ -2022,7 +2015,7 @@ fn merge_branch_variable(
 
     // convert common to hardware too
     let ty = ty.as_hardware_type(elab).map_err(|_| {
-        let ty_str = ty.value_string(elab);
+        let ty_str = ty.value_string(refs.shared);
 
         let mut diag = DiagnosticError::new(
             "branch assignment merging needs hardware type",
@@ -2041,7 +2034,10 @@ fn merge_branch_variable(
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
                             branch_value.span,
-                            format!("value in branch assigned here has type `{}`", ty.value_string(elab)),
+                            format!(
+                                "value in branch assigned here has type `{}`",
+                                ty.value_string(refs.shared)
+                            ),
                         )
                     }
                 }
@@ -2055,7 +2051,10 @@ fn merge_branch_variable(
                 MaybeUndefined::Defined(parent_value) => {
                     diag = diag.add_info(
                         parent_value.span,
-                        format!("value before branch assigned here has type `{}`", ty.value_string(elab)),
+                        format!(
+                            "value before branch assigned here has type `{}`",
+                            ty.value_string(refs.shared)
+                        ),
                     );
                 }
             }
@@ -2069,7 +2068,7 @@ fn merge_branch_variable(
             let var_ir_info = IrVariableInfo {
                 ty: ty.as_ir(refs),
                 debug_info_span: var_info.span_decl,
-                debug_info_id: var_info.id.as_str(refs.fixed.source).map(str::to_owned),
+                debug_info_id: var_info.id.str(&refs.shared.interner).map(str::to_owned),
             };
             parent_flow.new_ir_variable(var_ir_info)
         }
@@ -2273,18 +2272,6 @@ fn merge_branch_signal(
     });
 
     Ok((content, implied))
-}
-
-impl VariableId {
-    pub fn as_str<'s>(&self, source: &'s SourceDatabase) -> Option<&'s str> {
-        match self {
-            VariableId::Id(id) => match id {
-                MaybeIdentifier::Dummy { .. } => None,
-                MaybeIdentifier::Identifier(id) => Some(id.spanned_str(source).inner),
-            },
-            VariableId::Custom(s) => Some(s),
-        }
-    }
 }
 
 impl VariableContent {

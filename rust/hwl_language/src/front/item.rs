@@ -1,8 +1,8 @@
 use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs, WorkItem};
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::extra::ExtraScope;
-use crate::front::flow::{Flow, FlowCompile, FlowRoot, VariableId};
+use crate::front::flow::{Flow, FlowCompile, FlowRoot};
 use crate::front::function::{FunctionBody, FunctionValue, UserFunctionValue};
 use crate::front::interface::ElaboratedInterfaceInfo;
 use crate::front::module_header::{ElaboratedModuleExternalInfo, ElaboratedModuleInternalInfo};
@@ -13,15 +13,15 @@ use crate::front::value::{CompileValue, MethodInfo, SimpleCompileValue, Value};
 use crate::mid::ir::{IrEnumType, IrStructType, IrType};
 use crate::syntax::ast::{
     CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstDeclaration, EnumBodyItem,
-    EnumDeclaration, EnumVariant, Expression, ExtraList, FunctionDeclaration, Identifier, Item, ItemDefInterface,
+    EnumDeclaration, EnumVariant, Expression, ExtraList, FunctionDeclaration, Item, ItemDefInterface,
     ItemDefModuleExternal, ItemDefModuleInternal, MaybeIdentifier, ParameterSelfKind, Parameters, StructBodyItem,
     StructDeclaration, StructField, TypeDeclaration,
 };
 use crate::syntax::parsed::{AstRefInterface, AstRefItem, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
-use crate::syntax::source::SourceDatabase;
 use crate::util::ResultExt;
 use crate::util::big_int::BigInt;
+use crate::util::intern::Id;
 use crate::util::iter::IterExt;
 use crate::util::range::ClosedNonEmptyRange;
 use crate::util::sync::ComputeOnceMap;
@@ -68,11 +68,11 @@ pub struct ElaborationArenas {
 #[derive(Debug, Copy, Clone)]
 pub struct UniqueDeclaration {
     index: usize,
-    id: MaybeIdentifier,
+    id: MaybeIdentifier<Spanned<Id>>,
 }
 
 impl UniqueDeclaration {
-    pub fn id(&self) -> MaybeIdentifier {
+    pub fn id(&self) -> MaybeIdentifier<Spanned<Id>> {
         self.id
     }
 }
@@ -121,7 +121,7 @@ impl ElaborationArenas {
         self.elaborated_enums.get(elab)
     }
 
-    fn next_unique_declaration(&self, id: MaybeIdentifier) -> UniqueDeclaration {
+    fn next_unique_declaration(&self, id: MaybeIdentifier<Spanned<Id>>) -> UniqueDeclaration {
         let index = self.next_unique_declaration.fetch_add(1, Ordering::Relaxed);
         assert!(index < usize::MAX / 2, "(close to) overflowing");
         UniqueDeclaration { index, id }
@@ -179,7 +179,7 @@ impl<E: Copy + Eq + Hash, F> ElaborateItemArena<E, F> {
 pub struct ElaboratedItemParams {
     // TODO maybe remove this field?
     pub unique: UniqueDeclaration,
-    pub params: Option<Vec<(Identifier, CompileValue)>>,
+    pub params: Option<Vec<(Spanned<Id>, CompileValue)>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -190,8 +190,9 @@ pub struct ElaboratedItemKey {
 
 impl ElaboratedItemParams {
     pub fn cache_key(&self) -> ElaboratedItemKey {
-        let &ElaboratedItemParams { unique, ref params } = self;
-        let param_values = params
+        let unique = self.unique;
+        let param_values = self
+            .params
             .as_ref()
             .map(|params| params.iter().map(|(_, v)| v.clone()).collect());
         ElaboratedItemKey {
@@ -240,11 +241,11 @@ pub struct ElaboratedStructInfo {
     pub debug_info_name: String,
     pub span_body: Span,
 
-    pub fields: IndexMap<String, (Identifier, Spanned<Type>)>,
+    pub fields: IndexMap<Id, (Spanned<Id>, Spanned<Type>)>,
     pub hw: Result<HardwareStructInfo, NonHardwareStruct>,
 
-    pub members_static: IndexMap<String, DiagResult<CompileValue>>,
-    pub methods_self: IndexMap<String, Arc<MethodInfo>>,
+    pub members_static: IndexMap<Id, DiagResult<CompileValue>>,
+    pub methods_self: IndexMap<Id, Arc<MethodInfo>>,
 }
 
 #[derive(Debug)]
@@ -264,7 +265,7 @@ pub struct GenericEnumInfo {
     pub span_body: Span,
     // TODO replace with AstRef
     pub items: ExtraList<EnumBodyItem>,
-    pub generic_variants: IndexMap<String, GenericVariantInfo>,
+    pub generic_variants: IndexMap<Id, GenericVariantInfo>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -278,17 +279,16 @@ pub struct ElaboratedEnumInfo {
     pub unique: UniqueDeclaration,
     pub debug_info_name: String,
     pub span_body: Span,
-    pub variants: IndexMap<String, ElaboratedEnumVariantInfo>,
+    pub variants: IndexMap<Id, ElaboratedEnumVariantInfo>,
     pub hw: Result<HardwareEnumInfo, NonHardwareEnum>,
 
-    pub members_static: IndexMap<String, DiagResult<CompileValue>>,
-    pub methods_self: IndexMap<String, Arc<MethodInfo>>,
+    pub members_static: IndexMap<Id, DiagResult<CompileValue>>,
+    pub methods_self: IndexMap<Id, Arc<MethodInfo>>,
 }
 
 #[derive(Debug)]
 pub struct ElaboratedEnumVariantInfo {
-    pub id: Identifier,
-    pub debug_info_name: String,
+    pub id: Spanned<Id>,
     pub payload_ty: Option<Spanned<Type>>,
 }
 
@@ -306,63 +306,60 @@ pub struct HardwareEnumInfo {
 }
 
 impl GenericEnumInfo {
-    pub fn find_variant(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<&GenericVariantInfo> {
-        self.generic_variants.get(variant.inner).ok_or_else(|| {
+    pub fn find_variant(&self, refs: CompileRefs, variant: Spanned<Id>) -> DiagResult<&GenericVariantInfo> {
+        self.generic_variants.get(&variant.inner).ok_or_else(|| {
+            let variant_str = variant.inner.str(&refs.shared.interner);
             DiagnosticError::new(
-                format!("enum variant `{}` not found", variant.inner),
+                format!("enum variant `{variant_str}` not found"),
                 variant.span,
                 "attempt to access variant here",
             )
             .add_info(self.span_body, "enum variants declared here")
-            .report(diags)
+            .report(refs.diags)
         })
     }
 }
 
 impl ElaboratedStructInfo {
-    pub fn field_index(&self, diags: &Diagnostics, base_span: Span, field: Spanned<&str>) -> DiagResult<usize> {
-        self.fields.get_index_of(field.inner).ok_or_else(|| {
+    pub fn field_index(&self, refs: CompileRefs, base_span: Span, field: Spanned<Id>) -> DiagResult<usize> {
+        self.fields.get_index_of(&field.inner).ok_or_else(|| {
+            let field_str = field.inner.str(&refs.shared.interner);
             DiagnosticError::new(
-                format!("struct member `{}` not found", field.inner),
+                format!("struct member `{field_str}` not found"),
                 field.span,
                 "attempt to access non-existing member here",
             )
             .add_info(base_span, format!("base has type `{}`", self.value_str()))
             .add_info(self.span_body, "struct body declared here")
-            .report(diags)
+            .report(refs.diags)
         })
     }
 }
 
 impl ElaboratedEnumInfo {
-    pub fn variant_index(&self, diags: &Diagnostics, variant: Spanned<&str>) -> DiagResult<usize> {
-        self.variants.get_index_of(variant.inner).ok_or_else(|| {
+    pub fn variant_index(&self, refs: CompileRefs, variant: Spanned<Id>) -> DiagResult<usize> {
+        self.variants.get_index_of(&variant.inner).ok_or_else(|| {
+            let variant_str = variant.inner.str(&refs.shared.interner);
             DiagnosticError::new(
-                format!("enum variant `{}` not found", variant.inner),
+                format!("enum variant `{variant_str}` not found"),
                 variant.span,
                 "attempt to access variant here",
             )
             .add_info(self.span_body, "enum variants declared here")
-            .report(diags)
+            .report(refs.diags)
         })
     }
 }
 
 pub struct EvaluatedDeclaration {
     pub span: Span,
-    pub id: MaybeIdentifier,
+    pub id: MaybeIdentifier<Spanned<Id>>,
     pub value: CompileValue,
 }
 
 impl EvaluatedDeclaration {
     pub fn value_into_entry(self, refs: CompileRefs, flow: &mut impl Flow) -> DiagResult<ScopedEntry> {
-        let var = flow.var_new_immutable_init(
-            refs,
-            self.id.span(),
-            VariableId::Id(self.id),
-            self.span,
-            Ok(Value::from(self.value)),
-        )?;
+        let var = flow.var_new_immutable_init(refs, self.id, self.span, Ok(Value::from(self.value)))?;
         Ok(ScopedEntry::Named(NamedValue::Variable(var)))
     }
 }
@@ -406,11 +403,13 @@ impl CompileItemContext<'_, '_> {
                 let item = AstRefModuleInternal::new_unchecked(item, module);
                 let body_span = ports.span.join(body.span);
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
-                let body = FunctionItemBody::ModuleInternal(unique, item);
-
                 let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, module.span, "item declaration");
+                let id_eval = self.eval_maybe_id(&file_scope, &mut flow, id)?;
+
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id_eval);
+                let body = FunctionItemBody::ModuleInternal(unique, item);
+
                 self.eval_maybe_generic_item(id.span(), body_span, &file_scope, &mut flow, params, body)
             }
             Item::ModuleExternal(module) => {
@@ -425,6 +424,7 @@ impl CompileItemContext<'_, '_> {
                 let item = AstRefModuleExternal::new_unchecked(item, module);
                 let body_span = ports.span;
 
+                let id = self.eval_simple_id(id);
                 let unique = self
                     .refs
                     .shared
@@ -448,11 +448,13 @@ impl CompileItemContext<'_, '_> {
                 } = interface;
                 let item = AstRefInterface::new_unchecked(item, interface);
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
-                let body = FunctionItemBody::Interface(unique, item);
-
                 let flow_root = FlowRoot::new(diags, &self.refs.shared.next_flow_root_id);
                 let mut flow = FlowCompile::new_root(&flow_root, interface.span, "item declaration");
+                let id_eval = self.eval_maybe_id(&file_scope, &mut flow, id)?;
+
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id_eval);
+                let body = FunctionItemBody::Interface(unique, item);
+
                 self.eval_maybe_generic_item(id.span(), *span_body, &file_scope, &mut flow, params, body)
             }
         }
@@ -482,8 +484,8 @@ impl CompileItemContext<'_, '_> {
         flow: &mut impl Flow,
         decl: &CommonDeclarationNamedKind,
     ) -> DiagResult<EvaluatedDeclaration> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         match decl {
             CommonDeclarationNamedKind::Type(decl) => {
@@ -494,13 +496,19 @@ impl CompileItemContext<'_, '_> {
                     body,
                 } = decl;
                 let body_span = body.span;
+                let id_eval = self.eval_maybe_id(scope, flow, id)?;
 
                 let body = FunctionItemBody::TypeAliasExpr(body);
                 let value = self.eval_maybe_generic_item(id.span(), body_span, scope, flow, params, body)?;
-                Ok(EvaluatedDeclaration { span, id, value })
+                Ok(EvaluatedDeclaration {
+                    span,
+                    id: id_eval,
+                    value,
+                })
             }
             CommonDeclarationNamedKind::Const(decl) => {
                 let &ConstDeclaration { span, id, ty, value } = decl;
+                let id_eval = self.eval_maybe_id(scope, flow, id)?;
 
                 let ty = ty.map(|ty| self.eval_expression_as_ty(scope, flow, ty)).transpose()?;
 
@@ -519,12 +527,12 @@ impl CompileItemContext<'_, '_> {
                         span_target: id.span(),
                         span_target_ty: ty.span,
                     };
-                    check_type_contains_value(diags, elab, reason, &ty.inner, value.as_ref())?;
+                    check_type_contains_value(refs, reason, &ty.inner, value.as_ref())?;
                 };
 
                 Ok(EvaluatedDeclaration {
                     span,
-                    id,
+                    id: id_eval,
                     value: value.inner,
                 })
             }
@@ -537,12 +545,17 @@ impl CompileItemContext<'_, '_> {
                     ref items,
                 } = decl;
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
+                let id_eval = self.eval_maybe_id(scope, flow, id)?;
+                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id_eval);
                 let generic_info = GenericStructInfo { items: items.clone() };
                 let body = FunctionItemBody::Struct(unique, Arc::new(generic_info));
 
                 let value = self.eval_maybe_generic_item(id.span(), span_body, scope, flow, params, body)?;
-                Ok(EvaluatedDeclaration { span, id, value })
+                Ok(EvaluatedDeclaration {
+                    span,
+                    id: id_eval,
+                    value,
+                })
             }
             CommonDeclarationNamedKind::Enum(decl) => {
                 let &EnumDeclaration {
@@ -554,7 +567,8 @@ impl CompileItemContext<'_, '_> {
 
                 // check variant payload consistency
                 // this is necessary to avoid confusing type inference situations later
-                let mut generic_variants: IndexMap<String, GenericVariantInfo> = IndexMap::new();
+                let decl_id_eval = self.eval_maybe_id(scope, flow, id)?;
+                let mut generic_variants: IndexMap<Id, GenericVariantInfo> = IndexMap::new();
                 let mut any_err = Ok(());
                 items.for_each_leaf(&mut |item| {
                     let variant = match item {
@@ -567,12 +581,12 @@ impl CompileItemContext<'_, '_> {
                         id,
                         payload,
                     } = variant;
-                    let id_str = id.str(self.refs.fixed.source);
+                    let id_eval = refs.shared.interner.push(id.str(refs.fixed.source));
 
-                    match generic_variants.get(id_str) {
+                    match generic_variants.get(&id_eval) {
                         None => {
                             generic_variants.insert(
-                                id_str.to_owned(),
+                                id_eval,
                                 GenericVariantInfo {
                                     span_first_decl: variant_span,
                                     has_payload: payload.is_some(),
@@ -603,7 +617,11 @@ impl CompileItemContext<'_, '_> {
                 });
                 any_err?;
 
-                let unique = self.refs.shared.elaboration_arenas.next_unique_declaration(id);
+                let unique = self
+                    .refs
+                    .shared
+                    .elaboration_arenas
+                    .next_unique_declaration(decl_id_eval);
                 let generic_info = GenericEnumInfo {
                     span_body: items.span,
                     items: items.clone(),
@@ -612,7 +630,11 @@ impl CompileItemContext<'_, '_> {
                 let body = FunctionItemBody::Enum(unique, Arc::new(generic_info));
 
                 let value = self.eval_maybe_generic_item(id.span(), span, scope, flow, params, body)?;
-                Ok(EvaluatedDeclaration { span, id, value })
+                Ok(EvaluatedDeclaration {
+                    span,
+                    id: decl_id_eval,
+                    value,
+                })
             }
             CommonDeclarationNamedKind::Function(decl) => {
                 let &FunctionDeclaration {
@@ -628,6 +650,8 @@ impl CompileItemContext<'_, '_> {
                     items: param_items,
                 } = params;
 
+                let id_eval = self.eval_maybe_id(scope, flow, id)?;
+
                 let body_inner = FunctionBody::FunctionBodyBlockOwned {
                     body: Arc::new(body.clone()),
                     ret_ty,
@@ -642,7 +666,11 @@ impl CompileItemContext<'_, '_> {
                     },
                 };
                 let value = CompileValue::Simple(SimpleCompileValue::Function(FunctionValue::User(Arc::new(function))));
-                Ok(EvaluatedDeclaration { span, id, value })
+                Ok(EvaluatedDeclaration {
+                    span,
+                    id: id_eval,
+                    value,
+                })
             }
         }
     }
@@ -656,10 +684,9 @@ impl CompileItemContext<'_, '_> {
         let eval = self.eval_declaration(scope, flow, decl)?;
 
         if let Some(eval) = eval {
-            let &EvaluatedDeclaration { span: _, id, value: _ } = &eval;
-            let id_str = id.spanned_str(self.refs.fixed.source);
+            let id = eval.id;
             let entry = eval.value_into_entry(self.refs, flow)?;
-            scope.declare(self.refs.diags, id_str, Ok(entry));
+            scope.declare(self.refs, id, Ok(entry));
         }
 
         Ok(())
@@ -708,7 +735,7 @@ impl CompileItemContext<'_, '_> {
         &mut self,
         scope_params: &Scope,
         flow: &mut FlowCompile,
-        params: Option<Vec<(Identifier, CompileValue)>>,
+        params: Option<Vec<(Spanned<Id>, CompileValue)>>,
         body: Spanned<&FunctionItemBody>,
     ) -> DiagResult<CompileValue> {
         let diags = self.refs.diags;
@@ -719,7 +746,8 @@ impl CompileItemContext<'_, '_> {
                 let result_ty = self.eval_expression_as_ty(scope_params, flow, expr)?.inner;
                 Ok(CompileValue::new_ty(result_ty))
             }
-            FunctionItemBody::ModuleInternal(unique, ast_ref) => {
+            FunctionItemBody::ModuleInternal(ref unique, ast_ref) => {
+                let unique = *unique;
                 let item_params = ElaboratedItemParams { unique, params };
                 let refs = self.refs;
 
@@ -765,8 +793,11 @@ impl CompileItemContext<'_, '_> {
                     ElaboratedModule::Internal(result_id),
                 )))
             }
-            FunctionItemBody::ModuleExternal(unique, ast_ref) => {
-                let item_params = ElaboratedItemParams { unique, params };
+            FunctionItemBody::ModuleExternal(ref unique, ast_ref) => {
+                let item_params = ElaboratedItemParams {
+                    unique: *unique,
+                    params,
+                };
                 let refs = self.refs;
                 let ast = &refs.fixed.parsed[ast_ref];
 
@@ -799,7 +830,7 @@ impl CompileItemContext<'_, '_> {
                                             }
                                         };
 
-                                        Ok((id.str(source).to_owned(), value))
+                                        Ok((id.inner.str(&refs.shared.interner).to_owned(), value))
                                     })
                                     .try_collect_all_vec()
                             })
@@ -838,7 +869,8 @@ impl CompileItemContext<'_, '_> {
                     ElaboratedModule::External(result_id),
                 )))
             }
-            FunctionItemBody::Interface(unique, ast_ref) => {
+            FunctionItemBody::Interface(ref unique, ast_ref) => {
+                let unique = *unique;
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let refs = self.refs;
@@ -852,7 +884,8 @@ impl CompileItemContext<'_, '_> {
 
                 Ok(CompileValue::Simple(SimpleCompileValue::Interface(result_id)))
             }
-            FunctionItemBody::Struct(unique, ref generic_info) => {
+            FunctionItemBody::Struct(ref unique, ref generic_info) => {
+                let unique = *unique;
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_structs.elaborate(
@@ -872,7 +905,8 @@ impl CompileItemContext<'_, '_> {
                 )?;
                 Ok(CompileValue::new_ty(Type::Struct(result_id)))
             }
-            FunctionItemBody::Enum(unique, ref variants) => {
+            FunctionItemBody::Enum(ref unique, ref variants) => {
+                let unique = *unique;
                 let item_params = ElaboratedItemParams { unique, params };
 
                 let (result_id, _) = self.refs.shared.elaboration_arenas.elaborated_enums.elaborate(
@@ -901,13 +935,12 @@ impl CompileItemContext<'_, '_> {
         scope_params: &Scope,
         flow: &mut FlowCompile,
         unique: UniqueDeclaration,
-        params: &Option<Vec<(Identifier, CompileValue)>>,
+        params: &Option<Vec<(Spanned<Id>, CompileValue)>>,
         span_body: Span,
         generic_info: &'a GenericStructInfo,
         new_elab: ElaboratedStruct,
     ) -> DiagResult<ElaboratedStructInfo> {
         let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
         let elab = &self.refs.shared.elaboration_arenas;
         let GenericStructInfo { items } = generic_info;
 
@@ -915,8 +948,8 @@ impl CompileItemContext<'_, '_> {
         let scope_params_captured = Arc::new(scope_params.capture(flow, span_body));
 
         // elaborate extra list containing fields and members
-        let mut fields_eval: IndexMap<String, (Identifier, Spanned<Type>)> = IndexMap::new();
-        let mut methods_self: IndexMap<String, Arc<MethodInfo>> = IndexMap::new();
+        let mut fields_eval: IndexMap<Id, (Spanned<Id>, Spanned<Type>)> = IndexMap::new();
+        let mut methods_self: IndexMap<Id, Arc<MethodInfo>> = IndexMap::new();
         let mut any_item_err = Ok(());
 
         let mut err_member_duplicate = |prev_span, prev_kind, curr_span, curr_kind| {
@@ -930,19 +963,19 @@ impl CompileItemContext<'_, '_> {
                     StructBodyItem::Field(field) => {
                         let &StructField { span: _, id, ty } = field;
 
-                        let id_eval = id.str(source);
+                        let id_eval = s.eval_id(scope.as_scope(), flow, id)?;
                         let ty = s.eval_expression_as_ty(scope.as_scope(), flow, ty)?;
 
-                        if let Some(&(prev_id, _)) = fields_eval.get(id_eval) {
-                            err_member_duplicate(prev_id.span, "field", id.span, "field");
+                        if let Some(&(prev_id, _)) = fields_eval.get(&id_eval.inner) {
+                            err_member_duplicate(prev_id.span(), "field", id_eval.span(), "field");
                             return Ok(());
                         }
-                        if let Some(prev_info) = methods_self.get(id_eval) {
-                            err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "field");
+                        if let Some(prev_info) = methods_self.get(&id_eval.inner) {
+                            err_member_duplicate(prev_info.func_decl.id.span(), "method", id_eval.span(), "field");
                             return Ok(());
                         }
 
-                        fields_eval.insert(id_eval.to_owned(), (id, ty));
+                        fields_eval.insert(id_eval.inner, (id_eval, ty));
                     }
                     StructBodyItem::Method(method) => match method.params.slf.inner {
                         ParameterSelfKind::Slf => {
@@ -950,23 +983,23 @@ impl CompileItemContext<'_, '_> {
                                 MaybeIdentifier::Dummy { .. } => return Ok(()),
                                 MaybeIdentifier::Identifier(id) => id,
                             };
-                            let id_eval = id.str(source);
+                            let id_eval = s.eval_id(scope.as_scope(), flow, id)?.inner;
 
-                            if let Some(&(prev_id, _)) = fields_eval.get(id_eval) {
-                                err_member_duplicate(prev_id.span, "field", id.span, "method");
+                            if let Some(&(prev_id, _)) = fields_eval.get(&id_eval) {
+                                err_member_duplicate(prev_id.span(), "field", id.span(), "method");
                                 return Ok(());
                             }
-                            if let Some(prev_info) = methods_self.get(id_eval) {
-                                err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "method");
+                            if let Some(prev_info) = methods_self.get(&id_eval) {
+                                err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span(), "method");
                                 return Ok(());
                             }
 
                             let info = MethodInfo {
                                 scope: Arc::clone(&scope_params_captured),
-                                name: id_eval.to_owned(),
+                                name: id_eval,
                                 func_decl: method.clone(),
                             };
-                            methods_self.insert(id_eval.to_owned(), Arc::new(info));
+                            methods_self.insert(id_eval, Arc::new(info));
                         }
                     },
                 }
@@ -977,17 +1010,17 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, items, true, &mut visit_item)?;
         any_item_err?;
 
-        let members_static = collect_static_members_from_body(diags, &scope, flow, "struct", |name| {
-            if let Some(&(prev_id, _)) = fields_eval.get(name) {
-                Some((prev_id.span, "field"))
-            } else if let Some(prev_info) = methods_self.get(name) {
+        let members_static = collect_static_members_from_body(self.refs, &scope, flow, "struct", |name| {
+            if let Some(&(prev_id, _)) = fields_eval.get(&name) {
+                Some((prev_id.span(), "field"))
+            } else if let Some(prev_info) = methods_self.get(&name) {
                 Some((prev_info.func_decl.id.span(), "method"))
             } else {
                 None
             }
         });
 
-        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
+        let debug_info_name = debug_info_name_including_params(self.refs, &unique, params);
 
         // check if this struct can be represented in hardware
         //   we do this once now instead of each time we need to know this
@@ -1002,7 +1035,7 @@ impl CompileItemContext<'_, '_> {
             .try_collect_vec();
         let hw = fields_hw.map(|fields_hw| {
             let fields_ir = zip_eq(fields_eval.keys(), &fields_hw)
-                .map(|(name, ty)| (name.clone(), ty.as_ir(self.refs)))
+                .map(|(name, ty)| (name.str(&self.refs.shared.interner).to_owned(), ty.as_ir(self.refs)))
                 .collect();
             HardwareStructInfo {
                 ty_ir: IrStructType {
@@ -1030,14 +1063,12 @@ impl CompileItemContext<'_, '_> {
         scope_params: &Scope,
         flow: &mut FlowCompile,
         unique: UniqueDeclaration,
-        params: &Option<Vec<(Identifier, CompileValue)>>,
+        params: &Option<Vec<(Spanned<Id>, CompileValue)>>,
         span_body: Span,
         generic_info: &GenericEnumInfo,
         new_elab: ElaboratedEnum,
     ) -> DiagResult<ElaboratedEnumInfo> {
         let diags = self.refs.diags;
-        let source = self.refs.fixed.source;
-        let elab = &self.refs.shared.elaboration_arenas;
         let GenericEnumInfo {
             span_body: _,
             items,
@@ -1048,8 +1079,8 @@ impl CompileItemContext<'_, '_> {
         let scope_params_captured = Arc::new(scope_params.capture(flow, span_body));
 
         // elaborate extra list containing variants and members
-        let mut variants_eval: IndexMap<String, ElaboratedEnumVariantInfo> = IndexMap::new();
-        let mut methods_self: IndexMap<String, Arc<MethodInfo>> = IndexMap::new();
+        let mut variants_eval: IndexMap<Id, ElaboratedEnumVariantInfo> = IndexMap::new();
+        let mut methods_self: IndexMap<Id, Arc<MethodInfo>> = IndexMap::new();
         let mut any_item_err = Ok(());
 
         let mut err_member_duplicate = |prev_span, prev_kind, curr_span, curr_kind| {
@@ -1066,49 +1097,46 @@ impl CompileItemContext<'_, '_> {
                         payload: content,
                     } = variant;
 
-                    let id_eval = id.str(source).to_owned();
+                    let id = s.eval_simple_id(id);
+
                     let payload_ty = content
                         .map(|content| s.eval_expression_as_ty(scope.as_scope(), flow, content))
                         .transpose()?;
-                    let variant_info = ElaboratedEnumVariantInfo {
-                        id,
-                        debug_info_name: id_eval.clone(),
-                        payload_ty,
-                    };
+                    let variant_info = ElaboratedEnumVariantInfo { id, payload_ty };
 
-                    if let Some(prev_info) = variants_eval.get(&id_eval) {
-                        err_member_duplicate(prev_info.id.span, "variant", id.span, "variant");
+                    if let Some(prev_info) = variants_eval.get(&id.inner) {
+                        err_member_duplicate(prev_info.id.span(), "variant", id.span(), "variant");
                         return Ok(());
                     }
-                    if let Some(prev_info) = methods_self.get(&id_eval) {
-                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "variant");
+                    if let Some(prev_info) = methods_self.get(&id.inner) {
+                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span(), "variant");
                         return Ok(());
                     }
 
-                    variants_eval.insert(id_eval, variant_info);
+                    variants_eval.insert(id.inner, variant_info);
                 }
                 EnumBodyItem::Method(method) => {
                     let id = match method.id {
                         MaybeIdentifier::Dummy { .. } => return Ok(()),
                         MaybeIdentifier::Identifier(id) => id,
                     };
-                    let id_eval = id.str(source).to_owned();
+                    let id_eval = s.eval_id(scope.as_scope(), flow, id)?.inner;
 
                     if let Some(prev_info) = methods_self.get(&id_eval) {
-                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span, "method");
+                        err_member_duplicate(prev_info.func_decl.id.span(), "method", id.span(), "method");
                         return Ok(());
                     }
                     if let Some(prev_info) = variants_eval.get(&id_eval) {
-                        err_member_duplicate(prev_info.id.span, "variant", id.span, "method");
+                        err_member_duplicate(prev_info.id.span(), "variant", id.span(), "method");
                         return Ok(());
                     }
 
                     let info = MethodInfo {
                         scope: Arc::clone(&scope_params_captured),
-                        name: id_eval.to_owned(),
+                        name: id_eval,
                         func_decl: method.clone(),
                     };
-                    methods_self.insert(id_eval.to_owned(), Arc::new(info));
+                    methods_self.insert(id_eval, Arc::new(info));
                 }
             }
 
@@ -1119,15 +1147,15 @@ impl CompileItemContext<'_, '_> {
         self.elaborate_extra_list(&mut scope, flow, items, true, &mut visit_item)?;
         any_item_err?;
 
-        let members = collect_static_members_from_body(diags, &scope, flow, "enum", |name| {
-            if let Some(variant_info) = variants_eval.get(name) {
-                Some((variant_info.id.span, "variant"))
+        let members = collect_static_members_from_body(self.refs, &scope, flow, "enum", |name| {
+            if let Some(variant_info) = variants_eval.get(&name) {
+                Some((variant_info.id.span(), "variant"))
             } else {
                 None
             }
         });
 
-        let debug_info_name = debug_info_name_including_params(source, elab, unique, params);
+        let debug_info_name = debug_info_name_including_params(self.refs, &unique, params);
 
         // check if this enum can be represented in hardware
         //   we do this once now instead of each time we need to know this for performance reasons
@@ -1146,12 +1174,14 @@ impl CompileItemContext<'_, '_> {
 }
 
 fn collect_static_members_from_body(
-    diags: &Diagnostics,
+    refs: CompileRefs,
     scope: &Scope,
     flow: &impl Flow,
     ty_kind: &str,
-    prev_span_kind: impl Fn(&str) -> Option<(Span, &str)>,
-) -> IndexMap<String, DiagResult<CompileValue>> {
+    prev_span_kind: impl Fn(Id) -> Option<(Span, &'static str)>,
+) -> IndexMap<Id, DiagResult<CompileValue>> {
+    let diags = refs.diags;
+    let interner = &refs.shared.interner;
     let mut members = IndexMap::new();
     scope.for_each_immediate_entry(|name, entry| {
         let name = match name {
@@ -1161,11 +1191,12 @@ fn collect_static_members_from_body(
 
         let member = match entry {
             DeclaredValueSingle::Value { span, value } => {
-                if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name) {
+                let name_str = name.str(interner);
+                if POSSIBLE_BUILTIN_TYPE_MEMBERS.contains(&name_str) {
                     Err(DiagnosticError::new(
                         format!("{ty_kind} member name collides with builtin type member"),
                         span,
-                        format!("trying to declare member with name `{name}` here"),
+                        format!("trying to declare member with name `{name_str}` here"),
                     )
                     .report(diags))
                 } else if let Some((prev_span, prev_kind)) = prev_span_kind(name) {
@@ -1191,7 +1222,7 @@ fn collect_static_members_from_body(
             DeclaredValueSingle::Error(e) => Err(e),
         };
 
-        members.insert(name.to_owned(), member);
+        members.insert(name, member);
     });
     members
 }
@@ -1212,20 +1243,22 @@ fn err_member_duplicate(
 }
 
 pub fn debug_info_name_including_params(
-    source: &SourceDatabase,
-    elab: &ElaborationArenas,
-    unique: UniqueDeclaration,
-    params: &Option<Vec<(Identifier, CompileValue)>>,
+    refs: CompileRefs,
+    unique: &UniqueDeclaration,
+    params: &Option<Vec<(Spanned<Id>, CompileValue)>>,
 ) -> String {
-    let mut f = unique
-        .id
-        .spanned_string(source)
-        .inner
-        .unwrap_or_else(|| String::from("_"));
+    let interner = &refs.shared.interner;
+
+    let mut f = unique.id.diagnostic_str(interner).to_owned();
     if let Some(params) = params {
         swrite!(f, "(");
         for ((param_id, param_value), last) in params.iter().with_last() {
-            swrite!(f, "{}={}", param_id.str(source), param_value.value_string(elab));
+            swrite!(
+                f,
+                "{}={}",
+                param_id.inner.str(interner),
+                param_value.value_string(refs.shared)
+            );
             if !last {
                 swrite!(f, ", ");
             }
@@ -1237,11 +1270,12 @@ pub fn debug_info_name_including_params(
 
 fn try_enum_as_hardware(
     refs: CompileRefs,
-    variants_eval: &IndexMap<String, ElaboratedEnumVariantInfo>,
+    variants_eval: &IndexMap<Id, ElaboratedEnumVariantInfo>,
     debug_info_name: &str,
     new_elab: ElaboratedEnum,
 ) -> DiagResult<Result<HardwareEnumInfo, NonHardwareEnum>> {
     let elab = &refs.shared.elaboration_arenas;
+    let interner = &refs.shared.interner;
 
     if variants_eval.is_empty() {
         // no variants, cannot be represented in hardware
@@ -1270,7 +1304,12 @@ fn try_enum_as_hardware(
         end: BigInt::from(variants_eval.len()),
     };
     let variants_ir = zip_eq(variants_eval.keys(), &payload_types)
-        .map(|(name, payload_ty)| (name.clone(), payload_ty.as_ref().map(|(_, ty_ir)| ty_ir.clone())))
+        .map(|(name, payload_ty)| {
+            (
+                name.str(interner).to_owned(),
+                payload_ty.as_ref().map(|(_, ty_ir)| ty_ir.clone()),
+            )
+        })
         .collect();
     let ty_ir = IrEnumType {
         ty: HardwareChecked::new_unchecked(new_elab),

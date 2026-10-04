@@ -12,14 +12,15 @@ use crate::front::value::{CompileValue, SimpleCompileValue};
 use crate::mid::ir::{IrModule, IrPort, IrPortInfo, IrPorts};
 use crate::new_index_type;
 use crate::syntax::ast::{
-    DomainKind, ExtraList, Identifier, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    DomainKind, ExtraList, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
     ModulePortSingle, ModulePortSingleKind, PortDirection, PortSingleKindInner,
 };
 use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleInternal};
-use crate::syntax::pos::{Span, Spanned};
+use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::BigInt;
 use crate::util::data::NonEmptyVec;
+use crate::util::intern::Id;
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
 use itertools::{Itertools, enumerate};
@@ -32,7 +33,7 @@ new_index_type!(pub Connector);
 pub type ArenaConnectors = Arena<Connector, ConnectorInfo>;
 
 pub struct ConnectorInfo {
-    pub id: Identifier,
+    pub id: Spanned<Id>,
     pub kind: DiagResult<ConnectorKind>,
 }
 
@@ -57,6 +58,7 @@ pub struct ConnectorSingle(usize);
 pub struct ElaboratedModuleHeader<A> {
     pub ast_ref: A,
     pub elab_module: ElaboratedModule,
+    pub unique: UniqueDeclaration,
     pub debug_info_params: Option<Vec<(String, String)>>,
 
     pub ports: ArenaPorts,
@@ -97,7 +99,7 @@ impl CompileRefs<'_, '_> {
         ports: &Spanned<ExtraList<ModulePortItem>>,
     ) -> DiagResult<(ArenaConnectors, ElaboratedModuleHeader<A>)> {
         let ElaboratedItemParams {
-            unique: _,
+            unique,
             params: debug_info_params,
         } = params;
 
@@ -111,27 +113,27 @@ impl CompileRefs<'_, '_> {
         let (connectors, scope_ports, ir_ports, ir_ports_named) =
             self.elaborate_module_ports_impl(&mut ctx, scope_params_tmp, &mut flow, ports, def_span)?;
 
-        // save scope and flow
-        let scope_ports = scope_ports.into_content();
-        let flow = flow.into_content();
-
         // create params debug info string
-        let source = self.fixed.source;
         let debug_info_params = debug_info_params.map(|p| {
             p.into_iter()
                 .map(|(k, v)| {
                     (
-                        k.str(source).to_owned(),
-                        v.value_string(&self.shared.elaboration_arenas),
+                        k.inner.str(&self.shared.interner).to_owned(),
+                        v.value_string(self.shared),
                     )
                 })
                 .collect_vec()
         });
 
+        // save scope and flow
+        let scope_ports = scope_ports.into_content();
+        let flow = flow.into_content();
+
         // collect results
         let header = ElaboratedModuleHeader {
             elab_module,
             ast_ref,
+            unique,
             debug_info_params,
             ports: ctx.ports,
             port_interfaces: ctx.port_interfaces,
@@ -218,12 +220,14 @@ impl ModulePortsContext<'_> {
     ) -> DiagResult<()> {
         let refs = ctx.refs;
         let diags = refs.diags;
-        let source = refs.fixed.source;
-        let elab = &refs.shared.elaboration_arenas;
 
         match port_item {
             ModulePortItem::Single(port_item) => {
                 let &ModulePortSingle { span: _, id, ref kind } = port_item;
+
+                // eval id
+                let id = ctx.eval_id(scope.as_scope(), flow, id)?;
+
                 match *kind {
                     ModulePortSingleKind::Port { direction, ref kind } => {
                         // eval domain and type
@@ -242,7 +246,7 @@ impl ModulePortsContext<'_> {
                         // record
                         let entry = self.push_connector_single(ctx, id, direction, domain, ty);
                         self.report_any_err(&entry);
-                        scope.declare_root(diags, id.spanned_str(source), entry);
+                        scope.declare_root(refs, id, entry);
                     }
                     ModulePortSingleKind::Interface {
                         span_keyword,
@@ -263,7 +267,7 @@ impl ModulePortsContext<'_> {
                             )
                             .and_then(|view| {
                                 let reason = TypeContainsReason::InterfacePortView(span_keyword);
-                                check_type_contains_value(diags, elab, reason, &Type::InterfaceView, view.as_ref())?;
+                                check_type_contains_value(refs, reason, &Type::InterfaceView, view.as_ref())?;
 
                                 match view.inner {
                                     CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
@@ -276,7 +280,7 @@ impl ModulePortsContext<'_> {
                         // record
                         let entry = self.push_connector_interface(ctx, id, domain, interface_view);
                         self.report_any_err(&entry);
-                        scope.declare_root(diags, id.spanned_str(source), entry);
+                        scope.declare_root(refs, id, entry);
                     }
                 }
             }
@@ -297,7 +301,7 @@ impl ModulePortsContext<'_> {
                     ports,
                     true,
                     &mut |ctx, scope, flow, port_item_in_block| {
-                        self.visit_port_item_in_block(ctx, scope, flow, domain, port_item_in_block);
+                        self.visit_port_item_in_block(ctx, scope, flow, domain, port_item_in_block)?;
                         Ok(())
                     },
                 )?;
@@ -314,13 +318,14 @@ impl ModulePortsContext<'_> {
         flow: &mut FlowCompile,
         domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
         port_item_in_block: &ModulePortInBlock,
-    ) {
+    ) -> DiagResult<()> {
         let refs = ctx.refs;
         let diags = refs.diags;
-        let source = refs.fixed.source;
-        let elab = &refs.shared.elaboration_arenas;
 
         let &ModulePortInBlock { span: _, id, ref kind } = port_item_in_block;
+
+        // eval id
+        let id = ctx.eval_id(scope.as_scope(), flow, id)?;
 
         match *kind {
             ModulePortInBlockKind::Port { direction, ty } => {
@@ -333,7 +338,7 @@ impl ModulePortsContext<'_> {
                 // record
                 let entry = self.push_connector_single(ctx, id, direction, domain, ty);
                 self.report_any_err(&entry);
-                scope.declare_root(diags, id.spanned_str(source), entry);
+                scope.declare_root(refs, id, entry);
             }
             ModulePortInBlockKind::Interface {
                 span_keyword: _,
@@ -355,46 +360,45 @@ impl ModulePortsContext<'_> {
                         value => Err(diags.report_error_simple(
                             "expected interface view",
                             view.span,
-                            format!("got other value with type `{}`", value.ty().value_string(elab)),
+                            format!("got other value with type `{}`", value.ty().value_string(refs.shared)),
                         )),
                     });
 
                 // record
                 let entry = self.push_connector_interface(ctx, id, domain, interface_view);
                 self.report_any_err(&entry);
-                scope.declare_root(diags, id.spanned_str(source), entry);
+                scope.declare_root(refs, id, entry);
             }
         }
+
+        Ok(())
     }
 
     fn push_connector_single(
         &mut self,
         ctx: &mut CompileItemContext,
-        id: Identifier,
+        id: Spanned<Id>,
         direction: Spanned<PortDirection>,
         domain: DiagResult<Spanned<PortDomain<Port>>>,
         ty: DiagResult<Spanned<HardwareType>>,
     ) -> DiagResult<ScopedEntry> {
-        let source = ctx.refs.fixed.source;
-        let elab = &ctx.refs.shared.elaboration_arenas;
-
-        let id_str = id.str(source);
-        self.record_ir_port_name(id_str.to_owned(), id.span, false);
+        let id_str = id.inner.str(&ctx.refs.shared.interner);
+        self.record_ir_port_name(id_str.to_owned(), id.span(), false);
 
         let kind_and_entry = result_pair(domain, ty).map(|(domain, ty)| {
             let ir_port_info = IrPortInfo {
                 name: id_str.to_owned(),
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
-                debug_span: id.span,
-                debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(elab)),
+                debug_span: id.span(),
+                debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(ctx.refs.shared)),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             };
             let ir_port = self.ir_ports.push(ir_port_info);
 
             let port = ctx.ports.push(PortInfo {
-                span: id.span,
-                name: id_str.to_owned(),
+                span: id.span(),
+                name: id.inner.str(&ctx.refs.shared.interner).to_owned(),
                 direction,
                 domain,
                 ty: ty.clone(),
@@ -423,13 +427,10 @@ impl ModulePortsContext<'_> {
     fn push_connector_interface(
         &mut self,
         ctx: &mut CompileItemContext,
-        id: Identifier,
+        id: Spanned<Id>,
         domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
         view: DiagResult<Spanned<ElaboratedInterfaceView>>,
     ) -> DiagResult<ScopedEntry> {
-        let source = ctx.refs.fixed.source;
-        let elab = &ctx.refs.shared.elaboration_arenas;
-
         let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
             let ElaboratedInterfaceView { interface, view_index } = view.inner;
             let interface = ctx.refs.shared.elaboration_arenas.interface_info(interface);
@@ -441,13 +442,13 @@ impl ModulePortsContext<'_> {
             let mut singles = vec![];
 
             // TODO rework interface port names, to ensure unique but still readable names
+            let id_str = id.inner.str(&ctx.refs.shared.interner);
             for (port_index, (_, port)) in enumerate(&interface.signals) {
-                let id_str = id.str(source);
-                let port_id_str = port.id.str(source);
+                let port_id_str = port.id.inner.str(&ctx.refs.shared.interner);
                 let name = format!("{id_str}.{port_id_str}");
                 let ir_name = format!("{id_str}_{port_id_str}");
 
-                self.record_ir_port_name(ir_name.clone(), id.span, true);
+                self.record_ir_port_name(ir_name.clone(), id.span(), true);
 
                 let direction = port_dirs[port_index].1;
                 let ty = port.ty.as_ref_ok()?;
@@ -456,14 +457,14 @@ impl ModulePortsContext<'_> {
                     name: ir_name,
                     direction: direction.inner,
                     ty: ty.inner.as_ir(ctx.refs),
-                    debug_span: id.span,
-                    debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(elab)),
+                    debug_span: id.span(),
+                    debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(ctx.refs.shared)),
                     debug_info_domain: domain.inner.diagnostic_string(ctx),
                 };
                 let ir_port = self.ir_ports.push(ir_port_info);
 
                 let port = ctx.ports.push(PortInfo {
-                    span: id.span,
+                    span: id.span(),
                     name,
                     direction,
                     domain: domain.map_inner(PortDomain::Kind),

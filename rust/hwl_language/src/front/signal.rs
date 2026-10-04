@@ -7,10 +7,11 @@ use crate::front::types::HardwareType;
 use crate::front::value::{HardwareValue, SimpleCompileValue};
 use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
-use crate::syntax::ast::{DomainKind, Identifier, MaybeIdentifier, PortDirection};
+use crate::syntax::ast::{DomainKind, MaybeIdentifier, PortDirection};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
+use crate::util::intern::Id;
 use derive_more::From;
 
 new_index_type!(pub Port);
@@ -53,7 +54,7 @@ pub struct PortInfo {
 
 #[derive(Debug)]
 pub struct PortInterfaceInfo {
-    pub id: Identifier,
+    pub id: Spanned<Id>,
     pub view: Spanned<ElaboratedInterfaceView>,
     pub domain: Spanned<DomainKind<Polarized<Port>>>,
     pub ports: Vec<Port>,
@@ -67,7 +68,7 @@ pub enum WireInfo {
 
 #[derive(Debug)]
 pub struct WireInfoSingle {
-    pub id: MaybeIdentifier<Spanned<String>>,
+    pub id: MaybeIdentifier<Spanned<Id>>,
     pub domain: DiagResult<Option<Spanned<ValueDomain>>>,
     pub typed: DiagResult<Option<WireInfoTyped<HardwareType>>>,
 }
@@ -83,7 +84,7 @@ pub struct WireInfoInInterface {
 
 #[derive(Debug)]
 pub struct WireInterfaceInfo {
-    pub id: MaybeIdentifier<Spanned<String>>,
+    pub id: MaybeIdentifier<Spanned<Id>>,
     pub domain: DiagResult<Option<Spanned<ValueDomain>>>,
     pub interface: Spanned<ElaboratedInterface>,
     pub wires: Vec<Wire>,
@@ -94,7 +95,7 @@ pub struct WireInterfaceInfo {
 impl Interface {
     pub fn span_decl(self, ctx: &CompileItemContext) -> Span {
         match self {
-            PortOrWire::Port(intf) => ctx.port_interfaces[intf].id.span,
+            PortOrWire::Port(intf) => ctx.port_interfaces[intf].id.span(),
             PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].id.span(),
         }
     }
@@ -140,9 +141,9 @@ impl WireInfo {
         }
     }
 
-    pub fn diagnostic_str(&self) -> &str {
+    pub fn diagnostic_str<'c>(&'c self, ctx: &'c CompileItemContext) -> &'c str {
         match self {
-            WireInfo::Single(slf) => slf.id.diagnostic_str(),
+            WireInfo::Single(slf) => slf.id.diagnostic_str(&ctx.refs.shared.interner),
             WireInfo::Interface(slf) => &slf.diagnostic_string,
         }
     }
@@ -191,8 +192,8 @@ impl WireInfo {
                     .get_or_insert_with(|| {
                         let ir = ir_wires.push(IrWireInfo {
                             ty: suggest.inner.as_ir(refs),
-                            debug_info_id: slf.id.spanned_string(),
-                            debug_info_ty: suggest.inner.clone().value_string(&refs.shared.elaboration_arenas),
+                            debug_info_id: slf.id.spanned_string(&refs.shared.interner),
+                            debug_info_ty: suggest.inner.clone().value_string(refs.shared),
                             // will be filled in later during the inference checking pass
                             debug_info_domain: String::new(),
                         });
@@ -388,7 +389,7 @@ impl Signal {
     pub fn diagnostic_string<'c>(self, s: &'c CompileItemContext) -> &'c str {
         match self {
             Signal::Port(port) => &s.ports[port].name,
-            Signal::Wire(wire) => s.wires[wire].diagnostic_str(),
+            Signal::Wire(wire) => s.wires[wire].diagnostic_str(s),
         }
     }
 
@@ -464,7 +465,7 @@ impl Signal {
 }
 
 impl Interface {
-    pub fn get_signal(self, ctx: &CompileItemContext, base_span: Span, id: Spanned<&str>) -> DiagResult<Signal> {
+    pub fn get_signal(self, ctx: &CompileItemContext, base_span: Span, id: Spanned<Id>) -> DiagResult<Signal> {
         let refs = ctx.refs;
 
         let (elab_intf, base_intf_span) = match self {
@@ -479,10 +480,11 @@ impl Interface {
         };
         let info = refs.shared.elaboration_arenas.interface_info(elab_intf);
 
-        let signal_index = info.signals.get_index_of(id.inner).ok_or_else(|| {
-            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(&refs.shared.elaboration_arenas);
+        let signal_index = info.signals.get_index_of(&id.inner).ok_or_else(|| {
+            let id_str = id.inner.str(&refs.shared.interner);
+            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(refs.shared);
             DiagnosticError::new(
-                format!("signal `{}` not found on interface", id.inner),
+                format!("signal `{id_str}` not found on interface"),
                 id.span,
                 "attempt to access signal here",
             )

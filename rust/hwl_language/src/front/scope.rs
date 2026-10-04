@@ -1,3 +1,4 @@
+use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::flow::{Flow, Variable};
 use crate::front::signal::{Interface, Signal};
@@ -6,7 +7,7 @@ use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
-use indexmap::Equivalent;
+use crate::util::intern::{Id, Interner};
 use indexmap::map::{Entry, IndexMap};
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -34,13 +35,13 @@ pub enum ScopeParent<'p> {
 #[derive(Debug)]
 pub struct ScopeContent {
     span: Span,
-    values: IndexMap<ScopeKey<String>, DeclaredValue>,
+    values: IndexMap<ScopeKey<Id, ()>, DeclaredValue>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum ScopeKey<I, F = ()> {
+pub enum ScopeKey<I, S> {
     Id(I),
-    Slf(F),
+    Slf(S),
 }
 
 // TODO do we actually still need clone bounds here?
@@ -115,36 +116,39 @@ impl FrozenScope {
         Scope::new(span, ScopeParent::Frozen(self))
     }
 
-    pub fn declare<'s>(
+    pub fn declare(
         &mut self,
         diags: &Diagnostics,
-        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<&'s str>>, Span>>,
+        interner: &Interner,
+        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<Id>>, Span>>,
         value: DiagResult<ScopedEntry>,
     ) {
-        self.content.declare(diags, key, value);
+        self.content.declare(diags, interner, key, value);
     }
 
-    pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
+    pub fn declare_already_checked(&mut self, id: Id, value: DeclaredValueSingle) {
         self.content.declare_already_checked(id, value);
     }
 
-    pub fn find<'s>(
+    pub fn find(
         &self,
         diags: &Diagnostics,
-        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
+        interner: &Interner,
+        key: impl Into<ScopeKey<Spanned<Id>, Span>>,
     ) -> DiagResult<ScopeFound> {
-        self.find_impl(diags, key.into(), self.content.span)
+        self.find_impl(diags, interner, key.into(), self.content.span)
     }
 
     fn find_impl(
         &self,
         diags: &Diagnostics,
-        key: ScopeKey<Spanned<&str>, Span>,
+        interner: &Interner,
+        key: ScopeKey<Spanned<Id>, Span>,
         start_span: Span,
     ) -> DiagResult<ScopeFound> {
         let mut curr = self;
         loop {
-            if let Some(found) = curr.content.try_find(key.inner())? {
+            if let Some(found) = curr.content.try_find(key.without_span())? {
                 return Ok(found);
             }
 
@@ -154,14 +158,14 @@ impl FrozenScope {
             }
         }
 
-        Err(error_not_found(start_span, key).report(diags))
+        Err(error_not_found(interner, start_span, key).report(diags))
     }
 
-    pub fn for_each_immediate_entry(&self, f: impl FnMut(ScopeKey<&str>, DeclaredValueSingle<&ScopedEntry>)) {
+    pub fn for_each_immediate_entry(&self, f: impl FnMut(ScopeKey<Id, ()>, DeclaredValueSingle<&ScopedEntry>)) {
         self.content.for_each_immediate_entry(f);
     }
 
-    pub fn has_immediate_entry<'s>(&self, key: impl Into<ScopeKey<&'s str>>) -> bool {
+    pub fn has_immediate_entry(&self, key: impl Into<ScopeKey<Id, ()>>) -> bool {
         self.content.has_immediate_entry(key)
     }
 }
@@ -189,7 +193,7 @@ impl<'p> Scope<'p> {
         self.content.into_inner()
     }
 
-    pub fn for_each_immediate_entry(&self, f: impl FnMut(ScopeKey<&str>, DeclaredValueSingle<&ScopedEntry>)) {
+    pub fn for_each_immediate_entry(&self, f: impl FnMut(ScopeKey<Id, ()>, DeclaredValueSingle<&ScopedEntry>)) {
         self.content.borrow().for_each_immediate_entry(f);
     }
 
@@ -200,58 +204,58 @@ impl<'p> Scope<'p> {
     /// This function always appears to succeed, errors are instead reported as diags.
     /// This also tracks identifiers that have erroneously been declared multiple times,
     /// so that [Scope::find] can return an error for those cases.
-    pub fn declare<'s>(
+    pub fn declare(
         &mut self,
-        diags: &Diagnostics,
-        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<&'s str>>, Span>>,
+        refs: CompileRefs,
+        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<Id>>, Span>>,
         value: DiagResult<ScopedEntry>,
     ) {
-        self.content.get_mut().declare(diags, key, value)
+        self.content
+            .get_mut()
+            .declare(refs.diags, &refs.shared.interner, key, value)
     }
 
     /// The same as [Self::declare], but does not require `&mut self`.
     ///
     /// This should only be used in cases where a declaration needs to happen in a borrowed parent scope.
     /// We don't want to use this as the default declare method, since usually that is an error.
-    pub fn declare_non_mut<'s>(
+    pub fn declare_non_mut(
         &self,
-        diags: &Diagnostics,
-        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<&'s str>>, Span>>,
+        refs: CompileRefs,
+        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<Id>>, Span>>,
         value: DiagResult<ScopedEntry>,
     ) {
-        self.content.borrow_mut().declare(diags, key, value)
+        self.content
+            .borrow_mut()
+            .declare(refs.diags, &refs.shared.interner, key, value)
     }
 
-    pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
+    pub fn declare_already_checked(&mut self, id: Id, value: DeclaredValueSingle) {
         self.content.borrow_mut().declare_already_checked(id, value);
     }
 
     /// Find the given identifier in this scope.
     /// Walks up into the parent scopes until a scope without a parent is found,
     /// then looks in the `root` scope. If no value is found returns `Err`.
-    pub fn find<'s>(
-        &self,
-        diags: &Diagnostics,
-        key: impl Into<ScopeKey<Spanned<&'s str>, Span>>,
-    ) -> DiagResult<ScopeFound> {
+    pub fn find(&self, refs: CompileRefs, key: impl Into<ScopeKey<Spanned<Id>, Span>>) -> DiagResult<ScopeFound> {
         let key = key.into();
 
         let mut curr = self;
         loop {
             let content = curr.content.borrow();
-            if let Some(found) = content.try_find(key.inner())? {
+            if let Some(found) = content.try_find(key.without_span())? {
                 return Ok(found);
             }
             curr = match &curr.parent {
                 ScopeParent::Normal(parent) => parent,
                 ScopeParent::Frozen(parent) => {
-                    return parent.find_impl(diags, key, self.content.borrow().span);
+                    return parent.find_impl(refs.diags, &refs.shared.interner, key, self.content.borrow().span);
                 }
             };
         }
     }
 
-    pub fn try_find_for_diagnostic<'s>(&self, key: impl Into<ScopeKey<&'s str>>) -> DiagResult<Option<Span>> {
+    pub fn try_find_for_diagnostic(&self, key: impl Into<ScopeKey<Id, ()>>) -> DiagResult<Option<Span>> {
         let key = key.into();
 
         let mut curr = self;
@@ -282,7 +286,7 @@ impl<'p> Scope<'p> {
     pub fn capture(&self, flow: &impl Flow, span_capture: Span) -> FrozenScope {
         // walk up scopes, starting from the current scope up to the root
         //   try to capture all values that have not yet been shadowed by a child scope
-        let mut captured_values: IndexMap<ScopeKey<String>, DeclaredValue> = IndexMap::new();
+        let mut captured_values: IndexMap<ScopeKey<Id, ()>, DeclaredValue> = IndexMap::new();
 
         let mut curr = self;
         let final_parent = loop {
@@ -369,10 +373,11 @@ impl ScopeContent {
         }
     }
 
-    fn declare<'s>(
+    fn declare(
         &mut self,
         diags: &Diagnostics,
-        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<&'s str>>, Span>>,
+        interner: &Interner,
+        key: impl Into<ScopeKey<MaybeIdentifier<Spanned<Id>>, Span>>,
         value: DiagResult<ScopedEntry>,
     ) {
         let key = match key.into() {
@@ -382,11 +387,17 @@ impl ScopeContent {
             },
             ScopeKey::Slf(span) => Spanned::new(span, ScopeKey::Slf(())),
         };
-        self.declare_impl(diags, key, value);
+        self.declare_impl(diags, interner, key, value);
     }
 
-    fn declare_impl(&mut self, diags: &Diagnostics, key: Spanned<ScopeKey<&str>>, value: DiagResult<ScopedEntry>) {
-        match self.values.entry(key.inner.to_owned()) {
+    fn declare_impl(
+        &mut self,
+        diags: &Diagnostics,
+        interner: &Interner,
+        key: Spanned<ScopeKey<Id, ()>>,
+        value: DiagResult<ScopedEntry>,
+    ) {
+        match self.values.entry(key.inner) {
             Entry::Occupied(mut entry) => {
                 // already declared, report error
                 let declared = entry.get_mut();
@@ -401,7 +412,10 @@ impl ScopeContent {
                 // report error
                 // TODO this creates O(n^2) lines of errors, ideally we only want to report the final O(n) one
                 let title = match key.inner {
-                    ScopeKey::Id(id) => format!("identifier `{id}` declared multiple times"),
+                    ScopeKey::Id(id) => {
+                        let id_str = id.str(interner);
+                        format!("identifier `{id_str}` declared multiple times")
+                    }
                     ScopeKey::Slf(()) => "self declared multiple times".to_string(),
                 };
                 let mut diag = DiagnosticError::new(title, key.span, "declared again here");
@@ -422,9 +436,9 @@ impl ScopeContent {
     }
 
     // TODO do we really need this?
-    pub fn declare_already_checked(&mut self, id: String, value: DeclaredValueSingle) {
-        match self.values.entry(ScopeKey::Id(id.clone())) {
-            Entry::Occupied(_) => panic!("identifier `{}` already declared in scope {:?}", id, self.span),
+    pub fn declare_already_checked(&mut self, id: Id, value: DeclaredValueSingle) {
+        match self.values.entry(ScopeKey::Id(id)) {
+            Entry::Occupied(_) => panic!("identifier `{:?}` already declared in scope {:?}", id, self.span),
             Entry::Vacant(entry) => {
                 let declared = match value {
                     DeclaredValueSingle::Value { value, span } => DeclaredValue::Once { value: Ok(value), span },
@@ -435,7 +449,7 @@ impl ScopeContent {
         }
     }
 
-    fn try_find(&self, key: ScopeKey<&str>) -> DiagResult<Option<ScopeFound>> {
+    fn try_find(&self, key: ScopeKey<Id, ()>) -> DiagResult<Option<ScopeFound>> {
         if let Some(declared) = self.values.get(&key) {
             let (value, span_decl) = match *declared {
                 DeclaredValue::Once { ref value, span } => (value.as_ref_ok()?, span),
@@ -452,7 +466,7 @@ impl ScopeContent {
         }
     }
 
-    fn try_find_for_diagnostic(&self, key: ScopeKey<&str>) -> DiagResult<Option<Span>> {
+    fn try_find_for_diagnostic(&self, key: ScopeKey<Id, ()>) -> DiagResult<Option<Span>> {
         let result = if let Some(value) = self.values.get(&key) {
             match value {
                 &DeclaredValue::Once { value: _, span } => Some(span),
@@ -465,8 +479,8 @@ impl ScopeContent {
         Ok(result)
     }
 
-    pub fn for_each_immediate_entry(&self, mut f: impl FnMut(ScopeKey<&str>, DeclaredValueSingle<&ScopedEntry>)) {
-        for (k, v) in &self.values {
+    pub fn for_each_immediate_entry(&self, mut f: impl FnMut(ScopeKey<Id, ()>, DeclaredValueSingle<&ScopedEntry>)) {
+        for (&k, v) in &self.values {
             let v = match *v {
                 DeclaredValue::Once { ref value, span } => match value {
                     Ok(value) => DeclaredValueSingle::Value { span, value },
@@ -475,11 +489,11 @@ impl ScopeContent {
                 DeclaredValue::Multiple { spans: _, err } => DeclaredValueSingle::Error(err),
                 DeclaredValue::Error(err) => DeclaredValueSingle::Error(err),
             };
-            f(k.as_ref(), v)
+            f(k, v)
         }
     }
 
-    pub fn has_immediate_entry<'s>(&self, key: impl Into<ScopeKey<&'s str>>) -> bool {
+    pub fn has_immediate_entry(&self, key: impl Into<ScopeKey<Id, ()>>) -> bool {
         self.values.contains_key(&key.into())
     }
 }
@@ -496,10 +510,13 @@ impl<S: Clone> DeclaredValueSingle<&S> {
     }
 }
 
-fn error_not_found(initial_scope_span: Span, key: ScopeKey<Spanned<&str>, Span>) -> DiagnosticError {
+fn error_not_found(interner: &Interner, initial_scope_span: Span, key: ScopeKey<Spanned<Id>, Span>) -> DiagnosticError {
     // TODO add fuzzy-matched suggestions as info
     let (title, span) = match key {
-        ScopeKey::Id(id) => (format!("undeclared identifier `{}`", id.inner), id.span),
+        ScopeKey::Id(id) => {
+            let id_str = id.inner.str(interner);
+            (format!("undeclared identifier `{}`", id_str), id.span)
+        }
         ScopeKey::Slf(span) => ("self is not bound in this scope".to_string(), span),
     };
 
@@ -525,36 +542,12 @@ impl CaptureFailed {
     }
 }
 
-impl ScopeKey<&str> {
-    fn to_owned(&self) -> ScopeKey<String> {
+impl<I> ScopeKey<Spanned<I>, Span> {
+    fn without_span(self) -> ScopeKey<I, ()> {
         match self {
-            &ScopeKey::Id(s) => ScopeKey::Id(s.to_owned()),
-            ScopeKey::Slf(()) => ScopeKey::Slf(()),
-        }
-    }
-}
-
-impl ScopeKey<String> {
-    fn as_ref(&self) -> ScopeKey<&str> {
-        match self {
-            ScopeKey::Id(s) => ScopeKey::Id(s.as_str()),
-            ScopeKey::Slf(()) => ScopeKey::Slf(()),
-        }
-    }
-}
-
-impl ScopeKey<Spanned<&str>, Span> {
-    pub fn inner(&self) -> ScopeKey<&str> {
-        match self {
-            ScopeKey::Id(s) => ScopeKey::Id(s.inner),
+            ScopeKey::Id(id) => ScopeKey::Id(id.inner),
             ScopeKey::Slf(_span) => ScopeKey::Slf(()),
         }
-    }
-}
-
-impl Equivalent<ScopeKey<String>> for ScopeKey<&str> {
-    fn equivalent(&self, key: &ScopeKey<String>) -> bool {
-        *self == key.as_ref()
     }
 }
 

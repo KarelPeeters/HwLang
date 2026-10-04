@@ -15,7 +15,6 @@ use crate::syntax::ast::{Arg, Args, Expression, ExpressionKind, StringPiece};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::token::TOKEN_STR_BUILTIN;
 use crate::util::range_multi::MultiRange;
-use crate::util::store::ArcOrRef;
 use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {
@@ -38,7 +37,11 @@ impl CompileItemContext<'_, '_> {
             let &Arg { span: _, name, value } = arg;
 
             if let Some(name) = name {
-                return Err(diags.report_error_simple(ARG_DIAG_TITLE, name.span, "tried to pass named argument here"));
+                return Err(diags.report_error_simple(
+                    ARG_DIAG_TITLE,
+                    name.span(),
+                    "tried to pass named argument here",
+                ));
             }
             if arg_expr.is_some() {
                 return Err(diags.report_error_simple(ARG_DIAG_TITLE, args.span(), "too many arguments passed here"));
@@ -60,11 +63,13 @@ impl CompileItemContext<'_, '_> {
                 "tried to pass non-identifier here",
             ));
         };
-        let id = self.eval_general_id(scope, flow, id)?;
-        let value = self.eval_scoped_as_named(scope, id.as_ref().map_inner(ArcOrRef::as_ref))?;
+        let id = self.eval_id(scope, flow, id)?;
+
+        // eval named
+        let named = self.eval_scoped_as_named(scope, id)?;
 
         // get type
-        let ty = match value {
+        let ty = match named {
             NamedOrValue::Value(value) => value.ty(),
             NamedOrValue::Named(value) => match value {
                 NamedValue::Variable(var) => {
@@ -87,8 +92,8 @@ impl CompileItemContext<'_, '_> {
         target_span: Span,
         args: &Spanned<Vec<Expression>>,
     ) -> DiagResult<Value> {
+        let refs = self.refs;
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         // evaluate the first two arguments as string literals
         if args.inner.len() < 2 {
@@ -114,8 +119,8 @@ impl CompileItemContext<'_, '_> {
         let args_rest = &args.inner[2..];
 
         let type_reason = TypeContainsReason::Operator(target_span);
-        let arg_0 = check_type_is_string_compile(diags, elab, type_reason, arg_0)?;
-        let arg_1 = check_type_is_string_compile(diags, elab, type_reason, arg_1)?;
+        let arg_0 = check_type_is_string_compile(refs, type_reason, arg_0)?;
+        let arg_1 = check_type_is_string_compile(refs, type_reason, arg_1)?;
 
         // handle the different builtins
         match (arg_0.as_str(), arg_1.as_str(), args_rest) {
@@ -152,7 +157,7 @@ impl CompileItemContext<'_, '_> {
                 let msg = self.eval_expression(scope, flow, &Type::String, msg)?;
 
                 let reason_str = TypeContainsReason::Internal(expr_span);
-                let msg = check_type_is_string(diags, elab, reason_str, msg)?;
+                let msg = check_type_is_string(refs, reason_str, msg)?;
 
                 match flow.kind_mut() {
                     FlowKind::Compile(_) => {
@@ -162,13 +167,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs.print_handler.print(&msg);
                     }
                     FlowKind::Hardware(flow) => {
-                        hardware_print_string(
-                            &self.refs.shared.elaboration_arenas,
-                            flow,
-                            &mut self.large,
-                            expr_span,
-                            &msg,
-                        );
+                        hardware_print_string(self.refs.shared, flow, &mut self.large, expr_span, &msg);
                     }
                 }
 
@@ -182,7 +181,7 @@ impl CompileItemContext<'_, '_> {
                 let msg = self.eval_expression(scope, flow, &Type::String, msg)?;
 
                 let reason_str = TypeContainsReason::Internal(expr_span);
-                let msg = check_type_is_string(diags, elab, reason_str, msg)?;
+                let msg = check_type_is_string(refs, reason_str, msg)?;
 
                 const ASSERT_PREFIX: &str = "assertion failed";
                 match flow.kind_mut() {
@@ -212,13 +211,7 @@ impl CompileItemContext<'_, '_> {
                         };
 
                         // TODO keep the message and assert failure connected, so backends can use them properly
-                        hardware_print_string(
-                            &self.refs.shared.elaboration_arenas,
-                            flow,
-                            &mut self.large,
-                            expr_span,
-                            &msg,
-                        );
+                        hardware_print_string(self.refs.shared, flow, &mut self.large, expr_span, &msg);
                         flow.push_ir_statement(Spanned::new(expr_span, IrStatement::AssertFailed));
 
                         Ok(Value::unit())
@@ -229,7 +222,7 @@ impl CompileItemContext<'_, '_> {
                 let cond = self.eval_expression_with_implications(scope, flow, &Type::Bool, cond)?;
 
                 let reason_bool = TypeContainsReason::Internal(expr_span);
-                let cond = check_type_is_bool(diags, elab, reason_bool, cond)?;
+                let cond = check_type_is_bool(refs, reason_bool, cond)?;
 
                 // check constant cases
                 let cond = match cond {
@@ -275,8 +268,7 @@ impl CompileItemContext<'_, '_> {
             ("fn", "unsafe_bool_to_clock", &[value]) => {
                 let value = self.eval_expression(scope, flow, &Type::Bool, value)?;
                 let value = check_type_is_bool(
-                    diags,
-                    elab,
+                    refs,
                     TypeContainsReason::Internal(expr_span),
                     value.map_inner(ValueWithImplications::simple),
                 )?;

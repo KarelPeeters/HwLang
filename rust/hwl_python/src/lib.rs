@@ -29,7 +29,6 @@ use hwl_language::syntax::parsed::ParsedDatabase as RustParsedDatabase;
 use hwl_language::syntax::pos::{Span, Spanned};
 use hwl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use hwl_language::util::big_int::BigInt;
-use hwl_language::util::data::GrowVec;
 use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
@@ -44,7 +43,6 @@ use pyo3::{
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 
 mod check;
 mod convert;
@@ -459,11 +457,12 @@ impl Compile {
 
         // look up the item
         let diags = Diagnostics::new();
+        let item_id = shared.interner.push(item_name);
         let found = map_diag_error(
             py,
             &diags,
             source,
-            scope.find(&diags, Spanned::new(dummy_span, item_name)),
+            scope.find(&diags, &shared.interner, Spanned::new(dummy_span, item_id)),
         )?;
         let item = match found.value {
             ScopedEntry::Item(ast_ref_item) => ast_ref_item,
@@ -612,8 +611,8 @@ impl CapturePrintsContext {
 #[pymethods]
 impl Value {
     fn __repr__(&self, py: Python) -> String {
-        let elab = &self.compile.borrow(py).shared.elaboration_arenas;
-        self.value.value_string(elab)
+        let compile = self.compile.borrow(py);
+        self.value.value_string(&compile.shared)
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
@@ -648,8 +647,7 @@ impl Value {
 
         // convert target and args
         let target = RustValue::from(self.value.clone());
-        let arg_key_buffer = GrowVec::new();
-        let args = convert_python_args_and_kwargs_to_args(&self.compile, args, kwargs, dummy_span, &arg_key_buffer)?;
+        let args = convert_python_args_and_kwargs_to_args(&self.compile, &shared.interner, args, kwargs, dummy_span)?;
 
         // prepare context
         let diags = Diagnostics::new();
@@ -739,7 +737,7 @@ impl Value {
         // evaluate dot index
         // TODO release GIL
         let base = Spanned::new(dummy_span, self.value.clone());
-        let step = TargetStepCompile::DotIndexId(Arc::new(attr.to_owned()));
+        let step = TargetStepCompile::DotIndexId(shared.interner.push(attr));
         let steps = TargetSteps::new(vec![Spanned::new(dummy_span, &step)]);
         let result = steps.apply_to_compile_value(&mut item_ctx, base);
         refs.run_compile_loop(compile.pool.as_ref());
@@ -1129,13 +1127,25 @@ impl VerilatedPort {
         let parsed = compile.parsed.borrow(py);
         let source = parsed.source.borrow(py);
 
-        let elab = &compile.shared.elaboration_arenas;
         let dummy_span = source.dummy_span;
 
         let diags = Diagnostics::new();
+        let print_handler = compile.start_collect_prints();
+        let refs = CompileRefs {
+            fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
+                source: &source.source,
+                hierarchy: &source.hierarchy,
+                parsed: &parsed.parsed,
+            },
+            shared: &compile.shared,
+            diags: &diags,
+            print_handler: print_handler.handler(),
+            should_stop: &|| false,
+        };
         let result = instance
             .instance
-            .set_port(&diags, elab, self.port, Spanned::new(dummy_span, &value));
+            .set_port(refs, self.port, Spanned::new(dummy_span, &value));
 
         result.map_err(|e| match e {
             Either::Left(e) => map_verilator_error(e),

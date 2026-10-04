@@ -1,7 +1,7 @@
-use crate::front::compile::CompileItemContext;
+use crate::front::compile::{CompileItemContext, CompileShared};
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
-use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo, ElaborationArenas};
+use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
@@ -50,9 +50,9 @@ impl StringBuilder {
         }
     }
 
-    pub fn push_value(&mut self, elab: &ElaborationArenas, value: &Value) {
+    pub fn push_value(&mut self, shared: &CompileShared, value: &Value) {
         match value {
-            Value::Simple(value) => self.push_str(value.value_string(elab)),
+            Value::Simple(value) => self.push_str(value.value_string(shared)),
             Value::Compound(value) => match value {
                 MixedCompoundValue::String(value) => {
                     let MixedString { pieces } = value.as_ref();
@@ -71,15 +71,15 @@ impl StringBuilder {
                     RangeValue::Normal(range) => {
                         let Range { start, end } = range;
                         if let Some(start) = start {
-                            self.push_value(elab, &Value::from(start.clone()));
+                            self.push_value(shared, &Value::from(start.clone()));
                         }
                         self.push_str("..");
                         if let Some(end) = end {
-                            self.push_value(elab, &Value::from(end.clone()));
+                            self.push_value(shared, &Value::from(end.clone()));
                         }
                     }
                     RangeValue::HardwareStartLength { start, length } => {
-                        self.push_value(elab, &Value::Hardware(start.clone().map_type(HardwareType::Int)));
+                        self.push_value(shared, &Value::Hardware(start.clone().map_type(HardwareType::Int)));
                         self.push_str("+..");
                         self.push_str(length.to_string());
                     }
@@ -87,7 +87,7 @@ impl StringBuilder {
                 MixedCompoundValue::Tuple(elements) => {
                     self.push_str("(");
                     for (elem, last) in elements.iter().with_last() {
-                        self.push_value(elab, elem);
+                        self.push_value(shared, elem);
                         if !last {
                             self.push_str(", ");
                         }
@@ -99,14 +99,14 @@ impl StringBuilder {
                 }
                 MixedCompoundValue::Struct(value) => {
                     let &StructValue { ty, ref fields } = value;
-                    let ty_info = elab.struct_info(ty);
+                    let ty_info = shared.elaboration_arenas.struct_info(ty);
 
                     self.push_str(&ty_info.debug_info_name);
                     self.push_str(".new(");
                     for ((field_name, field_value), last) in zip_eq(ty_info.fields.keys(), fields).with_last() {
-                        self.push_str(field_name);
+                        self.push_str(field_name.str(&shared.interner));
                         self.push_str("=");
-                        self.push_value(elab, field_value);
+                        self.push_value(shared, field_value);
                         if !last {
                             self.push_str(", ");
                         }
@@ -119,16 +119,16 @@ impl StringBuilder {
                         variant,
                         ref payload,
                     } = value;
-                    let ty_info = elab.enum_info(ty);
+                    let ty_info = shared.elaboration_arenas.enum_info(ty);
 
                     let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
                     self.push_str(&ty_info.debug_info_name);
                     self.push_str(".");
-                    self.push_str(variant_name);
+                    self.push_str(variant_name.str(&shared.interner));
                     if let Some(payload) = payload {
                         self.push_str("(");
-                        self.push_value(elab, payload);
+                        self.push_value(shared, payload);
                         self.push_str(")");
                     }
                 }
@@ -140,9 +140,9 @@ impl StringBuilder {
                     } = bound;
 
                     self.push_str("<bound ");
-                    self.push_str(self_type.value_string(elab));
+                    self.push_str(self_type.value_string(shared));
                     self.push_str(".");
-                    self.push_str(&method.name);
+                    self.push_str(method.name.str(&shared.interner));
                     self.push_str(">");
                 }
             },
@@ -171,7 +171,6 @@ impl CompileItemContext<'_, '_> {
         pieces: &[StringPiece<Span, Expression>],
     ) -> DiagResult<Value> {
         let diags = self.refs.diags;
-        let elab = &self.refs.shared.elaboration_arenas;
 
         let mut builder = StringBuilder::new();
 
@@ -197,7 +196,7 @@ impl CompileItemContext<'_, '_> {
                         }
                     };
 
-                    builder.push_value(elab, &piece_value.inner);
+                    builder.push_value(self.refs.shared, &piece_value.inner);
                 }
             }
         }
@@ -211,7 +210,7 @@ impl CompileItemContext<'_, '_> {
 }
 
 pub fn hardware_print_string(
-    elab: &ElaborationArenas,
+    shared: &CompileShared,
     flow: &mut FlowHardware,
     large: &mut IrLargeArena,
     span: Span,
@@ -226,7 +225,7 @@ pub fn hardware_print_string(
         match piece {
             StringPiece::Literal(s) => builder.push_str(s),
             StringPiece::Substitute(sub) => {
-                block.extend(print_hardware_sub(elab, &mut new_ir_var, large, &mut builder, sub));
+                block.extend(print_hardware_sub(shared, &mut new_ir_var, large, &mut builder, sub));
             }
         }
     }
@@ -271,7 +270,7 @@ impl IrStringBuilder {
 
 #[must_use]
 fn print_hardware_sub(
-    elab: &ElaborationArenas,
+    shared: &CompileShared,
     new_ir_var: &mut impl FnMut(IrVariableInfo) -> IrVariable,
     large: &mut IrLargeArena,
     builder: &mut IrStringBuilder,
@@ -328,7 +327,7 @@ fn print_hardware_sub(
                 // single element, just print it
                 // TODO also do this for short arrays with simplem elements?
                 let element_value = element_value(IrExpression::Int(BigInt::ZERO));
-                block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &element_value));
+                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &element_value));
             } else {
                 // multiple elements, emit a loop
                 // print any pending pieces before the loop
@@ -347,7 +346,7 @@ fn print_hardware_sub(
 
                 // print the element, clearing again immediately afterwards to force all statements into the loop
                 let element_value = element_value(IrExpression::Variable(index));
-                let mut element_block = print_hardware_sub(elab, new_ir_var, large, builder, &element_value);
+                let mut element_block = print_hardware_sub(shared, new_ir_var, large, builder, &element_value);
                 builder.print_and_clear(&mut element_block);
 
                 // print comma
@@ -393,7 +392,7 @@ fn print_hardware_sub(
                     domain: value.domain,
                     expr: element_expr,
                 };
-                block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &element_value));
+                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &element_value));
                 if index < element_types.len() - 1 {
                     builder.push_str(", ");
                 }
@@ -404,7 +403,7 @@ fn print_hardware_sub(
             builder.push_str(")");
         }
         HardwareType::Struct(ty) => {
-            let ty_info = elab.struct_info(ty.inner());
+            let ty_info = shared.elaboration_arenas.struct_info(ty.inner());
             let ty_fields_hw = &ty_info.hw.as_ref().unwrap().fields;
 
             builder.push_str(&ty_info.debug_info_name);
@@ -421,9 +420,9 @@ fn print_hardware_sub(
                     expr: field_expr,
                 };
 
-                builder.push_str(field_name);
+                builder.push_str(field_name.str(&shared.interner));
                 builder.push_str("=");
-                block_parent.extend(print_hardware_sub(elab, new_ir_var, large, builder, &field_value));
+                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &field_value));
 
                 if field_index < ty_info.fields.len() - 1 {
                     builder.push_str(", ");
@@ -432,7 +431,7 @@ fn print_hardware_sub(
             builder.push_str(")");
         }
         HardwareType::Enum(ty) => {
-            let ty_info = elab.enum_info(ty.inner());
+            let ty_info = shared.elaboration_arenas.enum_info(ty.inner());
             let ty_info_hw = ty_info.hw.as_ref().unwrap();
 
             builder.push_str(&ty_info.debug_info_name);
@@ -445,10 +444,10 @@ fn print_hardware_sub(
                 let payload = ty_info_hw.extract_payload(large, value, variant);
 
                 let mut block_case = vec![];
-                builder.push_str(variant_name);
+                builder.push_str(variant_name.str(&shared.interner));
                 if let Some(payload) = payload {
                     builder.push_str("(");
-                    block_case.extend(print_hardware_sub(elab, new_ir_var, large, builder, &payload));
+                    block_case.extend(print_hardware_sub(shared, new_ir_var, large, builder, &payload));
                     builder.push_str(")");
                 }
                 builder.print_and_clear(&mut block_case);
@@ -468,23 +467,23 @@ fn print_hardware_sub(
 }
 
 impl CompileValue {
-    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
+    pub fn value_string(&self, shared: &CompileShared) -> String {
         match self {
-            CompileValue::Simple(v) => v.value_string(elab),
-            CompileValue::Compound(v) => v.value_string(elab),
+            CompileValue::Simple(v) => v.value_string(shared),
+            CompileValue::Compound(v) => v.value_string(shared),
             CompileValue::Hardware(never) => never.unreachable(),
         }
     }
 }
 
 impl SimpleCompileValue {
-    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
+    pub fn value_string(&self, shared: &CompileShared) -> String {
         match self {
-            SimpleCompileValue::Type(v) => v.value_string(elab),
+            SimpleCompileValue::Type(v) => v.value_string(shared),
             SimpleCompileValue::Bool(v) => v.to_string(),
             SimpleCompileValue::Int(v) => v.to_string(),
             SimpleCompileValue::Array(v) => {
-                let content = v.iter().map(|e| e.value_string(elab)).format(", ");
+                let content = v.iter().map(|e| e.value_string(shared)).format(", ");
                 format!("[{}]", content)
             }
             // TODO include names for function/module/references
@@ -492,11 +491,14 @@ impl SimpleCompileValue {
             SimpleCompileValue::Function(_) => "<function>".to_owned(),
             SimpleCompileValue::Module(_) => "<module>".to_owned(),
             &SimpleCompileValue::Interface(v) => {
-                format!("<interface {}>", elab.interface_info(v).debug_info_name)
+                format!(
+                    "<interface {}>",
+                    shared.elaboration_arenas.interface_info(v).debug_info_name
+                )
             }
             &SimpleCompileValue::InterfaceView(v) => {
                 let ElaboratedInterfaceView { interface, view_index } = v;
-                let info = elab.interface_info(interface);
+                let info = shared.elaboration_arenas.interface_info(interface);
                 let view_info = &info.views[view_index];
                 format!(
                     "<interface view {}.{}>",
@@ -505,11 +507,11 @@ impl SimpleCompileValue {
             }
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
                 ReferenceInner::Variable { var: _, ty } => {
-                    format!("<ref to var with type `{}`>", ty.value_string(elab))
+                    format!("<ref to var with type `{}`>", ty.value_string(shared))
                 }
                 ReferenceInner::Signal { signal, ty, ty_hw: _ } => {
                     let kind_str = signal.kind_str();
-                    format!("<ref to {kind_str} with type `{}`>", ty.value_string(elab))
+                    format!("<ref to {kind_str} with type `{}`>", ty.value_string(shared))
                 }
                 ReferenceInner::Interface {
                     intf: signal,
@@ -518,7 +520,7 @@ impl SimpleCompileValue {
                     let kind_str = signal.kind_str();
                     format!(
                         "<ref to {kind_str} instance of interface `{}`>",
-                        elab.interface_info(intf).debug_info_name
+                        shared.elaboration_arenas.interface_info(intf).debug_info_name
                     )
                 }
             },
@@ -527,7 +529,7 @@ impl SimpleCompileValue {
 }
 
 impl Type {
-    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
+    pub fn value_string(&self, shared: &CompileShared) -> String {
         match self {
             Type::Type => "type".to_string(),
             Type::Any => "any".to_string(),
@@ -552,7 +554,7 @@ impl Type {
                 }
             }
             Type::Array(inner, len) => {
-                let inner_str = inner.value_string(elab);
+                let inner_str = inner.value_string(shared);
                 match len {
                     None => format!("[_]{inner_str}"),
                     Some(len) => format!("[{len}]{inner_str}"),
@@ -563,7 +565,7 @@ impl Type {
                 swrite!(f, "Tuple");
                 if let Some(inner) = inner {
                     swrite!(f, "(");
-                    swrite!(f, "{}", inner.iter().map(|e| e.value_string(elab)).format(", "));
+                    swrite!(f, "{}", inner.iter().map(|e| e.value_string(shared)).format(", "));
                     if inner.len() == 1 {
                         swrite!(f, ",");
                     }
@@ -572,18 +574,21 @@ impl Type {
                 f
             }
             // TODO include import path for debug names?
-            &Type::Struct(ty) => elab.struct_info(ty).value_str(),
-            &Type::Enum(ty) => elab.enum_info(ty).value_str(),
+            &Type::Struct(ty) => shared.elaboration_arenas.struct_info(ty).value_str(),
+            &Type::Enum(ty) => shared.elaboration_arenas.enum_info(ty).value_str(),
             Type::Range => "Range".to_string(),
             Type::Function => "Function".to_string(),
             Type::Module => "Module".to_string(),
             Type::Interface => "Interface".to_string(),
             Type::InterfaceView => "InterfaceView".to_string(),
             Type::Ref(ty) => {
-                format!("Ref({})", ty.value_string(elab))
+                format!("Ref({})", ty.value_string(shared))
             }
             Type::RefInterface(intf) => {
-                format!("RefInterface({})", elab.interface_info(*intf).debug_info_name)
+                format!(
+                    "RefInterface({})",
+                    shared.elaboration_arenas.interface_info(*intf).debug_info_name
+                )
             }
         }
     }
@@ -602,13 +607,13 @@ impl ElaboratedEnumInfo {
 }
 
 impl HardwareType {
-    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
-        self.as_type().value_string(elab)
+    pub fn value_string(&self, shared: &CompileShared) -> String {
+        self.as_type().value_string(shared)
     }
 }
 
 impl CompileCompoundValue {
-    pub fn value_string(&self, elab: &ElaborationArenas) -> String {
+    pub fn value_string(&self, shared: &CompileShared) -> String {
         match self {
             CompileCompoundValue::String(v) => v.as_ref().clone(),
             CompileCompoundValue::Range(v) => {
@@ -627,7 +632,7 @@ impl CompileCompoundValue {
             CompileCompoundValue::Tuple(v) => {
                 let mut f = String::new();
                 swrite!(f, "(");
-                swrite!(f, "{}", v.iter().map(|e| e.value_string(elab)).format(", "));
+                swrite!(f, "{}", v.iter().map(|e| e.value_string(shared)).format(", "));
                 if v.len() == 1 {
                     swrite!(f, ",");
                 }
@@ -636,12 +641,17 @@ impl CompileCompoundValue {
             }
             CompileCompoundValue::Struct(v) => {
                 let &StructValue { ty, ref fields } = v;
-                let ty_info = elab.struct_info(ty);
+                let ty_info = shared.elaboration_arenas.struct_info(ty);
 
                 let mut f = String::new();
                 swrite!(f, "{}.new(", ty_info.debug_info_name);
                 for ((field_name, field_value), last) in zip_eq(ty_info.fields.keys(), fields).with_last() {
-                    swrite!(f, "{}={}", field_name, field_value.value_string(elab));
+                    swrite!(
+                        f,
+                        "{}={}",
+                        field_name.str(&shared.interner),
+                        field_value.value_string(shared)
+                    );
                     if !last {
                         swrite!(f, ", ");
                     }
@@ -655,14 +665,14 @@ impl CompileCompoundValue {
                     variant,
                     ref payload,
                 } = v;
-                let ty_info = elab.enum_info(ty);
+                let ty_info = shared.elaboration_arenas.enum_info(ty);
 
                 let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
                 let mut f = String::new();
-                swrite!(f, "{}.{}", ty_info.debug_info_name, variant_name);
+                swrite!(f, "{}.{}", ty_info.debug_info_name, variant_name.str(&shared.interner));
                 if let Some(payload) = payload {
-                    swrite!(f, "({})", payload.value_string(elab));
+                    swrite!(f, "({})", payload.value_string(shared));
                 }
                 f
             }
@@ -672,7 +682,11 @@ impl CompileCompoundValue {
                     self_value: _,
                     method,
                 } = bound;
-                format!("<bound {}.{}>", self_type.value_string(elab), method.name)
+                format!(
+                    "<bound {}.{}>",
+                    self_type.value_string(shared),
+                    method.name.str(&shared.interner)
+                )
             }
         }
     }
