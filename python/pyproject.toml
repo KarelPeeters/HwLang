@@ -1,7 +1,7 @@
 [project]
 name = "hwl_sandbox"
 version = "0.1.0"
-requires-python = ">=3.12,<=3.13"
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "hwl",
     "maturin>=1.11",
