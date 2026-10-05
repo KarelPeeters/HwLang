@@ -832,20 +832,10 @@ impl Module {
             return Err(PyValueError::new_err("Verilator optimization must be between 0 and 3"));
         }
 
-        // check build_dir
+        // create build_dir
         let build_dir = build_dir.as_path();
-        if !build_dir.exists() {
-            return Err(PyIOError::new_err(format!(
-                "build_dir `{}` does not exist",
-                build_dir.display()
-            )));
-        }
-        if !build_dir.is_dir() {
-            return Err(PyIOError::new_err(format!(
-                "build_dir `{}` is not a directory",
-                build_dir.display()
-            )));
-        }
+        std::fs::create_dir_all(build_dir)
+            .map_err(|e| PyIOError::new_err(format!("failed to create build_dir `{}`: {e}", build_dir.display())))?;
 
         // lower
         let (ir_database, ir_module, lowered_verilog) = Self::lower_verilog_impl(&slf, py)?;

@@ -214,3 +214,13 @@ def test_verilator_rebuild_same_dir(tmp_dir: Path):
     check(inst_pass, True, True)
     check(inst_inv, False, True)
     check(inst_inv, True, False)
+
+
+def test_verilator_creates_build_dir(tmp_dir: Path):
+    build_dir = tmp_dir / "does" / "not" / "exist"
+    assert not build_dir.exists()
+
+    src = "module top ports(y: out async bool) { comb { y = true; } }"
+    inst = compile_custom(src).resolve("top.top").as_verilated(build_dir).instance()
+    inst.step(1)
+    assert inst.ports.y.value is True
