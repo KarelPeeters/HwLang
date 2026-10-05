@@ -871,9 +871,10 @@ impl Module {
         std::fs::write(build_dir.join(name_cpp), &source_cpp)?;
 
         // verilate
+        // pick a random so file to avoid later `dlopen` calls hitting a stale cache
+        let name_so = format!("combined-{:016x}.so", rand::random::<u64>());
         let obj_dir = build_dir.join("obj_dir");
-        let name_so = "combined.so";
-        let path_so = obj_dir.join(name_so);
+        let path_so = obj_dir.join(&name_so);
 
         py.detach::<PyResult<()>, _>(|| {
             // TODO get everything properly incremental
@@ -928,7 +929,7 @@ impl Module {
 
             // TODO use faster linker
             run_command(
-                Command::new("g++").args(objects).arg("-o").arg(name_so).arg("-shared"),
+                Command::new("g++").args(objects).arg("-o").arg(&name_so).arg("-shared"),
                 &obj_dir,
                 "linking",
             )?;

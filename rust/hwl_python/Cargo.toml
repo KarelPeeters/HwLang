@@ -18,3 +18,4 @@ hwl_util = { workspace = true }
 itertools.workspace = true
 num-bigint.workspace = true
 pyo3.workspace = true
+rand.workspace = true
