@@ -77,7 +77,7 @@ module cdc_handshake(T: type, N: int(2..) = 2) ports(
 
 // TODO get common syntax for clock+reset (maybe via a builtin interface?), it's getting a bit repetitive
 // TODO add filling on both sides and maybe almost_full/empty signals
-module cdc_fifo(T: type, N: natural) ports(
+module cdc_fifo(T: type, N: uint) ports(
     in_clk: in clock,
     in_rst: in async bool,
     in_stream: interface sync(in_clk, async in_rst) axi_stream(T).input,

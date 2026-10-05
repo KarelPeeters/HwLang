@@ -103,7 +103,7 @@ def test_interface_access(tmp_dir: Path):
 
 def test_instantiate_external_module(tmp_dir: Path):
     src = """
-    external module external_module(W: natural) ports(x: in async uint(W), y: out async uint(W+1))
+    external module external_module(W: uint) ports(x: in async uint(W), y: out async uint(W+1))
     module top ports(x: in async uint(4), y: out async uint(5)) {
         instance external_module(W=4) ports(x, y);
     }

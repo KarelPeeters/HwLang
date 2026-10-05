@@ -1,7 +1,7 @@
 // Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
 import examples.axi_stream.axi_stream;
 
-pub module axi_gearbox_v2(input_width: natural, output_width: natural) ports(
+pub module axi_gearbox_v2(input_width: positive, output_width: positive) ports(
     clk: in clock,
     rst: in async bool,
 

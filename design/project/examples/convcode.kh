@@ -1,9 +1,9 @@
-struct Generator(L: natural) {
+struct Generator(L: uint) {
     generator_0: [L]bool,
     generator_1: [L]bool,
 }
 
-pub module convcode_encoder(length: natural, generator: Generator(length)) ports(
+pub module convcode_encoder(length: uint, generator: Generator(length)) ports(
     clk: in clock,
     rst: in async bool,
 
@@ -40,7 +40,7 @@ pub module convcode_encoder(length: natural, generator: Generator(length)) ports
     }
 }
 
-pub module convcode_decoder(length: natural, generator: Generator(length), analog_bits: natural, depth: natural) ports(
+pub module convcode_decoder(length: uint, generator: Generator(length), analog_bits: uint, depth: uint) ports(
     clk: in clock,
     rst: in async bool,
 
