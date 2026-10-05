@@ -142,7 +142,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let value =
                     self.eval_expression_as_compile(scope, flow, &Type::String, expr, Spanned::new(span, "id string"))?;
                 let value = check_type_is_string_compile(refs, TypeContainsReason::Operator(span), value)?;
-                let id = self.refs.shared.interner.push_arc(value);
+                let id = self.refs.shared.interner.push(&value);
                 Ok(Spanned::new(span, id))
             }
         }

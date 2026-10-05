@@ -1,81 +1,77 @@
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::pos::Spanned;
 use crate::util::arena::RandomCheck;
-use indexmap::IndexSet;
+use crate::util::sync::dashmap_shard_count;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
+use fnv::FnvBuildHasher;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A fully-evaluated identifier.
 /// Identifiers are interned through [Interner], so they're very cheap to store and compare.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Id {
     check: RandomCheck,
-    index: usize,
+    index: u32,
 }
 
 pub type MaybeId = MaybeIdentifier<Id>;
 
-// TODO replace with actual fast implementation:
-//   * look at lasso
-//   * dashmap? large shared string buffers with offsets?
 pub struct Interner {
     check: RandomCheck,
-    map: RwLock<IndexSet<String>>,
+    string_to_id: DashMap<String, u32, FnvBuildHasher>,
+    id_to_string: DashMap<u32, String, FnvBuildHasher>,
+    next_id: AtomicU32,
 }
 
 impl Interner {
     pub fn new(thread_count: NonZeroUsize) -> Self {
-        let _ = thread_count;
+        let shard_count = dashmap_shard_count(thread_count).get();
         Self {
             check: RandomCheck::new(),
-            map: RwLock::new(IndexSet::new()),
+            string_to_id: DashMap::with_hasher_and_shard_amount(FnvBuildHasher::default(), shard_count),
+            id_to_string: DashMap::with_hasher_and_shard_amount(FnvBuildHasher::default(), shard_count),
+            next_id: AtomicU32::new(0),
         }
     }
 
     pub fn push(&self, s: &str) -> Id {
-        // try read-only lookup first
-        let index = if let Some(index) = self.map.read().unwrap().get_index_of(s) {
-            index
-        } else {
-            // get write lock, then try cheap read again
-            let mut map = self.map.write().unwrap();
-            if let Some(index) = map.get_index_of(s) {
-                index
-            } else {
-                // actually insert owned value
-                let (index, new) = map.insert_full(s.to_owned());
-                assert!(new);
-                index
-            }
-        };
-
-        Id {
-            check: self.check,
-            index,
+        if let Some(index) = self.string_to_id.get(s) {
+            return self.id(*index);
         }
-    }
 
-    pub fn push_owned(&self, s: String) -> Id {
-        // TODO avoid clone if possible
-        self.push(&s)
-    }
-
-    pub fn push_arc(&self, s: Arc<String>) -> Id {
-        // TODO avoid clone if possible
-        self.push(&s)
+        match self.string_to_id.entry(s.to_owned()) {
+            Entry::Occupied(entry) => self.id(*entry.get()),
+            Entry::Vacant(entry) => {
+                let index = self.next_id.fetch_add(1, Ordering::Relaxed);
+                self.id_to_string.insert(index, s.to_owned());
+                entry.insert(index);
+                self.id(index)
+            }
+        }
     }
 
     pub fn get(&self, id: Id) -> &str {
         assert_eq!(self.check, id.check);
 
-        let map = self.map.read().unwrap();
-        let s = map.get_index(id.index).unwrap().as_str() as *const str;
+        let entry = self.id_to_string.get(&id.index).unwrap();
+        let s_ref = entry.value().as_str();
+        let s_ptr = s_ref as *const str;
+        drop(entry);
 
         // Safety:
-        //   We never delete anything from the map,
-        //   and strings are heap allocated and so stay stable when the map resizes.
-        //   This means the returned reference can get the same lifetime as self.
-        unsafe { &*s }
+        //   * the string is stored in a `String`, whose heap buffer does not move when the map grows,
+        //   * entries are never removed or mutated,
+        //   so the pointer stays valid for as long as `self` is borrowed, even after the reference guard is dropped.
+        unsafe { &*s_ptr }
+    }
+
+    fn id(&self, index: u32) -> Id {
+        Id {
+            check: self.check,
+            index,
+        }
     }
 }
 

@@ -42,13 +42,9 @@ struct Dependency<K, S> {
 
 impl<K: Debug + Copy + Hash + Eq, V: Debug, S: Debug + Clone> ComputeOnceArena<K, V, S> {
     pub fn new(thread_count: NonZeroUsize) -> Self {
-        // matches the default shard count of DashMap
-        // TODO try tuning this
-        let shards = (thread_count.get() * 4).next_power_of_two();
-
         ComputeOnceArena {
             mutex: Mutex::new(()),
-            map: DashMap::with_shard_amount(shards),
+            map: DashMap::with_shard_amount(dashmap_shard_count(thread_count).get()),
         }
     }
 
@@ -380,4 +376,10 @@ impl<T> SharedQueue<T> {
             inner.waiting_count -= 1;
         }
     }
+}
+
+pub fn dashmap_shard_count(thread_count: NonZeroUsize) -> NonZeroUsize {
+    // matches the default shard count of DashMap
+    // TODO try tuning this
+    NonZeroUsize::new((thread_count.get() * 4).next_power_of_two()).unwrap()
 }

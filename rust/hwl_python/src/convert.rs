@@ -161,7 +161,7 @@ pub fn convert_python_args_and_kwargs_to_args(
     if let Some(kwargs) = kwargs {
         for (name, value) in kwargs {
             let name = name.extract::<String>()?;
-            let id = interner.push_owned(name);
+            let id = interner.push(&name);
 
             let value = compile_value_from_py(&value, Some(compile))?;
 
