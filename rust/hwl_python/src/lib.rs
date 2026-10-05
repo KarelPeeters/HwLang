@@ -818,15 +818,19 @@ impl Module {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    #[pyo3(signature=(build_dir,*,extra_verilog_files=None))]
+    #[pyo3(signature=(build_dir,*,extra_verilog_files=None,optimization=None))]
     fn as_verilated(
         slf: Py<Self>,
         py: Python,
         build_dir: PathBuf,
         extra_verilog_files: Option<Vec<PathBuf>>,
+        optimization: Option<u8>,
     ) -> PyResult<ModuleVerilated> {
         // handle args
         let extra_verilog_files = extra_verilog_files.unwrap_or_default();
+        if optimization.is_some_and(|level| level > 3) {
+            return Err(PyValueError::new_err("Verilator optimization must be between 0 and 3"));
+        }
 
         // check build_dir
         let build_dir = build_dir.as_path();
@@ -877,6 +881,7 @@ impl Module {
             // TODO move this compilation process to somewhere else, not in the python create
             run_command(
                 Command::new("verilator")
+                    .args(optimization.map(|level| format!("-O{level}")))
                     .arg("-cc")
                     .arg("-CFLAGS")
                     .arg("-fPIC")
