@@ -654,6 +654,7 @@ declare_tokens! {
         Port("port", TC::Keyword),
         Module("module", TC::Keyword),
         Interface("interface", TC::Keyword),
+        View("view", TC::Keyword),
         Instance("instance", TC::Keyword),
         Fn("fn", TC::Keyword),
         Comb("comb", TC::Keyword),

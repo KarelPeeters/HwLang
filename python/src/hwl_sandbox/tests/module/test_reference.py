@@ -56,7 +56,7 @@ def test_ref_interface():
     src = """
     interface Pair {
         x: uint(8), y: uint(8),
-        interface Mixed { x: in, y: out }
+        view Mixed { x: in, y: out }
     }
     module top_basic ports(p: interface async Pair.Mixed) {
         comb {
@@ -89,7 +89,7 @@ def test_ref_ty():
     src = """
     interface Data {
         x: uint(8),
-        interface View { x: in }
+        view View { x: in }
     }
     module top_correct ports(p_single: in async uint(8), p_intf: interface async Data.View) {
         comb {

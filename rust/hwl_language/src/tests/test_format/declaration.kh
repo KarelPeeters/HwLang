@@ -29,8 +29,8 @@ enum Either(L: type, R: type) {
 interface empty {}
 
 interface only_views {
-    interface view {}
-    interface view {}
+    view v1 {}
+    view v2 {}
 }
 
 interface only_ports {
@@ -42,11 +42,11 @@ interface both {
     x: bool,
     y: bool,
 
-    interface input {
+    view input {
         x: in,
         y: out,
     }
-    interface output {
+    view output {
         x: out,
         y: in,
     }

@@ -379,8 +379,8 @@ fn preserve_blanks_interface() {
             }
 
             // add the item
-            swriteln!(src, "interface Bar {{}}");
-            swriteln!(expected, "interface Bar {{}}");
+            swriteln!(src, "view Bar {{}}");
+            swriteln!(expected, "view Bar {{}}");
         }
 
         // maybe add a final blank

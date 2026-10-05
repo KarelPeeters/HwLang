@@ -9,7 +9,7 @@ def test_extra_list_in_interface():
         if (X) { x: bool }
         if (Y) { y: bool }
 
-        interface view_0 {
+        view view_0 {
             if (X) { x: in }
             if (Y) { y: out }
 
@@ -19,7 +19,7 @@ def test_extra_list_in_interface():
 
         if (V) {
             // cause error
-            interface view_1 { d: out }
+            view view_1 { d: out }
         }
     }
     """

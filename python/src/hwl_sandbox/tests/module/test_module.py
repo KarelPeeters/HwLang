@@ -80,8 +80,8 @@ def test_interface_access(tmp_dir: Path):
     src = """
     interface Foo {
         x: bool,
-        interface input { x: in }
-        interface output { x: out }
+        view input { x: in }
+        view output { x: out }
     }
     module top ports(a: interface async Foo.input, b: interface async Foo.output) {
         comb {
@@ -265,8 +265,8 @@ def test_interface_chain(tmp_dir: Path):
     src = """
     interface foo {
         d: uint(8),
-        interface input { d: in }
-        interface output { d: out }
+        view input { d: in }
+        view output { d: out }
     }
     module top ports(x: interface async foo.input, y: interface async foo.output) {
         wire w: interface foo;
@@ -391,7 +391,7 @@ def test_module_duplicate_port_name_simple():
 
 def test_module_duplicate_port_name_interface():
     src = """
-    interface foo { d: uint(4), interface input { d: in } interface output { d: out } }
+    interface foo { d: uint(4), view input { d: in } view output { d: out } }
     module top ports(y: interface async foo.input, y: interface async foo.output) {}
     """
 
@@ -403,7 +403,7 @@ def test_module_duplicate_port_name_instantiate():
     # this caused an internal compiler error at some point,
     #   the failed module header elaboration did not stop the instantiation from happening
     src = """
-    interface foo { d: uint(4), interface input { d: in } interface output { d: out } }
+    interface foo { d: uint(4), view input { d: in } view output { d: out } }
     module top ports() {
         wire v: interface foo;
         wire w: interface foo;

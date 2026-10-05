@@ -76,7 +76,7 @@ def test_dynamic_id_interface_view_port_dir():
         for (i in 0..n) {
             ident("x_{i}"): bool,
         }
-        interface input {
+        view input {
             for (i in 0..n) {
                 ident("x_{i}"): in,
             }

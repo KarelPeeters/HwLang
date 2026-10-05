@@ -72,6 +72,6 @@ interface AxiStream(T: type) {
     valid: bool,
     ready: bool,
 
-    interface input { data: in, valid: in, ready: out }
-    interface output { data: out, valid: out, ready: in }
+    view input { data: in, valid: in, ready: out }
+    view output { data: out, valid: out, ready: in }
 }

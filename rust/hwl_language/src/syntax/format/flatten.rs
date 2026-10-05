@@ -461,7 +461,7 @@ impl Context<'_> {
 
         HNode::Sequence(vec![
             HNode::ForceWrap,
-            token(TT::Interface),
+            token(TT::View),
             HNode::Space,
             self.fmt_id(view_id),
             HNode::Space,

@@ -73,6 +73,10 @@
       "match": "\\binterface\\b"
     },
     {
+      "name": "keyword.other.view.hwlang",
+      "match": "\\bview\\b"
+    },
+    {
       "name": "keyword.other.instance.hwlang",
       "match": "\\binstance\\b"
     },

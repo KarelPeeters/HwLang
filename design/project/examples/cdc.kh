@@ -44,11 +44,11 @@ interface axi_stream(T: type) {
     data: Option(T),
     ready: bool,
 
-    interface input {
+    view input {
         data: in,
         ready: out,
     }
-    interface output {
+    view output {
         data: out,
         ready: in,
     }

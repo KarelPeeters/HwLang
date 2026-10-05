@@ -4,13 +4,13 @@ pub interface axi_stream(T: type) {
     valid: bool,
     ready: bool,
 
-    interface input {
+    view input {
         data: in,
         valid: in,
         ready: out,
     }
 
-    interface output {
+    view output {
         data: out,
         valid: out,
         ready: in,

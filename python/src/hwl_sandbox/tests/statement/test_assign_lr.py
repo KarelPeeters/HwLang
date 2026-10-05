@@ -17,7 +17,7 @@ def test_assign_right():
 def test_assign_interface():
     src = """
     interface Foo {
-        interface View {}
+        view View {}
     }
     module top ports(x: interface async Foo.View) {
         comb {

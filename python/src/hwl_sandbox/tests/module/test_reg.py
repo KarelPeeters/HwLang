@@ -155,7 +155,7 @@ def test_reg_input_port():
 
 def test_reg_interface_port():
     src = """
-    interface Data { x: uint(8), interface Output { x: out } }
+    interface Data { x: uint(8), view Output { x: out } }
     module top ports (
         clk: in clock,
         data: interface sync(clk) Data.Output,

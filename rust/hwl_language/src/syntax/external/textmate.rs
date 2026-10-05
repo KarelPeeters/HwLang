@@ -184,6 +184,7 @@ fn token_category(ty: TokenType) -> Option<Category> {
         TokenType::True | TokenType::False | TokenType::Undef => Some(Category::ConstantLanguage),
         // other keywords
         TokenType::Interface
+        | TokenType::View
         | TokenType::Ports
         | TokenType::Port
         | TokenType::Slf

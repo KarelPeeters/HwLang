@@ -33,8 +33,8 @@ pub module top ports(
 
 interface axi_stream(T: type) {
     ready: bool, valid: bool, data: T,
-    interface input { ready: out, valid: in, data: in }
-    interface output { ready: in, valid: out, data: out }
+    view input { ready: out, valid: in, data: in }
+    view output { ready: in, valid: out, data: out }
 }
 
 ```
