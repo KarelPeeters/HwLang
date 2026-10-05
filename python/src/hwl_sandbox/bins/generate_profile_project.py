@@ -3,13 +3,14 @@ import textwrap
 from pathlib import Path
 
 
-def generate_source(n: int):
-    assert n >= 0
+def generate_source(depth: int, width: int):
+    assert depth >= 1
+    assert width >= 1
     result = ""
 
-    for i in range(n):
+    for level in range(depth):
         result += f"""
-module passthrough_{i}(w: int) ports(
+module passthrough_{level}(w: int, dummy: int) ports(
     clk: in clock,
     rst: in async bool,
     sync(clk, async rst) {{
@@ -19,16 +20,16 @@ module passthrough_{i}(w: int) ports(
         data_out: out [w]bool,
     }}
 ) {{"""
-        if i == 0:
+        if level == 0:
             result += f"""
     clocked(clk, async rst) {{
         reg wire data_out = undef;
-        data_out = select_{i}([w]bool, select, data_a, data_b);
+        data_out = select_{level}([w]bool, select, data_a, data_b);
     }}
 """
         else:
             result += f"""
-    instance passthrough_{i - 1}(w=w) ports(
+    instance passthrough_{level - 1}(w=w, dummy=dummy) ports(
         clk,
         rst,
         select,
@@ -38,7 +39,7 @@ module passthrough_{i}(w: int) ports(
     );"""
         result += f"""
 }}
-fn select_{i}(T: type, select: bool, a: T, b: T) -> T {{
+fn select_{level}(T: type, select: bool, a: T, b: T) -> T {{
     var result: T;
     if (select) {{
         result = a;
@@ -48,38 +49,37 @@ fn select_{i}(T: type, select: bool, a: T, b: T) -> T {{
     return result;
 }}"""
 
+    ports: str = ""
+    instances: str = ""
+    for lane in range(width):
+        ports += f"        data_a_{lane}: in [4]bool,\n"
+        ports += f"        data_b_{lane}: in [4]bool,\n"
+        ports += f"        data_out_{lane}: out [4]bool,\n"
+
+        instances += f"    instance passthrough_{depth - 1}(w=4, dummy={lane}) ports(\n"
+        instances += f"        clk,\n"
+        instances += f"        rst,\n"
+        instances += f"        select,\n"
+        instances += f"        data_a=data_a_{lane},\n"
+        instances += f"        data_b=data_b_{lane},\n"
+        instances += f"        data_out=data_out_{lane},\n"
+        instances += f"    );\n"
+
     result += f"""
 pub module top ports(
     clk: in clock,
     rst: in async bool,
     sync(clk, async rst) {{
-        data_a: in [4]bool,
-        data_b: in [4]bool,
-        data_out: out [4]bool,
-    }}
+{ports}    }}
 ) {{
     wire select: sync(clk, async rst) bool = true;
-    instance passthrough_{n - 1}(w=4) ports(
-        clk,
-        rst,
-        select,
-        data_a,
-        data_b,
-        data_out,
-    );
-}}"""
+{instances}}}"""
 
     return result
 
 
-def main():
-    n = 1024 * 32
-
-    curr_path = Path(__file__).parent
-    output_path = curr_path / "../../../profile_test"
-
-    source = generate_source(n=n)
-    print(f"Generated {len(source.splitlines())} loc")
+def write_project(output_path: Path, depth: int, width: int):
+    source = generate_source(depth=depth, width=width)
 
     if output_path.exists():
         shutil.rmtree(output_path)
@@ -89,10 +89,19 @@ def main():
     [source]
     _ = "."
     """
-    (output_path / "hwl.toml").write_text(textwrap.dedent(manifest).lstrip())
 
-    with open(output_path / "top.kh", "w") as f:
-        f.write(source)
+    (output_path / "hwl.toml").write_text(textwrap.dedent(manifest).lstrip())
+    (output_path / "top.kh").write_text(source)
+
+    print(f"Wrote depth={depth} width={width} lines={source.count("\n")} to {output_path}")
+
+
+def main():
+    curr_path = Path(__file__).parent
+    base_output_path = curr_path / "../../../../ignored/profile_test"
+
+    write_project(base_output_path / "deep", depth=1024 * 32, width=1)
+    write_project(base_output_path / "wide", depth=1024 * 32, width=32)
 
 
 if __name__ == "__main__":
