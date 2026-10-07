@@ -166,8 +166,10 @@ pub fn range_binary_mod(
     let (a_min, a_max) = range_to_min_max(a);
     let (b_min, b_max) = range_to_min_max(b);
 
-    let right_positive = b_min > &BigInt::ZERO;
-    if right_positive {
+    // we already checked that b cannot be zero,
+    //   which means the entire (contiguous) range is either positive or negative
+    let b_positive = b_min > &BigInt::ZERO;
+    if b_positive {
         let (r_min, r_max) = range_binary_mod_positive(a_min, &a_max, b_min, &b_max);
         Some(range_from_min_max(r_min, r_max))
     } else {
