@@ -419,28 +419,20 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
     // pass 0: add all declared items to the file scope
     let mut file_scopes = IndexMap::new();
     for file in hierarchy.files() {
-        let scope = parsed[file].as_ref_ok().and_then(|ast| {
+        let scope = parsed[file].as_ref_ok().map(|ast| {
             let mut scope = FrozenScope::new(ast.span);
-            let mut any_id_err = Ok(());
 
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
                 if let Some(info) = ast_item.info().declaration {
-                    let id = require_maybe_simple_id(diags, info.id, "top-level item");
-                    match id {
-                        Ok(id) => {
-                            let id = id.map_id(|id| id.spanned_str(source).map_inner(|id| interner.push(id)));
-                            scope.declare(diags, interner, id, Ok(ScopedEntry::Item(ast_item_ref)));
-                        }
-                        Err(e) => {
-                            any_id_err = Err(e);
-                        }
+                    // skip items with an id that we can't determine here, they are reported as errors
+                    if let Ok(id) = require_maybe_simple_id(diags, info.id, "top-level item") {
+                        let id = id.map_id(|id| id.spanned_str(source).map_inner(|id| interner.push(id)));
+                        scope.declare(diags, interner, id, Ok(ScopedEntry::Item(ast_item_ref)));
                     }
                 }
             }
 
-            // TODO we don't really need to abandon the whole scope,
-            //   if scopes supported reporting that there is an unknown id defined
-            any_id_err.map(|()| scope)
+            scope
         });
 
         file_scopes.insert_first(file, scope);
