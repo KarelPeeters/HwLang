@@ -1,11 +1,11 @@
-from dataclasses import dataclass
-from functools import reduce
-from typing import Callable, List
-
 import math
 import sys
 import time
+
 import z3
+from dataclasses import dataclass
+from functools import reduce
+from typing import Callable, List
 
 
 @dataclass
@@ -24,6 +24,9 @@ class RangedValue:
 
 def check_nary_op_range(name: str, n: int, f: Callable[[List[RangedValue], List[z3.BoolRef]], RangedValue]) -> bool:
     print(f"Checking {name}")
+
+    # start from a fresh z3 context, the nonlinear solver performance depends heavily on state left by earlier checks
+    z3.z3._main_ctx = None
     z3.set_param(proof=True)
 
     # construct args
@@ -214,16 +217,50 @@ def main():
             ),
         )
 
-    def f_mod(a, b, req):
-        # b's range cannot contain zero
-        # (this also allows the if conditions below to be valid, the range is either entirely positive or negative)
-        req.append(z3.Not(z3.And(b.min <= 0, 0 <= b.max)))
+    def f_mod_positive(a, b, req):
+        # this is split from the negative case, solving them together is much slower
+        req.append(b.min > 0)
 
-        # TODO this could be tighter, eg. if b's range does not cover the entire mod interval
+        # floor(a / b) increases with a, and moves towards zero as b increases
+        # (the quotients are separate variables with defining constraints,
+        #   this is much faster to solve than nested division and multiplication)
+        q_min = z3.Int("q_min")
+        q_max = z3.Int("q_max")
+        d_min = z3.If(a.min >= 0, b.max, b.min)
+        d_max = z3.If(a.max >= 0, b.min, b.max)
+        req.extend([
+            q_min * d_min <= a.min, a.min < q_min * d_min + d_min,
+            q_max * d_max <= a.max, a.max < q_max * d_max + d_max,
+        ])
+
+        # if the quotient is the same for all values, the result `a - q * b` is linear
+        q = q_min
+        linear_min = a.min - q * z3.If(q >= 0, b.max, b.min)
+        linear_max = a.max - q * z3.If(q >= 0, b.min, b.max)
+
+        # otherwise the result can be anything in the mod interval,
+        #   except that it can't be larger than a itself if a is not negative
+        general_min = 0
+        general_max = z3.If(a.min >= 0, z3_min([a.max, b.max - 1]), b.max - 1)
+
         return RangedValue(
             val=z3_floor_mod(a.val, b.val),
-            min=z3.If(b.min > 0, 0, b.min + 1),
-            max=z3.If(b.min > 0, b.max - 1, 0),
+            min=z3.If(q_min == q_max, linear_min, general_min),
+            max=z3.If(q_min == q_max, linear_max, general_max),
+        )
+
+    def f_mod_negative(a, b, req):
+        # use the identity `a mod b == -((-a) mod (-b))`
+        req.append(b.max < 0)
+
+        a_neg = RangedValue(val=-a.val, min=-a.max, max=-a.min)
+        b_neg = RangedValue(val=-b.val, min=-b.max, max=-b.min)
+        r_neg = f_mod_positive(a_neg, b_neg, req)
+
+        return RangedValue(
+            val=z3_floor_mod(a.val, b.val),
+            min=-r_neg.max,
+            max=-r_neg.min,
         )
 
     def f_pow(base, exp, req):
@@ -290,7 +327,8 @@ def main():
     success &= check_binary_op_range("mul", f_mul)
     check_z3_floor_div_mod()
     success &= check_binary_op_range("div", f_div)
-    success &= check_binary_op_range("mod", f_mod)
+    success &= check_binary_op_range("mod_positive", f_mod_positive)
+    success &= check_binary_op_range("mod_negative", f_mod_negative)
     success &= check_binary_op_range("pow", f_pow)
 
     print(f"Took {time.perf_counter() - start:.2f}s")
