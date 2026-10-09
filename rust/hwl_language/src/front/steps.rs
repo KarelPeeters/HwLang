@@ -28,7 +28,17 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct TargetSteps<S = TargetStep> {
-    pub steps: Vec<Spanned<S>>,
+    pub steps: Vec<SpannedStep<S>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpannedStep<S> {
+    /// Span of the entire expression, base and step included.
+    pub span_full: Span,
+    /// Span of the step part of the expression.
+    pub span_step: Span,
+    /// The step itself.
+    pub step: S,
 }
 
 pub type TargetStep = MaybeCompile<TargetStepCompile, TargetStepHardware>;
@@ -48,15 +58,15 @@ pub enum TargetStepHardware {
 }
 
 impl<S> TargetSteps<S> {
-    pub fn new(steps: Vec<Spanned<S>>) -> Self {
+    pub fn new(steps: Vec<SpannedStep<S>>) -> Self {
         Self { steps }
     }
 
-    pub fn single(step: Spanned<S>) -> Self {
+    pub fn single(step: SpannedStep<S>) -> Self {
         Self::new(vec![step])
     }
 
-    pub fn push(&mut self, step: Spanned<S>) {
+    pub fn push(&mut self, step: SpannedStep<S>) {
         self.steps.push(step);
     }
 
@@ -103,8 +113,12 @@ impl TargetSteps<TargetStep> {
         let steps = self
             .steps
             .iter()
-            .map(|s| match &s.inner {
-                MaybeCompile::Compile(s_compile) => Ok(Spanned::new(s.span, s_compile)),
+            .map(|s| match &s.step {
+                MaybeCompile::Compile(s_compile) => Ok(SpannedStep {
+                    span_full: s.span_full,
+                    span_step: s.span_step,
+                    step: s_compile,
+                }),
                 MaybeCompile::Hardware(_) => Err(NotCompile),
             })
             .try_collect_vec()?;
@@ -155,14 +169,14 @@ impl TargetSteps<TargetStep> {
 
     pub fn for_each_domain(&self, mut f: impl FnMut(Spanned<ValueDomain>)) {
         for step in &self.steps {
-            let &d = match &step.inner {
+            let &d = match &step.step {
                 TargetStep::Compile(_) => &ValueDomain::CompileTime,
                 TargetStep::Hardware(step) => match step {
                     TargetStepHardware::ArrayIndex(index) => &index.domain,
                     TargetStepHardware::ArraySlice { start, length: _ } => &start.domain,
                 },
             };
-            f(Spanned::new(step.span, d));
+            f(Spanned::new(step.span_step, d));
         }
     }
 
@@ -193,14 +207,14 @@ impl TargetSteps<TargetStep> {
             }
 
             // map step to IR and get the next type
-            let step_span = step.span;
+            let step_span = step.span_step;
             let check_type_is_array = |step_is_slice: bool| {
                 let (inner, len) = check_type_is_array(refs, curr_ty.as_ref(), step_span, step_is_slice)?;
                 let len = Spanned::new(curr_ty.span, len);
                 Ok((inner, len))
             };
 
-            let (step_ir, next_ty) = match &step.inner {
+            let (step_ir, next_ty) = match &step.step {
                 TargetStep::Compile(step) => match step {
                     TargetStepCompile::ArrayIndex(index) => {
                         let (array_inner, array_len) = check_type_is_array(false)?;
@@ -326,7 +340,7 @@ impl TargetSteps<TargetStep> {
             }
 
             // move on to the next type
-            curr_ty = Spanned::new(curr_ty.span.join(step.span), next_ty);
+            curr_ty = Spanned::new(step.span_full, next_ty);
         }
 
         let steps_ir = steps_builder.map_err(Either::Right);
@@ -351,9 +365,10 @@ impl TargetSteps<TargetStep> {
         // TODO fuse IR steps?
         for step in steps {
             let curr_span = curr_value.span;
-            let step_span = step.span;
+            let expr_span = step.span_full;
+            let step_span = step.span_step;
 
-            let next_value: ValueWithImplications = match &step.inner {
+            let next_value: ValueWithImplications = match &step.step {
                 TargetStep::Compile(step) => match step {
                     TargetStepCompile::ArrayIndex(index) => {
                         let index_range = ClosedNonEmptyMultiRange::single(index.clone());
@@ -507,16 +522,13 @@ impl TargetSteps<TargetStep> {
                             return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                         }
                     },
-                    TargetStepCompile::DotIndexId(field) => {
-                        let expr_span = curr_span.join(step_span);
-                        eval_dot_index_id(
-                            ctx,
-                            curr_expected_ty,
-                            expr_span,
-                            curr_value,
-                            Spanned::new(step_span, *field),
-                        )?
-                    }
+                    TargetStepCompile::DotIndexId(field) => eval_dot_index_id(
+                        ctx,
+                        curr_expected_ty,
+                        expr_span,
+                        curr_value,
+                        Spanned::new(step_span, *field),
+                    )?,
                 },
                 TargetStep::Hardware(step) => {
                     // check type
@@ -605,7 +617,7 @@ impl TargetSteps<TargetStep> {
 
             // we lose expected type info after any step
             curr_expected_ty = &Type::Any;
-            curr_value = Spanned::new(curr_span.join(step_span), next_value);
+            curr_value = Spanned::new(step.span_full, next_value);
         }
 
         Ok(curr_value.inner)
@@ -640,7 +652,11 @@ impl TargetSteps<&TargetStepCompile> {
             steps: self
                 .steps
                 .iter()
-                .map(|s| s.map_inner(|s| TargetStep::Compile(s.clone())))
+                .map(|s| SpannedStep {
+                    span_full: s.span_full,
+                    span_step: s.span_step,
+                    step: TargetStep::Compile(s.step.clone()),
+                })
                 .collect_vec(),
         };
 
@@ -944,7 +960,7 @@ impl SetCompileTarget<'_> {
 fn set_compile_value_impl(
     refs: CompileRefs,
     target: Spanned<SetCompileTarget<'_>>,
-    steps: &[Spanned<&TargetStepCompile>],
+    steps: &[SpannedStep<&TargetStepCompile>],
     assign_op_span: Span,
     source: Spanned<CompileValue>,
 ) -> DiagResult {
@@ -1010,13 +1026,14 @@ fn set_compile_value_impl(
     };
 
     let target_span = target.span;
-    let new_target = match &step.inner {
+    let step_span = step.span_step;
+    let new_target = match step.step {
         TargetStepCompile::ArrayIndex(index) => {
-            let target_inner = check_target_is_array(refs, target, step.span, false)?;
+            let target_inner = check_target_is_array(refs, target, step_span, false)?;
 
             let index = check_range_index_compile(
                 diags,
-                Spanned::new(step.span, index),
+                Spanned::new(step_span, index),
                 Spanned::new(target_span, target_inner.len()),
             )?;
 
@@ -1026,15 +1043,15 @@ fn set_compile_value_impl(
             start: slice_start,
             length: slice_len,
         } => {
-            let target_inner = check_target_is_array(refs, target, step.span, true)?;
+            let target_inner = check_target_is_array(refs, target, step_span, true)?;
 
             let SliceInfo {
                 start: slice_start,
                 length: slice_len,
             } = check_range_slice_compile(
                 diags,
-                Spanned::new(step.span, slice_start),
-                slice_len.as_ref().map(|len| Spanned::new(step.span, len)),
+                Spanned::new(step_span, slice_start),
+                slice_len.as_ref().map(|len| Spanned::new(step_span, len)),
                 Spanned::new(target_span, target_inner.len()),
             )?;
 
@@ -1048,17 +1065,17 @@ fn set_compile_value_impl(
                     CompileValue::Hardware(never) => never.unreachable(),
                     _ => {
                         let curr_ty = Spanned::new(target_span, target_inner.ty());
-                        return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                        return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                     }
                 },
                 SetCompileTarget::Slice(_) => {
                     let curr_ty = Spanned::new(target_span, target.inner.ty());
-                    return Err(err_expected_tuple(refs, curr_ty.as_ref(), step.span));
+                    return Err(err_expected_tuple(refs, curr_ty.as_ref(), step_span));
                 }
             };
 
             // check index in bounds
-            let index = check_tuple_index(diags, target_inner.len(), index, target_span, step.span)?;
+            let index = check_tuple_index(diags, target_inner.len(), index, target_span, step_span)?;
 
             // build new target
             SetCompileTarget::Scalar(&mut target_inner[index])
@@ -1071,25 +1088,25 @@ fn set_compile_value_impl(
                     CompileValue::Hardware(never) => never.unreachable(),
                     _ => {
                         let curr_ty = Spanned::new(target_span, target_inner.ty());
-                        return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                        return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span));
                     }
                 },
                 SetCompileTarget::Slice(_) => {
                     let curr_ty = Spanned::new(target_span, target.inner.ty());
-                    return Err(err_expected_struct(refs, curr_ty.as_ref(), step.span));
+                    return Err(err_expected_struct(refs, curr_ty.as_ref(), step_span));
                 }
             };
 
             // get field index
             let ty_info = elab.struct_info(target_inner.ty);
-            let field_index = ty_info.field_index(refs, target_span, Spanned::new(step.span, *field))?;
+            let field_index = ty_info.field_index(refs, target_span, Spanned::new(step_span, *field))?;
 
             // build new target
             SetCompileTarget::Scalar(&mut target_inner.fields[field_index])
         }
     };
 
-    let new_target = Spanned::new(target_span.join(step.span), new_target);
+    let new_target = Spanned::new(step.span_full, new_target);
     set_compile_value_impl(refs, new_target, steps, assign_op_span, source)
 }
 

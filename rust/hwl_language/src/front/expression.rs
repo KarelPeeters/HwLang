@@ -12,7 +12,7 @@ use crate::front::implication::{BoolImplications, HardwareValueWithImplications,
 use crate::front::item::ElaboratedModule;
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
-use crate::front::steps::{TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps};
+use crate::front::steps::{SpannedStep, TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
@@ -691,7 +691,11 @@ impl<'a> CompileItemContext<'a, '_> {
 
                 // apply step to value
                 let step = self.eval_expression_as_array_step(scope, flow, index)?;
-                let step = Spanned::new(index.span, step);
+                let step = SpannedStep {
+                    span_full: expr.span,
+                    span_step: index.span,
+                    step,
+                };
 
                 match base {
                     LrValue::LeftTarget(base) => {
@@ -735,7 +739,11 @@ impl<'a> CompileItemContext<'a, '_> {
                         Either::Left(index) => TargetStepCompile::DotIndexId(index),
                         Either::Right(index) => TargetStepCompile::DotIndexInt(index),
                     };
-                    Spanned::new(index_span, TargetStep::Compile(step))
+                    SpannedStep {
+                        span_full: expr.span,
+                        span_step: index_span,
+                        step: TargetStep::Compile(step),
+                    }
                 };
 
                 match base {

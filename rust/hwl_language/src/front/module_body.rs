@@ -1087,12 +1087,12 @@ impl BodyContext {
 
                                 // double-check that the steps are compile-time, dynamic steps don't make sense for output ports
                                 for step in &target_steps.steps {
-                                    match &step.inner {
+                                    match &step.step {
                                         TargetStep::Compile(_) => {}
                                         TargetStep::Hardware(_) => {
                                             // cannot happen, the expr was evaluated in a compile-time context
                                             let msg = "non-compile step in output port connection";
-                                            return Err(diags.report_error_internal(step.span, msg));
+                                            return Err(diags.report_error_internal(step.span_step, msg));
                                         }
                                     }
                                 }
