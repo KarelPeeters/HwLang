@@ -41,12 +41,14 @@ pub struct RunAllResult {
 
     pub format_diags_ansi: String,
     pub format_debug_str: String,
+
+    pub ir_debug_str: String,
 }
 
 const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[wasm_bindgen]
-pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
+pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAllResult {
     let diags = Diagnostics::new();
     let settings = CompileSettings { do_ir_cleanup: true };
     let mut source = SourceDatabase::new();
@@ -96,6 +98,9 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
         Ok((db, top_module))
     });
 
+    let fallback_error = "/* error */";
+    let fallback_empty = "/* empty, no module named `top` */";
+
     // lower
     let lowered_verilog = compiled
         .as_ref_ok()
@@ -103,6 +108,15 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     let lowered_cpp = compiled
         .as_ref_ok()
         .and_then(|(db, top)| top.map(|top| lower_to_cpp(&diags, &db.modules, &[top])).transpose());
+
+    // ir
+    let ir_debug_str = if include_ir {
+        compiled
+            .as_ref_ok()
+            .map_or_else(|_| fallback_error.to_owned(), |(db, _)| format!("{db:#?}"))
+    } else {
+        String::new()
+    };
 
     // format
     let diags_format = Diagnostics::new();
@@ -120,8 +134,6 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
     // TODO lower diagnostics directly to html instead of through ansi first?
     let compile_diags_ansi = diags_to_string(&source, &diags.finish(), true);
 
-    let fallback_error = "/* error */";
-    let fallback_empty = "/* empty, no module named `top` */";
     let lowered_verilog = lowered_verilog.map_or_else(
         |_| fallback_error.to_owned(),
         |lowered| lowered.map_or_else(|| fallback_empty.to_owned(), |v| v.source),
@@ -141,6 +153,7 @@ pub fn run_all(top_src: String, include_format: bool) -> RunAllResult {
         lowered_cpp,
         format_diags_ansi,
         format_debug_str,
+        ir_debug_str,
     }
 }
 

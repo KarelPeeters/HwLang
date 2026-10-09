@@ -88,6 +88,7 @@ const element_editor_input = document.getElementById("div-editor-input");
 const element_editor_output_verilog = document.getElementById("div-editor-output-verilog");
 const element_editor_output_cpp = document.getElementById("div-editor-output-cpp");
 const element_editor_output_format = document.getElementById("div-editor-output-format");
+const element_editor_output_ir = document.getElementById("div-editor-output-ir");
 const element_diags_compile = document.getElementById("div-diags-compile");
 const element_diags_format = document.getElementById("div-diags-format");
 const element_share_link = document.getElementById("button-share") as HTMLAnchorElement;
@@ -120,10 +121,10 @@ function diagnostics_ansi_to_html(ansi: string): string {
     return result;
 }
 
-const EMPTY_DOC = "// empty";
+const EMPTY_DOC = "/* empty */";
 const COOKIE_SOURCE = "source";
 
-function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView, format_visible: boolean) {
+function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView, editor_view_output_ir: EditorView, format_visible: boolean, ir_visible: boolean) {
     // store code in cookie
     Cookies.set(COOKIE_SOURCE, source);
 
@@ -134,14 +135,15 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     element_share_link.href = url.toString()
 
     // run the compiler
-    let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str;
+    let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str, ir_debug_str;
     try {
-        const result = hwl_wasm.run_all(source, format_visible);
+        const result = hwl_wasm.run_all(source, format_visible, ir_visible);
         compile_diags_ansi = result.compile_diags_ansi;
         lowered_verilog = result.lowered_verilog;
         lowered_cpp = result.lowered_cpp;
         format_diags_ansi = result.format_diags_ansi;
         format_debug_str = result.format_debug_str;
+        ir_debug_str = result.ir_debug_str;
 
         if (result.compile_prints.length > 0) {
             let combined_prints = "// prints:\n";
@@ -160,6 +162,7 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
         lowered_cpp = "";
         format_diags_ansi = compile_diags_ansi;
         format_debug_str = "";
+        ir_debug_str = "";
     }
 
     // display diagnostics as html
@@ -176,6 +179,9 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     }
     if (format_debug_str.length == 0) {
         format_debug_str = EMPTY_DOC;
+    }
+    if (ir_debug_str.length == 0) {
+        ir_debug_str = EMPTY_DOC;
     }
 
     editor_view_output_verilog.dispatch({
@@ -197,6 +203,13 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
             from: 0,
             to: editor_view_output_format.state.doc.length,
             insert: format_debug_str,
+        }
+    })
+    editor_view_output_ir.dispatch({
+        changes: {
+            from: 0,
+            to: editor_view_output_ir.state.doc.length,
+            insert: ir_debug_str,
         }
     })
 }
@@ -263,17 +276,28 @@ let editor_view_output_format = new EditorView({
     state: editor_state_output_format,
     parent: element_editor_output_format
 })
+let editor_state_output_ir = EditorState.create({
+    doc: EMPTY_DOC,
+    extensions: common_extensions.concat([
+        EditorState.readOnly.of(true),
+    ]),
+})
+let editor_view_output_ir = new EditorView({
+    state: editor_state_output_ir,
+    parent: element_editor_output_ir
+})
 
 // TODO get this out of the typing event loop, run this async or on a separate thread
 let format_visible = false;
+let ir_visible = false;
 
 function force_update() {
-    onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, format_visible);
+    onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, editor_view_output_ir, format_visible, ir_visible);
 }
 
 let updateListenerExtension = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-        onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, format_visible);
+        onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, editor_view_output_ir, format_visible, ir_visible);
     }
 })
 
@@ -333,17 +357,21 @@ function show_output_tab(tab: string) {
         }
     }
 
-    set_element_display("div-diags-compile", ["verilog", "cpp"])
+    set_element_display("div-diags-compile", ["verilog", "cpp", "ir"])
     set_element_display("div-editor-output-verilog", ["verilog"])
     set_element_display("div-editor-output-cpp", ["cpp"])
 
     set_element_display("div-diags-format", ["format"])
     set_element_display("div-editor-output-format", ["format"])
 
-    // update format tab state and possible compute format state if it was not visible before
+    set_element_display("div-editor-output-ir", ["ir"])
+
+    // update optional tab states and possibly recompute if one of them was not visible before
     let format_was_visible = format_visible;
+    let ir_was_visible = ir_visible;
     format_visible = (tab == "format");
-    if (format_visible && !format_was_visible) {
+    ir_visible = (tab == "ir");
+    if ((format_visible && !format_was_visible) || (ir_visible && !ir_was_visible)) {
         force_update();
     }
 }
@@ -351,9 +379,11 @@ function show_output_tab(tab: string) {
 const svg_verilog = document.getElementById("svg-verilog");
 const svg_cpp = document.getElementById("svg-cpp");
 const svg_format = document.getElementById("svg-format");
+const svg_ir = document.getElementById("svg-ir");
 svg_verilog.addEventListener("click", () => show_output_tab("verilog"));
 svg_cpp.addEventListener("click", () => show_output_tab("cpp"));
 svg_format.addEventListener("click", () => show_output_tab("format"));
+svg_ir.addEventListener("click", () => show_output_tab("ir"));
 
 // initial update
 force_update();
