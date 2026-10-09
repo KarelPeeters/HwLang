@@ -594,8 +594,9 @@ pub trait Flow: FlowPrivate {
     ) -> DiagResult<ValueWithImplications> {
         match self.signal_get_content(signal.inner)? {
             SignalContent::Compile(value) => {
-                // compile-time evaluation can skips any hardware checking
-                Ok(Value::from(value.clone()))
+                // compile-time evaluation can skip any hardware checking
+                let value = Spanned::new(signal.span, ValueWithImplications::from(value.clone()));
+                steps.apply_to_value(ctx, &Type::Any, value)
             }
             SignalContent::Hardware(content) => {
                 let &SignalContentHardware {
@@ -613,7 +614,8 @@ pub trait Flow: FlowPrivate {
                     None => None,
                     Some(implied) => match implied {
                         &Implied::BoolConst(value) => {
-                            return Ok(Value::new_bool(value));
+                            let value = Spanned::new(signal.span, Value::new_bool(value));
+                            return steps.apply_to_value(ctx, &Type::Any, value);
                         }
                         Implied::IntRange(range) => Some(range),
                     },
@@ -669,7 +671,7 @@ pub trait Flow: FlowPrivate {
                         implications: full_implications.clone(),
                     };
                     let base = Spanned::new(signal.span, ValueWithImplications::Hardware(base));
-                    let result = steps.apply_to_value(ctx, &Type::Type, base)?;
+                    let result = steps.apply_to_value(ctx, &Type::Any, base)?;
                     match result {
                         ValueWithImplications::Simple(value) => {
                             // we got a compile-time value, just return it
@@ -979,7 +981,7 @@ impl Flow for FlowCompile<'_> {
                                 SignalContent::Compile(value) => {
                                     // we've found a compile-time value, we can return that
                                     let value = Spanned::new(signal.span, ValueWithImplications::from(value.clone()));
-                                    let result = steps.apply_to_value(ctx, &Type::Type, value)?;
+                                    let result = steps.apply_to_value(ctx, &Type::Any, value)?;
                                     return Ok(result);
                                 }
                                 SignalContent::Hardware(_) => {

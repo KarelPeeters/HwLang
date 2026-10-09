@@ -287,3 +287,34 @@ def test_assign_immutable():
         """
     with diag_error("cannot assign to immutable variable"):
         _ = compile_custom(src_b).resolve("top.top")
+
+
+def test_read_const_from_signal_with_steps_in_hw():
+    src = """
+    module top ports(clk: in clock) {
+        wire w: [2]uint(8);
+        comb {
+            w = [3, 4];
+            val a = w[1];
+            const {
+                assert(a == 4);
+            }
+        }
+    }
+    """
+    c = compile_custom(src)
+    _ = c.resolve("top.top")
+
+
+def test_read_implied_bool_from_signal_with_steps():
+    src = """
+    module top ports(p: in async bool) {
+        comb {
+            if (p) {
+                val _ = p[0];
+            }
+        }
+    }
+    """
+    with diag_error("cannot index non-array type"):
+        _ = compile_custom(src).resolve("top.top")
