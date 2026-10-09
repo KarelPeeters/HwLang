@@ -1,4 +1,4 @@
-import {EditorState} from "@codemirror/state"
+import {Compartment, EditorState, Extension} from "@codemirror/state"
 import {EditorView, highlightActiveLineGutter, keymap, lineNumbers} from "@codemirror/view"
 import {defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineKeepIndent} from "@codemirror/commands"
 import {
@@ -14,6 +14,7 @@ import {
 } from "@codemirror/language"
 import {Input, NodeSet, NodeType, Parser, PartialParse, Tree} from "@lezer/common"
 import {styleTags, tags} from "@lezer/highlight"
+import {oneDark} from "@codemirror/theme-one-dark";
 import * as hwl_wasm from "hwl_wasm";
 import {verilog as mode_verilog} from "@codemirror/legacy-modes/mode/verilog";
 import {cpp as mode_cpp} from "@codemirror/legacy-modes/mode/clike";
@@ -94,7 +95,29 @@ const element_diags_format = document.getElementById("div-diags-format");
 const element_share_link = document.getElementById("button-share") as HTMLAnchorElement;
 const element_clear_button = document.getElementById("button-clear");
 
-const ansi_to_html = new AnsiToHtmlClass();
+const ansi_to_html_light = new AnsiToHtmlClass();
+const ansi_to_html_dark = new AnsiToHtmlClass({
+    colors: {
+        0: "#808080",
+        1: "#f14c4c",
+        2: "#23d18b",
+        3: "#f5f543",
+        4: "#3b8eea",
+        5: "#d670d6",
+        6: "#29b8db",
+        7: "#e5e5e5",
+        8: "#a0a0a0",
+        9: "#ff6b6b",
+        10: "#5af78e",
+        11: "#ffff7a",
+        12: "#6cb6ff",
+        13: "#ff92df",
+        14: "#7ee0f5",
+        15: "#ffffff",
+    }
+});
+
+const dark_mode_query = window.matchMedia("(prefers-color-scheme: dark)");
 
 function escapeHtml(raw: string): string {
     return raw
@@ -110,6 +133,7 @@ function diagnostics_ansi_to_html(ansi: string): string {
         return "";
     }
 
+    const ansi_to_html = dark_mode_query.matches ? ansi_to_html_dark : ansi_to_html_light;
     let result = "";
     for (let line of ansi.split("\n")) {
         if (line.length == 0) {
@@ -214,6 +238,16 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     })
 }
 
+function color_scheme_extension(): Extension {
+    if (dark_mode_query.matches) {
+        return oneDark;
+    } else {
+        return syntaxHighlighting(defaultHighlightStyle);
+    }
+}
+
+const color_scheme_compartment = new Compartment();
+
 let common_extensions = [
     keymap.of([{key: "Enter", run: insertNewlineKeepIndent}]),
     keymap.of([indentWithTab]),
@@ -225,7 +259,7 @@ let common_extensions = [
     bracketMatching(),
 
     indentUnit.of(" ".repeat(4)),
-    syntaxHighlighting(defaultHighlightStyle),
+    color_scheme_compartment.of(color_scheme_extension()),
 ];
 
 function formatCurrentCode() {
@@ -384,6 +418,15 @@ svg_verilog.addEventListener("click", () => show_output_tab("verilog"));
 svg_cpp.addEventListener("click", () => show_output_tab("cpp"));
 svg_format.addEventListener("click", () => show_output_tab("format"));
 svg_ir.addEventListener("click", () => show_output_tab("ir"));
+
+// react to light/dark mode changes
+dark_mode_query.addEventListener("change", () => {
+    const effects = color_scheme_compartment.reconfigure(color_scheme_extension());
+    for (const view of [editor_view_input, editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, editor_view_output_ir]) {
+        view.dispatch({effects});
+    }
+    force_update();
+});
 
 // initial update
 force_update();
