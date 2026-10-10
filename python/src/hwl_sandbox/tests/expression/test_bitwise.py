@@ -1,16 +1,16 @@
 from pathlib import Path
 
 import pytest
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Any
 
 from hwl_sandbox.common.compare import compare_expression
 from hwl_sandbox.common.util import compile_custom, diag_error
 
-OP = Callable[[any, any], bool]
-OPS_BITWISE: list[tuple[str, OP]] = [
-    ("&", lambda a, b: a & b),
-    ("|", lambda a, b: a | b),
-    ("^", lambda a, b: a ^ b)
+OP = Callable[[Any, Any], Any]
+OPS_BITWISE = [
+    pytest.param(("&", lambda a, b: a & b), id="and"),
+    pytest.param(("|", lambda a, b: a | b), id="or"),
+    pytest.param(("^", lambda a, b: a ^ b), id="xor"),
 ]
 
 
@@ -35,10 +35,10 @@ def test_bitwise_bool_scalar(op: Tuple[str, OP], tmp_dir: Path):
 @pytest.mark.parametrize("op", OPS_BITWISE)
 def test_bitwise_bool_scalar_array(op: Tuple[str, OP], tmp_dir: Path):
     op_str, op_py = op
-    e = compare_expression(["bool", "bool"], "bool", f"a0 {op_str} a1", tmp_dir)
+    e = compare_expression(["bool", "[3]bool"], "[3]bool", f"a0 {op_str} a1", tmp_dir)
     for a in [False, True]:
-        for b in [False, True]:
-            e.eval_assert([a, b], op_py(a, b))
+        for b in ([True, False, True], [True, True, False]):
+            e.eval_assert([a, b], [op_py(a, y) for y in b])
 
 
 @pytest.mark.parametrize("op", OPS_BITWISE)
