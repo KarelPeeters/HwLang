@@ -401,7 +401,7 @@ mod compute_once_map_tests {
     struct SameShard(u32);
 
     impl Hash for SameShard {
-        fn hash<H: Hasher>(&self, state: &mut H) {
+        fn hash<H: Hasher>(&self, _: &mut H) {
             // hash nothing
         }
     }
