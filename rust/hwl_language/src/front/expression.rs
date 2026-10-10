@@ -537,10 +537,10 @@ impl<'a> CompileItemContext<'a, '_> {
                             "this iterator is infinite",
                         ));
                     }
-                    Some(len) => usize::try_from(len).unwrap_or(0),
+                    Some(len) => usize::try_from(len).unwrap_or(usize::MAX),
                 };
 
-                let mut values = Vec::with_capacity(len_lower_bound);
+                let mut values = try_vec_with_capacity(diags, expr.span, len_lower_bound)?;
 
                 for index_value in iter {
                     self.refs.check_should_stop(expr.span)?;
@@ -1897,7 +1897,7 @@ pub fn eval_binary_expression(
                                 },
                             )?;
 
-                            let mut result = Vec::with_capacity(result_len);
+                            let mut result = try_vec_with_capacity(diags, expr_span, result_len)?;
                             for _ in 0..right_inner {
                                 result.extend_from_slice(&left_inner);
                             }
@@ -1906,7 +1906,8 @@ pub fn eval_binary_expression(
                         Value::Hardware(value) => {
                             // implement runtime repetition through spread array literal
                             let element = IrArrayLiteralElement::Spread(value.expr);
-                            let elements = vec![element; right_inner];
+                            let mut elements = try_vec_with_capacity(diags, expr_span, right_inner)?;
+                            elements.resize(right_inner, element);
 
                             let left_ty_inner_hw = left_ty_inner.as_hardware_type(elab).unwrap();
                             let result_len = left_len * right_inner;
@@ -2344,15 +2345,6 @@ enum BitOperand {
     Array(MaybeCompile<Vec<bool>, HardwareValue<BigUint>>),
 }
 
-impl BitOperand {
-    fn is_compile(&self) -> bool {
-        match self {
-            BitOperand::Scalar(v) => matches!(v, MaybeCompile::Compile(_)),
-            BitOperand::Array(v) => matches!(v, MaybeCompile::Compile(_)),
-        }
-    }
-}
-
 fn check_bit_operand(
     refs: CompileRefs,
     op_reason: TypeContainsReason,
@@ -2412,18 +2404,20 @@ fn eval_binary_bitwise_array(
     };
 
     // full compile-time evaluation
-    if left.inner.is_compile() && right.inner.is_compile() {
-        let get = |operand: &BitOperand, i: usize| match operand {
-            &BitOperand::Scalar(MaybeCompile::Compile(v)) => v,
-            BitOperand::Array(MaybeCompile::Compile(v)) => v[i],
-            BitOperand::Scalar(MaybeCompile::Hardware(_)) | BitOperand::Array(MaybeCompile::Hardware(_)) => {
-                unreachable!()
-            }
-        };
-        let len = usize::try_from(&len).expect("length of compile-time array fits in usize");
-        let result = (0..len)
-            .map(|i| CompileValue::new_bool(op.eval_bool(get(&left.inner, i), get(&right.inner, i))))
-            .collect();
+    let result_compile: Option<Vec<bool>> = match (&left.inner, &right.inner) {
+        (BitOperand::Array(MaybeCompile::Compile(left)), BitOperand::Array(MaybeCompile::Compile(right))) => {
+            Some(left.iter().zip(right).map(|(&l, &r)| op.eval_bool(l, r)).collect())
+        }
+        (&BitOperand::Scalar(MaybeCompile::Compile(left)), BitOperand::Array(MaybeCompile::Compile(right))) => {
+            Some(right.iter().map(|&r| op.eval_bool(left, r)).collect())
+        }
+        (BitOperand::Array(MaybeCompile::Compile(left)), &BitOperand::Scalar(MaybeCompile::Compile(right))) => {
+            Some(left.iter().map(|&l| op.eval_bool(l, right)).collect())
+        }
+        _ => None,
+    };
+    if let Some(result) = result_compile {
+        let result = result.into_iter().map(CompileValue::new_bool).collect();
         return Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(result))));
     }
 
@@ -2888,3 +2882,15 @@ fn message_range_or_single(name: &str, range: &impl AnyMultiRange<BigInt>, suffi
 }
 
 const HINT_RANGE_USE_START_LENGTH: &str = "to construct ranges that are valid by design, use the `start+..len` syntax";
+
+fn try_vec_with_capacity<T>(diags: &Diagnostics, span: Span, capacity: usize) -> DiagResult<Vec<T>> {
+    let mut result = Vec::new();
+    result.try_reserve_exact(capacity).map_err(|_| {
+        diags.report_error_simple(
+            "array too large",
+            span,
+            format!("array with length `{capacity}` cannot be allocated"),
+        )
+    })?;
+    Ok(result)
+}

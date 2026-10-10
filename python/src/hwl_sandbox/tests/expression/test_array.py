@@ -344,3 +344,15 @@ def test_array_large_repeat():
         f(4, 2 ** 65)
     with diag_error("array repeat result size too large"):
         f(2 ** 8, 2 ** (65 - 8))
+
+
+def test_array_too_large():
+    src = """
+        fn repeat() -> any { return [false] * 2**60; }
+        fn comprehension() -> any { return [false for _ in 0..2**60]; }
+    """
+    c = compile_custom(src)
+    with diag_error("array too large"):
+        c.resolve("top.repeat")()
+    with diag_error("array too large"):
+        c.resolve("top.comprehension")()
