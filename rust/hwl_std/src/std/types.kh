@@ -4,7 +4,9 @@ pub type str = __builtin("type", "str");
 
 pub type int = __builtin("type", "int");
 pub type uint = int(0..);
-pub type positive = int(0..);
+pub type positive = int(1..);
+pub type negative = int(..0);
+pub type nonzero = int(..0, 1..);
 
 pub type Tuple = __builtin("type", "Tuple");
 

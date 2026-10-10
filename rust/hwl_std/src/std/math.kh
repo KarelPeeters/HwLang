@@ -37,7 +37,7 @@ pub fn gcd(a: positive, b: positive) -> positive {
     return a;
 }
 
-pub fn clog(base: positive, n: uint) -> uint {
+pub fn clog(base: int(2..), n: uint) -> uint {
     for (i in 0..) {
         if (base**i >= n) {
             return i;
@@ -49,6 +49,6 @@ pub fn clog2(n: uint) -> uint {
     return clog(2, n);
 }
 
-pub fn ceil_div(a: int, b: positive) -> uint {
-    return (a + b - 1) / b;
+pub fn ceil_div(a: int, b: nonzero) -> int {
+    return -((-a) / b);
 }
