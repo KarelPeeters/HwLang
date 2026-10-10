@@ -5,9 +5,9 @@
 //! This uses the real TextMate engine from VS Code through a node subprocess,
 //!   which requires running `npm install` in the `textmate` folder first.
 
-use hwl_language::syntax::external::textmate::{generate_textmate_language_json, source_scope, token_scope};
-use hwl_language::syntax::source::FileId;
-use hwl_language::syntax::token::{Token, TokenType, tokenize};
+use khdl_language::syntax::external::textmate::{generate_textmate_language_json, source_scope, token_scope};
+use khdl_language::syntax::source::FileId;
+use khdl_language::syntax::token::{Token, TokenType, tokenize};
 use libfuzzer_sys::fuzz_target;
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};

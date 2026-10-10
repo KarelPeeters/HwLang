@@ -1,12 +1,12 @@
 #![no_main]
 
-use hwl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
-use hwl_language::front::diagnostic::Diagnostics;
-use hwl_language::front::print::IgnorePrintHandler;
-use hwl_language::syntax::hierarchy::SourceHierarchy;
-use hwl_language::syntax::parsed::ParsedDatabase;
-use hwl_language::syntax::source::SourceDatabase;
-use hwl_language::util::NON_ZERO_USIZE_ONE;
+use khdl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use khdl_language::front::diagnostic::Diagnostics;
+use khdl_language::front::print::IgnorePrintHandler;
+use khdl_language::syntax::hierarchy::SourceHierarchy;
+use khdl_language::syntax::parsed::ParsedDatabase;
+use khdl_language::syntax::source::SourceDatabase;
+use khdl_language::util::NON_ZERO_USIZE_ONE;
 use libfuzzer_sys::fuzz_target;
 
 // TODO we can be a lot smarter here, generate only valid asts, reuse identifiers from a limited pool, ...

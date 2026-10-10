@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "hwl_language",
-    "hwl_std",
-    "hwl_util",
-    "hwl_bin",
-    "hwl_lsp_server",
-    "hwl_wasm",
-    "hwl_python",
+    "khdl_language",
+    "khdl_std",
+    "khdl_util",
+    "khdl_bin",
+    "khdl_lsp_server",
+    "khdl_wasm",
+    "khdl_python",
     "fuzz",
 ]
 resolver = "2"
@@ -18,9 +18,9 @@ rust-version = "1.95.0"
 
 [workspace.dependencies]
 # internal dependencies
-hwl_language = { path = "hwl_language" }
-hwl_std = { path = "hwl_std" }
-hwl_util = { path = "hwl_util" }
+khdl_language = { path = "khdl_language" }
+khdl_std = { path = "khdl_std" }
+khdl_util = { path = "khdl_util" }
 
 # external dependencies
 annotate-snippets = "0.12.16"

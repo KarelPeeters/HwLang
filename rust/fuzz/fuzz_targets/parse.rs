@@ -1,7 +1,7 @@
 #![no_main]
 
-use hwl_language::syntax::parser::parse_file_content_without_recovery;
-use hwl_language::syntax::source::FileId;
+use khdl_language::syntax::parser::parse_file_content_without_recovery;
+use khdl_language::syntax::source::FileId;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| target(data));

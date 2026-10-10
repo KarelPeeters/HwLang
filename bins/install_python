@@ -3,5 +3,5 @@ set -ue
 
 cd "$(dirname "$0")"/..
 
-cd rust/hwl_python
+cd rust/khdl_python
 maturin develop --release --compression-method stored --uv

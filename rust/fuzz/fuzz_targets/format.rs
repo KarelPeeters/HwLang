@@ -1,10 +1,10 @@
 #![no_main]
 
-use hwl_language::front::diagnostic::{Diagnostics, diags_to_string};
-use hwl_language::syntax::format::{FormatSettings, format_file};
-use hwl_language::syntax::parser::parse_file_content_without_recovery;
-use hwl_language::syntax::source::SourceDatabase;
-use hwl_language::syntax::token::{TokenCategory, tokenize};
+use khdl_language::front::diagnostic::{Diagnostics, diags_to_string};
+use khdl_language::syntax::format::{FormatSettings, format_file};
+use khdl_language::syntax::parser::parse_file_content_without_recovery;
+use khdl_language::syntax::source::SourceDatabase;
+use khdl_language::syntax::token::{TokenCategory, tokenize};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| target(data));

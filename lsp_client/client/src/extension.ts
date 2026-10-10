@@ -7,7 +7,7 @@ let client: LanguageClient | undefined;
 let watcher: fs.FSWatcher | undefined;
 
 function getServerPath(): string | undefined {
-    return workspace.getConfiguration('hwlang.server').get<string>('path') || undefined;
+    return workspace.getConfiguration('khdl.server').get<string>('path') || undefined;
 }
 
 function disposeWatcher() {
@@ -33,7 +33,7 @@ async function startClient(context: ExtensionContext) {
     const serverPath = getServerPath();
     if (!serverPath) {
         // log a warning here (but don't show a popup)
-        console.warn('HwLang LSP: No server path configured, LSP client not started');
+        console.warn('KHDL LSP: No server path configured, LSP client not started');
         return;
     }
 
@@ -53,12 +53,12 @@ async function startClient(context: ExtensionContext) {
     };
     const clientOptions: LanguageClientOptions = {
         documentSelector: [
-            {scheme: 'file', language: 'hwlang'},
+            {scheme: 'file', language: 'khdl'},
         ],
     };
     client = new LanguageClient(
-        'hwl-lsp',
-        'HwLang LSP',
+        'khdl-lsp',
+        'KHDL LSP',
         serverOptions,
         clientOptions
     );
@@ -70,7 +70,7 @@ export function activate(context: ExtensionContext) {
     // restart the client when the configured path changes
     context.subscriptions.push(
         workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('hwlang.server.path')) {
+            if (e.affectsConfiguration('khdl.server.path')) {
                 startClient(context);
             }
         })

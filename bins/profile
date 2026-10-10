@@ -4,9 +4,9 @@ set -ue
 cd "$(dirname "$0")"/..
 
 cd rust
-cargo build --bin hwl_language --release
+cargo build --bin khdl_language --release
 
-COMMAND="target/release/hwl_language ../design/project/ --skip-lower --profile"
+COMMAND="target/release/khdl_language ../design/project/ --skip-lower --profile"
 
 valgrind --tool=cachegrind --cachegrind-out-file=cachegrind.out \
   --cache-sim=yes --branch-sim=yes \
@@ -15,4 +15,4 @@ valgrind --tool=cachegrind --cachegrind-out-file=cachegrind.out \
 valgrind --tool=callgrind --callgrind-out-file=callgrind.out \
   $COMMAND
 
-samply record ./target/release/hwl_bin ../python/profile_test/ -j1
+samply record ./target/release/khdl_bin ../python/profile_test/ -j1

@@ -462,7 +462,7 @@ dependencies = [
 name = "fuzz"
 version = "0.1.0"
 dependencies = [
- "hwl_language",
+ "khdl_language",
  "libfuzzer-sys",
  "serde_json",
 ]
@@ -497,110 +497,6 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
-
-[[package]]
-name = "hwl_bin"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ctrlc",
- "hwl_language",
- "hwl_util",
- "indexmap",
- "itertools 0.13.0",
- "mimalloc",
- "path-clean",
-]
-
-[[package]]
-name = "hwl_language"
-version = "0.1.0"
-dependencies = [
- "annotate-snippets",
- "dashmap",
- "derive_more",
- "dlopen2",
- "fnv",
- "hwl_std",
- "hwl_util",
- "indexmap",
- "itertools 0.13.0",
- "lalrpop",
- "lalrpop-util",
- "lazy_static",
- "num-bigint",
- "num-integer",
- "num-traits",
- "num_cpus",
- "path-clean",
- "rand",
- "regex",
- "regex-automata",
- "serde",
- "serde_json",
- "strum",
- "toml",
- "unwrap-match",
- "yastl",
-]
-
-[[package]]
-name = "hwl_lsp_server"
-version = "0.1.0"
-dependencies = [
- "annotate-snippets",
- "clap",
- "crossbeam-channel",
- "fluent-uri",
- "futures",
- "hwl_language",
- "hwl_util",
- "indexmap",
- "itertools 0.13.0",
- "lsp-server",
- "lsp-types",
- "mimalloc",
- "serde_json",
- "strum",
-]
-
-[[package]]
-name = "hwl_python"
-version = "0.1.0"
-dependencies = [
- "hwl_language",
- "hwl_util",
- "itertools 0.13.0",
- "num-bigint",
- "pyo3",
- "rand",
-]
-
-[[package]]
-name = "hwl_std"
-version = "0.1.0"
-dependencies = [
- "hwl_util",
- "itertools 0.13.0",
-]
-
-[[package]]
-name = "hwl_util"
-version = "0.1.0"
-
-[[package]]
-name = "hwl_wasm"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "getrandom",
- "hwl_language",
- "hwl_util",
- "itertools 0.13.0",
- "strum",
- "wasm-bindgen",
- "wasm-timer",
-]
 
 [[package]]
 name = "indexmap"
@@ -668,6 +564,110 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1868808506b929d7b0cfa8f75951347aa71bb21144b7791bae35d9bccfcfe37a"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "khdl_bin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "indexmap",
+ "itertools 0.13.0",
+ "khdl_language",
+ "khdl_util",
+ "mimalloc",
+ "path-clean",
+]
+
+[[package]]
+name = "khdl_language"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
+ "dashmap",
+ "derive_more",
+ "dlopen2",
+ "fnv",
+ "indexmap",
+ "itertools 0.13.0",
+ "khdl_std",
+ "khdl_util",
+ "lalrpop",
+ "lalrpop-util",
+ "lazy_static",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "num_cpus",
+ "path-clean",
+ "rand",
+ "regex",
+ "regex-automata",
+ "serde",
+ "serde_json",
+ "strum",
+ "toml",
+ "unwrap-match",
+ "yastl",
+]
+
+[[package]]
+name = "khdl_lsp_server"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
+ "clap",
+ "crossbeam-channel",
+ "fluent-uri",
+ "futures",
+ "indexmap",
+ "itertools 0.13.0",
+ "khdl_language",
+ "khdl_util",
+ "lsp-server",
+ "lsp-types",
+ "mimalloc",
+ "serde_json",
+ "strum",
+]
+
+[[package]]
+name = "khdl_python"
+version = "0.1.0"
+dependencies = [
+ "itertools 0.13.0",
+ "khdl_language",
+ "khdl_util",
+ "num-bigint",
+ "pyo3",
+ "rand",
+]
+
+[[package]]
+name = "khdl_std"
+version = "0.1.0"
+dependencies = [
+ "itertools 0.13.0",
+ "khdl_util",
+]
+
+[[package]]
+name = "khdl_util"
+version = "0.1.0"
+
+[[package]]
+name = "khdl_wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom",
+ "itertools 0.13.0",
+ "khdl_language",
+ "khdl_util",
+ "strum",
+ "wasm-bindgen",
+ "wasm-timer",
 ]
 
 [[package]]

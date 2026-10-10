@@ -1,0 +1,21 @@
+[package]
+name = "khdl_python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "khdl"
+crate-type = ["cdylib"]
+
+[dependencies]
+khdl_language = { workspace = true, features = ["wrap_verilator"] }
+khdl_util = { workspace = true }
+
+itertools.workspace = true
+num-bigint.workspace = true
+pyo3.workspace = true
+rand.workspace = true

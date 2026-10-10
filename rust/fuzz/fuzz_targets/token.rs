@@ -1,7 +1,7 @@
 #![no_main]
 
-use hwl_language::syntax::source::FileId;
-use hwl_language::syntax::token::{
+use khdl_language::syntax::source::FileId;
+use khdl_language::syntax::token::{
     TokenType, parse_token_int_literal_binary, parse_token_int_literal_decimal, parse_token_int_literal_hexadecimal,
     parse_token_string_middle, tokenize,
 };

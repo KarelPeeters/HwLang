@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hwl_language.workspace = true
+khdl_language.workspace = true
 serde_json.workspace = true
 
 [[bin]]

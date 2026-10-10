@@ -33,16 +33,16 @@ wheels = [
 ]
 
 [[package]]
-name = "hwl"
+name = "khdl"
 version = "0.1.0"
-source = { editable = "../rust/hwl_python" }
+source = { editable = "../rust/khdl_python" }
 
 [[package]]
-name = "hwl-sandbox"
+name = "khdl-sandbox"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "hwl" },
+    { name = "khdl" },
     { name = "maturin" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -51,7 +51,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hwl", editable = "../rust/hwl_python" },
+    { name = "khdl", editable = "../rust/khdl_python" },
     { name = "maturin", specifier = ">=1.11" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },

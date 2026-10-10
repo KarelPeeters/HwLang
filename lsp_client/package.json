@@ -1,13 +1,13 @@
 {
-	"name": "hwlang",
-	"displayName": "HWLang",
-	"description": "The VSCode LSP client for HWLang",
+	"name": "khdl-lsp-client",
+	"displayName": "KHDL",
+	"description": "The VSCode LSP client for KHDL",
 	"author": "Karel Peeters",
 	"license": "MIT",
 	"version": "0.0.1",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/KarelPeeters/HwLang"
+		"url": "https://github.com/khdl-lang/khdl"
 	},
 	"publisher": "KarelPeeters",
 	"categories": [],
@@ -21,15 +21,15 @@
 	"contributes": {
 		"configuration": {
 			"type": "object",
-			"title": "HWLang",
+			"title": "KHDL",
 			"properties": {
-				"hwlang.server.path": {
+				"khdl.server.path": {
 					"scope": "machine-overridable",
 					"type": "string",
 					"default": null,
-					"description": "Path to the HWLang LSP server executable"
+					"description": "Path to the KHDL LSP server executable"
 				},
-				"hwlang.trace": {
+				"khdl.trace": {
 					"scope": "window",
 					"type": "string",
 					"enum": [
@@ -44,9 +44,9 @@
 		},
 		"languages": [
 			{
-				"id": "hwlang",
+				"id": "khdl",
 				"aliases": [
-					"HWLang"
+					"KHDL"
 				],
 				"extensions": [
 					".kh"
@@ -56,9 +56,9 @@
 		],
 		"grammars": [
 			{
-				"language": "hwlang",
-				"scopeName": "source.hwlang",
-				"path": "./syntaxes/hwlang.tmLanguage.json"
+				"language": "khdl",
+				"scopeName": "source.khdl",
+				"path": "./syntaxes/khdl.tmLanguage.json"
 			}
 		]
 	},

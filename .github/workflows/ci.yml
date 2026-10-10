@@ -98,7 +98,7 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
       - name: Run wasm-pack
-        run: cd rust/hwl_wasm && wasm-pack build
+        run: cd rust/khdl_wasm && wasm-pack build
       - name: NPM install
         run: cd web_demo && npm ci
       - name: NPM build

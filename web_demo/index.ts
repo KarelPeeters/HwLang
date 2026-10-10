@@ -15,7 +15,7 @@ import {
 import {Input, NodeSet, NodeType, Parser, PartialParse, Tree} from "@lezer/common"
 import {styleTags, tags} from "@lezer/highlight"
 import {oneDark} from "@codemirror/theme-one-dark";
-import * as hwl_wasm from "hwl_wasm";
+import * as khdl_wasm from "khdl_wasm";
 import {verilog as mode_verilog} from "@codemirror/legacy-modes/mode/verilog";
 import {cpp as mode_cpp} from "@codemirror/legacy-modes/mode/clike";
 
@@ -24,7 +24,7 @@ import Cookies from "js-cookie";
 import pako from "pako";
 
 function build_node_types() {
-    const node_types_string = hwl_wasm.codemirror_node_types();
+    const node_types_string = khdl_wasm.codemirror_node_types();
 
     // build node types
     const child_node_types = node_types_string.map((name, index) => {
@@ -43,7 +43,7 @@ function build_node_types() {
     // create set, including styles
     const style_tags_object: any = {};
     const tags_any: any = tags;
-    for (const name of hwl_wasm.codemirror_node_types()) {
+    for (const name of khdl_wasm.codemirror_node_types()) {
         style_tags_object[name] = tags_any[name];
     }
     const node_set = new NodeSet(all_node_types).extend(styleTags(style_tags_object));
@@ -58,7 +58,7 @@ const {node_set: NODE_SET, top_node_type: TOP_NODE_TYPE} = build_node_types();
 //
 // Implementation based on
 // https://thetrevorharmon.com/blog/connecting-antlr-to-code-mirror-6-connecting-a-language-server/
-class HwlParser extends Parser {
+class KhdlParser extends Parser {
     createParse(input: Input): PartialParse {
         return this.startParse(input)
     }
@@ -68,7 +68,7 @@ class HwlParser extends Parser {
         let input_length = input_str.length;
 
         const tree = Tree.build({
-            buffer: Array.from(hwl_wasm.codemirror_tokenize_to_tree(input_str)),
+            buffer: Array.from(khdl_wasm.codemirror_tokenize_to_tree(input_str)),
             nodeSet: NODE_SET,
             topID: TOP_NODE_TYPE.id,
         });
@@ -83,7 +83,7 @@ class HwlParser extends Parser {
     }
 }
 
-let language = new Language(null, new HwlParser(), [], "HWLang");
+let language = new Language(null, new KhdlParser(), [], "KHDL");
 
 const element_editor_input = document.getElementById("div-editor-input");
 const element_editor_output_verilog = document.getElementById("div-editor-output-verilog");
@@ -161,7 +161,7 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
     // run the compiler
     let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str, ir_debug_str;
     try {
-        const result = hwl_wasm.run_all(source, format_visible, ir_visible);
+        const result = khdl_wasm.run_all(source, format_visible, ir_visible);
         compile_diags_ansi = result.compile_diags_ansi;
         lowered_verilog = result.lowered_verilog;
         lowered_cpp = result.lowered_cpp;
@@ -264,7 +264,7 @@ let common_extensions = [
 
 function formatCurrentCode() {
     const currentCode = editor_view_input.state.doc.toString();
-    const formatted = hwl_wasm.format_source(currentCode);
+    const formatted = khdl_wasm.format_source(currentCode);
     if (formatted !== undefined) {
         editor_view_input.dispatch({
             changes: {
@@ -335,7 +335,7 @@ let updateListenerExtension = EditorView.updateListener.of((update) => {
     }
 })
 
-const wasm_initial_source = hwl_wasm.initial_source();
+const wasm_initial_source = khdl_wasm.initial_source();
 let initial_source = wasm_initial_source;
 {
     let cookie_doc = Cookies.get(COOKIE_SOURCE);

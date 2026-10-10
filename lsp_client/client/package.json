@@ -1,13 +1,13 @@
 {
-	"name": "lsp-sample-client",
-	"description": "VSCode part of a language server",
-	"author": "Microsoft Corporation",
+	"name": "khdl-vscode-client",
+	"description": "The VSCode LSP client for KHDL",
+	"author": "Karel Peeters",
 	"license": "MIT",
 	"version": "0.0.1",
-	"publisher": "vscode",
+	"publisher": "KarelPeeters",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/Microsoft/vscode-extension-samples"
+		"url": "https://github.com/khdl-lang/khdl"
 	},
 	"engines": {
 		"vscode": "^1.75.0"

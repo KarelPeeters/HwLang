@@ -8,5 +8,5 @@ mkdir -p $EXT_DIR
 
 ./node_modules/.bin/vsce package
 
-code --extensions-dir "$EXT_DIR" --install-extension hwl-lsp-client-0.0.1.vsix
+code --extensions-dir "$EXT_DIR" --install-extension khdl-lsp-client-0.0.1.vsix
 code --extensions-dir "$EXT_DIR" ../design/project

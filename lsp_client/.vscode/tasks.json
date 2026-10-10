@@ -35,7 +35,7 @@
 			"command": "build",
           "args": [
             "-p",
-            "hwl_lsp_server"
+            "khdl_lsp_server"
           ],
 			"problemMatcher": [
 				"$rustc"

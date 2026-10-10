@@ -25,11 +25,11 @@ cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" clean --workspace
 
 # run python tests
 (
-  cd python && (uv run pytest -n auto src/hwl_sandbox || true)
+  cd python && (uv run pytest -n auto src/khdl_sandbox || true)
 )
 
 # report coverage
-IGNORE_REGEX="^$PWD/rust/(hwl_lsp_server|hwl_bin|hwl_wasm)/src/"
+IGNORE_REGEX="^$PWD/rust/(khdl_lsp_server|khdl_bin|khdl_wasm)/src/"
 
 cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" report --html --ignore-filename-regex "$IGNORE_REGEX"
 cargo llvm-cov --manifest-path "$RUST_MANIFEST_PATH" report --text --ignore-filename-regex "$IGNORE_REGEX" \

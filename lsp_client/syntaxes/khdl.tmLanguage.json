@@ -1,0 +1,436 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "KHDL",
+  "scopeName": "source.khdl",
+  "patterns": [
+    {
+      "name": "comment.line.double-slash.khdl",
+      "match": "//.*$"
+    },
+    {
+      "include": "#block_comment"
+    },
+    {
+      "name": "string.quoted.double.khdl",
+      "begin": "r\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "match": "\\\\[\\\\\"{nrt0]"
+        }
+      ]
+    },
+    {
+      "name": "string.quoted.double.khdl",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "match": "\\\\[\\\\\"{nrt0]"
+        },
+        {
+          "name": "meta.string_substitution.khdl",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "constant.numeric.khdl",
+      "match": "[0-9][0-9_bxa-fA-F]*"
+    },
+    {
+      "name": "keyword.other.unsafevaluewithdomain.khdl",
+      "match": "unsafe_value_with_domain(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.interface.khdl",
+      "match": "interface(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.builtin.khdl",
+      "match": "__builtin(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.instance.khdl",
+      "match": "instance(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.continue.khdl",
+      "match": "continue(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.modifier.external.khdl",
+      "match": "external(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.clocked.khdl",
+      "match": "clocked(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.import.khdl",
+      "match": "import(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.struct.khdl",
+      "match": "struct(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.module.khdl",
+      "match": "module(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.return.khdl",
+      "match": "return(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.ports.khdl",
+      "match": "ports(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.clock.khdl",
+      "match": "clock(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.const.khdl",
+      "match": "const(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.deref.khdl",
+      "match": "deref(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.async.khdl",
+      "match": "async(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.break.khdl",
+      "match": "break(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "constant.language.false.khdl",
+      "match": "false(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "constant.language.undef.khdl",
+      "match": "undef(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.match.khdl",
+      "match": "match(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.while.khdl",
+      "match": "while(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.ident.khdl",
+      "match": "ident(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.type.khdl",
+      "match": "type(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.enum.khdl",
+      "match": "enum(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.slf.khdl",
+      "match": "self(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.port.khdl",
+      "match": "port(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.view.khdl",
+      "match": "view(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.comb.khdl",
+      "match": "comb(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.wire.khdl",
+      "match": "wire(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.sync.khdl",
+      "match": "sync(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "constant.language.true.khdl",
+      "match": "true(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.else.khdl",
+      "match": "else(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.loop.khdl",
+      "match": "loop(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.val.khdl",
+      "match": "val(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.var.khdl",
+      "match": "var(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.reg.khdl",
+      "match": "reg(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "storage.type.ref.khdl",
+      "match": "ref(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.out.khdl",
+      "match": "out(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.for.khdl",
+      "match": "for(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.pub.khdl",
+      "match": "pub(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.operator.dotdoteq.khdl",
+      "match": "\\.\\.="
+    },
+    {
+      "name": "keyword.operator.plusdotdot.khdl",
+      "match": "\\+\\.\\."
+    },
+    {
+      "name": "keyword.other.fn.khdl",
+      "match": "fn(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.in.khdl",
+      "match": "in(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.control.if.khdl",
+      "match": "if(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "keyword.other.as.khdl",
+      "match": "as(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "punctuation.arrow.khdl",
+      "match": "->"
+    },
+    {
+      "name": "punctuation.doublearrow.khdl",
+      "match": "=>"
+    },
+    {
+      "name": "punctuation.coloncolon.khdl",
+      "match": "::"
+    },
+    {
+      "name": "keyword.operator.dotdot.khdl",
+      "match": "\\.\\."
+    },
+    {
+      "name": "keyword.operator.amperamper.khdl",
+      "match": "&&"
+    },
+    {
+      "name": "keyword.operator.pipepipe.khdl",
+      "match": "\\|\\|"
+    },
+    {
+      "name": "keyword.operator.caretcaret.khdl",
+      "match": "\\^\\^"
+    },
+    {
+      "name": "keyword.operator.eqeq.khdl",
+      "match": "=="
+    },
+    {
+      "name": "keyword.operator.neq.khdl",
+      "match": "!="
+    },
+    {
+      "name": "keyword.operator.gte.khdl",
+      "match": ">="
+    },
+    {
+      "name": "keyword.operator.lte.khdl",
+      "match": "<="
+    },
+    {
+      "name": "keyword.operator.ltlt.khdl",
+      "match": "<<"
+    },
+    {
+      "name": "keyword.operator.gtgt.khdl",
+      "match": ">>"
+    },
+    {
+      "name": "keyword.operator.plusslash.khdl",
+      "match": "\\+/(?![/*])"
+    },
+    {
+      "name": "keyword.operator.starstar.khdl",
+      "match": "\\*\\*"
+    },
+    {
+      "name": "keyword.operator.pluseq.khdl",
+      "match": "\\+="
+    },
+    {
+      "name": "keyword.operator.minuseq.khdl",
+      "match": "-="
+    },
+    {
+      "name": "keyword.operator.stareq.khdl",
+      "match": "\\*="
+    },
+    {
+      "name": "keyword.operator.slasheq.khdl",
+      "match": "/="
+    },
+    {
+      "name": "keyword.operator.percenteq.khdl",
+      "match": "%="
+    },
+    {
+      "name": "keyword.operator.ampereq.khdl",
+      "match": "&="
+    },
+    {
+      "name": "keyword.operator.pipeeq.khdl",
+      "match": "\\|="
+    },
+    {
+      "name": "keyword.operator.careteq.khdl",
+      "match": "\\^="
+    },
+    {
+      "name": "punctuation.semi.khdl",
+      "match": ";"
+    },
+    {
+      "name": "punctuation.colon.khdl",
+      "match": ":"
+    },
+    {
+      "name": "punctuation.comma.khdl",
+      "match": ","
+    },
+    {
+      "name": "punctuation.underscore.khdl",
+      "match": "_(?![_a-zA-Z0-9])"
+    },
+    {
+      "name": "punctuation.openc.khdl",
+      "match": "\\{"
+    },
+    {
+      "name": "punctuation.closec.khdl",
+      "match": "\\}"
+    },
+    {
+      "name": "punctuation.openr.khdl",
+      "match": "\\("
+    },
+    {
+      "name": "punctuation.closer.khdl",
+      "match": "\\)"
+    },
+    {
+      "name": "punctuation.opens.khdl",
+      "match": "\\["
+    },
+    {
+      "name": "punctuation.closes.khdl",
+      "match": "\\]"
+    },
+    {
+      "name": "keyword.operator.dot.khdl",
+      "match": "\\."
+    },
+    {
+      "name": "keyword.operator.gt.khdl",
+      "match": ">"
+    },
+    {
+      "name": "keyword.operator.lt.khdl",
+      "match": "<"
+    },
+    {
+      "name": "keyword.operator.amper.khdl",
+      "match": "&"
+    },
+    {
+      "name": "keyword.operator.pipe.khdl",
+      "match": "\\|"
+    },
+    {
+      "name": "keyword.operator.caret.khdl",
+      "match": "\\^"
+    },
+    {
+      "name": "keyword.operator.plus.khdl",
+      "match": "\\+"
+    },
+    {
+      "name": "keyword.operator.minus.khdl",
+      "match": "-"
+    },
+    {
+      "name": "keyword.operator.star.khdl",
+      "match": "\\*"
+    },
+    {
+      "name": "keyword.operator.slash.khdl",
+      "match": "/(?![/*])"
+    },
+    {
+      "name": "keyword.operator.percent.khdl",
+      "match": "%"
+    },
+    {
+      "name": "keyword.operator.bang.khdl",
+      "match": "!"
+    },
+    {
+      "name": "keyword.operator.eq.khdl",
+      "match": "="
+    },
+    {
+      "name": "identifier.khdl",
+      "match": "[_a-zA-Z][_a-zA-Z0-9]*"
+    }
+  ],
+  "repository": {
+    "block_comment": {
+      "patterns": [
+        {
+          "name": "comment.block.khdl",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#block_comment"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

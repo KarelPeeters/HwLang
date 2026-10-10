@@ -1,7 +1,7 @@
-# HwLang
+# KHDL
 
 An experimental new language for hardware design.
-A webdemo is available at https://karelpeeters.github.io/HwLang/.
+A webdemo is available at https://khdl-lang.org/.
 
 A short sneak-peak at the language:
 
@@ -199,7 +199,7 @@ TODO document:
 
 * Most of the compiler and surrounding infrastructure is is written in Rust. The workspace is at `rust/` and contains
   multiple crates:
-    * The core `hwl_language` library crate contains the compiler implementation. The major sub-modules are:
+    * The core `khdl_language` library crate contains the compiler implementation. The major sub-modules are:
         * `syntax`: Implements tokenization, parsing, formatting, resolving.
         * `front`: Contains the bulk of the implementation of the language:
           module elaboration, statement and expression evaluation, type checking, domain checking, ....
@@ -210,11 +210,11 @@ TODO document:
             * _C++_: generates C++ that can be used to directly simulate the design, without having to use any EDA
               simulator.
     * The other crates use this core library and expose it in more convenient ways:
-        * hwl_bin: commandline compiler and formatter
-        * hwl_lsp_server: [LSP](https://microsoft.github.io/language-server-protocol/) server implementation
-        * hwl_python: python module that uses PyO3 to provide python bindings to the compiler
+        * khdl_bin: commandline compiler and formatter
+        * khdl_lsp_server: [LSP](https://microsoft.github.io/language-server-protocol/) server implementation
+        * khdl_python: python module that uses PyO3 to provide python bindings to the compiler
         * hwm_wasm: wasm module that uses wasm_bindgen to provide web bindings
-    * There's also the `hwl_util` crate that contains some common utilities.
+    * There's also the `khdl_util` crate that contains some common utilities.
 * There's a VS Code plugin to act as the LSP client at `lsp_client/`, written in Typescript.
 * The frontend of the webdemo is a NodeJS node project also using Typescript, located in `web_demo/`.
 
