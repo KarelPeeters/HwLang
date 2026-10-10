@@ -13,6 +13,10 @@ dependencies = [
 [tool.uv.sources]
 khdl = { path = "../rust/khdl_python/", editable = true }
 
+# For local development, build khdl with the dev profile instead of the default release profile
+[tool.uv.config-settings-package]
+khdl = { build-args = "--profile=dev" }
+
 [tool.pytest.ini_options]
 addopts = "--tb=short --import-mode=importlib"
 testpaths = ["src/khdl_sandbox/tests"]

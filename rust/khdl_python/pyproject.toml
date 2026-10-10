@@ -1,15 +1,39 @@
 [project]
 name = "khdl"
-version = "0.1.0"
-requires-python = ">=3.10,<3.15"
+dynamic = ["version"]
+description = "Python bindings for KHDL, an experimental new language for hardware design."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENCE.txt"]
+authors = [{ name = "Karel Peeters" }]
+requires-python = ">=3.10"
+keywords = ["hardware", "hdl", "fpga", "verilog", "compiler"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://khdl-lang.org/"
+Repository = "https://github.com/khdl-lang/khdl"
+Issues = "https://github.com/khdl-lang/khdl/issues"
 
 [build-system]
-requires = ["maturin>=1.11"]
+requires = ["maturin>=1.11,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-profile = "dev"
 
 [tool.uv]
 cache-keys = [

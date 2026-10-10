@@ -3,6 +3,11 @@ name = "khdl_bin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
 default-run = "khdl_bin"
 
 [lints]

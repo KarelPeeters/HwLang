@@ -1,6 +1,5 @@
 # TODO build and maybe even test VSCode LSP plugin
 # TODO publish crates to crates.io?
-# TODO publish wheels to pypi.org?
 # TODO add python linting
 
 name: CI
