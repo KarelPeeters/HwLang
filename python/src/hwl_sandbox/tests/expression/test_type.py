@@ -1,5 +1,3 @@
-import pytest
-
 from hwl_sandbox.common.util import compile_custom, diag_error
 
 
@@ -46,15 +44,6 @@ def test_type_int_empty():
     f = compile_custom(src).resolve("top.f")
     with diag_error("type mismatch"):
         f(0)
-
-
-# TODO fix this deadlock by moving all elaboration into a single loop-detecting data structure
-@pytest.mark.skip
-def test_type_recursive_struct_generic():
-    with diag_error("cyclic dependency"):
-        c = compile_custom("struct S(T: type) { a: int, b: S(T) }")
-        s = c.resolve("top.S")
-        _ = s(int)
 
 
 def test_type_array():

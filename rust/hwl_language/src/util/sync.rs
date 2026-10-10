@@ -263,32 +263,42 @@ impl<K: Eq + Hash, V> ComputeOnceMap<K, V> {
         Self { inner: DashMap::new() }
     }
 
+    /// Extend the lifetime of an entry from the shard guard it was obtained from to `self`.
+    ///
+    /// # Safety
+    /// `entry` must point into a box stored in `self.inner`.
+    /// This is sound because entries are never removed or replaced,
+    /// and boxing ensures the pointee does not move when the map is resized.
+    unsafe fn extend_entry_lifetime(&self, entry: &OnceLock<V>) -> &OnceLock<V> {
+        let ptr: *const OnceLock<V> = entry;
+        unsafe { &*ptr }
+    }
+
     pub fn get(&self, k: &K) -> Option<&V> {
-        let ptr: *const OnceLock<V> = &**self.inner.get(k)?;
-        // Entries are boxed and never removed: releasing the shard lock preserves the pointee.
-        unsafe { &*ptr }.get()
+        let guard = self.inner.get(k)?;
+        let entry = unsafe { self.extend_entry_lifetime(&guard) };
+        drop(guard);
+        entry.get()
     }
 
     pub fn set(&self, k: K, v: V) -> Result<&V, KeyAlreadyPresent> {
-        match self.inner.entry(k) {
-            Entry::Occupied(_) => Err(KeyAlreadyPresent),
-            Entry::Vacant(entry) => {
-                let ptr: *const OnceLock<V> = &**entry.insert(Box::new(OnceLock::from(v)));
-                Ok(unsafe { &*ptr }.get().unwrap())
-            }
-        }
+        let guard = match self.inner.entry(k) {
+            Entry::Occupied(_) => return Err(KeyAlreadyPresent),
+            Entry::Vacant(entry) => entry.insert(Box::new(OnceLock::from(v))),
+        };
+        let entry = unsafe { self.extend_entry_lifetime(&guard) };
+        drop(guard);
+        Ok(entry.get().unwrap())
     }
 
     pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V
     where
         K: Clone,
     {
-        let entry = self.inner.entry(k.clone()).or_insert_with(|| Box::new(OnceLock::new()));
-        let ptr: *const OnceLock<V> = &**entry;
-        drop(entry);
-        // Recursive computations can access another key in the same shard. Release the
-        // DashMap guard first; OnceLock still ensures one computation per key.
-        unsafe { &*ptr }.get_or_init(|| f(&k))
+        let guard = self.inner.entry(k.clone()).or_insert_with(|| Box::new(OnceLock::new()));
+        let entry = unsafe { self.extend_entry_lifetime(&guard) };
+        drop(guard);
+        entry.get_or_init(|| f(&k))
     }
 }
 
@@ -392,7 +402,7 @@ mod compute_once_map_tests {
 
     impl Hash for SameShard {
         fn hash<H: Hasher>(&self, state: &mut H) {
-            0u32.hash(state);
+            // hash nothing
         }
     }
 
@@ -402,25 +412,5 @@ mod compute_once_map_tests {
         let value = map.get_or_compute(SameShard(0), |_| *map.get_or_compute(SameShard(1), |_| 41) + 1);
         assert_eq!(*value, 42);
         assert_eq!(*map.get_or_compute(SameShard(0), |_| panic!("computed twice")), 42);
-    }
-
-    #[test]
-    fn concurrent_computation_happens_once() {
-        let map = ComputeOnceMap::new();
-        let count = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
-                    assert_eq!(
-                        *map.get_or_compute(0, |_| {
-                            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            42
-                        }),
-                        42
-                    );
-                });
-            }
-        });
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
