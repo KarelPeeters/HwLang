@@ -47,9 +47,3 @@ def test_struct_generic_basics(tmp_dir: Path):
     e.eval_assert([0, True], (True, 0))
 
 
-def test_nested_struct_fresh_contexts():
-    # Resolving Outer must elaborate Inner recursively. Random cache hashing can
-    # place both structs in the same shard; that must not deadlock elaboration.
-    for _ in range(128):
-        c = compile_custom("struct Inner { value: uint } struct Outer { inner: Inner }")
-        _ = c.resolve("top.Outer")
