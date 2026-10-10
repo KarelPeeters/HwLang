@@ -1,7 +1,7 @@
 use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{
-    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_int, check_type_is_string_compile,
-    check_type_is_uint, check_type_is_uint_compile,
+    TypeContainsReason, check_type_contains_value, check_type_is_bool, check_type_is_bool_array, check_type_is_int,
+    check_type_is_string_compile, check_type_is_uint, check_type_is_uint_compile,
 };
 use crate::front::compile::{CompileItemContext, CompileRefs, StackEntry};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
@@ -20,7 +20,7 @@ use crate::front::value::{
 };
 use crate::mid::ir::{
     IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
-    IrLargeArena,
+    IrLargeArena, IrType,
 };
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
@@ -33,14 +33,16 @@ use crate::util::data::{VecExt, vec_concat};
 use crate::front::exit::ExitStack;
 use crate::front::flow::Flow;
 use crate::front::range_arithmetic::{
-    multi_range_binary_add, multi_range_binary_div, multi_range_binary_mod, multi_range_binary_mul,
-    multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_neg,
+    multi_range_binary_add, multi_range_binary_bitwise, multi_range_binary_div, multi_range_binary_mod,
+    multi_range_binary_mul, multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_bitwise_not,
+    multi_range_unary_neg,
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::token::{
     parse_token_int_literal_binary, parse_token_int_literal_decimal, parse_token_int_literal_hexadecimal,
 };
 use crate::util::ResultDoubleExt;
+use crate::util::int::IntRepresentation;
 use crate::util::intern::Id;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
@@ -598,26 +600,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 }
                 UnaryOp::Not => {
                     let operand = self.eval_expression_with_implications(scope, flow, &Type::Any, operand)?;
-                    let operand_bool = check_type_is_bool(refs, TypeContainsReason::Operator(op.span), operand)?;
-
-                    let result = match operand_bool {
-                        MaybeCompile::Compile(c) => ValueWithImplications::new_bool(!c),
-                        MaybeCompile::Hardware(v) => {
-                            let result = HardwareValue {
-                                ty: HardwareType::Bool,
-                                domain: v.value.domain,
-                                expr: self.large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
-                            };
-                            let result_with_implications = HardwareValueWithImplications {
-                                value: result,
-                                version: None,
-                                implications: v.implications.invert(),
-                            };
-                            ValueWithImplications::Hardware(result_with_implications)
-                        }
-                    };
-
-                    LrValue::Right(result)
+                    LrValue::Right(eval_unary_not(refs, &mut self.large, op.span, operand)?)
                 }
             },
             &ExpressionKind::BinaryOp(op, left, right) => {
@@ -1823,6 +1806,7 @@ pub fn eval_binary_expression(
     let elab = &refs.shared.elaboration_arenas;
 
     let op_reason = TypeContainsReason::Operator(op.span);
+    let op_span = op.span;
 
     let left_span = left.span;
     let right_span = right.span;
@@ -1835,6 +1819,8 @@ pub fn eval_binary_expression(
     let eval_binary_bool = |large, left, right, op| eval_binary_bool(refs, large, op_reason, left, right, op);
     let eval_binary_int_compare =
         |large, left, right, op| eval_binary_int_compare(refs, large, op_reason, left, right, op);
+    let eval_binary_bitwise =
+        |large, left, right, op| eval_binary_bitwise(refs, large, op_reason, op_span, left, right, op);
 
     let result_simple: Value<_> = match op.inner {
         // (int, int)
@@ -2139,14 +2125,340 @@ pub fn eval_binary_expression(
         // TODO share code with match "in" pattern
         // TODO for hardware ranges, also check if start <(=) end, otherwise this might have false positives
         BinaryOp::In => return Err(diags.report_error_todo(expr_span, "binary op In")),
-        // (bool, bool)
-        // TODO support boolean arrays
-        BinaryOp::BitAnd => return eval_binary_bool(large, left, right, IrBoolBinaryOp::And),
-        BinaryOp::BitOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
-        BinaryOp::BitXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
+        // (bool, bool), (int, int), (bool, []bool), ([]bool, bool), ([]bool, []bool)
+        BinaryOp::BitAnd => return eval_binary_bitwise(large, left, right, IrBoolBinaryOp::And),
+        BinaryOp::BitOr => return eval_binary_bitwise(large, left, right, IrBoolBinaryOp::Or),
+        BinaryOp::BitXor => return eval_binary_bitwise(large, left, right, IrBoolBinaryOp::Xor),
     };
 
     Ok(Value::simple(result_simple))
+}
+
+/// Logical not for bools, bitwise not for ints and bool arrays.
+fn eval_unary_not(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_span: Span,
+    operand: Spanned<ValueWithImplications>,
+) -> DiagResult<ValueWithImplications> {
+    let op_reason = TypeContainsReason::Operator(op_span);
+    let operand_ty = operand.inner.ty();
+
+    match &operand_ty {
+        Type::Bool => {
+            let operand_bool = check_type_is_bool(refs, op_reason, operand)?;
+            let result = match operand_bool {
+                MaybeCompile::Compile(c) => ValueWithImplications::new_bool(!c),
+                MaybeCompile::Hardware(v) => ValueWithImplications::Hardware(HardwareValueWithImplications {
+                    value: HardwareValue {
+                        ty: HardwareType::Bool,
+                        domain: v.value.domain,
+                        expr: large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
+                    },
+                    version: None,
+                    implications: v.implications.invert(),
+                }),
+            };
+            return Ok(result);
+        }
+        Type::Int(_) => {
+            let operand_int = check_type_is_int(refs, op_reason, operand.map_inner(|v| v.into_value()))?;
+            let result = match operand_int {
+                MaybeCompile::Compile(c) => Value::new_int(!c),
+                MaybeCompile::Hardware(v) => {
+                    // `!x == -1 - x`
+                    let range = multi_range_unary_bitwise_not(&v.ty);
+                    let expr = IrExpressionLarge::IntArithmetic(
+                        IrIntArithmeticOp::Sub,
+                        range.enclosing_range().cloned(),
+                        IrExpression::Int(BigInt::NEG_ONE),
+                        v.expr,
+                    );
+                    Value::Hardware(HardwareValue {
+                        ty: HardwareType::Int(range),
+                        domain: v.domain,
+                        expr: large.push_expr(expr),
+                    })
+                }
+            };
+            return Ok(ValueWithImplications::simple(result));
+        }
+        Type::Array(ty_inner, _) => {
+            if matches!(**ty_inner, Type::Bool) {
+                let operand_array =
+                    check_type_is_bool_array(refs, op_reason, operand.map_inner(|v| v.into_value()), None)?;
+                let result = match operand_array {
+                    MaybeCompile::Compile(c) => {
+                        let result = c.into_iter().map(|b| CompileValue::new_bool(!b)).collect();
+                        Value::Simple(SimpleCompileValue::Array(Arc::new(result)))
+                    }
+                    MaybeCompile::Hardware(v) => {
+                        // `!x == x ^ true`
+                        let ones = large.push_expr(IrExpressionLarge::BoolFill(v.ty.clone(), IrExpression::Bool(true)));
+                        Value::Hardware(HardwareValue {
+                            ty: HardwareType::Array(Arc::new(HardwareType::Bool), v.ty),
+                            domain: v.domain,
+                            expr: large.push_expr(IrExpressionLarge::BoolBinaryArray(
+                                IrBoolBinaryOp::Xor,
+                                v.expr,
+                                ones,
+                            )),
+                        })
+                    }
+                };
+                return Ok(ValueWithImplications::simple(result));
+            }
+        }
+        _ => {
+            // fallthrough
+        }
+    }
+
+    // report type error
+    let diag = DiagnosticError::new("invalid operand type for not operator", op_span, "for operator here")
+        .add_info(
+            operand.span,
+            format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
+        )
+        .add_footer_hint("the not operator supports `bool`, `int` and `[_]bool`")
+        .report(refs.diags);
+    Err(diag)
+}
+
+fn eval_binary_bitwise(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_reason: TypeContainsReason,
+    op_span: Span,
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
+    op: IrBoolBinaryOp,
+) -> DiagResult<ValueWithImplications> {
+    #[derive(Debug, Copy, Clone)]
+    enum Kind {
+        Bool,
+        Int,
+        BoolArray,
+    }
+    let kind_of = |ty: &Type| {
+        if Type::Bool.contains_type(ty) {
+            Some(Kind::Bool)
+        } else if Type::Int(MultiRange::open()).contains_type(ty) {
+            Some(Kind::Int)
+        } else if Type::Array(Arc::new(Type::Bool), None).contains_type(ty) {
+            Some(Kind::BoolArray)
+        } else {
+            None
+        }
+    };
+
+    let left_ty = left.inner.ty();
+    let right_ty = right.inner.ty();
+
+    match (kind_of(&left_ty), kind_of(&right_ty)) {
+        (Some(Kind::Bool), Some(Kind::Bool)) => eval_binary_bool(refs, large, op_reason, left, right, op),
+        (Some(Kind::Int), Some(Kind::Int)) => {
+            let left = check_type_is_int(refs, op_reason, left.map_inner(|e| e.into_value()))?;
+            let right = check_type_is_int(refs, op_reason, right.map_inner(|e| e.into_value()))?;
+
+            let result = match pair_compile_int(left, right) {
+                MaybeCompile::Compile((left, right)) => Value::new_int(op.eval_int(&left, &right)),
+                MaybeCompile::Hardware((left, right)) => {
+                    Value::Hardware(HardwareValue::from(build_binary_int_bitwise_op(large, op, left, right)))
+                }
+            };
+            Ok(ValueWithImplications::simple(result))
+        }
+        (Some(Kind::Bool | Kind::BoolArray), Some(Kind::Bool | Kind::BoolArray)) => {
+            let left = check_bit_operand(refs, op_reason, left)?;
+            let right = check_bit_operand(refs, op_reason, right)?;
+            let result = eval_binary_bitwise_array(refs, large, op_span, op, left, right)?;
+            Ok(ValueWithImplications::simple(result))
+        }
+        _ => {
+            let shared = refs.shared;
+            let diag = DiagnosticError::new(
+                "invalid operand types for bitwise operator",
+                op_span,
+                "for operator here",
+            )
+            .add_info(left.span, format!("left operand has type `{}`", left_ty.value_string(shared)))
+            .add_info(right.span, format!("right operand has type `{}`", right_ty.value_string(shared)))
+            .add_footer_hint("bitwise operators support `(bool, bool)`, `(int, int)`, `([_]bool, [_]bool)`, `(bool, [_]bool)` and `([_]bool, bool)`")
+            .report(refs.diags);
+            Err(diag)
+        }
+    }
+}
+
+/// Bitwise operation on integers, using the infinitely sign-extended two's complement representation.
+///
+/// This is lowered to the IR by expanding both operands to a common representation, converting them to bits,
+/// applying the operation on the bits and converting back to an integer.
+fn build_binary_int_bitwise_op(
+    large: &mut IrLargeArena,
+    op: IrBoolBinaryOp,
+    left: HardwareInt,
+    right: HardwareInt,
+) -> HardwareInt {
+    let result_range = multi_range_binary_bitwise(op, &left.ty, &right.ty);
+
+    // the result of a bitwise operation always fits in the representation of the operands
+    let combined_range = left
+        .ty
+        .enclosing_range()
+        .cloned()
+        .union(right.ty.enclosing_range().cloned());
+    let repr_range = IntRepresentation::for_range(combined_range.as_ref()).range();
+    let repr_ty = IrType::Int(repr_range.clone());
+
+    let mut to_bits = |value: HardwareInt| {
+        let value_range = value.ty.enclosing_range().cloned();
+        let value_expanded = if value_range == repr_range {
+            value.expr
+        } else {
+            large.push_expr(IrExpressionLarge::ExpandIntRange(repr_range.clone(), value.expr))
+        };
+        large.push_expr(IrExpressionLarge::ToBits(repr_ty.clone(), value_expanded))
+    };
+    let domain = left.domain.join(right.domain);
+    let left_bits = to_bits(left);
+    let right_bits = to_bits(right);
+
+    let result_bits = large.push_expr(IrExpressionLarge::BoolBinaryArray(op, left_bits, right_bits));
+    let result_repr = large.push_expr(IrExpressionLarge::FromBits(repr_ty, result_bits));
+    let result_expr = large.push_expr(IrExpressionLarge::ConstrainIntRange(
+        result_range.enclosing_range().cloned(),
+        result_repr,
+    ));
+
+    HardwareInt {
+        ty: result_range,
+        domain,
+        expr: result_expr,
+    }
+}
+
+enum BitOperand {
+    Scalar(MaybeCompile<bool, HardwareValue<TypeBool>>),
+    Array(MaybeCompile<Vec<bool>, HardwareValue<BigUint>>),
+}
+
+impl BitOperand {
+    fn is_compile(&self) -> bool {
+        match self {
+            BitOperand::Scalar(v) => matches!(v, MaybeCompile::Compile(_)),
+            BitOperand::Array(v) => matches!(v, MaybeCompile::Compile(_)),
+        }
+    }
+}
+
+fn check_bit_operand(
+    refs: CompileRefs,
+    op_reason: TypeContainsReason,
+    value: Spanned<ValueWithImplications>,
+) -> DiagResult<Spanned<BitOperand>> {
+    let value_span = value.span;
+    let operand = if Type::Bool.contains_type(&value.inner.ty()) {
+        BitOperand::Scalar(check_type_is_bool(refs, op_reason, value)?.map_hardware(|v| v.value))
+    } else {
+        BitOperand::Array(check_type_is_bool_array(
+            refs,
+            op_reason,
+            value.map_inner(|v| v.into_value()),
+            None,
+        )?)
+    };
+    Ok(Spanned::new(value_span, operand))
+}
+
+/// Bitwise operation where at least one of the operands is a bool array, scalar operands are broadcast.
+fn eval_binary_bitwise_array(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_span: Span,
+    op: IrBoolBinaryOp,
+    left: Spanned<BitOperand>,
+    right: Spanned<BitOperand>,
+) -> DiagResult<Value> {
+    let operand_len = |operand: &BitOperand| match operand {
+        BitOperand::Scalar(_) => None,
+        BitOperand::Array(MaybeCompile::Compile(v)) => Some(BigUint::from(v.len())),
+        BitOperand::Array(MaybeCompile::Hardware(v)) => Some(v.ty.clone()),
+    };
+
+    // determine the result length
+    let len = match (operand_len(&left.inner), operand_len(&right.inner)) {
+        (None, None) => {
+            return Err(refs
+                .diags
+                .report_error_internal(op_span, "expected at least one array operand"));
+        }
+        (Some(len), None) | (None, Some(len)) => len,
+        (Some(left_len), Some(right_len)) => {
+            if left_len != right_len {
+                let diag = DiagnosticError::new(
+                    "bitwise operator on arrays with different lengths",
+                    op_span,
+                    "for operator here",
+                )
+                .add_info(left.span, format!("left operand has length `{left_len}`"))
+                .add_info(right.span, format!("right operand has length `{right_len}`"))
+                .report(refs.diags);
+                return Err(diag);
+            }
+            left_len
+        }
+    };
+
+    // full compile-time evaluation
+    if left.inner.is_compile() && right.inner.is_compile() {
+        let get = |operand: &BitOperand, i: usize| match operand {
+            &BitOperand::Scalar(MaybeCompile::Compile(v)) => v,
+            BitOperand::Array(MaybeCompile::Compile(v)) => v[i],
+            BitOperand::Scalar(MaybeCompile::Hardware(_)) | BitOperand::Array(MaybeCompile::Hardware(_)) => {
+                unreachable!()
+            }
+        };
+        let len = usize::try_from(&len).expect("length of compile-time array fits in usize");
+        let result = (0..len)
+            .map(|i| CompileValue::new_bool(op.eval_bool(get(&left.inner, i), get(&right.inner, i))))
+            .collect();
+        return Ok(Value::Simple(SimpleCompileValue::Array(Arc::new(result))));
+    }
+
+    // hardware evaluation
+    let mut to_hardware = |operand: BitOperand| -> (ValueDomain, IrExpression) {
+        match operand {
+            BitOperand::Scalar(MaybeCompile::Compile(v)) => (
+                ValueDomain::CompileTime,
+                large.push_expr(IrExpressionLarge::BoolFill(len.clone(), IrExpression::Bool(v))),
+            ),
+            BitOperand::Scalar(MaybeCompile::Hardware(v)) => (
+                v.domain,
+                large.push_expr(IrExpressionLarge::BoolFill(len.clone(), v.expr)),
+            ),
+            BitOperand::Array(MaybeCompile::Compile(v)) => {
+                let elements = v
+                    .into_iter()
+                    .map(|b| IrArrayLiteralElement::Single(IrExpression::Bool(b)))
+                    .collect();
+                (
+                    ValueDomain::CompileTime,
+                    large.push_expr(IrExpressionLarge::ArrayLiteral(IrType::Bool, len.clone(), elements)),
+                )
+            }
+            BitOperand::Array(MaybeCompile::Hardware(v)) => (v.domain, v.expr),
+        }
+    };
+    let (left_domain, left_expr) = to_hardware(left.inner);
+    let (right_domain, right_expr) = to_hardware(right.inner);
+
+    Ok(Value::Hardware(HardwareValue {
+        ty: HardwareType::Array(Arc::new(HardwareType::Bool), len),
+        domain: left_domain.join(right_domain),
+        expr: large.push_expr(IrExpressionLarge::BoolBinaryArray(op, left_expr, right_expr)),
+    }))
 }
 
 fn eval_binary_bool(
@@ -2178,14 +2490,14 @@ pub fn eval_binary_bool_typed(
 ) -> MaybeCompile<bool, HardwareValueWithImplications<TypeBool>> {
     match (left, right) {
         // full compile-time eval
-        (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => MaybeCompile::Compile(op.eval(left, right)),
+        (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => MaybeCompile::Compile(op.eval_bool(left, right)),
 
         // partial compile-time eval
         (MaybeCompile::Compile(left), MaybeCompile::Hardware(right)) => {
-            build_unary_bool_gate(large, right, |b| op.eval(left, b))
+            build_unary_bool_gate(large, right, |b| op.eval_bool(left, b))
         }
         (MaybeCompile::Hardware(left), MaybeCompile::Compile(right)) => {
-            build_unary_bool_gate(large, left, |b| op.eval(b, right))
+            build_unary_bool_gate(large, left, |b| op.eval_bool(b, right))
         }
 
         // full hardware
@@ -2195,7 +2507,11 @@ pub fn eval_binary_bool_typed(
             let expr = HardwareValue {
                 ty: TypeBool,
                 domain: left.value.domain.join(right.value.domain),
-                expr: large.push_expr(IrExpressionLarge::BoolBinary(op, left.value.expr, right.value.expr)),
+                expr: large.push_expr(IrExpressionLarge::BoolBinaryScalar(
+                    op,
+                    left.value.expr,
+                    right.value.expr,
+                )),
             };
 
             let implications = match op {

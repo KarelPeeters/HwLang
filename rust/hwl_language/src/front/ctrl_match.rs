@@ -862,8 +862,10 @@ fn build_ir_int_in_range(large: &mut IrLargeArena, value: &IrExpression, range: 
     match (cond_start, cond_end) {
         (None, None) => None,
         (Some(cond), None) | (None, Some(cond)) => Some(cond),
-        (Some(cond_start), Some(cond_end)) => {
-            Some(large.push_expr(IrExpressionLarge::BoolBinary(IrBoolBinaryOp::And, cond_start, cond_end)))
-        }
+        (Some(cond_start), Some(cond_end)) => Some(large.push_expr(IrExpressionLarge::BoolBinaryScalar(
+            IrBoolBinaryOp::And,
+            cond_start,
+            cond_end,
+        ))),
     }
 }

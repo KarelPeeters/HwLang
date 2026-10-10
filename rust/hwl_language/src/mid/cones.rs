@@ -584,7 +584,9 @@ fn record_expression_reads(
             // just read operands
             IrExpressionLarge::Undefined(_)
             | IrExpressionLarge::BoolNot(_)
-            | IrExpressionLarge::BoolBinary(_, _, _)
+            | IrExpressionLarge::BoolBinaryScalar(_, _, _)
+            | IrExpressionLarge::BoolBinaryArray(_, _, _)
+            | IrExpressionLarge::BoolFill(_, _)
             | IrExpressionLarge::IntArithmetic(_, _, _, _)
             | IrExpressionLarge::IntCompare(_, _, _)
             | IrExpressionLarge::TupleLiteral(_)

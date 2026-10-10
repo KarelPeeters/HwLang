@@ -1376,19 +1376,24 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
                         Evaluated::String(format!("(!{inner})"))
                     }
-                    IrExpressionLarge::BoolBinary(op, left, right) => {
+                    IrExpressionLarge::BoolBinaryScalar(op, left, right) => {
                         // logical and bitwise operators would both work,
                         //   bitwise is more consistent since it also has an xor operator
-                        let op_str = match op {
-                            IrBoolBinaryOp::And => "&",
-                            IrBoolBinaryOp::Or => "|",
-                            IrBoolBinaryOp::Xor => "^",
-                        };
-
+                        let op_str = bitwise_op_str(*op);
                         let left = self.lower_expression_non_zero_width(span, left, "boolean")?;
                         let right = self.lower_expression_non_zero_width(span, right, "boolean")?;
-
                         Evaluated::String(format!("({left} {op_str} {right})"))
+                    }
+                    IrExpressionLarge::BoolBinaryArray(op, left, right) => {
+                        // both operands have the same width as the result, which we already checked is non-zero
+                        let op_str = bitwise_op_str(*op);
+                        let left = self.lower_expression_non_zero_width(span, left, "bit array")?;
+                        let right = self.lower_expression_non_zero_width(span, right, "bit array")?;
+                        Evaluated::String(format!("({left} {op_str} {right})"))
+                    }
+                    IrExpressionLarge::BoolFill(len, inner) => {
+                        let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
+                        Evaluated::String(format!("{{{len}{{{inner}}}}}"))
                     }
                     &IrExpressionLarge::IntArithmetic(op, ref result_range, ref left, ref right) => {
                         let result_range = NonZeroWidthRange::new(result_range.clone())
@@ -2329,6 +2334,14 @@ impl MaybeBool {
             }
             (MaybeBool::Runtime(a), MaybeBool::Runtime(b)) => MaybeBool::Runtime(format!("({} && {})", a, b)),
         }
+    }
+}
+
+fn bitwise_op_str(op: IrBoolBinaryOp) -> &'static str {
+    match op {
+        IrBoolBinaryOp::And => "&",
+        IrBoolBinaryOp::Or => "|",
+        IrBoolBinaryOp::Xor => "^",
     }
 }
 

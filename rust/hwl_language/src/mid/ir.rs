@@ -336,7 +336,10 @@ pub enum IrExpressionLarge {
 
     // actual expressions
     BoolNot(IrExpression),
-    BoolBinary(IrBoolBinaryOp, IrExpression, IrExpression),
+    BoolFill(BigUint, IrExpression),
+    BoolBinaryScalar(IrBoolBinaryOp, IrExpression, IrExpression),
+    BoolBinaryArray(IrBoolBinaryOp, IrExpression, IrExpression),
+
     IntArithmetic(
         IrIntArithmeticOp,
         // The range of the resulting value.
@@ -426,10 +429,18 @@ pub enum IrIntCompareOp {
 }
 
 impl IrBoolBinaryOp {
-    pub fn eval(&self, left: bool, right: bool) -> bool {
+    pub fn eval_bool(&self, left: bool, right: bool) -> bool {
         match self {
             IrBoolBinaryOp::And => left && right,
             IrBoolBinaryOp::Or => left || right,
+            IrBoolBinaryOp::Xor => left ^ right,
+        }
+    }
+
+    pub fn eval_int(&self, left: &BigInt, right: &BigInt) -> BigInt {
+        match self {
+            IrBoolBinaryOp::And => left & right,
+            IrBoolBinaryOp::Or => left | right,
             IrBoolBinaryOp::Xor => left ^ right,
         }
     }
@@ -596,7 +607,9 @@ impl IrExpression {
             &IrExpression::Large(expr) => match &large[expr] {
                 IrExpressionLarge::Undefined(ty) => ty.clone(),
                 IrExpressionLarge::BoolNot(_) => IrType::Bool,
-                IrExpressionLarge::BoolBinary(_, left, _) => left.ty(large, signals, variables),
+                IrExpressionLarge::BoolBinaryScalar(_, _, _) => IrType::Bool,
+                IrExpressionLarge::BoolBinaryArray(_, left, _) => left.ty(large, signals, variables),
+                IrExpressionLarge::BoolFill(len, _) => IrType::Array(Box::new(IrType::Bool), len.clone()),
                 IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
                 IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
@@ -650,10 +663,12 @@ impl IrExpression {
             &IrExpression::Large(expr) => match &large[expr] {
                 IrExpressionLarge::Undefined(_ty) => {}
                 IrExpressionLarge::BoolNot(x) => f(x),
-                IrExpressionLarge::BoolBinary(_op, left, right) => {
+                IrExpressionLarge::BoolBinaryScalar(_op, left, right)
+                | IrExpressionLarge::BoolBinaryArray(_op, left, right) => {
                     f(left);
                     f(right);
                 }
+                IrExpressionLarge::BoolFill(_len, x) => f(x),
                 IrExpressionLarge::IntArithmetic(_op, _ty, left, right) => {
                     f(left);
                     f(right);
@@ -767,8 +782,15 @@ impl IrExpression {
                 IrExpressionLarge::BoolNot(inner) => {
                     build_unary!(|inner| large.push_expr(IrExpressionLarge::BoolNot(inner)))
                 }
-                &IrExpressionLarge::BoolBinary(op, ref left, ref right) => {
-                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolBinary(op, left, right)))
+                &IrExpressionLarge::BoolBinaryScalar(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolBinaryScalar(op, left, right)))
+                }
+                &IrExpressionLarge::BoolBinaryArray(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolBinaryArray(op, left, right)))
+                }
+                IrExpressionLarge::BoolFill(len, inner) => {
+                    let len = len.clone();
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::BoolFill(len, inner)))
                 }
                 &IrExpressionLarge::IntArithmetic(op, ref ty, ref left, ref right) => {
                     build_binary!(|left, right| large.push_expr(IrExpressionLarge::IntArithmetic(

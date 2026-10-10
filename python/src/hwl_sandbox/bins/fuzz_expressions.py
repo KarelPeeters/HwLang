@@ -145,7 +145,7 @@ def try_sample_value(state: SampleState, rng, ty_int_not_bool: bool, depth: int)
     if ty_int_not_bool:
         # int result
         # TODO include power, unary minus
-        operators = ["+", "-", "*", "/", "%", "<<", ">>"]
+        operators = ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^"]
         operand_int_not_bool = True
     else:
         # bool result
@@ -211,7 +211,7 @@ def sample_value(state: SampleState, rng: random.Random, ty_int_not_bool: bool, 
                 "operator requires type `uint`",
                 "target requires type `int("
             ]
-            if all(any(a in m for a in allowed_messages) for m in e.messages):
+            if all(any(a in d.full_string for a in allowed_messages) for d in e.diagnostics):
                 state.restore(checkpoint)
                 continue
 
@@ -250,7 +250,7 @@ def fuzz_step(build_dir: Path, sample_count: int, rng: random.Random):
     # TODO allow multiple args and returns to increase fuzzing throughput
     # TODO expand this for multiple expressions, more operators, mix of ints and non-ints,
     #    arrays, conditional statements, variable assignments, ...
-    # TODO add power, add shifts, add bitwise, add binary
+    # TODO add power, add binary
 
     sampled_code = sample_code(rng)
 

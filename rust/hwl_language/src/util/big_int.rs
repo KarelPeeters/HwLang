@@ -613,12 +613,13 @@ macro_rules! impl_op_owned {
 }
 
 macro_rules! impl_op_storage {
-    ($op_trait:ident, $op_fn:ident, $op_small_checked:ident) => {
+    ($op_trait:ident, $op_fn:ident, $op_small:expr) => {
         impl std::ops::$op_trait<&Storage> for &Storage {
             type Output = Storage;
             fn $op_fn(self, rhs: &Storage) -> Self::Output {
                 if let (&Storage::Small(lhs), &Storage::Small(rhs)) = (self, rhs) {
-                    if let Some(result) = lhs.$op_small_checked(rhs) {
+                    let op_small: fn(IStorage, IStorage) -> Option<IStorage> = $op_small;
+                    if let Some(result) = op_small(lhs, rhs) {
                         return Storage::Small(result);
                     }
                 }
@@ -650,9 +651,13 @@ impl_primitive!(u64, i64);
 impl_primitive!(u128, i128);
 impl_primitive!(usize, isize);
 
-impl_op_storage!(Add, add, checked_add);
-impl_op_storage!(Sub, sub, checked_sub);
-impl_op_storage!(Mul, mul, checked_mul);
+impl_op_storage!(Add, add, IStorage::checked_add);
+impl_op_storage!(Sub, sub, IStorage::checked_sub);
+impl_op_storage!(Mul, mul, IStorage::checked_mul);
+
+impl_op_storage!(BitAnd, bitand, |lhs, rhs| Some(lhs & rhs));
+impl_op_storage!(BitOr, bitor, |lhs, rhs| Some(lhs | rhs));
+impl_op_storage!(BitXor, bitxor, |lhs, rhs| Some(lhs ^ rhs));
 
 impl_op_int!(Add, add, (BigUint, BigUint) -> BigUint);
 impl_op_int!(Add, add, (BigUint, BigInt) -> BigInt);
@@ -668,6 +673,49 @@ impl_op_int!(Mul, mul, (BigUint, BigUint) -> BigUint);
 impl_op_int!(Mul, mul, (BigUint, BigInt) -> BigInt);
 impl_op_int!(Mul, mul, (BigInt, BigUint) -> BigInt);
 impl_op_int!(Mul, mul, (BigInt, BigInt) -> BigInt);
+
+impl_op_int!(BitAnd, bitand, (BigUint, BigUint) -> BigUint);
+impl_op_int!(BitAnd, bitand, (BigUint, BigInt) -> BigUint);
+impl_op_int!(BitAnd, bitand, (BigInt, BigUint) -> BigUint);
+impl_op_int!(BitAnd, bitand, (BigInt, BigInt) -> BigInt);
+
+impl_op_int!(BitOr, bitor, (BigUint, BigUint) -> BigUint);
+impl_op_int!(BitOr, bitor, (BigUint, BigInt) -> BigInt);
+impl_op_int!(BitOr, bitor, (BigInt, BigUint) -> BigInt);
+impl_op_int!(BitOr, bitor, (BigInt, BigInt) -> BigInt);
+
+impl_op_int!(BitXor, bitxor, (BigUint, BigUint) -> BigUint);
+impl_op_int!(BitXor, bitxor, (BigUint, BigInt) -> BigInt);
+impl_op_int!(BitXor, bitxor, (BigInt, BigUint) -> BigInt);
+impl_op_int!(BitXor, bitxor, (BigInt, BigInt) -> BigInt);
+
+impl std::ops::Not for &BigUint {
+    type Output = BigInt;
+    fn not(self) -> Self::Output {
+        !BigInt::from(self)
+    }
+}
+
+impl std::ops::Not for BigUint {
+    type Output = BigInt;
+    fn not(self) -> Self::Output {
+        !BigInt::from(self)
+    }
+}
+
+impl std::ops::Not for &BigInt {
+    type Output = BigInt;
+    fn not(self) -> Self::Output {
+        -self - 1
+    }
+}
+
+impl std::ops::Not for BigInt {
+    type Output = BigInt;
+    fn not(self) -> Self::Output {
+        !&self
+    }
+}
 
 impl<T: Into<BigUint>> std::ops::AddAssign<T> for BigUint {
     fn add_assign(&mut self, rhs: T) {

@@ -452,15 +452,41 @@ impl CodegenBlockContext<'_> {
                     let inner_eval = self.eval(indent, span, inner, stage_read)?;
                     Evaluated::Inline(format!("!({inner_eval})"))
                 }
-                IrExpressionLarge::BoolBinary(op, left, right) => {
-                    let op_str = match op {
-                        IrBoolBinaryOp::And => "&",
-                        IrBoolBinaryOp::Or => "|",
-                        IrBoolBinaryOp::Xor => "^",
-                    };
+                IrExpressionLarge::BoolBinaryScalar(op, left, right) => {
+                    let op_str = bitwise_op_str(*op);
                     let left_eval = self.eval(indent, span, left, stage_read)?;
                     let right_eval = self.eval(indent, span, right, stage_read)?;
                     Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+                }
+                IrExpressionLarge::BoolBinaryArray(op, left, right) => {
+                    let op_str = bitwise_op_str(*op);
+                    let left_eval = self.eval_to_temporary(indent, span, left, stage_read)?;
+                    let right_eval = self.eval_to_temporary(indent, span, right, stage_read)?;
+
+                    let result_ty = expr.ty(&self.module_info.large, &self.module_info.signals, self.variables);
+                    let result_ty_str = type_to_cpp(self.diags, span, &result_ty)?;
+                    let tmp_result = self.new_temporary();
+                    let tmp_i = self.new_temporary();
+
+                    swriteln!(self.f, "{indent}{result_ty_str} {tmp_result};");
+                    swriteln!(
+                        self.f,
+                        "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {tmp_result}.size(); {tmp_i}++) {{"
+                    );
+                    swriteln!(
+                        self.f,
+                        "{indent}{I}{tmp_result}[{tmp_i}] = {left_eval}[{tmp_i}] {op_str} {right_eval}[{tmp_i}];"
+                    );
+                    swriteln!(self.f, "{indent}}}");
+
+                    Evaluated::Temporary(tmp_result)
+                }
+                IrExpressionLarge::BoolFill(len, inner) => {
+                    let inner_eval = self.eval(indent, span, inner, stage_read)?;
+                    let tmp_result = self.new_temporary();
+                    swriteln!(self.f, "{indent}std::array<bool, {len}> {tmp_result};");
+                    swriteln!(self.f, "{indent}{tmp_result}.fill({inner_eval});");
+                    Evaluated::Temporary(tmp_result)
                 }
                 IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
                     // TODO types and even the power operator are wrong
@@ -1065,6 +1091,14 @@ impl CodegenBlockContext<'_> {
         let index = self.next_temporary_index;
         self.next_temporary_index += 1;
         Temporary(index)
+    }
+}
+
+fn bitwise_op_str(op: IrBoolBinaryOp) -> &'static str {
+    match op {
+        IrBoolBinaryOp::And => "&",
+        IrBoolBinaryOp::Or => "|",
+        IrBoolBinaryOp::Xor => "^",
     }
 }
 

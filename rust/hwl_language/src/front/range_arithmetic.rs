@@ -2,6 +2,7 @@
 //!
 //! Proofs of the validity of these range bounds can be found in `int_range_proofs.py`.
 
+use crate::mid::ir::IrBoolBinaryOp;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::range::{ClosedNonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
@@ -15,6 +16,15 @@ pub fn range_unary_neg(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<B
 
 pub fn multi_range_unary_neg(a: &ClosedNonEmptyMultiRange<BigInt>) -> ClosedNonEmptyMultiRange<BigInt> {
     wrap_multi_unary(a, range_unary_neg)
+}
+
+pub fn range_unary_bitwise_not(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<BigInt> {
+    let (a_min, a_max) = range_to_min_max(a);
+    range_from_min_max(!a_max, !a_min)
+}
+
+pub fn multi_range_unary_bitwise_not(a: &ClosedNonEmptyMultiRange<BigInt>) -> ClosedNonEmptyMultiRange<BigInt> {
+    wrap_multi_unary(a, range_unary_bitwise_not)
 }
 
 pub fn range_unary_abs(a: ClosedNonEmptyRange<&BigInt>) -> ClosedNonEmptyRange<BigInt> {
@@ -241,6 +251,91 @@ pub fn multi_range_binary_pow(
     }))
 }
 
+pub fn range_binary_bitwise(
+    op: IrBoolBinaryOp,
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> ClosedNonEmptyRange<BigInt> {
+    /// The same as the outer function, but for ranges with a constant sign.
+    fn range_binary_bitwise_same_sign(
+        op: IrBoolBinaryOp,
+        a: &(BigInt, BigInt),
+        b: &(BigInt, BigInt),
+    ) -> (BigInt, BigInt) {
+        match op {
+            IrBoolBinaryOp::And => (bitwise_and_min(a, b), bitwise_and_max(a, b)),
+            // `x | y == ~(~x & ~y)`
+            IrBoolBinaryOp::Or => min_max_not(&range_binary_bitwise_same_sign(
+                IrBoolBinaryOp::And,
+                &min_max_not(a),
+                &min_max_not(b),
+            )),
+            // `x ^ y == ~(x ^ ~y)`
+            IrBoolBinaryOp::Xor => (bitwise_xor_min(a, b), !bitwise_xor_min(a, &min_max_not(b))),
+        }
+    }
+
+    /// Split the given range into min/max slices where each slice has a constant sign.
+    fn sign_parts(a: ClosedNonEmptyRange<&BigInt>) -> impl Iterator<Item = (BigInt, BigInt)> + Clone {
+        let (a_min, a_max) = range_to_min_max(a);
+        let neg = a_min
+            .is_negative()
+            .then(|| (a_min.clone(), min(a_max.clone(), BigInt::NEG_ONE)));
+        let non_neg = (!a_max.is_negative()).then(|| (max(a_min.clone(), BigInt::ZERO), a_max));
+        chain(neg, non_neg)
+    }
+
+    /// Compute the min bound of the `&` operation.
+    fn bitwise_and_min(a: &(BigInt, BigInt), b: &(BigInt, BigInt)) -> BigInt {
+        let f = |(a_min, a_max): &(BigInt, BigInt), (b_min, _): &(BigInt, BigInt)| {
+            a_min & b_min & !smear(&(!a_min & !b_min & smear(&(a_min ^ a_max))))
+        };
+        min(f(a, b), f(b, a))
+    }
+
+    /// Compute the max bound of the `&` operation.
+    fn bitwise_and_max(a: &(BigInt, BigInt), b: &(BigInt, BigInt)) -> BigInt {
+        let f = |(a_min, a_max): &(BigInt, BigInt), (_, b_max): &(BigInt, BigInt)| {
+            b_max & (a_max | smear(&(a_max & !b_max & smear(&(a_min ^ a_max)))))
+        };
+        max(f(a, b), f(b, a))
+    }
+
+    /// Compute the min bound of the `^` operation.
+    fn bitwise_xor_min(a: &(BigInt, BigInt), b: &(BigInt, BigInt)) -> BigInt {
+        bitwise_and_min(a, &min_max_not(b)) | bitwise_and_min(&min_max_not(a), b)
+    }
+
+    /// Compute the min/max bounds of the `!` operation.
+    fn min_max_not((min, max): &(BigInt, BigInt)) -> (BigInt, BigInt) {
+        (!max, !min)
+    }
+
+    /// All bits at or below the highest set bit of the non-negative value `x`.
+    fn smear(x: &BigInt) -> BigInt {
+        let size_bits = BigUint::try_from(x)
+            .expect("smear requires a non-negative value")
+            .size_bits();
+        BigInt::from(BigUint::pow_2_to(&BigUint::from(size_bits))) - 1
+    }
+
+    // Split the ranges up into pieces with a constant sign, then compute the result, then join everything again.
+    let (r_min, r_max) = sign_parts(a)
+        .cartesian_product(sign_parts(b))
+        .map(|(a, b)| range_binary_bitwise_same_sign(op, &a, &b))
+        .reduce(|(min_0, max_0), (min_1, max_1)| (min(min_0, min_1), max(max_0, max_1)))
+        .unwrap();
+    range_from_min_max(r_min, r_max)
+}
+
+pub fn multi_range_binary_bitwise(
+    op: IrBoolBinaryOp,
+    a: &ClosedNonEmptyMultiRange<BigInt>,
+    b: &ClosedNonEmptyMultiRange<BigInt>,
+) -> ClosedNonEmptyMultiRange<BigInt> {
+    wrap_multi_binary(a, b, |a, b| range_binary_bitwise(op, a, b))
+}
+
 // multi-range versions just apply the single-range versions to each possible combination
 fn wrap_multi_unary<A: Ord, R: Ord + Clone>(
     a: &ClosedNonEmptyMultiRange<A>,
@@ -292,9 +387,10 @@ fn range_from_min_max(min: BigInt, max: BigInt) -> ClosedNonEmptyRange<BigInt> {
 #[cfg(test)]
 mod tests {
     use crate::front::range_arithmetic::{
-        range_binary_add, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow, range_binary_sub,
-        range_from_min_max, range_unary_abs, range_unary_neg,
+        range_binary_add, range_binary_bitwise, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow,
+        range_binary_sub, range_from_min_max, range_unary_abs, range_unary_bitwise_not, range_unary_neg,
     };
+    use crate::mid::ir::IrBoolBinaryOp;
     use crate::util::big_int::{BigInt, BigUint};
     use crate::util::exhaust::{Exhaust, exhaust};
     use crate::util::range::ClosedNonEmptyRange;
@@ -308,6 +404,11 @@ mod tests {
     #[test]
     fn test_abs() {
         check_unary(|a| Some(range_unary_abs(a)), |a| BigInt::from(a.abs()))
+    }
+
+    #[test]
+    fn test_bitwise_not() {
+        check_unary(|a| Some(range_unary_bitwise_not(a)), |a| !a)
     }
 
     #[test]
@@ -367,6 +468,30 @@ mod tests {
                 r.map(|r| (r, true))
             },
             |a, b| a.pow(&BigUint::try_from(b).unwrap()),
+        )
+    }
+
+    #[test]
+    fn test_bitwise_and() {
+        check_binary(
+            |a, b| Some((range_binary_bitwise(IrBoolBinaryOp::And, a, b), true)),
+            |a, b| a & b,
+        )
+    }
+
+    #[test]
+    fn test_bitwise_or() {
+        check_binary(
+            |a, b| Some((range_binary_bitwise(IrBoolBinaryOp::Or, a, b), true)),
+            |a, b| a | b,
+        )
+    }
+
+    #[test]
+    fn test_bitwise_xor() {
+        check_binary(
+            |a, b| Some((range_binary_bitwise(IrBoolBinaryOp::Xor, a, b), true)),
+            |a, b| a ^ b,
         )
     }
 
