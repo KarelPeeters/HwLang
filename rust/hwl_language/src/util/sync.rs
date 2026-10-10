@@ -6,7 +6,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use unwrap_match::unwrap_match;
 
 // TODO rename to ComputeOnceMap
@@ -252,10 +252,8 @@ impl<K: Debug, S: Debug> Debug for Dependency<K, S> {
 }
 
 pub struct ComputeOnceMap<K, V> {
-    inner: DashMap<K, Box<UnsafeCell<V>>>,
+    inner: DashMap<K, Box<OnceLock<V>>>,
 }
-
-unsafe impl<K: Send + Sync, V: Send + Sync> Sync for ComputeOnceMap<K, V> {}
 
 #[derive(Debug)]
 pub struct KeyAlreadyPresent;
@@ -266,31 +264,31 @@ impl<K: Eq + Hash, V> ComputeOnceMap<K, V> {
     }
 
     pub fn get(&self, k: &K) -> Option<&V> {
-        let ptr = self.inner.get(k)?.get();
-        Some(unsafe { &*ptr })
+        let ptr: *const OnceLock<V> = &**self.inner.get(k)?;
+        // Entries are boxed and never removed: releasing the shard lock preserves the pointee.
+        unsafe { &*ptr }.get()
     }
 
     pub fn set(&self, k: K, v: V) -> Result<&V, KeyAlreadyPresent> {
         match self.inner.entry(k) {
             Entry::Occupied(_) => Err(KeyAlreadyPresent),
             Entry::Vacant(entry) => {
-                let ptr = entry.insert(Box::new(UnsafeCell::new(v))).get();
-                Ok(unsafe { &*ptr })
+                let ptr: *const OnceLock<V> = &**entry.insert(Box::new(OnceLock::from(v)));
+                Ok(unsafe { &*ptr }.get().unwrap())
             }
         }
     }
 
-    pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V {
-        let ptr = match self.inner.entry(k) {
-            Entry::Occupied(entry) => entry.get().get(),
-            Entry::Vacant(entry) => {
-                let value = f(entry.key());
-                let boxed = Box::new(UnsafeCell::new(value));
-                let entry = entry.insert(boxed);
-                entry.get()
-            }
-        };
-        unsafe { &*ptr }
+    pub fn get_or_compute(&self, k: K, f: impl FnOnce(&K) -> V) -> &V
+    where
+        K: Clone,
+    {
+        let entry = self.inner.entry(k.clone()).or_insert_with(|| Box::new(OnceLock::new()));
+        let ptr: *const OnceLock<V> = &**entry;
+        drop(entry);
+        // Recursive computations can access another key in the same shard. Release the
+        // DashMap guard first; OnceLock still ensures one computation per key.
+        unsafe { &*ptr }.get_or_init(|| f(&k))
     }
 }
 
@@ -382,4 +380,47 @@ pub fn dashmap_shard_count(thread_count: NonZeroUsize) -> NonZeroUsize {
     // matches the default shard count of DashMap
     // TODO try tuning this
     NonZeroUsize::new((thread_count.get() * 4).next_power_of_two()).unwrap()
+}
+
+#[cfg(test)]
+mod compute_once_map_tests {
+    use super::ComputeOnceMap;
+    use std::hash::{Hash, Hasher};
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct SameShard(u32);
+
+    impl Hash for SameShard {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            0u32.hash(state);
+        }
+    }
+
+    #[test]
+    fn recursive_computation_in_same_shard() {
+        let map = ComputeOnceMap::new();
+        let value = map.get_or_compute(SameShard(0), |_| *map.get_or_compute(SameShard(1), |_| 41) + 1);
+        assert_eq!(*value, 42);
+        assert_eq!(*map.get_or_compute(SameShard(0), |_| panic!("computed twice")), 42);
+    }
+
+    #[test]
+    fn concurrent_computation_happens_once() {
+        let map = ComputeOnceMap::new();
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    assert_eq!(
+                        *map.get_or_compute(0, |_| {
+                            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            42
+                        }),
+                        42
+                    );
+                });
+            }
+        });
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 }
