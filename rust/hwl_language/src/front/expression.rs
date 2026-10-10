@@ -1819,6 +1819,7 @@ pub fn eval_binary_expression(
     let eval_binary_bool = |large, left, right, op| eval_binary_bool(refs, large, op_reason, left, right, op);
     let eval_binary_int_compare =
         |large, left, right, op| eval_binary_int_compare(refs, large, op_reason, left, right, op);
+    let eval_binary_eq = |large, left, right, eq| eval_binary_eq(refs, large, op_reason, op_span, left, right, eq);
     let eval_binary_bitwise =
         |large, left, right, op| eval_binary_bitwise(refs, large, op_reason, op_span, left, right, op);
 
@@ -2115,9 +2116,8 @@ pub fn eval_binary_expression(
         BinaryOp::BoolOr => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Or),
         BinaryOp::BoolXor => return eval_binary_bool(large, left, right, IrBoolBinaryOp::Xor),
         // (T, T)
-        // TODO expand eq/neq to bools/tuples/strings/structs/enums, for the latter only if the type is the same
-        BinaryOp::CmpEq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Eq),
-        BinaryOp::CmpNeq => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Neq),
+        BinaryOp::CmpEq => return eval_binary_eq(large, left, right, true),
+        BinaryOp::CmpNeq => return eval_binary_eq(large, left, right, false),
         BinaryOp::CmpLt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lt),
         BinaryOp::CmpLte => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Lte),
         BinaryOp::CmpGt => return eval_binary_int_compare(large, left, right, IrIntCompareOp::Gt),
@@ -2241,16 +2241,11 @@ fn eval_binary_bitwise(
         Int,
         BoolArray,
     }
-    let kind_of = |ty: &Type| {
-        if Type::Bool.contains_type(ty) {
-            Some(Kind::Bool)
-        } else if Type::Int(MultiRange::open()).contains_type(ty) {
-            Some(Kind::Int)
-        } else if Type::Array(Arc::new(Type::Bool), None).contains_type(ty) {
-            Some(Kind::BoolArray)
-        } else {
-            None
-        }
+    let kind_of = |ty: &Type| match ty {
+        Type::Bool => Some(Kind::Bool),
+        Type::Int(_) => Some(Kind::Int),
+        Type::Array(inner, _) if matches!(**inner, Type::Bool) => Some(Kind::BoolArray),
+        _ => None,
     };
 
     let left_ty = left.inner.ty();
@@ -2351,7 +2346,7 @@ fn check_bit_operand(
     value: Spanned<ValueWithImplications>,
 ) -> DiagResult<Spanned<BitOperand>> {
     let value_span = value.span;
-    let operand = if Type::Bool.contains_type(&value.inner.ty()) {
+    let operand = if matches!(value.inner.ty(), Type::Bool) {
         BitOperand::Scalar(check_type_is_bool(refs, op_reason, value)?.map_hardware(|v| v.value))
     } else {
         BitOperand::Array(check_type_is_bool_array(
@@ -2551,6 +2546,86 @@ fn build_unary_bool_gate(
             implications: value.implications.invert(),
         }),
     }
+}
+
+fn eval_binary_eq(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_reason: TypeContainsReason,
+    op_span: Span,
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
+    eq: bool,
+) -> DiagResult<ValueWithImplications> {
+    let left_ty = left.inner.ty();
+    let right_ty = right.inner.ty();
+
+    match (&left_ty, &right_ty) {
+        (Type::Bool, Type::Bool) => {
+            let left = check_type_is_bool(refs, op_reason, left)?;
+            let right = check_type_is_bool(refs, op_reason, right)?;
+
+            // implement using xor
+            let result_xor = eval_binary_bool_typed(large, IrBoolBinaryOp::Xor, left, right);
+            let result = match (eq, result_xor) {
+                (false, neq) => neq,
+                (true, MaybeCompile::Compile(neq)) => MaybeCompile::Compile(!neq),
+                (true, MaybeCompile::Hardware(neq)) => build_unary_bool_gate(large, neq, |b| !b),
+            };
+
+            let result = match result {
+                MaybeCompile::Compile(v) => Value::new_bool(v),
+                MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|_: TypeBool| HardwareType::Bool)),
+            };
+            return Ok(result);
+        }
+        (Type::Int(_), Type::Int(_)) => {
+            let op = if eq { IrIntCompareOp::Eq } else { IrIntCompareOp::Neq };
+            return eval_binary_int_compare(refs, large, op_reason, left, right, op);
+        }
+        _ => {
+            // fallthrough into error
+        }
+    }
+
+    // check operand types individually
+    let check_supported = |operand_span: Span, operand_ty: &Type| match operand_ty {
+        Type::Bool | Type::Int(_) => Ok(()),
+        _ => {
+            let diag = DiagnosticError::new(
+                "invalid operand type for equality operator",
+                operand_span,
+                format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
+            )
+            .add_info(op_span, "for operator here")
+            .add_footer_hint("equality operators support `bool` and `int`")
+            .report(refs.diags);
+            Err(diag)
+        }
+    };
+    let left_supported = check_supported(left.span, &left_ty);
+    let right_supported = check_supported(right.span, &right_ty);
+    left_supported?;
+    right_supported?;
+
+    // if we get here the only possible reason is that the types don't match
+    let shared = refs.shared;
+    let diag = DiagnosticError::new(
+        "mismatched operand types for equality operator",
+        op_span,
+        "for operator here",
+    )
+    .add_info(
+        left.span,
+        format!("left operand has type `{}`", left_ty.value_string(shared)),
+    )
+    .add_info(
+        right.span,
+        format!("right operand has type `{}`", right_ty.value_string(shared)),
+    )
+    .add_footer_hint("both operands of an equality operator must have the same type")
+    .report(refs.diags);
+    Err(diag)
 }
 
 fn eval_binary_int_compare(
