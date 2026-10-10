@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Any, Iterator, Literal
+from typing import Dict, List, Optional, Any, Iterator, Literal
 
 
 def format_file(source: str) -> str: ...
@@ -59,6 +59,21 @@ class Value:
     def __ne__(self, other: Any) -> bool: ...
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def __getattr__(self, name: str) -> Any: ...
+
+
+class StructValue(Value):
+    @property
+    def fields(self) -> Dict[str, Any]: ...
+
+
+class EnumValue(Value):
+    @property
+    def tag(self) -> str: ...
+
+    @property
+    def payload(self) -> Optional[Any]: ...
 
 
 class Range:

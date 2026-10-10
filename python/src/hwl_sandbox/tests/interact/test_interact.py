@@ -110,6 +110,12 @@ def test_interact_struct(tmp_dir: Path):
     assert not (a0 == "test")
     assert a0 != "test"
 
+    # check field access
+    assert isinstance(a0, hwl.StructValue)
+    assert a0.x == 4
+    assert a0.y is False
+    assert a0.fields == {"x": 4, "y": False}
+
     # check that we get normal python behavior for non-existing attributes
     with pytest.raises(AttributeError):
         _ = f(4, False).non_existing
@@ -139,6 +145,13 @@ def test_interact_enum():
     assert str(foo.Empty) == "Foo.Empty"
     assert str(foo.Data(0)) == "Foo.Data(0)"
     assert str(foo.Data(1)) == "Foo.Data(1)"
+
+    # check tag and payload access
+    assert isinstance(foo.Empty, hwl.EnumValue)
+    assert foo.Empty.tag == "Empty"
+    assert foo.Empty.payload is None
+    assert f(True, 3).tag == "Data"
+    assert f(True, 3).payload == 3
 
 
 def _verilated_port_test_module(tmp_dir: Path) -> hwl.VerilatedInstance:

@@ -1,4 +1,4 @@
-use crate::{Compile, Module, Range, Value};
+use crate::{Compile, EnumValue, Module, Range, StructValue, Value};
 use hwl_language::front::function::EvaluatedArgs;
 use hwl_language::front::implication::ValueWithImplications;
 use hwl_language::front::types::Type as RustType;
@@ -60,9 +60,23 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
                     .try_collect()?;
                 PyTuple::new(py, items)?.into_py_any(py)
             }
-            CompileCompoundValue::Struct(_) | CompileCompoundValue::Enum(_) | CompileCompoundValue::BoundMethod(_) => {
-                fallback()
+            CompileCompoundValue::Struct(x) => {
+                let init = PyClassInitializer::from(Value {
+                    compile: state.clone_ref(py),
+                    value: RustValue::Compound(value.clone()),
+                })
+                .add_subclass(StructValue { value: x.clone() });
+                Py::new(py, init).map(Py::into_any)
             }
+            CompileCompoundValue::Enum(x) => {
+                let init = PyClassInitializer::from(Value {
+                    compile: state.clone_ref(py),
+                    value: RustValue::Compound(value.clone()),
+                })
+                .add_subclass(EnumValue { value: x.clone() });
+                Py::new(py, init).map(Py::into_any)
+            }
+            CompileCompoundValue::BoundMethod(_) => fallback(),
         },
         CompileValue::Hardware(n) => n.unreachable(),
     }

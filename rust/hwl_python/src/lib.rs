@@ -16,7 +16,10 @@ use hwl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintH
 use hwl_language::front::scope::ScopedEntry;
 use hwl_language::front::steps::{SpannedStep, TargetStepCompile, TargetSteps};
 use hwl_language::front::types::Type as RustType;
-use hwl_language::front::value::{CompileValue as RustCompileValue, NotCompile, Value as RustValue};
+use hwl_language::front::value::{
+    CompileValue as RustCompileValue, EnumValue as RustEnumValue, NotCompile, StructValue as RustStructValue,
+    Value as RustValue,
+};
 use hwl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
 use hwl_language::syntax::collect::{
     add_source_files_to_tree, add_std_sources, collect_source_files_from_tree, collect_source_from_manifest,
@@ -33,12 +36,12 @@ use hwl_language::util::pool::ThreadPool;
 use hwl_language::util::range::Range as RustRange;
 use hwl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
 use hwl_util::io::IoErrorExt;
-use itertools::{Either, Itertools, enumerate};
+use itertools::{Either, Itertools, enumerate, zip_eq};
 use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
 use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
-    Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyResult, Python, create_exception, intern, pyclass,
-    pyfunction, pymethods, pymodule, wrap_pyfunction,
+    Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyRef, PyResult, Python, create_exception, intern,
+    pyclass, pyfunction, pymethods, pymodule, wrap_pyfunction,
 };
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -102,6 +105,17 @@ struct Range {
 #[pyclass(extends=Value)]
 struct Module {
     module: ElaboratedModule,
+}
+
+// Struct and enum values store a copy of their unwrapped value for convenient access.
+#[pyclass(extends=Value)]
+struct StructValue {
+    value: RustStructValue<RustCompileValue>,
+}
+
+#[pyclass(extends=Value)]
+struct EnumValue {
+    value: RustEnumValue<Box<RustCompileValue>>,
 }
 
 #[pyclass]
@@ -217,6 +231,8 @@ fn hwl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Value>()?;
     m.add_class::<Range>()?;
     m.add_class::<Module>()?;
+    m.add_class::<StructValue>()?;
+    m.add_class::<EnumValue>()?;
     m.add_class::<ModuleVerilog>()?;
     m.add_class::<ModuleVerilated>()?;
     m.add_class::<VerilatedInstance>()?;
@@ -764,6 +780,57 @@ impl Value {
         compile.finish_collect_prints(py, print_handler);
 
         compile_value_to_py(py, &self.compile, &result)
+    }
+}
+
+#[pymethods]
+impl StructValue {
+    #[getter]
+    fn fields(slf: PyRef<Self>, py: Python) -> PyResult<Py<PyDict>> {
+        let value = &slf.value;
+        let base = slf.as_super();
+
+        let names = {
+            let compile = base.compile.borrow(py);
+            let shared = &compile.shared;
+            let info = shared.elaboration_arenas.struct_info(value.ty);
+            info.fields
+                .keys()
+                .map(|id| id.str(&shared.interner).to_owned())
+                .collect_vec()
+        };
+
+        let result = PyDict::new(py);
+        for (name, field) in zip_eq(names, &value.fields) {
+            result.set_item(name, compile_value_to_py(py, &base.compile, field)?)?;
+        }
+        Ok(result.unbind())
+    }
+}
+
+#[pymethods]
+impl EnumValue {
+    #[getter]
+    fn tag(slf: PyRef<Self>, py: Python) -> PyResult<String> {
+        let value = &slf.value;
+        let compile = slf.as_super().compile.borrow(py);
+        let shared = &compile.shared;
+        let info = shared.elaboration_arenas.enum_info(value.ty);
+        let (&id, _) = info
+            .variants
+            .get_index(value.variant)
+            .ok_or_else(|| PyException::new_err("internal error: enum variant out of range"))?;
+        Ok(id.str(&shared.interner).to_owned())
+    }
+
+    #[getter]
+    fn payload(slf: PyRef<Self>, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        let compile = &slf.as_super().compile;
+        slf.value
+            .payload
+            .as_ref()
+            .map(|payload| compile_value_to_py(py, compile, payload))
+            .transpose()
     }
 }
 
