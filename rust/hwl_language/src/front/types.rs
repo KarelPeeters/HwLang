@@ -343,16 +343,12 @@ impl HardwareType {
                     return false;
                 }
 
-                // TODO rethink this, this makes enum comparisons trickier,
-                //   it would be nicer to enforce zero bits for padding.
-                // We don't need all variants to be the same size:
-                //   the bits they don't cover will never be used, since the tag should be checked first.
-                // Each variant being valid individually is enough.
-                info_hw
-                    .payload_types
-                    .iter()
-                    .filter_map(Option::as_ref)
-                    .all(|(ty, _)| ty.every_bit_pattern_is_valid(refs))
+                // Padding bits must be zero, so there can't be any padding.
+                let max_payload_size = info_hw.ty_ir.max_payload_size_bits();
+                info_hw.payload_types.iter().all(|payload| match payload {
+                    None => max_payload_size == BigUint::ZERO,
+                    Some((ty, ty_ir)) => ty_ir.size_bits() == max_payload_size && ty.every_bit_pattern_is_valid(refs),
+                })
             }
         }
     }

@@ -2,8 +2,8 @@ use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagResult;
 use crate::front::domain::ValueDomain;
 use crate::front::flow::ValueVersion;
-use crate::front::types::{HardwareType, Type, Typed};
-use crate::front::value::{HardwareValue, MixedCompoundValue, SimpleCompileValue, Value, ValueCommon};
+use crate::front::types::{HardwareType, Type, TypeBool, Typed};
+use crate::front::value::{HardwareValue, MaybeCompile, MixedCompoundValue, SimpleCompileValue, Value, ValueCommon};
 use crate::mid::ir::{IrExpression, IrLargeArena};
 use crate::syntax::pos::Span;
 use crate::util::big_int::BigInt;
@@ -165,6 +165,23 @@ impl<T, E, V> HardwareValueWithImplications<T, E, V> {
             value: self.value,
             version: f(self.version),
             implications: self.implications,
+        }
+    }
+}
+
+impl<E> From<HardwareValueWithImplications<TypeBool, E>> for HardwareValueWithImplications<HardwareType, E> {
+    fn from(value: HardwareValueWithImplications<TypeBool, E>) -> Self {
+        value.map_type(|_: TypeBool| HardwareType::Bool)
+    }
+}
+
+impl<C, E> From<MaybeCompile<bool, HardwareValueWithImplications<TypeBool, E>>>
+    for ValueWithImplications<SimpleCompileValue, C, HardwareType, E>
+{
+    fn from(value: MaybeCompile<bool, HardwareValueWithImplications<TypeBool, E>>) -> Self {
+        match value {
+            MaybeCompile::Compile(v) => Value::Simple(SimpleCompileValue::Bool(v)),
+            MaybeCompile::Hardware(v) => Value::Hardware(v.into()),
         }
     }
 }

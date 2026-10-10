@@ -54,6 +54,8 @@ pub struct IrStructType {
     pub fields: IndexMap<String, IrType>,
 }
 
+/// Enums are represented as the tag, followed by the payload of the active variant, followed by padding.
+/// The padding bits are always zero, so equal values always have equal bit representations.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct IrEnumType {
     pub ty: HardwareChecked<ElaboratedEnum>,
@@ -337,8 +339,11 @@ pub enum IrExpressionLarge {
     // actual expressions
     BoolNot(IrExpression),
     BoolFill(BigUint, IrExpression),
+    BoolReduce(IrBoolBinaryOp, IrExpression),
     BoolBinaryScalar(IrBoolBinaryOp, IrExpression, IrExpression),
     BoolBinaryArray(IrBoolBinaryOp, IrExpression, IrExpression),
+    BoolCompareScalar(IrBoolCompareOp, IrExpression, IrExpression),
+    BoolCompareArray(IrBoolCompareOp, IrExpression, IrExpression),
 
     IntArithmetic(
         IrIntArithmeticOp,
@@ -375,14 +380,13 @@ pub enum IrExpressionLarge {
     },
 
     // casting
-    // to-bits can never fail
+    // To-bits can never fail.
     ToBits(IrType, IrExpression),
-    // from-bits can fail (eg. for an int, if the resulting value if out of range),
-    //   if so the result is undefined
+    // If the bit pattern is not valid for the given type, the result is fully undefined.
     FromBits(IrType, IrExpression),
-    // expand can never fail, this is just a re-encoding
+    // Expand can never fail, this is just a re-encoding.
     ExpandIntRange(ClosedNonEmptyRange<BigInt>, IrExpression),
-    // constrain can fail, if it fails the resulting value is undefined
+    // Constrain can fail, if it fails the resulting value is undefined.
     ConstrainIntRange(ClosedNonEmptyRange<BigInt>, IrExpression),
 }
 
@@ -419,6 +423,12 @@ pub enum IrIntArithmeticOp {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IrBoolCompareOp {
+    Eq,
+    Neq,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum IrIntCompareOp {
     Eq,
     Neq,
@@ -428,12 +438,29 @@ pub enum IrIntCompareOp {
     Gte,
 }
 
+impl IrBoolCompareOp {
+    pub fn eval(&self, left: bool, right: bool) -> bool {
+        match self {
+            IrBoolCompareOp::Eq => left == right,
+            IrBoolCompareOp::Neq => left != right,
+        }
+    }
+}
+
 impl IrBoolBinaryOp {
     pub fn eval_bool(&self, left: bool, right: bool) -> bool {
         match self {
             IrBoolBinaryOp::And => left && right,
             IrBoolBinaryOp::Or => left || right,
             IrBoolBinaryOp::Xor => left ^ right,
+        }
+    }
+
+    /// The value `i` for which `op(i, x) == x` for all `x`.
+    pub fn identity_bool(&self) -> bool {
+        match self {
+            IrBoolBinaryOp::And => true,
+            IrBoolBinaryOp::Or | IrBoolBinaryOp::Xor => false,
         }
     }
 
@@ -610,6 +637,9 @@ impl IrExpression {
                 IrExpressionLarge::BoolBinaryScalar(_, _, _) => IrType::Bool,
                 IrExpressionLarge::BoolBinaryArray(_, left, _) => left.ty(large, signals, variables),
                 IrExpressionLarge::BoolFill(len, _) => IrType::Array(Box::new(IrType::Bool), len.clone()),
+                IrExpressionLarge::BoolReduce(_, _) => IrType::Bool,
+                IrExpressionLarge::BoolCompareScalar(_, _, _) => IrType::Bool,
+                IrExpressionLarge::BoolCompareArray(_, _, _) => IrType::Bool,
                 IrExpressionLarge::IntArithmetic(_, ty, _, _) => IrType::Int(ty.clone()),
                 IrExpressionLarge::IntCompare(_, _, _) => IrType::Bool,
 
@@ -669,6 +699,12 @@ impl IrExpression {
                     f(right);
                 }
                 IrExpressionLarge::BoolFill(_len, x) => f(x),
+                IrExpressionLarge::BoolReduce(_op, x) => f(x),
+                IrExpressionLarge::BoolCompareScalar(_op, left, right)
+                | IrExpressionLarge::BoolCompareArray(_op, left, right) => {
+                    f(left);
+                    f(right);
+                }
                 IrExpressionLarge::IntArithmetic(_op, _ty, left, right) => {
                     f(left);
                     f(right);
@@ -791,6 +827,15 @@ impl IrExpression {
                 IrExpressionLarge::BoolFill(len, inner) => {
                     let len = len.clone();
                     build_unary!(|inner| large.push_expr(IrExpressionLarge::BoolFill(len, inner)))
+                }
+                &IrExpressionLarge::BoolReduce(op, ref inner) => {
+                    build_unary!(|inner| large.push_expr(IrExpressionLarge::BoolReduce(op, inner)))
+                }
+                &IrExpressionLarge::BoolCompareScalar(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolCompareScalar(op, left, right)))
+                }
+                &IrExpressionLarge::BoolCompareArray(op, ref left, ref right) => {
+                    build_binary!(|left, right| large.push_expr(IrExpressionLarge::BoolCompareArray(op, left, right)))
                 }
                 &IrExpressionLarge::IntArithmetic(op, ref ty, ref left, ref right) => {
                     build_binary!(|left, right| large.push_expr(IrExpressionLarge::IntArithmetic(

@@ -2,12 +2,12 @@ use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo, IrModuleInternalInstance,
-    IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals, IrStatement,
-    IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariable, IrVariableInfo, IrVariables, IrWire,
-    IrWireInfo,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrBoolCompareOp,
+    IrClockedProcess, IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement,
+    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo,
+    IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals,
+    IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariable, IrVariableInfo, IrVariables,
+    IrWire, IrWireInfo,
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::pos::Span;
@@ -488,6 +488,33 @@ impl CodegenBlockContext<'_> {
                     swriteln!(self.f, "{indent}{tmp_result}.fill({inner_eval});");
                     Evaluated::Temporary(tmp_result)
                 }
+                IrExpressionLarge::BoolCompareScalar(op, left, right)
+                | IrExpressionLarge::BoolCompareArray(op, left, right) => {
+                    // std::array also supports comparison operators
+                    let op_str = compare_op_str(*op);
+                    let left_eval = self.eval(indent, span, left, stage_read)?;
+                    let right_eval = self.eval(indent, span, right, stage_read)?;
+                    Evaluated::Inline(format!("({left_eval} {op_str} {right_eval})"))
+                }
+                IrExpressionLarge::BoolReduce(op, inner) => {
+                    let op_str = bitwise_op_str(*op);
+                    let inner_eval = self.eval_to_temporary(indent, span, inner, stage_read)?;
+                    let tmp_result = self.new_temporary();
+                    let tmp_i = self.new_temporary();
+
+                    swriteln!(self.f, "{indent}bool {tmp_result} = {};", op.identity_bool());
+                    swriteln!(
+                        self.f,
+                        "{indent}for (std::size_t {tmp_i} = 0; {tmp_i} < {inner_eval}.size(); {tmp_i}++) {{"
+                    );
+                    swriteln!(
+                        self.f,
+                        "{indent}{I}{tmp_result} = {tmp_result} {op_str} {inner_eval}[{tmp_i}];"
+                    );
+                    swriteln!(self.f, "{indent}}}");
+
+                    Evaluated::Temporary(tmp_result)
+                }
                 IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
                     // TODO types and even the power operator are wrong
                     let op_str = match op {
@@ -672,11 +699,12 @@ impl CodegenBlockContext<'_> {
                 }
 
                 IrExpressionLarge::ToBits(ty, value) => {
-                    let value = self.eval_to_temporary(indent, span, value, Stage::Next)?;
+                    let value = self.eval_to_temporary(indent, span, value, stage_read)?;
 
                     let size_bits = ty.size_bits();
                     let tmp_result = self.new_temporary();
-                    swriteln!(self.f, "{indent}std::array<bool, {size_bits}> {tmp_result};");
+                    // value-initialize to zero, this ensures that enum padding bits are zero
+                    swriteln!(self.f, "{indent}std::array<bool, {size_bits}> {tmp_result}{{}};");
 
                     self.impl_to_bits(indent, ty, tmp_result, "0", &value.to_string())?;
 
@@ -810,7 +838,7 @@ impl CodegenBlockContext<'_> {
                 }
                 swriteln!(self.f, "{indent}}}");
 
-                // padding already defaults to zero, so no need to clear those extra bits
+                // padding was already initialized to zero by the caller
             }
         }
 
@@ -1091,6 +1119,13 @@ impl CodegenBlockContext<'_> {
         let index = self.next_temporary_index;
         self.next_temporary_index += 1;
         Temporary(index)
+    }
+}
+
+fn compare_op_str(op: IrBoolCompareOp) -> &'static str {
+    match op {
+        IrBoolCompareOp::Eq => "==",
+        IrBoolCompareOp::Neq => "!=",
     }
 }
 

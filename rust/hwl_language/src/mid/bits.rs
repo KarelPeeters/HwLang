@@ -183,11 +183,15 @@ impl IrType {
                     None => None,
                 };
 
-                // padding
+                // padding: check that there are enough padding bits and that they are all zero
                 let payload_size = payload_ty.as_ref().map_or(BigUint::ZERO, IrType::size_bits);
                 let padding_size = info.max_payload_size_bits() - payload_size;
+                let mut padding_zero = true;
                 for _ in 0..usize::try_from(padding_size).map_err(|_| Either::Right(FromBitsWrongLength))? {
-                    bits.next().ok_or(Either::Right(FromBitsWrongLength))?;
+                    padding_zero &= !bits.next().ok_or(Either::Right(FromBitsWrongLength))?;
+                }
+                if !padding_zero {
+                    return Err(Either::Left(FromBitsInvalidValue));
                 }
 
                 Ok(CompileValue::Compound(CompileCompoundValue::Enum(EnumValue {

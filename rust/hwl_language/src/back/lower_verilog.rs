@@ -3,12 +3,12 @@ use crate::front::range_arithmetic::{range_binary_add, range_binary_sub};
 use crate::front::signal::Polarized;
 use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrClockedProcess,
-    IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement,
-    IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild, IrModuleExternalInstance,
-    IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal,
-    IrSignalOrVariable, IrSignals, IrStatement, IrString, IrStringSubstitution, IrType, IrVariable, IrVariableInfo,
-    IrVariables, IrWire, IrWireInfo, ValueAccess,
+    IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrBoolCompareOp,
+    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement,
+    IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrLargeArena, IrModule, IrModuleChild,
+    IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo,
+    IrSignal, IrSignalOrVariable, IrSignals, IrStatement, IrString, IrStringSubstitution, IrType, IrVariable,
+    IrVariableInfo, IrVariables, IrWire, IrWireInfo, ValueAccess,
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::ast::{PortDirection, StringPiece};
@@ -1395,6 +1395,35 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                         let inner = self.lower_expression_non_zero_width(span, inner, "boolean")?;
                         Evaluated::String(format!("{{{len}{{{inner}}}}}"))
                     }
+                    IrExpressionLarge::BoolReduce(op, inner) => match self.lower_expression(span, inner)? {
+                        Ok(inner) => Evaluated::String(format!("({}{inner})", bitwise_op_str(*op))),
+                        Err(ZeroWidth) => Evaluated::String(format!("1'b{}", u8::from(op.identity_bool()))),
+                    },
+                    IrExpressionLarge::BoolCompareScalar(op, left, right) => {
+                        let op_str = compare_op_str(*op);
+                        let left = self.lower_expression_non_zero_width(span, left, "boolean")?;
+                        let right = self.lower_expression_non_zero_width(span, right, "boolean")?;
+                        Evaluated::String(format!("({left} {op_str} {right})"))
+                    }
+                    IrExpressionLarge::BoolCompareArray(op, left, right) => {
+                        // both operands have the same type, so they are either both zero-width or neither is
+                        let left = self.lower_expression(span, left)?;
+                        let right = self.lower_expression(span, right)?;
+                        match (left, right) {
+                            (Ok(left), Ok(right)) => {
+                                Evaluated::String(format!("({left} {} {right})", compare_op_str(*op)))
+                            }
+                            (Err(ZeroWidth), Err(ZeroWidth)) => {
+                                // zero-width arrays are always equal
+                                Evaluated::String(format!("1'b{}", u8::from(op.eval(true, true))))
+                            }
+                            _ => {
+                                return Err(self
+                                    .diags
+                                    .report_error_internal(span, "bool array comparison width mismatch"));
+                            }
+                        }
+                    }
                     &IrExpressionLarge::IntArithmetic(op, ref result_range, ref left, ref right) => {
                         let result_range = NonZeroWidthRange::new(result_range.clone())
                             .expect("already checked for zero-width earlier");
@@ -1461,11 +1490,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                             }
                         }
 
-                        // padding
+                        // padding, which is always zero
                         let payload_size = ty.variants[variant].as_ref().map_or(BigUint::ZERO, |v| v.size_bits());
                         let delta = ty.max_payload_size_bits() - payload_size;
                         if delta > BigInt::ZERO {
-                            // TODO this could be X? Or will we use the convention that padding needs to be zero?
                             elements.push(Evaluated::String(format!("{}'b0", delta)));
                         }
 
@@ -2334,6 +2362,13 @@ impl MaybeBool {
             }
             (MaybeBool::Runtime(a), MaybeBool::Runtime(b)) => MaybeBool::Runtime(format!("({} && {})", a, b)),
         }
+    }
+}
+
+fn compare_op_str(op: IrBoolCompareOp) -> &'static str {
+    match op {
+        IrBoolCompareOp::Eq => "==",
+        IrBoolCompareOp::Neq => "!=",
     }
 }
 

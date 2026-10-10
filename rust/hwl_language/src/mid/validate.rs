@@ -419,6 +419,21 @@ impl IrExpression {
                 IrExpressionLarge::BoolFill(_len, inner) => {
                     check_type_is_bool(diags, span, &inner.ty(large, signals, variables))?;
                 }
+                IrExpressionLarge::BoolReduce(_op, inner) => {
+                    let (inner_ty, _len) = check_type_is_array(diags, span, inner.ty(large, signals, variables))?;
+                    check_type_is_bool(diags, span, &inner_ty)?;
+                }
+                IrExpressionLarge::BoolCompareScalar(_op, left, right) => {
+                    check_type_is_bool(diags, span, &left.ty(large, signals, variables))?;
+                    check_type_is_bool(diags, span, &right.ty(large, signals, variables))?;
+                }
+                IrExpressionLarge::BoolCompareArray(_op, left, right) => {
+                    let left_ty = left.ty(large, signals, variables);
+                    let right_ty = right.ty(large, signals, variables);
+                    check_type_match(diags, span, &left_ty, &right_ty)?;
+                    let (inner_ty, _len) = check_type_is_array(diags, span, left_ty)?;
+                    check_type_is_bool(diags, span, &inner_ty)?;
+                }
                 IrExpressionLarge::IntArithmetic(_op, _range, left, right) => {
                     check_type_is_int(diags, span, &left.ty(large, signals, variables))?;
                     check_type_is_int(diags, span, &right.ty(large, signals, variables))?;

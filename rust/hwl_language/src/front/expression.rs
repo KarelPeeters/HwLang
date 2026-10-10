@@ -15,12 +15,13 @@ use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable}
 use crate::front::steps::{SpannedStep, TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
-    CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile, MixedCompoundValue,
-    NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value, ValueCommon,
+    BoundMethod, CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile,
+    MixedCompoundValue, NotCompile, RangeValue, ReferenceInner, ReferenceWrapper, SimpleCompileValue, Value,
+    ValueCommon,
 };
 use crate::mid::ir::{
-    IrArrayLiteralElement, IrBoolBinaryOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp, IrIntCompareOp,
-    IrLargeArena, IrType,
+    IrArrayLiteralElement, IrBoolBinaryOp, IrBoolCompareOp, IrExpression, IrExpressionLarge, IrIntArithmeticOp,
+    IrIntCompareOp, IrLargeArena, IrType,
 };
 use crate::syntax::ast::{
     Arg, ArrayComprehension, ArrayLiteralElement, BinaryOp, BlockExpression, DomainKind, DotIndexKind, Expression,
@@ -47,7 +48,7 @@ use crate::util::intern::Id;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
-use itertools::Either;
+use itertools::{Either, zip_eq};
 use std::sync::Arc;
 use unwrap_match::unwrap_match;
 
@@ -1805,24 +1806,28 @@ pub fn eval_binary_expression(
     let diags = refs.diags;
     let elab = &refs.shared.elaboration_arenas;
 
+    // extract spans
     let op_reason = TypeContainsReason::Operator(op.span);
     let op_span = op.span;
-
     let left_span = left.span;
     let right_span = right.span;
 
+    // common utility functions
     let check_both_int = |left, right| {
         let left = check_type_is_int(refs, op_reason, left);
         let right = check_type_is_int(refs, op_reason, right);
         Ok((left?, right?))
     };
+
     let eval_binary_bool = |large, left, right, op| eval_binary_bool(refs, large, op_reason, left, right, op);
-    let eval_binary_int_compare =
-        |large, left, right, op| eval_binary_int_compare(refs, large, op_reason, left, right, op);
+    let eval_binary_int_compare = |large, left, right, op| {
+        eval_binary_int_compare(refs, large, op_reason, left, right, op).map(ValueWithImplications::from)
+    };
     let eval_binary_eq = |large, left, right, eq| eval_binary_eq(refs, large, op_reason, op_span, left, right, eq);
     let eval_binary_bitwise =
         |large, left, right, op| eval_binary_bitwise(refs, large, op_reason, op_span, left, right, op);
 
+    // handle operation
     let result_simple: Value<_> = match op.inner {
         // (int, int)
         BinaryOp::Add => {
@@ -2149,18 +2154,10 @@ fn eval_unary_not(
         Type::Bool => {
             let operand_bool = check_type_is_bool(refs, op_reason, operand)?;
             let result = match operand_bool {
-                MaybeCompile::Compile(c) => ValueWithImplications::new_bool(!c),
-                MaybeCompile::Hardware(v) => ValueWithImplications::Hardware(HardwareValueWithImplications {
-                    value: HardwareValue {
-                        ty: HardwareType::Bool,
-                        domain: v.value.domain,
-                        expr: large.push_expr(IrExpressionLarge::BoolNot(v.value.expr)),
-                    },
-                    version: None,
-                    implications: v.implications.invert(),
-                }),
+                MaybeCompile::Compile(c) => MaybeCompile::Compile(!c),
+                MaybeCompile::Hardware(v) => build_unary_bool_gate(large, v, |b| !b),
             };
-            return Ok(result);
+            return Ok(result.into());
         }
         Type::Int(_) => {
             let operand_int = check_type_is_int(refs, op_reason, operand.map_inner(|v| v.into_value()))?;
@@ -2464,11 +2461,7 @@ fn eval_binary_bool(
     let left = left?;
     let right = right?;
 
-    let result = match eval_binary_bool_typed(large, op, left, right) {
-        MaybeCompile::Compile(v) => Value::new_bool(v),
-        MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|_: TypeBool| HardwareType::Bool)),
-    };
-    Ok(result)
+    Ok(eval_binary_bool_typed(large, op, left, right).into())
 }
 
 pub fn eval_binary_bool_typed(
@@ -2560,22 +2553,126 @@ fn eval_binary_eq(
     let left_ty = left.inner.ty();
     let right_ty = right.inner.ty();
 
-    match (&left_ty, &right_ty) {
+    // check that both operand types are individually valid
+    let mut operands_valid = Ok(());
+    for (operand_span, operand_ty) in [(left.span, &left_ty), (right.span, &right_ty)] {
+        if !valid_type_for_eq(refs, operand_ty) {
+            let diag = DiagnosticError::new(
+                "invalid operand type for equality operator",
+                operand_span,
+                format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
+            )
+            .add_info(op_span, "for operator here")
+            .report(refs.diags);
+            operands_valid = Err(diag);
+        }
+    }
+    operands_valid?;
+
+    // check that the common type is still valid
+    let common_ty = left_ty.union(&right_ty);
+    if !valid_type_for_eq(refs, &common_ty) {
+        let shared = refs.shared;
+        let diag = DiagnosticError::new(
+            "mismatched operand types for equality operator",
+            op_span,
+            "for operator here",
+        )
+        .add_info(
+            left.span,
+            format!("left operand has type `{}`", left_ty.value_string(shared)),
+        )
+        .add_info(
+            right.span,
+            format!("right operand has type `{}`", right_ty.value_string(shared)),
+        )
+        .add_footer_hint("both operands of an equality operator must have compatible types")
+        .report(refs.diags);
+        return Err(diag);
+    }
+
+    // recursively compare the values
+    let result = eval_binary_eq_recurse(refs, large, op_reason, op_span, left, right, eq)?;
+    Ok(result.into())
+}
+
+/// Whether values of the given type can be compared for equality.
+fn valid_type_for_eq(refs: CompileRefs, ty: &Type) -> bool {
+    let elab = &refs.shared.elaboration_arenas;
+    match ty {
+        // basic types are valid
+        Type::Type
+        | Type::Bool
+        | Type::String
+        | Type::Int(_)
+        | Type::Range
+        | Type::Function
+        | Type::Module
+        | Type::Interface
+        | Type::InterfaceView => true,
+
+        // this comes up for empty arrays and for values that are undefined after merging flows, allow it
+        Type::Undefined => true,
+
+        // these could maybe be compared but are sketchy, so don't allow them for now
+        Type::Any | Type::Ref(_) | Type::RefInterface(_) => false,
+
+        // compound types are valid iff their subtypes are
+        Type::Array(inner, len) => len.is_some() && valid_type_for_eq(refs, inner),
+        Type::Tuple(inner) => inner
+            .as_ref()
+            .is_some_and(|inner| inner.iter().all(|ty| valid_type_for_eq(refs, ty))),
+        &Type::Struct(ty_struct) => elab
+            .struct_info(ty_struct)
+            .fields
+            .values()
+            .all(|(_, field_ty)| valid_type_for_eq(refs, &field_ty.inner)),
+        &Type::Enum(ty_enum) => elab.enum_info(ty_enum).variants.values().all(|variant| {
+            variant
+                .payload_ty
+                .as_ref()
+                .is_none_or(|payload_ty| valid_type_for_eq(refs, &payload_ty.inner))
+        }),
+    }
+}
+
+/// Check whether two values with valid and matching types are equal (`eq = true`) or not equal (`eq = false`).
+///
+/// Compile-time values are compared at compile time, compound values are compared recursively
+///   and the remaining values are converted to a common hardware type and compared in hardware.
+fn eval_binary_eq_recurse(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_reason: TypeContainsReason,
+    op_span: Span,
+    left: Spanned<ValueWithImplications>,
+    right: Spanned<ValueWithImplications>,
+    eq: bool,
+) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
+    // special cases for bool and int to track implications
+    match (&left.inner.ty(), &right.inner.ty()) {
         (Type::Bool, Type::Bool) => {
             let left = check_type_is_bool(refs, op_reason, left)?;
             let right = check_type_is_bool(refs, op_reason, right)?;
 
-            // implement using xor
-            let result_xor = eval_binary_bool_typed(large, IrBoolBinaryOp::Xor, left, right);
-            let result = match (eq, result_xor) {
-                (false, neq) => neq,
-                (true, MaybeCompile::Compile(neq)) => MaybeCompile::Compile(!neq),
-                (true, MaybeCompile::Hardware(neq)) => build_unary_bool_gate(large, neq, |b| !b),
-            };
-
-            let result = match result {
-                MaybeCompile::Compile(v) => Value::new_bool(v),
-                MaybeCompile::Hardware(v) => Value::Hardware(v.map_type(|_: TypeBool| HardwareType::Bool)),
+            let result = match (left, right) {
+                (MaybeCompile::Compile(left), MaybeCompile::Compile(right)) => {
+                    MaybeCompile::Compile((left == right) == eq)
+                }
+                (MaybeCompile::Compile(c), MaybeCompile::Hardware(v))
+                | (MaybeCompile::Hardware(v), MaybeCompile::Compile(c)) => {
+                    build_unary_bool_gate(large, v, |b| (b == c) == eq)
+                }
+                (MaybeCompile::Hardware(left), MaybeCompile::Hardware(right)) => {
+                    let op = if eq { IrBoolCompareOp::Eq } else { IrBoolCompareOp::Neq };
+                    let expr = IrExpressionLarge::BoolCompareScalar(op, left.value.expr, right.value.expr);
+                    let value = HardwareValue {
+                        ty: TypeBool,
+                        domain: left.value.domain.join(right.value.domain),
+                        expr: large.push_expr(expr),
+                    };
+                    MaybeCompile::Hardware(HardwareValueWithImplications::simple(value))
+                }
             };
             return Ok(result);
         }
@@ -2584,48 +2681,224 @@ fn eval_binary_eq(
             return eval_binary_int_compare(refs, large, op_reason, left, right, op);
         }
         _ => {
-            // fallthrough into error
+            // fallthrough into general comparison
         }
     }
 
-    // check operand types individually
-    let check_supported = |operand_span: Span, operand_ty: &Type| match operand_ty {
-        Type::Bool | Type::Int(_) => Ok(()),
-        _ => {
-            let diag = DiagnosticError::new(
-                "invalid operand type for equality operator",
-                operand_span,
-                format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
-            )
-            .add_info(op_span, "for operator here")
-            .add_footer_hint("equality operators support `bool` and `int`")
-            .report(refs.diags);
-            Err(diag)
-        }
-    };
-    let left_supported = check_supported(left.span, &left_ty);
-    let right_supported = check_supported(right.span, &right_ty);
-    left_supported?;
-    right_supported?;
+    // try full compile-time evaluation
+    let left = left.map_inner(ValueWithImplications::into_value);
+    let right = right.map_inner(ValueWithImplications::into_value);
+    if let (Ok(left), Ok(right)) = (
+        CompileValue::try_from(&left.inner),
+        CompileValue::try_from(&right.inner),
+    ) {
+        return Ok(MaybeCompile::Compile((left == right) == eq));
+    }
 
-    // if we get here the only possible reason is that the types don't match
-    let shared = refs.shared;
-    let diag = DiagnosticError::new(
-        "mismatched operand types for equality operator",
-        op_span,
-        "for operator here",
-    )
-    .add_info(
-        left.span,
-        format!("left operand has type `{}`", left_ty.value_string(shared)),
-    )
-    .add_info(
-        right.span,
-        format!("right operand has type `{}`", right_ty.value_string(shared)),
-    )
-    .add_footer_hint("both operands of an equality operator must have the same type")
-    .report(refs.diags);
-    Err(diag)
+    // handle hardware and compound values
+    let err_internal = |msg: &str| refs.diags.report_error_internal(op_span, msg);
+    match (&left.inner, &right.inner) {
+        // at least one side is hardware, compare in hardware
+        (Value::Hardware(_), _) | (_, Value::Hardware(_)) => {
+            eval_binary_eq_hardware(refs, large, op_span, left.as_ref(), right.as_ref(), eq)
+        }
+
+        // compound values, recurse into their elements
+        (Value::Compound(left_inner), Value::Compound(right_inner)) => match (left_inner, right_inner) {
+            (MixedCompoundValue::Tuple(left_inner), MixedCompoundValue::Tuple(right_inner)) => {
+                if left_inner.len() != right_inner.len() {
+                    return Err(err_internal("tuple equality with mismatched lengths"));
+                }
+                eval_binary_eq_recurse_all(
+                    refs,
+                    large,
+                    op_reason,
+                    op_span,
+                    left.span,
+                    right.span,
+                    zip_eq(left_inner, right_inner),
+                    eq,
+                )
+            }
+            (MixedCompoundValue::Struct(left_inner), MixedCompoundValue::Struct(right_inner)) => {
+                if left_inner.ty != right_inner.ty || left_inner.fields.len() != right_inner.fields.len() {
+                    return Err(err_internal("struct equality with mismatched types"));
+                }
+                eval_binary_eq_recurse_all(
+                    refs,
+                    large,
+                    op_reason,
+                    op_span,
+                    left.span,
+                    right.span,
+                    zip_eq(&left_inner.fields, &right_inner.fields),
+                    eq,
+                )
+            }
+            (MixedCompoundValue::Enum(left_inner), MixedCompoundValue::Enum(right_inner)) => {
+                if left_inner.ty != right_inner.ty {
+                    return Err(err_internal("enum equality with mismatched types"));
+                }
+                if left_inner.variant != right_inner.variant {
+                    return Ok(MaybeCompile::Compile(!eq));
+                }
+                match (&left_inner.payload, &right_inner.payload) {
+                    (None, None) => Ok(MaybeCompile::Compile(eq)),
+                    (Some(left_payload), Some(right_payload)) => eval_binary_eq_recurse_all(
+                        refs,
+                        large,
+                        op_reason,
+                        op_span,
+                        left.span,
+                        right.span,
+                        std::iter::once((&**left_payload, &**right_payload)),
+                        eq,
+                    ),
+                    (None, Some(_)) | (Some(_), None) => Err(err_internal("payload presence mismatch")),
+                }
+            }
+
+            // these only support compile-time equality, which was already handled
+            (MixedCompoundValue::String(_), MixedCompoundValue::String(_))
+            | (MixedCompoundValue::Range(_), MixedCompoundValue::Range(_)) => {
+                let diag = DiagnosticError::new(
+                    "equality between strings or ranges is only supported for compile-time values",
+                    op_span,
+                    "for comparison here",
+                )
+                .report(refs.diags);
+                Err(diag)
+            }
+            (MixedCompoundValue::BoundMethod(left_inner), MixedCompoundValue::BoundMethod(right_inner)) => {
+                let BoundMethod {
+                    self_type: left_self_type,
+                    self_value: left_self_value,
+                    method: left_method,
+                } = left_inner;
+                let BoundMethod {
+                    self_type: right_self_type,
+                    self_value: right_self_value,
+                    method: right_method,
+                } = right_inner;
+
+                if left_self_type != right_self_type || left_method != right_method {
+                    return Ok(MaybeCompile::Compile(!eq));
+                }
+                eval_binary_eq_recurse_all(
+                    refs,
+                    large,
+                    op_reason,
+                    op_span,
+                    left.span,
+                    right.span,
+                    std::iter::once((&**left_self_value, &**right_self_value)),
+                    eq,
+                )
+            }
+
+            // mismatches, these should have been rejected by the type check
+            (
+                MixedCompoundValue::String(_)
+                | MixedCompoundValue::Range(_)
+                | MixedCompoundValue::Tuple(_)
+                | MixedCompoundValue::Struct(_)
+                | MixedCompoundValue::Enum(_)
+                | MixedCompoundValue::BoundMethod(_),
+                _,
+            ) => Err(err_internal("equality between mismatched compound values")),
+        },
+
+        // simple values are always compile-time, so this was already handled
+        (Value::Simple(_), Value::Simple(_)) => Err(err_internal("equality between simple values not handled")),
+
+        // mismatches, these should have been rejected by the type check
+        (Value::Simple(_), Value::Compound(_)) | (Value::Compound(_), Value::Simple(_)) => {
+            Err(err_internal("equality between mismatched simple and compound values"))
+        }
+    }
+}
+
+/// Compare multiple pairs of values, combining the results.
+/// The values are equal if all pairs are equal, and not equal if any pair is not equal.
+fn eval_binary_eq_recurse_all<'v>(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_reason: TypeContainsReason,
+    op_span: Span,
+    left_span: Span,
+    right_span: Span,
+    pairs: impl Iterator<Item = (&'v Value, &'v Value)>,
+    eq: bool,
+) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
+    let combine_op = if eq { IrBoolBinaryOp::And } else { IrBoolBinaryOp::Or };
+
+    let mut result = MaybeCompile::Compile(eq);
+    for (left, right) in pairs {
+        let left = Spanned::new(left_span, ValueWithImplications::simple(left.clone()));
+        let right = Spanned::new(right_span, ValueWithImplications::simple(right.clone()));
+        let inner = eval_binary_eq_recurse(refs, large, op_reason, op_span, left, right, eq)?;
+        result = eval_binary_bool_typed(large, combine_op, result, inner);
+    }
+    Ok(result)
+}
+
+/// Compare two values in hardware, by converting them to a common hardware type and comparing their bits.
+fn eval_binary_eq_hardware(
+    refs: CompileRefs,
+    large: &mut IrLargeArena,
+    op_span: Span,
+    left: Spanned<&Value>,
+    right: Spanned<&Value>,
+    eq: bool,
+) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
+    let left_ty = left.inner.ty();
+    let right_ty = right.inner.ty();
+    let ty_hw = left_ty
+        .union(&right_ty)
+        .as_hardware_type(&refs.shared.elaboration_arenas)
+        .map_err(|_: NonHardwareType| {
+            let shared = refs.shared;
+            DiagnosticError::new(
+                "equality on non-compile-time values requires hardware types",
+                op_span,
+                "for operator here",
+            )
+            .add_info(
+                left.span,
+                format!("left value has type `{}`", left_ty.value_string(shared)),
+            )
+            .add_info(
+                right.span,
+                format!("right value has type `{}`", right_ty.value_string(shared)),
+            )
+            .report(refs.diags)
+        })?;
+
+    // zero-width types only have a single possible value
+    let ty_ir = ty_hw.as_ir(refs);
+    if ty_ir.size_bits() == BigUint::ZERO {
+        return Ok(MaybeCompile::Compile(eq));
+    }
+
+    let left = left
+        .inner
+        .as_hardware_value_unchecked(refs, large, left.span, ty_hw.clone())?;
+    let right = right
+        .inner
+        .as_hardware_value_unchecked(refs, large, right.span, ty_hw)?;
+
+    // compare the bit representations
+    let op = if eq { IrBoolCompareOp::Eq } else { IrBoolCompareOp::Neq };
+    let left_bits = large.push_expr(IrExpressionLarge::ToBits(ty_ir.clone(), left.expr));
+    let right_bits = large.push_expr(IrExpressionLarge::ToBits(ty_ir, right.expr));
+    let expr = large.push_expr(IrExpressionLarge::BoolCompareArray(op, left_bits, right_bits));
+
+    let value = HardwareValue {
+        ty: TypeBool,
+        domain: left.domain.join(right.domain),
+        expr,
+    };
+    Ok(MaybeCompile::Hardware(HardwareValueWithImplications::simple(value)))
 }
 
 fn eval_binary_int_compare(
@@ -2635,7 +2908,7 @@ fn eval_binary_int_compare(
     left: Spanned<ValueWithImplications>,
     right: Spanned<ValueWithImplications>,
     op: IrIntCompareOp,
-) -> DiagResult<ValueWithImplications> {
+) -> DiagResult<MaybeCompile<bool, HardwareValueWithImplications<TypeBool>>> {
     let left_int = check_type_is_int(
         refs,
         op_reason,
@@ -2651,10 +2924,7 @@ fn eval_binary_int_compare(
 
     // TODO spans are getting unnecessarily complicated, eg. why does this try to propagate spans?
     match pair_compile_int(left_int, right_int) {
-        MaybeCompile::Compile((left, right)) => {
-            let result = op.eval(&left, &right);
-            Ok(ValueWithImplications::new_bool(result))
-        }
+        MaybeCompile::Compile((left, right)) => Ok(MaybeCompile::Compile(op.eval(&left, &right))),
         MaybeCompile::Hardware((left_int, right_int)) => {
             let lv = match left.inner {
                 ValueWithImplications::Simple(_) | ValueWithImplications::Compound(_) => None,
@@ -2681,11 +2951,11 @@ fn eval_binary_int_compare(
 
             // build the resulting expression
             let result = HardwareValue {
-                ty: HardwareType::Bool,
+                ty: TypeBool,
                 domain: left_int.domain.join(right_int.domain),
                 expr: large.push_expr(IrExpressionLarge::IntCompare(op, left_int.expr, right_int.expr)),
             };
-            Ok(Value::Hardware(HardwareValueWithImplications {
+            Ok(MaybeCompile::Hardware(HardwareValueWithImplications {
                 value: result,
                 version: None,
                 implications,
