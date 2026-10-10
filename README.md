@@ -10,7 +10,7 @@ pub module top ports(
     clk: in clock,
     rst: in async bool,
 
-    sync(clk, rst) {
+    sync(clk, async rst) {
         data_to_add: in uint(0..8),
         stream_in: interface axi_stream(uint(0..8)).input,
         stream_out: interface axi_stream(uint(0..16)).output,
@@ -23,8 +23,8 @@ pub module top ports(
         stream_out.data = stream_in.data + data_to_add;
     }
 
-    reg out values_transferred = 0;
     clocked(clk, async rst) {
+        reg wire values_transferred = 0;
         if (stream_out.valid && stream_out.ready) {
             values_transferred = (values_transferred + 1) % 2**32;
         }
