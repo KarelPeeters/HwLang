@@ -50,21 +50,21 @@ use std::process::{Command, Stdio};
 mod check;
 mod convert;
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct Source {
     source: RustSourceDatabase,
     hierarchy: SourceHierarchy,
     dummy_span: Span,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct Parsed {
     #[pyo3(get)]
     source: Py<Source>,
     parsed: RustParsedDatabase,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct Compile {
     pool: Option<ThreadPool>,
 
@@ -74,13 +74,13 @@ struct Compile {
     capture_prints: Option<Py<CapturePrints>>,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct CapturePrints {
     #[pyo3(get)]
     prints: Vec<String>,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct CapturePrintsContext {
     compile: Py<Compile>,
     capture: Py<CapturePrints>,
@@ -89,7 +89,7 @@ struct CapturePrintsContext {
 
 // TODO rework this, put all values into an inheritance hierarchy that matches CompileValue
 //   (and obviously support all values)
-#[pyclass(subclass)]
+#[pyclass(module = "hwl", subclass)]
 struct Value {
     compile: Py<Compile>,
     value: RustCompileValue,
@@ -97,28 +97,28 @@ struct Value {
 
 // This intentionally does not inherit from Value,
 //   to avoid needing a compile reference and being unable to share ranges across compilation contexts.
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct Range {
     range: RustRange<BigInt>,
 }
 
-#[pyclass(extends=Value)]
+#[pyclass(module = "hwl", extends=Value)]
 struct Module {
     module: ElaboratedModule,
 }
 
 // Struct and enum values store a copy of their unwrapped value for convenient access.
-#[pyclass(extends=Value)]
+#[pyclass(module = "hwl", extends=Value)]
 struct StructValue {
     value: RustStructValue<RustCompileValue>,
 }
 
-#[pyclass(extends=Value)]
+#[pyclass(module = "hwl", extends=Value)]
 struct EnumValue {
     value: RustEnumValue<Box<RustCompileValue>>,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct ModuleVerilog {
     #[pyo3(get)]
     module_name: String,
@@ -126,33 +126,33 @@ struct ModuleVerilog {
     source: String,
 }
 
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct ModuleVerilated {
     compile: Py<Compile>,
     lib: VerilatedLib,
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "hwl", unsendable)]
 struct VerilatedInstance {
     module: Py<ModuleVerilated>,
     instance: RustVerilatedInstance,
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "hwl", unsendable)]
 struct VerilatedPorts {
     instance: Py<VerilatedInstance>,
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "hwl", unsendable)]
 struct VerilatedPort {
     instance: Py<VerilatedInstance>,
     port: IrPort,
 }
 
-#[pyclass(subclass, extends=PyException)]
+#[pyclass(module = "hwl", subclass, extends=PyException)]
 struct HwlException {}
 
-#[pyclass(extends=HwlException)]
+#[pyclass(module = "hwl", extends=HwlException)]
 struct DiagnosticException {
     #[pyo3(get)]
     diagnostics: Py<PyList>,
@@ -164,7 +164,7 @@ struct DiagnosticException {
 }
 
 // We expose lots of detail here, so it can be used in tests assertions.
-#[pyclass]
+#[pyclass(module = "hwl")]
 struct Diagnostic {
     #[pyo3(get)]
     level: String,
