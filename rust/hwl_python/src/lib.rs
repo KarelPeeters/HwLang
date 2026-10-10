@@ -823,19 +823,30 @@ impl Module {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    #[pyo3(signature=(build_dir,*,extra_verilog_files=None,optimization=None))]
+    #[pyo3(signature=(build_dir,*,extra_verilog_files=None,optimization=None,compiler=None))]
     fn as_verilated(
         slf: Py<Self>,
         py: Python,
         build_dir: PathBuf,
         extra_verilog_files: Option<Vec<PathBuf>>,
         optimization: Option<u8>,
+        compiler: Option<String>,
     ) -> PyResult<ModuleVerilated> {
         // handle args
         let extra_verilog_files = extra_verilog_files.unwrap_or_default();
         if optimization.is_some_and(|level| level > 3) {
             return Err(PyValueError::new_err("Verilator optimization must be between 0 and 3"));
         }
+
+        // Select code-generation workarounds, C++ driver, and matching PCH
+        // settings together; Verilator's configured defaults may use another compiler.
+        // None preserves the existing toolchain selection and Make overrides.
+        let compiler = match compiler.as_deref() {
+            None => None,
+            Some("gcc") => Some(("gcc", "g++", "-include", "")),
+            Some("clang") => Some(("clang", "clang++", "-include-pch", ".gch")),
+            Some(_) => return Err(PyValueError::new_err("Verilator compiler must be 'gcc' or 'clang'")),
+        };
 
         // create build_dir
         let build_dir = build_dir.as_path();
@@ -877,6 +888,7 @@ impl Module {
             // TODO move this compilation process to somewhere else, not in the python create
             run_command(
                 Command::new("verilator")
+                    .args(compiler.into_iter().flat_map(|(name, ..)| ["--compiler", name]))
                     .args(optimization.map(|level| format!("-O{level}")))
                     .arg("-cc")
                     .arg("-CFLAGS")
@@ -909,7 +921,15 @@ impl Module {
                     .arg("-f")
                     .arg(format!("{top_class_name}.mk"))
                     .arg("-j")
-                    .arg(get_num_cpus().get().to_string()),
+                    .arg(get_num_cpus().get().to_string())
+                    .args(compiler.into_iter().flat_map(|(_, driver, pch_include, pch_suffix)| {
+                        [
+                            format!("CXX={driver}"),
+                            format!("LINK={driver}"),
+                            format!("CFG_CXXFLAGS_PCH_I={pch_include}"),
+                            format!("CFG_GCH_IF_CLANG={pch_suffix}"),
+                        ]
+                    })),
                 &obj_dir,
                 "make",
             )?;
@@ -924,7 +944,11 @@ impl Module {
 
             // TODO use faster linker
             run_command(
-                Command::new("g++").args(objects).arg("-o").arg(&name_so).arg("-shared"),
+                Command::new(compiler.map(|(_, driver, ..)| driver).unwrap_or("g++"))
+                    .args(objects)
+                    .arg("-o")
+                    .arg(&name_so)
+                    .arg("-shared"),
                 &obj_dir,
                 "linking",
             )?;
