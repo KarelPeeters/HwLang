@@ -118,7 +118,7 @@ pub fn range_binary_div(
     }
 }
 
-pub fn multi_range_binary_div(
+pub fn multi_range_binary_foor_div(
     a: &ClosedNonEmptyMultiRange<BigInt>,
     b: &ClosedNonEmptyMultiRange<BigInt>,
 ) -> Option<ClosedNonEmptyMultiRange<BigInt>> {
@@ -127,6 +127,28 @@ pub fn multi_range_binary_div(
     }
     Some(wrap_multi_binary(a, b, |r_a, r_b| {
         range_binary_div(r_a, r_b).expect("already checked for division by zero")
+    }))
+}
+
+pub fn range_binary_ceil_div(
+    a: ClosedNonEmptyRange<&BigInt>,
+    b: ClosedNonEmptyRange<&BigInt>,
+) -> Option<ClosedNonEmptyRange<BigInt>> {
+    // `ceil(a / b) == -floor(-a / b)`
+    let a_neg = range_unary_neg(a);
+    let result_neg = range_binary_div(a_neg.as_ref(), b)?;
+    Some(range_unary_neg(result_neg.as_ref()))
+}
+
+pub fn multi_range_binary_ceil_div(
+    a: &ClosedNonEmptyMultiRange<BigInt>,
+    b: &ClosedNonEmptyMultiRange<BigInt>,
+) -> Option<ClosedNonEmptyMultiRange<BigInt>> {
+    if b.contains(&BigInt::ZERO) {
+        return None;
+    }
+    Some(wrap_multi_binary(a, b, |r_a, r_b| {
+        range_binary_ceil_div(r_a, r_b).expect("already checked for division by zero")
     }))
 }
 
@@ -387,8 +409,9 @@ fn range_from_min_max(min: BigInt, max: BigInt) -> ClosedNonEmptyRange<BigInt> {
 #[cfg(test)]
 mod tests {
     use crate::front::range_arithmetic::{
-        range_binary_add, range_binary_bitwise, range_binary_div, range_binary_mod, range_binary_mul, range_binary_pow,
-        range_binary_sub, range_from_min_max, range_unary_abs, range_unary_bitwise_not, range_unary_neg,
+        range_binary_add, range_binary_bitwise, range_binary_ceil_div, range_binary_div, range_binary_mod,
+        range_binary_mul, range_binary_pow, range_binary_sub, range_from_min_max, range_unary_abs,
+        range_unary_bitwise_not, range_unary_neg,
     };
     use crate::mid::ir::IrBoolBinaryOp;
     use crate::util::big_int::{BigInt, BigUint};
@@ -431,6 +454,14 @@ mod tests {
         check_binary(
             |a, b| range_binary_div(a, b).map(|r| (r, true)),
             |a, b| a.div_floor(b).unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_ceil_div() {
+        check_binary(
+            |a, b| range_binary_ceil_div(a, b).map(|r| (r, true)),
+            |a, b| -(-a).div_floor(b).unwrap(),
         )
     }
 

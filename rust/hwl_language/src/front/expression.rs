@@ -34,9 +34,9 @@ use crate::util::data::{VecExt, vec_concat};
 use crate::front::exit::ExitStack;
 use crate::front::flow::Flow;
 use crate::front::range_arithmetic::{
-    multi_range_binary_add, multi_range_binary_bitwise, multi_range_binary_div, multi_range_binary_mod,
-    multi_range_binary_mul, multi_range_binary_pow, multi_range_binary_sub, multi_range_unary_bitwise_not,
-    multi_range_unary_neg,
+    multi_range_binary_add, multi_range_binary_bitwise, multi_range_binary_ceil_div, multi_range_binary_foor_div,
+    multi_range_binary_mod, multi_range_binary_mul, multi_range_binary_pow, multi_range_binary_sub,
+    multi_range_unary_bitwise_not, multi_range_unary_neg,
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::token::{
@@ -581,20 +581,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     let result = match operand_int {
                         MaybeCompile::Compile(c) => Value::new_int(-c),
                         MaybeCompile::Hardware(v) => {
-                            let range = multi_range_unary_neg(&v.ty);
-                            let result_expr = self.large.push_expr(IrExpressionLarge::IntArithmetic(
-                                IrIntArithmeticOp::Sub,
-                                range.enclosing_range().cloned(),
-                                IrExpression::Int(BigInt::ZERO),
-                                v.expr,
-                            ));
-
-                            let result = HardwareValue {
-                                ty: HardwareType::Int(range),
-                                domain: v.domain,
-                                expr: result_expr,
-                            };
-                            Value::Hardware(result)
+                            Value::Hardware(HardwareValue::from(build_unary_int_neg(&mut self.large, v)))
                         }
                     };
                     LrValue::Right(ValueWithImplications::simple(result))
@@ -1960,7 +1947,9 @@ pub fn eval_binary_expression(
             }
         }
         // (int, non-zero int)
-        BinaryOp::Div => {
+        BinaryOp::FloorDiv | BinaryOp::CeilDiv => {
+            let ceil = matches!(op.inner, BinaryOp::CeilDiv);
+
             let (left, right) =
                 check_both_int(left.map_inner(|e| e.into_value()), right.map_inner(|e| e.into_value()))?;
 
@@ -1976,12 +1965,27 @@ pub fn eval_binary_expression(
 
             match pair_compile_int(left, right) {
                 MaybeCompile::Compile((left, right)) => {
-                    let result = left.div_floor(&right).unwrap();
+                    let result = if ceil {
+                        -(-left).div_floor(&right).unwrap()
+                    } else {
+                        left.div_floor(&right).unwrap()
+                    };
                     Value::new_int(result)
                 }
                 MaybeCompile::Hardware((left, right)) => {
-                    let range = multi_range_binary_div(&left.ty, &right.ty).expect("already checked for zero");
-                    let result = build_binary_int_arithmetic_op(IrIntArithmeticOp::Div, large, range, left, right);
+                    let (op, range) = if ceil {
+                        (
+                            IrIntArithmeticOp::CeilDiv,
+                            multi_range_binary_ceil_div(&left.ty, &right.ty),
+                        )
+                    } else {
+                        (
+                            IrIntArithmeticOp::FloorDiv,
+                            multi_range_binary_foor_div(&left.ty, &right.ty),
+                        )
+                    };
+                    let range = range.expect("already checked for zero");
+                    let result = build_binary_int_arithmetic_op(op, large, range, left, right);
                     Value::Hardware(HardwareValue::from(result))
                 }
             }
@@ -2105,7 +2109,7 @@ pub fn eval_binary_expression(
                     let divisor_range =
                         multi_range_binary_pow(&ClosedNonEmptyMultiRange::single(BigInt::TWO), &right.ty)
                             .expect("non-zero expr");
-                    let result_range = multi_range_binary_div(&left.ty, &divisor_range).expect("non-zero divisor");
+                    let result_range = multi_range_binary_foor_div(&left.ty, &divisor_range).expect("non-zero divisor");
 
                     let right = HardwareInt::from(right);
                     let result =
@@ -2961,6 +2965,21 @@ fn eval_binary_int_compare(
                 implications,
             }))
         }
+    }
+}
+
+fn build_unary_int_neg(large: &mut IrLargeArena, value: HardwareInt) -> HardwareInt {
+    let range = multi_range_unary_neg(&value.ty);
+    let result_expr = IrExpressionLarge::IntArithmetic(
+        IrIntArithmeticOp::Sub,
+        range.enclosing_range().cloned(),
+        IrExpression::Int(BigInt::ZERO),
+        value.expr,
+    );
+    HardwareInt {
+        ty: range,
+        domain: value.domain,
+        expr: large.push_expr(result_expr),
     }
 }
 

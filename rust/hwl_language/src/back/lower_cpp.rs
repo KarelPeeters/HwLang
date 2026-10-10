@@ -515,13 +515,22 @@ impl CodegenBlockContext<'_> {
 
                     Evaluated::Temporary(tmp_result)
                 }
+                &IrExpressionLarge::IntArithmetic(IrIntArithmeticOp::CeilDiv, _, ref left, ref right) => {
+                    // round towards positive infinity instead of towards zero
+                    let left_eval = self.eval_to_temporary(indent, span, left, stage_read)?;
+                    let right_eval = self.eval_to_temporary(indent, span, right, stage_read)?;
+                    Evaluated::Inline(format!(
+                        "({left_eval} / {right_eval} + ({left_eval} % {right_eval} != 0 && ({left_eval} < 0) == ({right_eval} < 0)))"
+                    ))
+                }
                 IrExpressionLarge::IntArithmetic(op, _ty, left, right) => {
                     // TODO types and even the power operator are wrong
                     let op_str = match op {
                         IrIntArithmeticOp::Add => "+",
                         IrIntArithmeticOp::Sub => "-",
                         IrIntArithmeticOp::Mul => "*",
-                        IrIntArithmeticOp::Div => "/",
+                        IrIntArithmeticOp::FloorDiv => "/",
+                        IrIntArithmeticOp::CeilDiv => unreachable!("handled separately above"),
                         IrIntArithmeticOp::Mod => "%",
                         IrIntArithmeticOp::Pow => "**",
                         IrIntArithmeticOp::Shr => ">>",

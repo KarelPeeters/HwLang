@@ -1661,11 +1661,19 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
                 // TODO replace multiplication with (constant?) power of two with shift
                 self.lower_arithmetic_expression_simple(span, result_range, result_ty_verilog, "*", left, right)
             }
-            IrIntArithmeticOp::Div => self.lower_arithmetic_expression_div_mod(
+            IrIntArithmeticOp::FloorDiv => self.lower_arithmetic_expression_div_mod(
                 span,
                 result_range,
                 result_ty_verilog,
-                OperatorDivMod::Div,
+                OperatorDivMod::FloorDiv,
+                left,
+                right,
+            ),
+            IrIntArithmeticOp::CeilDiv => self.lower_arithmetic_expression_div_mod(
+                span,
+                result_range,
+                result_ty_verilog,
+                OperatorDivMod::CeilDiv,
                 left,
                 right,
             ),
@@ -1786,7 +1794,10 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
             end: &BigInt::TWO,
         };
         let range_adj = range_binary_add(range_b.as_ref(), range_adj_one);
-        let range_a_adj = range_binary_sub(range_a.as_ref(), range_adj.as_ref());
+        let range_a_adj = match op {
+            OperatorDivMod::FloorDiv | OperatorDivMod::Mod => range_binary_sub(range_a.as_ref(), range_adj.as_ref()),
+            OperatorDivMod::CeilDiv => range_binary_add(range_a.as_ref(), range_adj.as_ref()),
+        };
         let range_all = result_range
             .range()
             .as_ref()
@@ -1807,15 +1818,23 @@ impl<'a, 'n> LowerBlockContext<'a, 'n> {
         let a = a_raw.as_signed_maybe(signed);
         let b = b_raw.as_signed_maybe(signed);
 
-        // make adjustments to match IR semantics (round down) instead of verilog (truncate towards zero)
+        // make adjustments to match IR semantics (round down or up) instead of verilog (truncate towards zero)
         let a_is_neg = MaybeBool::is_negative(&a, ClosedRange::from(range_a.as_ref()));
         let b_is_neg = MaybeBool::is_negative(&b, ClosedRange::from(range_b.as_ref()));
         let signs_differ = MaybeBool::xor(&a_is_neg, &b_is_neg);
         let res_expr = match op {
-            OperatorDivMod::Div => {
+            OperatorDivMod::FloorDiv => {
+                // truncation rounds up if the result is negative, adjust to round down instead
                 let adj_one = b_is_neg.select("1", "-1");
                 let adj = signs_differ.select(&format!("({b} + {adj_one})"), "0");
                 let a_adj = format!("({a} - {adj})");
+                format!("{a_adj} / {b}")
+            }
+            OperatorDivMod::CeilDiv => {
+                // truncation rounds down if the result is positive, adjust to round up instead
+                let adj_one = b_is_neg.select("1", "-1");
+                let adj = signs_differ.select("0", &format!("({b} + {adj_one})"));
+                let a_adj = format!("({a} + {adj})");
                 format!("{a_adj} / {b}")
             }
             OperatorDivMod::Mod => {
@@ -2157,7 +2176,8 @@ impl NonZeroWidthRange {
 
 #[derive(Debug, Copy, Clone)]
 enum OperatorDivMod {
-    Div,
+    FloorDiv,
+    CeilDiv,
     Mod,
 }
 

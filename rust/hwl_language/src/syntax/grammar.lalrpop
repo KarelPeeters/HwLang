@@ -101,6 +101,7 @@ extern {
         "-" => TokenType::Minus,
         "*" => TokenType::Star,
         "/" => TokenType::Slash,
+        "+/" => TokenType::PlusSlash,
         "%" => TokenType::Percent,
         "!" => TokenType::Bang,
         "**" => TokenType::StarStar,
@@ -734,7 +735,9 @@ ExprLevelMul: ExpressionKind = {
     <left:Spanned<ExprLevelMul>> <op:Span<"*">> <right:Spanned<ExprLevelUnary>> =>
         build_binary_op(arena_expr, op, BinaryOp::Mul, left, right),
     <left:Spanned<ExprLevelMul>> <op:Span<"/">> <right:Spanned<ExprLevelUnary>> =>
-        build_binary_op(arena_expr, op, BinaryOp::Div, left, right),
+        build_binary_op(arena_expr, op, BinaryOp::FloorDiv, left, right),
+    <left:Spanned<ExprLevelMul>> <op:Span<"+/">> <right:Spanned<ExprLevelUnary>> =>
+        build_binary_op(arena_expr, op, BinaryOp::CeilDiv, left, right),
     // TODO disallow mixing this with mul and/or div?
     <left:Spanned<ExprLevelMul>> <op:Span<"%">> <right:Spanned<ExprLevelUnary>> =>
         build_binary_op(arena_expr, op, BinaryOp::Mod, left, right),

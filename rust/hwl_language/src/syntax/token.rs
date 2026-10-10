@@ -386,6 +386,8 @@ impl<'s> Tokenizer<'s> {
             ['^', '=', _] => skip_fixed(2, TokenType::CaretEq),
             ['^', _, _] => skip_fixed(1, TokenType::Caret),
             ['+', '=', _] => skip_fixed(2, TokenType::PlusEq),
+            // don't steal the start of a comment
+            ['+', '/', c] if c != '/' && c != '*' => skip_fixed(2, TokenType::PlusSlash),
             ['+', _, _] => skip_fixed(1, TokenType::Plus),
             ['-', '=', _] => skip_fixed(2, TokenType::MinusEq),
             ['-', '>', _] => skip_fixed(2, TokenType::Arrow),
@@ -733,6 +735,7 @@ declare_tokens! {
         Minus("-", TC::Symbol),
         Star("*", TC::Symbol),
         Slash("/", TC::Symbol),
+        PlusSlash("+/", TC::Symbol),
         Percent("%", TC::Symbol),
         Bang("!", TC::Symbol),
         StarStar("**", TC::Symbol),

@@ -4,6 +4,7 @@ from typing import Tuple
 import pytest
 
 from hwl_sandbox.common.compare import CompiledCompare, compare_expression
+from hwl_sandbox.common.util import compile_custom
 
 
 def test_add_pos(tmp_dir: Path):
@@ -185,6 +186,22 @@ def test_div_overflow(tmp_dir: Path):
     a = -2 ** 33
     b = 2 ** 33 - 1
     e.eval_assert([a, b], a // b)
+
+
+@pytest.mark.parametrize("b_range", [(1, 5), (-4, 0)], ids=["pos", "neg"])
+def test_ceil_div(tmp_dir: Path, b_range: Tuple[int, int]):
+    b_start, b_end = b_range
+    e = compare_expression(["int(-16..16)", f"int({b_start}..{b_end})"], "int(-16..=16)", "a0 +/ a1", tmp_dir)
+    for a in range(-16, 16):
+        for b in range(b_start, b_end):
+            e.eval_assert([a, b], -(-a // b))
+
+
+def test_ceil_div_compile():
+    f = compile_custom("fn f(a: int, b: int) -> int { return a +/ b; }").resolve("top.f")
+    for a in [-2 ** 70 - 1, -7, 0, 7, 2 ** 70 + 1]:
+        for b in [-3, 2, 2 ** 65]:
+            assert f(a, b) == -(-a // b)
 
 
 def test_shift_left_pos(tmp_dir: Path):

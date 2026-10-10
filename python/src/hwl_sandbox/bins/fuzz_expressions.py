@@ -145,7 +145,7 @@ def try_sample_value(state: SampleState, rng, ty_int_not_bool: bool, depth: int)
     if ty_int_not_bool:
         # int result
         # TODO include power, unary minus
-        operators = ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^"]
+        operators = ["+", "-", "*", "/", "+/", "%", "<<", ">>", "&", "|", "^"]
         operand_int_not_bool = True
     else:
         # bool result

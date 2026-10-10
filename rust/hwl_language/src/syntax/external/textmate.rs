@@ -239,6 +239,7 @@ fn token_category(ty: TokenType) -> Option<Category> {
         | TokenType::Minus
         | TokenType::Star
         | TokenType::Slash
+        | TokenType::PlusSlash
         | TokenType::Percent
         | TokenType::Bang
         | TokenType::StarStar

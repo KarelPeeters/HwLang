@@ -941,13 +941,13 @@ pub fn build_binary_op(
     )
 }
 
-// TODO add ceil_div operator `+/`?
 #[derive(Debug, Copy, Clone)]
 pub enum BinaryOp {
     Add,
     Sub,
     Mul,
-    Div,
+    FloorDiv,
+    CeilDiv,
     Mod,
     Pow,
 
@@ -1140,7 +1140,8 @@ impl BinaryOp {
             BinaryOp::Add => TokenType::Plus,
             BinaryOp::Sub => TokenType::Minus,
             BinaryOp::Mul => TokenType::Star,
-            BinaryOp::Div => TokenType::Slash,
+            BinaryOp::FloorDiv => TokenType::Slash,
+            BinaryOp::CeilDiv => TokenType::PlusSlash,
             BinaryOp::Mod => TokenType::Percent,
             BinaryOp::Pow => TokenType::StarStar,
             BinaryOp::BitAnd => TokenType::Amper,
@@ -1164,7 +1165,7 @@ impl BinaryOp {
     pub fn level(self) -> BinaryOpLevel {
         match self {
             BinaryOp::Add | BinaryOp::Sub => BinaryOpLevel::Add,
-            BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => BinaryOpLevel::Mul,
+            BinaryOp::Mul | BinaryOp::FloorDiv | BinaryOp::CeilDiv | BinaryOp::Mod => BinaryOpLevel::Mul,
             BinaryOp::Pow => BinaryOpLevel::Pow,
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => BinaryOpLevel::Bit,
             BinaryOp::BoolAnd | BinaryOp::BoolOr | BinaryOp::BoolXor => BinaryOpLevel::Bool,
@@ -1199,7 +1200,7 @@ impl AssignBinaryOp {
             AssignBinaryOp::Add => BinaryOp::Add,
             AssignBinaryOp::Sub => BinaryOp::Sub,
             AssignBinaryOp::Mul => BinaryOp::Mul,
-            AssignBinaryOp::Div => BinaryOp::Div,
+            AssignBinaryOp::Div => BinaryOp::FloorDiv,
             AssignBinaryOp::Mod => BinaryOp::Mod,
             AssignBinaryOp::BitAnd => BinaryOp::BitAnd,
             AssignBinaryOp::BitOr => BinaryOp::BitOr,

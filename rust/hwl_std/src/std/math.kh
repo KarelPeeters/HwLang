@@ -48,7 +48,3 @@ pub fn clog(base: int(2..), n: uint) -> uint {
 pub fn clog2(n: uint) -> uint {
     return clog(2, n);
 }
-
-pub fn ceil_div(a: int, b: nonzero) -> int {
-    return -((-a) / b);
-}
