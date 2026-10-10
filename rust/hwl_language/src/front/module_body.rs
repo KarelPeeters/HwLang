@@ -13,7 +13,7 @@ use crate::front::module_header::{
     ArenaConnectors, Connector, ConnectorInfo, ConnectorKind, ConnectorSingle, ElaboratedModuleExternalInfo,
     ElaboratedModuleHeader, ElaboratedModuleInternalInfo,
 };
-use crate::front::scope::{NamedValue, Scope, ScopeParent, ScopedEntry};
+use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeParent, ScopedEntry};
 use crate::front::signal::{
     Interface, Polarized, PortOrWire, Signal, SignalOrVariable, WireInfo, WireInfoInInterface, WireInfoSingle,
     WireInterfaceInfo,
@@ -762,30 +762,31 @@ impl BodyContext {
         // eval port connections
         let mut port_connections_eval = vec![];
         {
-            // declarations are not allowed here, so no need to worry about expression scopes
+            // Freeze each extra-list iteration before its loop variables leave scope.
             let mut scope_connections = scope.new_child(port_connections.span);
             ctx.elaborate_extra_list(
                 &mut scope_connections,
                 flow_parent,
                 &port_connections.inner,
                 true,
-                &mut |_, _, _, connection| {
-                    port_connections_eval.push(connection);
+                &mut |ctx, scope, flow, connection| {
+                    let id = ctx.eval_id(scope.as_scope(), flow, connection.id)?;
+                    let captured = Arc::new(scope.as_scope().capture_module_connection(flow, connection.span()));
+                    port_connections_eval.push((id, connection, captured));
                     Ok(())
                 },
             )?;
         }
 
         // check that connections are unique
-        let mut id_to_connection_and_used: IndexMap<Id, (&PortConnection, bool)> = IndexMap::new();
-        for connection in port_connections_eval {
-            let connection_id = ctx.eval_id(scope, flow_parent, connection.id)?;
+        let mut id_to_connection_and_used: IndexMap<Id, (&PortConnection, Arc<FrozenScope>, bool)> = IndexMap::new();
+        for (connection_id, connection, captured) in port_connections_eval {
             match id_to_connection_and_used.entry(connection_id.inner) {
                 Entry::Vacant(entry) => {
-                    entry.insert((connection, false));
+                    entry.insert((connection, captured, false));
                 }
                 Entry::Occupied(entry) => {
-                    let (prev_connection, _) = entry.get();
+                    let (prev_connection, _, _) = entry.get();
                     let diag = DiagnosticError::new("duplicate connection", connection.span(), "connected again here")
                         .add_info(prev_connection.span(), "previous connection here")
                         .report(diags);
@@ -802,16 +803,17 @@ impl BodyContext {
 
         for (connector, connector_info) in connectors {
             match id_to_connection_and_used.get_mut(&connector_info.id.inner) {
-                Some((connection, connection_used)) => {
+                Some((connection, captured, connection_used)) => {
                     if *connection_used {
                         // this should have already been caught during module header elaboration
                         return Err(diags.report_error_internal(connection.span(), "connection used twice"));
                     }
                     *connection_used = true;
 
+                    let connection_scope = Arc::clone(captured).as_scope();
                     let connections = self.elaborate_instance_port_connection(
                         ctx,
-                        scope,
+                        &connection_scope,
                         flow_parent,
                         connectors,
                         &single_to_signal,
@@ -839,8 +841,8 @@ impl BodyContext {
         }
 
         let mut any_unused_err = Ok(());
-        for (_, &(connection, used)) in id_to_connection_and_used.iter() {
-            if !used {
+        for (_, (connection, _, used)) in id_to_connection_and_used.iter() {
+            if !*used {
                 let diag = DiagnosticError::new(
                     "connection does not match any port",
                     connection.span(),

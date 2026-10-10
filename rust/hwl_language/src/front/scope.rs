@@ -284,6 +284,16 @@ impl<'p> Scope<'p> {
     }
 
     pub fn capture(&self, flow: &impl Flow, span_capture: Span) -> FrozenScope {
+        self.capture_inner(flow, span_capture, false)
+    }
+
+    // Deferred instance connections stay in the same module, so retain signal
+    // references while freezing compile-time loop variables and local values.
+    pub fn capture_module_connection(&self, flow: &impl Flow, span_capture: Span) -> FrozenScope {
+        self.capture_inner(flow, span_capture, true)
+    }
+
+    fn capture_inner(&self, flow: &impl Flow, span_capture: Span, keep_signals: bool) -> FrozenScope {
         // walk up scopes, starting from the current scope up to the root
         //   try to capture all values that have not yet been shadowed by a child scope
         let mut captured_values: IndexMap<ScopeKey<Id, ()>, DeclaredValue> = IndexMap::new();
@@ -311,6 +321,9 @@ impl<'p> Scope<'p> {
                                             value: value.map(Arc::new),
                                         })
                                     })
+                                }
+                                NamedValue::Signal(_) | NamedValue::Interface(_) if keep_signals => {
+                                    Ok(ScopedEntry::Named(named))
                                 }
                                 NamedValue::Signal(_) | NamedValue::Interface(_) => {
                                     Ok(ScopedEntry::Captured(CapturedValue {
