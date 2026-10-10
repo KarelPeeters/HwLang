@@ -9,7 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hwl_language = { path = "../hwl_language" }
+hwl_language.workspace = true
+serde_json.workspace = true
 
 [[bin]]
 name = "fuzz_token"
@@ -35,6 +36,13 @@ bench = false
 [[bin]]
 name = "fuzz_compile"
 path = "fuzz_targets/compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_textmate"
+path = "fuzz_targets/textmate.rs"
 test = false
 doc = false
 bench = false

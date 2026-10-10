@@ -1,0 +1,10 @@
+{
+  "name": "hwl-textmate-oracle",
+  "private": true,
+  "description": "Tokenizes source code with the real TextMate engine used by VS Code, used by the fuzz_textmate fuzz target.",
+  "type": "module",
+  "dependencies": {
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
+  }
+}

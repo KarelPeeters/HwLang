@@ -60,18 +60,23 @@ macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
 #[rustfmt::skip]
 macro_rules! pattern_string_escape_chars { () => { '\\' | '"' | '{' | 'n' | 'r' | 't' | '0' }; }
 
+pub const REGEX_STRING_ESCAPE_CHARS: &str = r#"[\\"{nrt0]"#;
+
 #[rustfmt::skip]
 macro_rules! pattern_id_start { () => { '_' | 'a'..='z' | 'A'..='Z' }; }
 #[rustfmt::skip]
 macro_rules! pattern_id_continue { () => { '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' }; }
+
+pub const REGEX_ID_START: &str = "[_a-zA-Z]";
+pub const REGEX_ID_CONTINUE: &str = "[_a-zA-Z0-9]";
 
 #[rustfmt::skip]
 macro_rules! pattern_int_start { () => { '0'..='9' }; }
 #[rustfmt::skip]
 macro_rules! pattern_int_continue { () => { pattern_int_start!() | '_' | 'b' | 'x' | 'a'..='f' | 'A'..='F' }; }
 
-pub const REGEX_ID: &str = "[_A-Za-z][_A-Za-z0-9]*";
-pub const REGEX_INT: &str = "0.[0-9_bxa-fA-F]*";
+pub const REGEX_INT_START: &str = "[0-9]";
+pub const REGEX_INT_CONTINUE: &str = "[0-9_bxa-fA-F]";
 
 #[derive(Debug, Copy, Clone)]
 enum NextInnerResult {
@@ -590,6 +595,13 @@ macro_rules! declare_tokens {
                 $(FixedTokenInfo { name: stringify!($f_token), literal: $f_string, ty: TokenType::$f_token },)*
             ];
 
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(TokenType::$c_token => stringify!($c_token),)*
+                    $(TokenType::$f_token => stringify!($f_token),)*
+                }
+            }
+
             pub fn category(self) -> TokenCategory {
                 match self {
                     $(TokenType::$c_token => $c_cat,)*
@@ -975,5 +987,36 @@ mod test {
 
         let grammar = include_str!("grammar.lalrpop");
         assert!(grammar.contains(&expected));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::syntax::token::{
+        REGEX_ID_CONTINUE, REGEX_ID_START, REGEX_INT_CONTINUE, REGEX_INT_START, REGEX_STRING_ESCAPE_CHARS,
+    };
+    use regex::Regex;
+
+    /// Check that each regex matches exactly the same chars as the corresponding pattern macro.
+    #[test]
+    #[allow(clippy::manual_is_ascii_check)]
+    fn regexes_match_patterns() {
+        fn check(regex: &str, pattern: impl Fn(char) -> bool) {
+            let compiled = Regex::new(&format!("^{regex}$")).unwrap();
+            for c in 0..256 {
+                if let Some(c) = char::from_u32(c) {
+                    let matches_regex = compiled.is_match(c.encode_utf8(&mut [0; 4]));
+                    assert_eq!(matches_regex, pattern(c), "regex `{regex}` mismatch for char {c:?}");
+                }
+            }
+        }
+
+        check(REGEX_STRING_ESCAPE_CHARS, |c| {
+            matches!(c, pattern_string_escape_chars!())
+        });
+        check(REGEX_ID_START, |c| matches!(c, pattern_id_start!()));
+        check(REGEX_ID_CONTINUE, |c| matches!(c, pattern_id_continue!()));
+        check(REGEX_INT_START, |c| matches!(c, pattern_int_start!()));
+        check(REGEX_INT_CONTINUE, |c| matches!(c, pattern_int_continue!()));
     }
 }

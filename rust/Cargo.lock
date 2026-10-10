@@ -464,6 +464,7 @@ version = "0.1.0"
 dependencies = [
  "hwl_language",
  "libfuzzer-sys",
+ "serde_json",
 ]
 
 [[package]]
