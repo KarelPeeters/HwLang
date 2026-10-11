@@ -21,3 +21,5 @@ pub const STACK_OVERFLOW_STACK_LIMIT: usize = if cfg!(target_family = "wasm") { 
 pub const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 pub const MAX_DRIVER_INFO_PATHS: usize = 20;
+
+pub const MAX_IMPORT_SUGGESTIONS: usize = 8;

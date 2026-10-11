@@ -21,13 +21,15 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
+use crate::util::edit_distance::most_similar;
 use crate::util::intern::{Id, Interner};
 use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
-use khdl_util::constants::{STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
+use khdl_util::constants::{MAX_IMPORT_SUGGESTIONS, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
+use khdl_util::swrite;
 use rand::seq::SliceRandom;
 use std::borrow::Borrow;
 use std::fmt::Debug;
@@ -650,7 +652,7 @@ fn report_import_not_found(
     base: HierarchyNode,
     base_span: Option<Span>,
     step: Spanned<&str>,
-    mut options: Vec<&str>,
+    options: Vec<&str>,
 ) -> DiagError {
     let title = if base == hierarchy.root_node() {
         format!("root package has no member `{}`", step.inner)
@@ -670,10 +672,15 @@ fn report_import_not_found(
         None => diag.add_footer_info("looked up in the root package"),
     };
 
-    // TODO sort by similarity and only show top k?
-    options.sort();
+    // only suggest the most similar options
+    let option_count = options.len();
+    let options = most_similar(step.inner, options, MAX_IMPORT_SUGGESTIONS);
     if !options.is_empty() {
-        diag = diag.add_footer_hint(format!("possible options: {options:?}"));
+        let mut hint = format!("possible options: {options:?}");
+        if option_count > options.len() {
+            swrite!(hint, " and {} more", option_count - options.len());
+        }
+        diag = diag.add_footer_hint(hint);
     }
     diag.report(diags)
 }
