@@ -1,4 +1,4 @@
-use crate::front::compile::{CompileItemContext, CompileRefs, CompileShared};
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::implication::{HardwareValueWithImplications, ValueWithImplications};
@@ -133,8 +133,8 @@ pub enum TypeContainsReason {
 }
 
 impl TypeContainsReason {
-    pub fn add_diag_info(self, shared: &CompileShared, diag: DiagnosticError, target_ty: &Type) -> DiagnosticError {
-        let target_ty_str = target_ty.value_string(shared);
+    pub fn add_diag_info(self, refs: CompileRefs, diag: DiagnosticError, target_ty: &Type) -> DiagnosticError {
+        let target_ty_str = target_ty.value_string(refs);
         match self {
             // TODO improve assignment error message
             TypeContainsReason::Assignment {
@@ -222,7 +222,6 @@ pub fn check_type_contains_type(
     value_ty: Spanned<&Type>,
 ) -> DiagResult {
     let diags = refs.diags;
-    let shared = &refs.shared;
     if target_ty.contains_type(value_ty.inner) {
         Ok(())
     } else {
@@ -233,10 +232,10 @@ pub fn check_type_contains_type(
             value_ty.span,
             format!(
                 "source value with type `{}` does not fit",
-                value_ty.inner.value_string(shared)
+                value_ty.inner.value_string(refs)
             ),
         );
-        diag = reason.add_diag_info(shared, diag, target_ty);
+        diag = reason.add_diag_info(refs, diag, target_ty);
         Err(diag.report(diags))
     }
 }
@@ -452,7 +451,7 @@ pub fn check_hardware_type_for_bit_operation(refs: CompileRefs, ty: Spanned<&Typ
     let diags = refs.diags;
     let shared = &refs.shared;
     ty.inner.as_hardware_type(&shared.elaboration_arenas).map_err(|_| {
-        let ty_str = ty.inner.value_string(shared);
+        let ty_str = ty.inner.value_string(refs);
         DiagnosticError::new(
             "converting to/from bits is only possible for hardware types",
             ty.span,

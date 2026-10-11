@@ -1984,7 +1984,7 @@ fn merge_branch_variable(
             match branch_ty.as_hardware_type(elab) {
                 Ok(ty) => Ok(ty),
                 Err(NonHardwareType) => {
-                    let ty_str = branch_ty.value_string(refs.shared);
+                    let ty_str = branch_ty.value_string(refs);
                     branch_errors.entry(branch_value.span).or_insert(ty_str);
                     Err(NonHardwareType)
                 }
@@ -2017,7 +2017,7 @@ fn merge_branch_variable(
 
     // convert common to hardware too
     let ty = ty.as_hardware_type(elab).map_err(|_| {
-        let ty_str = ty.value_string(refs.shared);
+        let ty_str = ty.value_string(refs);
 
         let mut diag = DiagnosticError::new(
             "branch assignment merging needs hardware type",
@@ -2036,10 +2036,7 @@ fn merge_branch_variable(
                     MaybeUndefined::Defined(branch_value) => {
                         diag = diag.add_info(
                             branch_value.span,
-                            format!(
-                                "value in branch assigned here has type `{}`",
-                                ty.value_string(refs.shared)
-                            ),
+                            format!("value in branch assigned here has type `{}`", ty.value_string(refs)),
                         )
                     }
                 }
@@ -2053,10 +2050,7 @@ fn merge_branch_variable(
                 MaybeUndefined::Defined(parent_value) => {
                     diag = diag.add_info(
                         parent_value.span,
-                        format!(
-                            "value before branch assigned here has type `{}`",
-                            ty.value_string(refs.shared)
-                        ),
+                        format!("value before branch assigned here has type `{}`", ty.value_string(refs)),
                     );
                 }
             }

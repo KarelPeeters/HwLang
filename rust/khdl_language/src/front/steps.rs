@@ -1,5 +1,5 @@
 use crate::front::check::check_hardware_type_for_bit_operation;
-use crate::front::compile::{CompileItemContext, CompileRefs};
+use crate::front::compile::{CompileItemContext, CompileRefs, resolve_import_final};
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::ValueDomain;
 use crate::front::function::{
@@ -483,10 +483,7 @@ impl TargetSteps<TargetStep> {
                                 )
                                 .add_info(
                                     curr_span,
-                                    format!(
-                                        "target resolved to type `{}`",
-                                        Type::Tuple(None).value_string(refs.shared)
-                                    ),
+                                    format!("target resolved to type `{}`", Type::Tuple(None).value_string(refs)),
                                 )
                                 .report(diags)
                             })?;
@@ -546,7 +543,7 @@ impl TargetSteps<TargetStep> {
                             curr_span,
                             format!(
                                 "this array target needs to have a hardware type, has type `{}`",
-                                curr_ty.value_string(refs.shared)
+                                curr_ty.value_string(refs)
                             ),
                         )
                         .add_info(step_span, "for this hardware array access operation")
@@ -697,6 +694,21 @@ fn eval_dot_index_id(
         return Ok(Value::Simple(SimpleCompileValue::InterfaceView(interface_view)));
     }
 
+    // hierarchy indexing, similar to import
+    if let &Value::Simple(SimpleCompileValue::Package(node)) = &base.inner {
+        let value = resolve_import_final(
+            diags,
+            &refs.shared.interner,
+            refs.fixed.hierarchy,
+            &refs.shared.file_scopes,
+            node,
+            Spanned::new(index.span, index_str),
+            false,
+        )?;
+
+        return Ok(Value::from(ctx.eval_import_value(value)?));
+    }
+
     // common type attributes
     if let Value::Simple(SimpleCompileValue::Type(ty)) = &base.inner {
         match index_str {
@@ -720,10 +732,7 @@ fn eval_dot_index_id(
                     let diag = DiagnosticError::new(
                         "from_bits is only allowed for types where every bit pattern is valid",
                         base.span,
-                        format!(
-                            "got type `{}` with invalid bit patterns",
-                            ty_hw.value_string(refs.shared)
-                        ),
+                        format!("got type `{}` with invalid bit patterns", ty_hw.value_string(refs)),
                     )
                     .add_footer_hint("consider using a target type where every bit pattern is valid")
                     .add_footer_hint("if you know the bits are valid for this type, use `from_bits_unsafe` instead")
@@ -763,7 +772,7 @@ fn eval_dot_index_id(
                             index.span,
                             "trying to get length here",
                         )
-                        .add_info(base.span, format!("array type is `{}`", ty.value_string(refs.shared)))
+                        .add_info(base.span, format!("array type is `{}`", ty.value_string(refs)))
                         .report(diags);
                         Err(diag)
                     };
@@ -932,10 +941,7 @@ fn eval_dot_index_id(
         index.span,
         format!("no attribute found with name `{index_str}`"),
     )
-    .add_info(
-        base.span,
-        format!("base has type `{}`", base_ty.value_string(refs.shared)),
-    )
+    .add_info(base.span, format!("base has type `{}`", base_ty.value_string(refs)))
     .report(diags);
     Err(diag)
 }
@@ -1013,7 +1019,7 @@ fn set_compile_value_impl(
                             source.span,
                             format!(
                                 "non-array value with type `{}` here",
-                                source.inner.ty().value_string(refs.shared)
+                                source.inner.ty().value_string(refs)
                             ),
                         )
                         .add_info(target.span, "target is a slice assignment")
@@ -1346,10 +1352,7 @@ fn err_expected_array(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span, st
     )
     .add_info(
         ty.span,
-        format!(
-            "on non-array value with type `{}` here",
-            ty.inner.value_string(refs.shared)
-        ),
+        format!("on non-array value with type `{}` here", ty.inner.value_string(refs)),
     )
     .report(refs.diags)
 }
@@ -1358,10 +1361,7 @@ pub fn err_expected_tuple(refs: CompileRefs, ty: Spanned<&Type>, step_span: Span
     DiagnosticError::new("cannot tuple index non-tuple type", step_span, "tuple index here")
         .add_info(
             ty.span,
-            format!(
-                "on non-tuple value with type `{}` here",
-                ty.inner.value_string(refs.shared)
-            ),
+            format!("on non-tuple value with type `{}` here", ty.inner.value_string(refs)),
         )
         .report(refs.diags)
 }
@@ -1370,10 +1370,7 @@ pub fn err_expected_struct(refs: CompileRefs, ty: Spanned<&Type>, step_span: Spa
     DiagnosticError::new("cannot struct index non-struct type", step_span, "struct index here")
         .add_info(
             ty.span,
-            format!(
-                "on non-struct value with type `{}` here",
-                ty.inner.value_string(refs.shared)
-            ),
+            format!("on non-struct value with type `{}` here", ty.inner.value_string(refs)),
         )
         .report(refs.diags)
 }

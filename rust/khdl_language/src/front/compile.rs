@@ -4,18 +4,20 @@ use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
 use crate::front::module_header::ElaboratedModuleHeader;
 use crate::front::print::PrintHandler;
-use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopeKey, ScopedEntry};
+use crate::front::scope::{DeclaredValueSingle, FrozenScope, ScopedEntry};
 use crate::front::signal::{
     Polarized, Port, PortInfo, PortInterface, PortInterfaceInfo, Signal, Wire, WireInfo, WireInterface,
     WireInterfaceInfo,
 };
-use crate::front::value::{CompileValue, Value};
+use crate::front::value::{CompileValue, SimpleCompileValue, Value};
 use crate::mid::graph::ir_modules_check_no_instance_cycles;
 use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
-use crate::syntax::ast::{self, Expression, ExpressionKind, Identifier, MaybeIdentifier, SimpleIdentifier, Visibility};
-use crate::syntax::hierarchy::SourceHierarchy;
+use crate::syntax::ast::{
+    self, Expression, ExpressionKind, Identifier, ImportFinalKind, MaybeIdentifier, SimpleIdentifier, Visibility,
+};
+use crate::syntax::hierarchy::{HierarchyNode, SourceHierarchy};
 use crate::syntax::parsed::{AstRefItem, AstRefModuleInternal, ParsedDatabase};
-use crate::syntax::pos::{HasSpan, Span, Spanned};
+use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
@@ -27,6 +29,7 @@ use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
 use khdl_util::constants::{STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
 use rand::seq::SliceRandom;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -129,54 +132,37 @@ impl<'a, 's> CompileRefs<'a, 's> {
         }
     }
 
-    pub fn resolve_item_by_path(self, path: Spanned<&str>) -> DiagResult<AstRefItem> {
-        // TODO share code with resolve_import_path
+    /// Resolve a dot-separated path, using the same rules as imports.
+    /// If `allow_private` is set, private items are accessible too.
+    pub fn resolve_path(self, path: Spanned<&str>, allow_private: bool) -> DiagResult<ImportValue> {
         let diags = self.diags;
-        let interner = &self.shared.interner;
 
         // split path
-        let path_split = path.inner.split(".").collect_vec();
-        let (&name, steps) = path_split.split_last().ok_or_else(|| {
-            diags.report_error_simple(
-                "invalid path: cannot be empty",
-                path.span,
-                format!("got empty path `{}`", path.inner),
-            )
-        })?;
-
-        // follow steps to get node
-        let mut curr_node = self.fixed.hierarchy.root_node();
-        for &step in steps {
-            curr_node = curr_node.children.get(step).ok_or_else(|| {
-                diags.report_error_simple(
-                    "invalid path: step does not exist in hierarchy",
-                    path.span,
-                    format!("hierarchy step `{}` does not exist in path `{}`", step, path.inner),
-                )
-            })?;
+        if path.inner.is_empty() {
+            return Err(diags.report_error_simple("path cannot be empty", path.span, "empty path here"));
         }
+        let path_split = path.inner.split(".").collect_vec();
+        if path_split.iter().any(|step| step.is_empty()) {
+            let title = format!("path `{}` contains an empty step", path.inner);
+            return Err(diags.report_error_simple(title, path.span, "path here"));
+        }
+        let (&final_, steps) = path_split.split_last().unwrap();
 
-        // get file scope
-        let file = curr_node.file.ok_or_else(|| {
-            diags.report_error_simple(
-                "invalid path: expected file at end of hierarchy",
-                path.span,
-                format!("expected file at end of hierarchy for path `{}`", path.inner),
-            )
-        })?;
-        let scope = self.shared.file_scope(file)?;
-
-        // get item in scope
-        // TODO check public?
-        let name = interner.push(name);
-        let entry = scope.find(diags, interner, Spanned::new(path.span, name))?;
-        let item = match entry.value {
-            ScopedEntry::Item(item) => item,
-            ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
-                return Err(diags.report_error_internal(path.span, "file scopes should only contain items"));
-            }
-        };
-        Ok(item)
+        // call into existing import machinery
+        let base = resolve_import_steps(
+            diags,
+            self.fixed.hierarchy,
+            steps.iter().map(|&step| Spanned::new(path.span, step)),
+        )?;
+        resolve_import_final(
+            diags,
+            &self.shared.interner,
+            self.fixed.hierarchy,
+            &self.shared.file_scopes,
+            base,
+            Spanned::new(path.span, final_),
+            allow_private,
+        )
     }
 
     pub fn eval_item(self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
@@ -213,7 +199,7 @@ pub enum WorkItem {
 
 /// long-term shared between threads
 pub struct CompileShared {
-    pub file_scopes: FileScopes,
+    pub file_scopes: FileScopes<Arc<FrozenScope>>,
 
     pub work_queue: SharedQueue<WorkItem>,
 
@@ -227,7 +213,19 @@ pub struct CompileShared {
     pub next_flow_root_id: NextFlowRootId,
 }
 
-pub type FileScopes = IndexMap<FileId, DiagResult<Arc<FrozenScope>>>;
+pub type FileScopes<S> = IndexMap<FileId, DiagResult<FileScope<S>>>;
+
+pub struct FileScope<S> {
+    pub declared: IndexMap<Id, DiagResult<DeclaredItem>>,
+    pub scope: S,
+}
+
+#[derive(Copy, Clone)]
+pub struct DeclaredItem {
+    span_id: Span,
+    vis: Visibility,
+    item: AstRefItem,
+}
 
 #[derive(Copy, Clone)]
 pub struct CompileRefs<'a, 's> {
@@ -326,6 +324,13 @@ impl<'a, 's> CompileItemContext<'a, 's> {
         Ok(result)
     }
 
+    pub fn eval_import_value(&mut self, value: ImportValue) -> DiagResult<CompileValue> {
+        match value {
+            ImportValue::HierarchyNode(node) => Ok(CompileValue::Simple(SimpleCompileValue::Package(node))),
+            ImportValue::Item(item) => self.eval_item(item).cloned(),
+        }
+    }
+
     pub fn eval_item(&mut self, item: AstRefItem) -> DiagResult<&'s CompileValue> {
         let item_span = self.refs.fixed.parsed[item].info().span_short;
         let stack_entry = StackEntry::ItemEvaluation(item_span);
@@ -408,7 +413,7 @@ pub enum CompileStackEntry {
     FunctionRun(AstRefItem, Vec<Value>),
 }
 
-fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Interner) -> FileScopes {
+fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Interner) -> FileScopes<Arc<FrozenScope>> {
     let CompileFixed {
         settings: _,
         source,
@@ -417,9 +422,12 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
     } = fixed;
 
     // pass 0: add all declared items to the file scope
-    let mut file_scopes = IndexMap::new();
+    let mut file_scopes: FileScopes<FrozenScope> = IndexMap::new();
     for file in hierarchy.files() {
+        let file_node = &hierarchy[hierarchy.file_node(file).unwrap()];
+
         let scope = parsed[file].as_ref_ok().map(|ast| {
+            let mut declared = IndexMap::new();
             let mut scope = FrozenScope::new(ast.span);
 
             for (ast_item_ref, ast_item) in ast.items_with_ref() {
@@ -428,11 +436,31 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
                     if let Ok(id) = require_maybe_simple_id(diags, info.id, "top-level item") {
                         let id = id.map_id(|id| id.spanned_str(source).map_inner(|id| interner.push(id)));
                         scope.declare(diags, interner, id, Ok(ScopedEntry::Item(ast_item_ref)));
+
+                        // insert the item in the declared map as well,
+                        //   items can't have the same name as a child node, that would make imports ambiguous
+                        if let MaybeIdentifier::Identifier(id) = id {
+                            let result = scope.find(diags, interner, id).and_then(|_| {
+                                let id_str = id.inner.str(interner);
+                                match file_node.children.get(id_str) {
+                                    None => Ok(DeclaredItem {
+                                        span_id: id.span,
+                                        vis: info.vis,
+                                        item: ast_item_ref,
+                                    }),
+                                    Some(_) => {
+                                        let title = format!("item `{id_str}` has the same name as a child package");
+                                        Err(diags.report_error_simple(title, id.span, "item declared here"))
+                                    }
+                                }
+                            });
+                            declared.insert(id.inner, result);
+                        }
                     }
                 }
             }
 
-            scope
+            FileScope { declared, scope }
         });
 
         file_scopes.insert_first(file, scope);
@@ -447,57 +475,44 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
         if let Ok(target_file_ast) = &parsed[target_file] {
             for item in &target_file_ast.items {
                 if let ast::Item::Import(item) = item {
-                    let ast::ItemImport {
-                        span: _,
-                        parents,
-                        entry,
-                    } = item;
+                    let ast::ItemImport { span: _, steps, final_ } = item;
 
-                    let source_scope = resolve_import_path(diags, source, hierarchy, parents)
-                        .and_then(|source_file| file_scopes.get(&source_file).unwrap().as_ref_ok());
+                    let steps = steps.inner.iter().map(|step| step.spanned_str(source));
+                    let base = resolve_import_steps(diags, hierarchy, steps);
 
-                    let entries = match &entry.inner {
-                        ast::ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
-                        ast::ImportFinalKind::Multi(entries) => entries,
+                    let entries = match &final_.inner {
+                        ImportFinalKind::Single(entry) => std::slice::from_ref(entry),
+                        ImportFinalKind::Multi(entries) => entries,
                     };
 
                     for entry in entries {
                         let &ast::ImportEntry { span: _, id, as_ } = entry;
 
                         // eval ids
-                        let id_str = id.str(source);
-                        let id = Spanned::new(id.span, interner.push(id_str));
+                        let id_str = id.spanned_str(source);
+                        let id = Spanned::new(id.span, interner.push(id_str.inner));
                         let as_ =
                             as_.map(|as_| as_.map_id(|as_| Spanned::new(as_.span, interner.push(as_.str(source)))));
 
-                        // TODO suggest alternatives, like for parent imports
-                        let source_value = source_scope
-                            .and_then(|source_scope| source_scope.find(diags, interner, id))
-                            .map(|found| found.value);
+                        // find entry
+                        let value = base.and_then(|base| {
+                            resolve_import_final(diags, interner, hierarchy, &file_scopes, base, id_str, false)
+                        });
 
-                        // check visibility, but still proceed as if the import succeeded
-                        if let Ok(ScopedEntry::Item(source_item)) = source_value {
-                            let decl_info = parsed[source_item].info().declaration.unwrap();
-                            match decl_info.vis {
-                                Visibility::Public { span: _ } => {}
-                                Visibility::Private => {
-                                    let _ = DiagnosticError::new(
-                                        format!("cannot access identifier `{}`", id_str),
-                                        id.span,
-                                        "not accessible here",
-                                    )
-                                    .add_info(decl_info.id.span(), "identifier declared here")
-                                    .add_footer_info("private items cannot be accessed outside of the declaring file")
-                                    .report(diags);
-                                }
+                        // map to entry
+                        let entry = value.map(|value| match value {
+                            ImportValue::HierarchyNode(node) => {
+                                ScopedEntry::Value(Value::Simple(SimpleCompileValue::Package(node)))
                             }
-                        }
+                            ImportValue::Item(item) => ScopedEntry::Item(item),
+                        });
 
+                        // store pair
                         let target_id = match as_ {
                             Some(as_) => as_,
                             None => MaybeIdentifier::Identifier(id),
                         };
-                        curr_imported_items.push((target_id, source_value));
+                        curr_imported_items.push((target_id, entry));
                     }
                 }
             }
@@ -510,45 +525,64 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
     for (target_file, items) in zip_eq(hierarchy.files(), file_imported_items) {
         if let Ok(scope) = file_scopes.get_mut(&target_file).unwrap() {
             for (target_id, value) in items {
-                scope.declare(diags, interner, target_id, value);
+                scope.scope.declare(diags, interner, target_id, value);
             }
         }
     }
 
     // pass 3: add prelude items to all files scopes
-    // TODO this silently does nothing if there is no std library, is that okay?
-    // TODO this causes errors if there are duplicate identifiers
-    let mut prelude_imported_items: Vec<(Id, DeclaredValueSingle)> = vec![];
+    // TODO this silently does nothing if:
+    //   * the std files are missing
+    //   * std contains name collisions
+    let mut prelude_imported_items = vec![];
     for std_file in ["types", "util", "math"] {
-        let file = hierarchy
-            .root_node()
+        let file = hierarchy[hierarchy.root_node()]
             .children
             .get("std")
-            .and_then(|n| n.children.get(std_file))
-            .and_then(|n| n.file);
+            .and_then(|&n| hierarchy[n].children.get(std_file))
+            .and_then(|&n| hierarchy[n].file);
 
         if let Some(file) = file {
             let scope = &file_scopes.get(&file).unwrap();
             if let Ok(scope) = scope {
-                scope.for_each_immediate_entry(|name, value| {
-                    if let ScopeKey::Id(name) = name {
-                        prelude_imported_items.push((name, value.cloned()));
-                    }
+                let public_items = scope.declared.iter().filter(|(_, item)| match item {
+                    Ok(item) => match item.vis {
+                        Visibility::Public { .. } => true,
+                        Visibility::Private => false,
+                    },
+                    Err(_) => true,
                 });
+                prelude_imported_items.extend(public_items.map(|(&k, &v)| (k, v)));
             }
         }
     }
     for file in hierarchy.files() {
         if let Ok(scope) = file_scopes.get_mut(&file).unwrap() {
-            for &(name, ref value) in &prelude_imported_items {
-                if !scope.has_immediate_entry(name) {
-                    scope.declare_already_checked(name, value.clone());
+            for &(id, item) in &prelude_imported_items {
+                if !scope.scope.has_immediate_entry(id) {
+                    let value = match item {
+                        Ok(item) => DeclaredValueSingle::Value {
+                            span: item.span_id,
+                            value: ScopedEntry::Item(item.item),
+                        },
+                        Err(e) => DeclaredValueSingle::Error(e),
+                    };
+                    scope.scope.declare_already_checked(id, value);
                 }
             }
         }
     }
 
-    file_scopes.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect()
+    file_scopes
+        .into_iter()
+        .map(|(k, v)| {
+            let v = v.map(|v| FileScope {
+                declared: v.declared,
+                scope: Arc::new(v.scope),
+            });
+            (k, v)
+        })
+        .collect()
 }
 
 fn require_maybe_simple_id(
@@ -568,43 +602,115 @@ fn require_maybe_simple_id(
     }
 }
 
-fn resolve_import_path(
+fn resolve_import_steps<'s>(
     diags: &Diagnostics,
-    source: &SourceDatabase,
     hierarchy: &SourceHierarchy,
-    path: &Spanned<Vec<SimpleIdentifier>>,
-) -> DiagResult<FileId> {
-    // TODO the current path design does not allow private sub-modules
-    //   are they really necessary? if all inner items are private it's effectively equivalent
-    //   -> no it's not equivalent, things can also be private from the parent
-    let mut curr_node = hierarchy.root_node();
-
-    // get the span without the trailing separator
-    let parents_span = if path.inner.is_empty() {
-        // TODO is an empty path even possible?
-        path.span
-    } else {
-        path.inner.first().unwrap().span.join(path.inner.last().unwrap().span)
-    };
-
-    for step in &path.inner {
-        curr_node = match curr_node.children.get(step.str(source)) {
-            Some(child_node) => child_node,
+    path: impl IntoIterator<Item = Spanned<&'s str>>,
+) -> DiagResult<HierarchyNode> {
+    path.into_iter().try_fold(hierarchy.root_node(), |node, step| {
+        let children = &hierarchy[node].children;
+        match children.get(step.inner) {
+            Some(&child_node) => Ok(child_node),
             None => {
-                let mut options = curr_node.children.keys().cloned().collect_vec();
+                // TODO sort by similarity and only show top k?
+                let mut options = children.keys().cloned().collect_vec();
                 options.sort();
 
-                // TODO without trailing separator
-                return Err(DiagnosticError::new("import not found", step.span, "failed step")
-                    .add_footer_hint(format!("possible options: {options:?}"))
-                    .report(diags));
+                let mut diag = DiagnosticError::new("import not found", step.span, "failed step");
+                if !options.is_empty() {
+                    diag = diag.add_footer_hint(format!("possible options: {options:?}"));
+                }
+                Err(diag.report(diags))
             }
-        };
-    }
+        }
+    })
+}
 
-    curr_node
+#[derive(Debug, Copy, Clone)]
+pub enum ImportValue {
+    HierarchyNode(HierarchyNode),
+    Item(AstRefItem),
+}
+
+pub fn resolve_import_final<S: Borrow<FrozenScope>>(
+    diags: &Diagnostics,
+    interner: &Interner,
+    hierarchy: &SourceHierarchy,
+    file_scopes: &FileScopes<S>,
+    base: HierarchyNode,
+    final_: Spanned<&str>,
+    allow_private: bool,
+) -> DiagResult<ImportValue> {
+    let base_info = &hierarchy[base];
+
+    // search for both options
+    let node = base_info.children.get(final_.inner).copied();
+    let item = base_info
         .file
-        .ok_or_else(|| diags.report_error_simple("expected path to file", parents_span, "no file exists at this path"))
+        .map(|file| {
+            let Some(final_id) = interner.find(final_.inner) else {
+                return Ok(None);
+            };
+            let scope = file_scopes.get(&file).unwrap().as_ref_ok()?;
+            scope.declared.get(&final_id).map(ResultExt::as_ref_ok).transpose()
+        })
+        .transpose()?
+        .flatten();
+
+    // pick the result
+    // if there is exactly one matching option, return it
+    // if there are two, report an internal error, this should have been checked earlier already
+    match (node, item) {
+        (Some(node), None) => {
+            // simple hierarchy node
+            Ok(ImportValue::HierarchyNode(node))
+        }
+        (None, Some(item)) => {
+            // item import
+            // check visibility, but still proceed as if the import succeeded
+            if !allow_private {
+                match item.vis {
+                    Visibility::Public { span: _ } => {}
+                    Visibility::Private => {
+                        let _ = DiagnosticError::new(
+                            format!("cannot import private item `{}`", final_.inner),
+                            final_.span,
+                            "not accessible here",
+                        )
+                        .add_info(item.span_id, "item declared as private here")
+                        .add_footer_info("private items cannot be imported")
+                        .report(diags);
+                    }
+                }
+            }
+            Ok(ImportValue::Item(item.item))
+        }
+        (None, None) => {
+            // TODO sort by similarity and only show top k?
+            let mut options = base_info.children.keys().map(String::as_str).collect_vec();
+            if let Some(file) = base_info.file
+                && let Ok(scope) = file_scopes.get(&file).unwrap()
+            {
+                let items = scope.declared.iter().filter_map(|(id, item)| {
+                    let item = item.as_ref().ok()?;
+                    let visible = allow_private || matches!(item.vis, Visibility::Public { span: _ });
+                    visible.then(|| id.str(interner))
+                });
+                options.extend(items);
+            }
+            options.sort();
+
+            let mut diag = DiagnosticError::new("import not found", final_.span, "failed step");
+            if !options.is_empty() {
+                diag = diag.add_footer_hint(format!("possible options: {options:?}"));
+            }
+            Err(diag.report(diags))
+        }
+        (Some(_), Some(_)) => Err(diags.report_error_internal(
+            final_.span,
+            "items with the same name as a child package should have been reported already",
+        )),
+    }
 }
 
 impl CompileShared {
@@ -680,7 +786,7 @@ impl CompileShared {
         }
     }
 
-    pub fn file_scope(&self, file: FileId) -> DiagResult<&Arc<FrozenScope>> {
+    pub fn file_scope(&self, file: FileId) -> DiagResult<&FileScope<Arc<FrozenScope>>> {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 

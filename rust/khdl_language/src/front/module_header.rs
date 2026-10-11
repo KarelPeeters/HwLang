@@ -116,12 +116,7 @@ impl CompileRefs<'_, '_> {
         // create params debug info string
         let debug_info_params = debug_info_params.map(|p| {
             p.into_iter()
-                .map(|(k, v)| {
-                    (
-                        k.inner.str(&self.shared.interner).to_owned(),
-                        v.value_string(self.shared),
-                    )
-                })
+                .map(|(k, v)| (k.inner.str(&self.shared.interner).to_owned(), v.value_string(self)))
                 .collect_vec()
         });
 
@@ -360,7 +355,7 @@ impl ModulePortsContext<'_> {
                         value => Err(diags.report_error_simple(
                             "expected interface view",
                             view.span,
-                            format!("got other value with type `{}`", value.ty().value_string(refs.shared)),
+                            format!("got other value with type `{}`", value.ty().value_string(refs)),
                         )),
                     });
 
@@ -391,7 +386,7 @@ impl ModulePortsContext<'_> {
                 direction: direction.inner,
                 ty: ty.inner.as_ir(ctx.refs),
                 debug_span: id.span(),
-                debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(ctx.refs.shared)),
+                debug_info_ty: ty.as_ref().map_inner(|inner| inner.value_string(ctx.refs)),
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             };
             let ir_port = self.ir_ports.push(ir_port_info);
@@ -458,7 +453,7 @@ impl ModulePortsContext<'_> {
                     direction: direction.inner,
                     ty: ty.inner.as_ir(ctx.refs),
                     debug_span: id.span(),
-                    debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(ctx.refs.shared)),
+                    debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(ctx.refs)),
                     debug_info_domain: domain.inner.diagnostic_string(ctx),
                 };
                 let ir_port = self.ir_ports.push(ir_port_info);

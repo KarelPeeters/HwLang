@@ -67,12 +67,11 @@ pub struct ConstBlock {
     pub block: Block<BlockStatement>,
 }
 
-// TODO split this out from the items that actually define _new_ symbols?
 #[derive(Debug, Clone)]
 pub struct ItemImport {
     pub span: Span,
-    pub parents: Spanned<Vec<SimpleIdentifier>>,
-    pub entry: Spanned<ImportFinalKind>,
+    pub steps: Spanned<Vec<SimpleIdentifier>>,
+    pub final_: Spanned<ImportFinalKind>,
 }
 
 #[derive(Debug, Clone)]

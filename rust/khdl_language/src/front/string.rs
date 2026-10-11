@@ -1,7 +1,7 @@
-use crate::front::compile::{CompileItemContext, CompileShared};
+use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
-use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo};
+use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo, ElaborationArenas};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
@@ -14,9 +14,11 @@ use crate::mid::ir::{
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{Expression, StringPiece};
+use crate::syntax::hierarchy::SourceHierarchy;
 use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::token::parse_token_string_middle;
 use crate::util::big_int::{BigInt, BigUint};
+use crate::util::intern::Interner;
 use crate::util::iter::IterExt;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange, Range};
 use crate::util::range_multi::{AnyMultiRange, MultiRange};
@@ -50,9 +52,9 @@ impl StringBuilder {
         }
     }
 
-    pub fn push_value(&mut self, shared: &CompileShared, value: &Value) {
+    pub fn push_value(&mut self, refs: CompileRefs, value: &Value) {
         match value {
-            Value::Simple(value) => self.push_str(value.value_string(shared)),
+            Value::Simple(value) => self.push_str(value.value_string(refs)),
             Value::Compound(value) => match value {
                 MixedCompoundValue::String(value) => {
                     let MixedString { pieces } = value.as_ref();
@@ -71,15 +73,15 @@ impl StringBuilder {
                     RangeValue::Normal(range) => {
                         let Range { start, end } = range;
                         if let Some(start) = start {
-                            self.push_value(shared, &Value::from(start.clone()));
+                            self.push_value(refs, &Value::from(start.clone()));
                         }
                         self.push_str("..");
                         if let Some(end) = end {
-                            self.push_value(shared, &Value::from(end.clone()));
+                            self.push_value(refs, &Value::from(end.clone()));
                         }
                     }
                     RangeValue::HardwareStartLength { start, length } => {
-                        self.push_value(shared, &Value::Hardware(start.clone().map_type(HardwareType::Int)));
+                        self.push_value(refs, &Value::Hardware(start.clone().map_type(HardwareType::Int)));
                         self.push_str("+..");
                         self.push_str(length.to_string());
                     }
@@ -87,7 +89,7 @@ impl StringBuilder {
                 MixedCompoundValue::Tuple(elements) => {
                     self.push_str("(");
                     for (elem, last) in elements.iter().with_last() {
-                        self.push_value(shared, elem);
+                        self.push_value(refs, elem);
                         if !last {
                             self.push_str(", ");
                         }
@@ -99,14 +101,14 @@ impl StringBuilder {
                 }
                 MixedCompoundValue::Struct(value) => {
                     let &StructValue { ty, ref fields } = value;
-                    let ty_info = shared.elaboration_arenas.struct_info(ty);
+                    let ty_info = refs.shared.elaboration_arenas.struct_info(ty);
 
                     self.push_str(&ty_info.debug_info_name);
                     self.push_str(".new(");
                     for ((field_name, field_value), last) in zip_eq(ty_info.fields.keys(), fields).with_last() {
-                        self.push_str(field_name.str(&shared.interner));
+                        self.push_str(field_name.str(&refs.shared.interner));
                         self.push_str("=");
-                        self.push_value(shared, field_value);
+                        self.push_value(refs, field_value);
                         if !last {
                             self.push_str(", ");
                         }
@@ -119,16 +121,16 @@ impl StringBuilder {
                         variant,
                         ref payload,
                     } = value;
-                    let ty_info = shared.elaboration_arenas.enum_info(ty);
+                    let ty_info = refs.shared.elaboration_arenas.enum_info(ty);
 
                     let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
                     self.push_str(&ty_info.debug_info_name);
                     self.push_str(".");
-                    self.push_str(variant_name.str(&shared.interner));
+                    self.push_str(variant_name.str(&refs.shared.interner));
                     if let Some(payload) = payload {
                         self.push_str("(");
-                        self.push_value(shared, payload);
+                        self.push_value(refs, payload);
                         self.push_str(")");
                     }
                 }
@@ -140,9 +142,9 @@ impl StringBuilder {
                     } = bound;
 
                     self.push_str("<bound ");
-                    self.push_str(self_type.value_string(shared));
+                    self.push_str(self_type.value_string(refs));
                     self.push_str(".");
-                    self.push_str(method.name.str(&shared.interner));
+                    self.push_str(method.name.str(&refs.shared.interner));
                     self.push_str(">");
                 }
             },
@@ -196,7 +198,7 @@ impl CompileItemContext<'_, '_> {
                         }
                     };
 
-                    builder.push_value(self.refs.shared, &piece_value.inner);
+                    builder.push_value(self.refs, &piece_value.inner);
                 }
             }
         }
@@ -210,7 +212,7 @@ impl CompileItemContext<'_, '_> {
 }
 
 pub fn hardware_print_string(
-    shared: &CompileShared,
+    refs: CompileRefs,
     flow: &mut FlowHardware,
     large: &mut IrLargeArena,
     span: Span,
@@ -225,7 +227,7 @@ pub fn hardware_print_string(
         match piece {
             StringPiece::Literal(s) => builder.push_str(s),
             StringPiece::Substitute(sub) => {
-                block.extend(print_hardware_sub(shared, &mut new_ir_var, large, &mut builder, sub));
+                block.extend(print_hardware_sub(refs, &mut new_ir_var, large, &mut builder, sub));
             }
         }
     }
@@ -270,7 +272,7 @@ impl IrStringBuilder {
 
 #[must_use]
 fn print_hardware_sub(
-    shared: &CompileShared,
+    refs: CompileRefs,
     new_ir_var: &mut impl FnMut(IrVariableInfo) -> IrVariable,
     large: &mut IrLargeArena,
     builder: &mut IrStringBuilder,
@@ -327,7 +329,7 @@ fn print_hardware_sub(
                 // single element, just print it
                 // TODO also do this for short arrays with simplem elements?
                 let element_value = element_value(IrExpression::Int(BigInt::ZERO));
-                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &element_value));
+                block_parent.extend(print_hardware_sub(refs, new_ir_var, large, builder, &element_value));
             } else {
                 // multiple elements, emit a loop
                 // print any pending pieces before the loop
@@ -346,7 +348,7 @@ fn print_hardware_sub(
 
                 // print the element, clearing again immediately afterwards to force all statements into the loop
                 let element_value = element_value(IrExpression::Variable(index));
-                let mut element_block = print_hardware_sub(shared, new_ir_var, large, builder, &element_value);
+                let mut element_block = print_hardware_sub(refs, new_ir_var, large, builder, &element_value);
                 builder.print_and_clear(&mut element_block);
 
                 // print comma
@@ -392,7 +394,7 @@ fn print_hardware_sub(
                     domain: value.domain,
                     expr: element_expr,
                 };
-                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &element_value));
+                block_parent.extend(print_hardware_sub(refs, new_ir_var, large, builder, &element_value));
                 if index < element_types.len() - 1 {
                     builder.push_str(", ");
                 }
@@ -403,7 +405,7 @@ fn print_hardware_sub(
             builder.push_str(")");
         }
         HardwareType::Struct(ty) => {
-            let ty_info = shared.elaboration_arenas.struct_info(ty.inner());
+            let ty_info = refs.shared.elaboration_arenas.struct_info(ty.inner());
             let ty_fields_hw = &ty_info.hw.as_ref().unwrap().fields;
 
             builder.push_str(&ty_info.debug_info_name);
@@ -420,9 +422,9 @@ fn print_hardware_sub(
                     expr: field_expr,
                 };
 
-                builder.push_str(field_name.str(&shared.interner));
+                builder.push_str(field_name.str(&refs.shared.interner));
                 builder.push_str("=");
-                block_parent.extend(print_hardware_sub(shared, new_ir_var, large, builder, &field_value));
+                block_parent.extend(print_hardware_sub(refs, new_ir_var, large, builder, &field_value));
 
                 if field_index < ty_info.fields.len() - 1 {
                     builder.push_str(", ");
@@ -431,7 +433,7 @@ fn print_hardware_sub(
             builder.push_str(")");
         }
         HardwareType::Enum(ty) => {
-            let ty_info = shared.elaboration_arenas.enum_info(ty.inner());
+            let ty_info = refs.shared.elaboration_arenas.enum_info(ty.inner());
             let ty_info_hw = ty_info.hw.as_ref().unwrap();
 
             builder.push_str(&ty_info.debug_info_name);
@@ -444,10 +446,10 @@ fn print_hardware_sub(
                 let payload = ty_info_hw.extract_payload(large, value, variant);
 
                 let mut block_case = vec![];
-                builder.push_str(variant_name.str(&shared.interner));
+                builder.push_str(variant_name.str(&refs.shared.interner));
                 if let Some(payload) = payload {
                     builder.push_str("(");
-                    block_case.extend(print_hardware_sub(shared, new_ir_var, large, builder, &payload));
+                    block_case.extend(print_hardware_sub(refs, new_ir_var, large, builder, &payload));
                     builder.push_str(")");
                 }
                 builder.print_and_clear(&mut block_case);
@@ -466,39 +468,59 @@ fn print_hardware_sub(
     block_parent
 }
 
+/// The minimal set of references needed to convert values and types to strings.
+#[derive(Copy, Clone)]
+pub struct StringRefs<'a> {
+    pub hierarchy: &'a SourceHierarchy,
+    pub interner: &'a Interner,
+    pub elab: &'a ElaborationArenas,
+}
+
+impl<'a, 's: 'a> From<CompileRefs<'a, 's>> for StringRefs<'a> {
+    fn from(refs: CompileRefs<'a, 's>) -> Self {
+        StringRefs {
+            hierarchy: refs.fixed.hierarchy,
+            interner: &refs.shared.interner,
+            elab: &refs.shared.elaboration_arenas,
+        }
+    }
+}
+
 impl CompileValue {
-    pub fn value_string(&self, shared: &CompileShared) -> String {
+    pub fn value_string<'a>(&self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
         match self {
-            CompileValue::Simple(v) => v.value_string(shared),
-            CompileValue::Compound(v) => v.value_string(shared),
+            CompileValue::Simple(v) => v.value_string(refs),
+            CompileValue::Compound(v) => v.value_string(refs),
             CompileValue::Hardware(never) => never.unreachable(),
         }
     }
 }
 
 impl SimpleCompileValue {
-    pub fn value_string(&self, shared: &CompileShared) -> String {
+    pub fn value_string<'a>(&self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
         match self {
-            SimpleCompileValue::Type(v) => v.value_string(shared),
+            SimpleCompileValue::Type(v) => v.value_string(refs),
             SimpleCompileValue::Bool(v) => v.to_string(),
             SimpleCompileValue::Int(v) => v.to_string(),
             SimpleCompileValue::Array(v) => {
-                let content = v.iter().map(|e| e.value_string(shared)).format(", ");
+                let content = v.iter().map(|e| e.value_string(refs)).format(", ");
                 format!("[{}]", content)
             }
             // TODO include names for function/module/references
             // TODO include import path for debug names?
             SimpleCompileValue::Function(_) => "<function>".to_owned(),
             SimpleCompileValue::Module(_) => "<module>".to_owned(),
+            &SimpleCompileValue::Package(node) => {
+                format!("<package {}>", refs.hierarchy[node].steps.join("."))
+            }
             &SimpleCompileValue::Interface(v) => {
-                format!(
-                    "<interface {}>",
-                    shared.elaboration_arenas.interface_info(v).debug_info_name
-                )
+                format!("<interface {}>", refs.elab.interface_info(v).debug_info_name)
             }
             &SimpleCompileValue::InterfaceView(v) => {
                 let ElaboratedInterfaceView { interface, view_index } = v;
-                let info = shared.elaboration_arenas.interface_info(interface);
+                let info = refs.elab.interface_info(interface);
                 let view_info = &info.views[view_index];
                 format!(
                     "<interface view {}.{}>",
@@ -507,11 +529,11 @@ impl SimpleCompileValue {
             }
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
                 ReferenceInner::Variable { var: _, ty } => {
-                    format!("<ref to var with type `{}`>", ty.value_string(shared))
+                    format!("<ref to var with type `{}`>", ty.value_string(refs))
                 }
                 ReferenceInner::Signal { signal, ty, ty_hw: _ } => {
                     let kind_str = signal.kind_str();
-                    format!("<ref to {kind_str} with type `{}`>", ty.value_string(shared))
+                    format!("<ref to {kind_str} with type `{}`>", ty.value_string(refs))
                 }
                 ReferenceInner::Interface {
                     intf: signal,
@@ -520,7 +542,7 @@ impl SimpleCompileValue {
                     let kind_str = signal.kind_str();
                     format!(
                         "<ref to {kind_str} instance of interface `{}`>",
-                        shared.elaboration_arenas.interface_info(intf).debug_info_name
+                        refs.elab.interface_info(intf).debug_info_name
                     )
                 }
             },
@@ -529,14 +551,15 @@ impl SimpleCompileValue {
 }
 
 impl Type {
-    pub fn value_string(&self, shared: &CompileShared) -> String {
+    pub fn value_string<'a>(&self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
         match self {
             Type::Type => "type".to_string(),
             Type::Any => "any".to_string(),
             Type::Undefined => "undefined".to_string(),
 
             Type::Bool => "bool".to_string(),
-            Type::String => "string".to_string(),
+            Type::String => "str".to_string(),
             Type::Int(range) => {
                 let range_int = MultiRange::open();
                 let range_uint = MultiRange::from(Range {
@@ -554,7 +577,7 @@ impl Type {
                 }
             }
             Type::Array(inner, len) => {
-                let inner_str = inner.value_string(shared);
+                let inner_str = inner.value_string(refs);
                 match len {
                     None => format!("[_]{inner_str}"),
                     Some(len) => format!("[{len}]{inner_str}"),
@@ -565,7 +588,7 @@ impl Type {
                 swrite!(f, "Tuple");
                 if let Some(inner) = inner {
                     swrite!(f, "(");
-                    swrite!(f, "{}", inner.iter().map(|e| e.value_string(shared)).format(", "));
+                    swrite!(f, "{}", inner.iter().map(|e| e.value_string(refs)).format(", "));
                     if inner.len() == 1 {
                         swrite!(f, ",");
                     }
@@ -574,46 +597,46 @@ impl Type {
                 f
             }
             // TODO include import path for debug names?
-            &Type::Struct(ty) => shared.elaboration_arenas.struct_info(ty).value_str(),
-            &Type::Enum(ty) => shared.elaboration_arenas.enum_info(ty).value_str(),
+            &Type::Struct(ty) => refs.elab.struct_info(ty).value_string(),
+            &Type::Enum(ty) => refs.elab.enum_info(ty).value_string(),
             Type::Range => "Range".to_string(),
             Type::Function => "Function".to_string(),
             Type::Module => "Module".to_string(),
             Type::Interface => "Interface".to_string(),
             Type::InterfaceView => "InterfaceView".to_string(),
+            Type::HierarchyNode => "Package".to_string(),
             Type::Ref(ty) => {
-                format!("Ref({})", ty.value_string(shared))
+                format!("Ref({})", ty.value_string(refs))
             }
             Type::RefInterface(intf) => {
-                format!(
-                    "RefInterface({})",
-                    shared.elaboration_arenas.interface_info(*intf).debug_info_name
-                )
+                format!("RefInterface({})", refs.elab.interface_info(*intf).debug_info_name)
             }
         }
     }
 }
 
 impl ElaboratedStructInfo {
-    pub fn value_str(&self) -> String {
+    pub fn value_string(&self) -> String {
         format!("<struct {}>", self.debug_info_name)
     }
 }
 
 impl ElaboratedEnumInfo {
-    pub fn value_str(&self) -> String {
+    pub fn value_string(&self) -> String {
         format!("<enum {}>", self.debug_info_name)
     }
 }
 
 impl HardwareType {
-    pub fn value_string(&self, shared: &CompileShared) -> String {
-        self.as_type().value_string(shared)
+    pub fn value_string<'a>(&self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
+        self.as_type().value_string(refs)
     }
 }
 
 impl CompileCompoundValue {
-    pub fn value_string(&self, shared: &CompileShared) -> String {
+    pub fn value_string<'a>(&self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
         match self {
             CompileCompoundValue::String(v) => v.as_ref().clone(),
             CompileCompoundValue::Range(v) => {
@@ -632,7 +655,7 @@ impl CompileCompoundValue {
             CompileCompoundValue::Tuple(v) => {
                 let mut f = String::new();
                 swrite!(f, "(");
-                swrite!(f, "{}", v.iter().map(|e| e.value_string(shared)).format(", "));
+                swrite!(f, "{}", v.iter().map(|e| e.value_string(refs)).format(", "));
                 if v.len() == 1 {
                     swrite!(f, ",");
                 }
@@ -641,7 +664,7 @@ impl CompileCompoundValue {
             }
             CompileCompoundValue::Struct(v) => {
                 let &StructValue { ty, ref fields } = v;
-                let ty_info = shared.elaboration_arenas.struct_info(ty);
+                let ty_info = refs.elab.struct_info(ty);
 
                 let mut f = String::new();
                 swrite!(f, "{}.new(", ty_info.debug_info_name);
@@ -649,8 +672,8 @@ impl CompileCompoundValue {
                     swrite!(
                         f,
                         "{}={}",
-                        field_name.str(&shared.interner),
-                        field_value.value_string(shared)
+                        field_name.str(refs.interner),
+                        field_value.value_string(refs)
                     );
                     if !last {
                         swrite!(f, ", ");
@@ -665,14 +688,14 @@ impl CompileCompoundValue {
                     variant,
                     ref payload,
                 } = v;
-                let ty_info = shared.elaboration_arenas.enum_info(ty);
+                let ty_info = refs.elab.enum_info(ty);
 
                 let (variant_name, _) = ty_info.variants.get_index(variant).unwrap();
 
                 let mut f = String::new();
-                swrite!(f, "{}.{}", ty_info.debug_info_name, variant_name.str(&shared.interner));
+                swrite!(f, "{}.{}", ty_info.debug_info_name, variant_name.str(refs.interner));
                 if let Some(payload) = payload {
-                    swrite!(f, "({})", payload.value_string(shared));
+                    swrite!(f, "({})", payload.value_string(refs));
                 }
                 f
             }
@@ -684,8 +707,8 @@ impl CompileCompoundValue {
                 } = bound;
                 format!(
                     "<bound {}.{}>",
-                    self_type.value_string(shared),
-                    method.name.str(&shared.interner)
+                    self_type.value_string(refs),
+                    method.name.str(refs.interner)
                 )
             }
         }

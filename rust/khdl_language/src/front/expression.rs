@@ -274,7 +274,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     diags.report_error_simple(
                         "undefined expression requires hardware type",
                         expr.span,
-                        format!("inferred type is `{}`", expected_ty.value_string(refs.shared)),
+                        format!("inferred type is `{}`", expected_ty.value_string(refs)),
                     )
                 })?;
 
@@ -815,7 +815,7 @@ impl<'a> CompileItemContext<'a, '_> {
                         let diag = DiagnosticError::new(
                             "value must be representable in hardware for domain cast",
                             value.span,
-                            format!("got non-hardware type `{}`", value.inner.ty().value_string(refs.shared)),
+                            format!("got non-hardware type `{}`", value.inner.ty().value_string(refs)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -937,7 +937,7 @@ impl<'a> CompileItemContext<'a, '_> {
                     )
                     .add_info(
                         operand.span,
-                        format!("operand has type `{}`", operand.inner.ty().value_string(refs.shared)),
+                        format!("operand has type `{}`", operand.inner.ty().value_string(refs)),
                     )
                     .report(diags);
                     return Err(diag);
@@ -983,7 +983,7 @@ impl<'a> CompileItemContext<'a, '_> {
             _ => Err(diags.report_error_simple(
                 "call target must be function",
                 expr_span,
-                format!("got value with type `{}`", target.inner.ty().value_string(refs.shared)),
+                format!("got value with type `{}`", target.inner.ty().value_string(refs)),
             )),
         }
     }
@@ -1065,7 +1065,7 @@ impl<'a> CompileItemContext<'a, '_> {
             diags.report_error_simple(
                 "array index must be integer or range",
                 index.span,
-                format!("got type `{}`", index_ty.value_string(refs.shared)),
+                format!("got type `{}`", index_ty.value_string(refs)),
             )
         };
         let err_hardware_not_len = || {
@@ -1221,7 +1221,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 let mut diag = DiagnosticError::new(
                     "expected type, got value",
                     expr.span,
-                    format!("got value with type `{}`", value.ty().value_string(refs.shared)),
+                    format!("got value with type `{}`", value.ty().value_string(refs)),
                 );
 
                 if let ExpressionKind::TupleLiteral(_) = self.refs.get_expr(expr) {
@@ -1249,7 +1249,7 @@ impl<'a> CompileItemContext<'a, '_> {
             diags.report_error_simple(
                 format!("{reason} type must be representable in hardware"),
                 expr.span,
-                format!("got type `{}`", ty.value_string(refs.shared)),
+                format!("got type `{}`", ty.value_string(refs)),
             )
         })?;
         Ok(Spanned {
@@ -1387,11 +1387,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let result = match iter.inner {
             Value::Compound(MixedCompoundValue::Range(iter)) => {
                 // TODO allow hardware-length range?
-                fn expect_compile<C, H>(
-                    diags: &Diagnostics,
-                    iter_span: Span,
-                    v: MaybeCompile<C, H>,
-                ) -> Result<C, DiagError> {
+                fn expect_compile<C, H>(diags: &Diagnostics, iter_span: Span, v: MaybeCompile<C, H>) -> DiagResult<C> {
                     match v {
                         MaybeCompile::Compile(v) => Ok(v),
                         MaybeCompile::Hardware(_) => Err(diags.report_error_simple(
@@ -1453,7 +1449,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 return Err(diags.report_error_simple(
                     "invalid for loop iterator type, must be range or array",
                     iter.span,
-                    format!("iterator has type `{}`", iter.inner.ty().value_string(refs.shared)),
+                    format!("iterator has type `{}`", iter.inner.ty().value_string(refs)),
                 ));
             }
         };
@@ -1514,7 +1510,7 @@ fn eval_int_ty_call(
                 target.span,
                 format!(
                     "base type `{}` here",
-                    Type::Int(target.inner.clone()).value_string(refs.shared)
+                    Type::Int(target.inner.clone()).value_string(refs)
                 ),
             )
             .report(diags);
@@ -1591,10 +1587,7 @@ fn eval_int_ty_call(
                 let diag = DiagnosticError::new(
                     "int type constraint must be a single int int or multiple int ranges",
                     arg.span,
-                    format!(
-                        "got value with type `{}` here",
-                        arg.inner.ty().value_string(refs.shared)
-                    ),
+                    format!("got value with type `{}` here", arg.inner.ty().value_string(refs)),
                 )
                 .report(diags);
                 return Err(diag);
@@ -1646,10 +1639,7 @@ fn eval_tuple_ty_call(refs: CompileRefs, args: EvaluatedArgs) -> DiagResult<Type
                 _ => Err(diags.report_error_simple(
                     "expected type",
                     value.span,
-                    format!(
-                        "got value with type `{}` here",
-                        value.inner.ty().value_string(refs.shared)
-                    ),
+                    format!("got value with type `{}` here", value.inner.ty().value_string(refs)),
                 )),
             }
         })
@@ -1941,7 +1931,7 @@ pub fn eval_binary_expression(
                     return Err(diags.report_error_simple(
                         "left hand side of multiplication must be an array or an integer",
                         left.span,
-                        format!("got value with type `{}`", left.inner.ty().value_string(refs.shared)),
+                        format!("got value with type `{}`", left.inner.ty().value_string(refs)),
                     ));
                 }
             }
@@ -2220,7 +2210,7 @@ fn eval_unary_not(
     let diag = DiagnosticError::new("invalid operand type for not operator", op_span, "for operator here")
         .add_info(
             operand.span,
-            format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
+            format!("operand has type `{}`", operand_ty.value_string(refs)),
         )
         .add_footer_hint("the not operator supports `bool`, `int` and `[_]bool`")
         .report(refs.diags);
@@ -2273,14 +2263,13 @@ fn eval_binary_bitwise(
             Ok(ValueWithImplications::simple(result))
         }
         _ => {
-            let shared = refs.shared;
             let diag = DiagnosticError::new(
                 "invalid operand types for bitwise operator",
                 op_span,
                 "for operator here",
             )
-            .add_info(left.span, format!("left operand has type `{}`", left_ty.value_string(shared)))
-            .add_info(right.span, format!("right operand has type `{}`", right_ty.value_string(shared)))
+            .add_info(left.span, format!("left operand has type `{}`", left_ty.value_string(refs)))
+            .add_info(right.span, format!("right operand has type `{}`", right_ty.value_string(refs)))
             .add_footer_hint("bitwise operators support `(bool, bool)`, `(int, int)`, `([_]bool, [_]bool)`, `(bool, [_]bool)` and `([_]bool, bool)`")
             .report(refs.diags);
             Err(diag)
@@ -2564,7 +2553,7 @@ fn eval_binary_eq(
             let diag = DiagnosticError::new(
                 "invalid operand type for equality operator",
                 operand_span,
-                format!("operand has type `{}`", operand_ty.value_string(refs.shared)),
+                format!("operand has type `{}`", operand_ty.value_string(refs)),
             )
             .add_info(op_span, "for operator here")
             .report(refs.diags);
@@ -2576,7 +2565,6 @@ fn eval_binary_eq(
     // check that the common type is still valid
     let common_ty = left_ty.union(&right_ty);
     if !valid_type_for_eq(refs, &common_ty) {
-        let shared = refs.shared;
         let diag = DiagnosticError::new(
             "mismatched operand types for equality operator",
             op_span,
@@ -2584,11 +2572,11 @@ fn eval_binary_eq(
         )
         .add_info(
             left.span,
-            format!("left operand has type `{}`", left_ty.value_string(shared)),
+            format!("left operand has type `{}`", left_ty.value_string(refs)),
         )
         .add_info(
             right.span,
-            format!("right operand has type `{}`", right_ty.value_string(shared)),
+            format!("right operand has type `{}`", right_ty.value_string(refs)),
         )
         .add_footer_hint("both operands of an equality operator must have compatible types")
         .report(refs.diags);
@@ -2613,7 +2601,8 @@ fn valid_type_for_eq(refs: CompileRefs, ty: &Type) -> bool {
         | Type::Function
         | Type::Module
         | Type::Interface
-        | Type::InterfaceView => true,
+        | Type::InterfaceView
+        | Type::HierarchyNode => true,
 
         // this comes up for empty arrays and for values that are undefined after merging flows, allow it
         Type::Undefined => true,
@@ -2861,7 +2850,6 @@ fn eval_binary_eq_hardware(
         .union(&right_ty)
         .as_hardware_type(&refs.shared.elaboration_arenas)
         .map_err(|_: NonHardwareType| {
-            let shared = refs.shared;
             DiagnosticError::new(
                 "equality on non-compile-time values requires hardware types",
                 op_span,
@@ -2869,11 +2857,11 @@ fn eval_binary_eq_hardware(
             )
             .add_info(
                 left.span,
-                format!("left value has type `{}`", left_ty.value_string(shared)),
+                format!("left value has type `{}`", left_ty.value_string(refs)),
             )
             .add_info(
                 right.span,
-                format!("right value has type `{}`", right_ty.value_string(shared)),
+                format!("right value has type `{}`", right_ty.value_string(refs)),
             )
             .report(refs.diags)
         })?;
@@ -3144,7 +3132,7 @@ fn array_literal_combine_values(
         let ty_inner_hw = ty_inner.as_hardware_type(elab).map_err(|_| {
             let message = format!(
                 "hardware array literal has inner type `{}` which is not representable in hardware",
-                ty_inner.value_string(refs.shared)
+                ty_inner.value_string(refs)
             );
             DiagnosticError::new(
                 "hardware array type needs to be representable in hardware",
@@ -3155,7 +3143,7 @@ fn array_literal_combine_values(
                 first_non_compile.span,
                 format!(
                     "first non-compile value with type `{}`",
-                    first_non_compile.inner.ty().value_string(refs.shared)
+                    first_non_compile.inner.ty().value_string(refs)
                 ),
             )
             .report(diags)

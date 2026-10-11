@@ -1,7 +1,9 @@
 use itertools::Itertools;
 use khdl_language::back::lower_cpp::lower_to_cpp;
 use khdl_language::back::lower_verilog::lower_to_verilog;
-use khdl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use khdl_language::front::compile::{
+    CompileFixed, CompileRefs, CompileSettings, CompileShared, ImportValue, QueueItems,
+};
 use khdl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string};
 use khdl_language::front::item::ElaboratedModule;
 use khdl_language::front::print::CollectPrintHandler;
@@ -86,7 +88,8 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
         // (we already did the main compilation, so no real errors will be discarded)
         let dummy_diags = Diagnostics::new();
         refs.diags = &dummy_diags;
-        let top_module = if let Ok(top) = refs.resolve_item_by_path(Spanned::new(dummy_span, "top.top"))
+        let top_module = if let Ok(ImportValue::Item(top)) =
+            refs.resolve_path(Spanned::new(dummy_span, "top.top"), false)
             && let Ok(top) = refs.eval_item(top)
             && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
         {

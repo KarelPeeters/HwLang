@@ -123,8 +123,8 @@ pub FileItems: Vec<Item> = {
 
 // items
 Item: Item = {
-    <start:@L> "import" <parents:Spanned<(<SimpleId> ".")+>> <entry:Spanned<ImportFinalKind>> ";" <end:@R>
-        => Item::Import(ItemImport { parents, entry, span: ctx.span(start, end) }),
+    <start:@L> "import" <steps:Spanned<(<SimpleId> ".")*>> <final_:Spanned<ImportFinalKind>> ";" <end:@R>
+        => Item::Import(ItemImport { steps, final_, span: ctx.span(start, end) }),
 
     <decl:Spanned<CommonDeclaration<Vis>>>
         => Item::CommonDeclaration(decl),

@@ -36,6 +36,7 @@ impl Interner {
         }
     }
 
+    /// Intern the given string.
     pub fn push(&self, s: &str) -> Id {
         if let Some(index) = self.string_to_id.get(s) {
             return self.id(*index);
@@ -52,6 +53,12 @@ impl Interner {
         }
     }
 
+    /// Find the id corresponding to the given string, if it has been interned yet.
+    pub fn find(&self, s: &str) -> Option<Id> {
+        self.string_to_id.get(s).map(|index| self.id(*index))
+    }
+
+    /// Get the string corresponding to the given id.
     pub fn get(&self, id: Id) -> &str {
         assert_eq!(self.check, id.check);
 

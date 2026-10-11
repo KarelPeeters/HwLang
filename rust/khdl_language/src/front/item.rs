@@ -329,7 +329,7 @@ impl ElaboratedStructInfo {
                 field.span,
                 "attempt to access non-existing member here",
             )
-            .add_info(base_span, format!("base has type `{}`", self.value_str()))
+            .add_info(base_span, format!("base has type `{}`", self.value_string()))
             .add_info(self.span_body, "struct body declared here")
             .report(refs.diags)
         })
@@ -372,7 +372,7 @@ impl CompileItemContext<'_, '_> {
         self.refs.check_should_stop(item_ast.info().span_short)?;
 
         let file_scope = self.refs.shared.file_scope(item.file())?;
-        let file_scope = Arc::clone(file_scope).as_scope();
+        let file_scope = Arc::clone(&file_scope.scope).as_scope();
 
         match item_ast {
             Item::Import(item_inner) => {
@@ -1253,12 +1253,7 @@ pub fn debug_info_name_including_params(
     if let Some(params) = params {
         swrite!(f, "(");
         for ((param_id, param_value), last) in params.iter().with_last() {
-            swrite!(
-                f,
-                "{}={}",
-                param_id.inner.str(interner),
-                param_value.value_string(refs.shared)
-            );
+            swrite!(f, "{}={}", param_id.inner.str(interner), param_value.value_string(refs));
             if !last {
                 swrite!(f, ", ");
             }

@@ -282,7 +282,7 @@ impl CompileItemContext<'_, '_> {
                                         target_base.span,
                                         format!(
                                             "type `{}` is not representable in hardware",
-                                            target_base_ty.inner.value_string(refs.shared)
+                                            target_base_ty.inner.value_string(refs)
                                         ),
                                     )
                                     .add_info(target_base_ty.span, target_base_ty_origin)

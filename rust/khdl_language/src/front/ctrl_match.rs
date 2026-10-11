@@ -190,10 +190,7 @@ impl CompileItemContext<'_, '_> {
                     diags.report_error_simple(
                         "failed to fully convert non-compile match target to hardware",
                         target.span,
-                        format!(
-                            "match target has non-hardware type `{}`",
-                            target_ty.value_string(refs.shared)
-                        ),
+                        format!("match target has non-hardware type `{}`", target_ty.value_string(refs)),
                     )
                 })?;
 
@@ -349,7 +346,7 @@ impl CompileItemContext<'_, '_> {
                     )
                     .add_info(
                         target_span,
-                        format!("target has type `{}`", target_ty.value_string(refs.shared)),
+                        format!("target has type `{}`", target_ty.value_string(refs)),
                     )
                     .report(diags))
                 }
@@ -453,7 +450,7 @@ impl CompileItemContext<'_, '_> {
         )
         .add_info(
             target.span,
-            format!("target value `{}`", target.inner.value_string(refs.shared)),
+            format!("target value `{}`", target.inner.value_string(refs)),
         )
         .report(diags))
     }
@@ -498,7 +495,7 @@ impl CompileItemContext<'_, '_> {
                     target.span,
                     format!(
                         "hardware matching for target type `{}`",
-                        target_value.value.ty.value_string(shared)
+                        target_value.value.ty.value_string(refs)
                     ),
                 ));
             }
@@ -528,7 +525,7 @@ impl CompileItemContext<'_, '_> {
                 DiagnosticWarning::new("unreachable match branch", span, message_branch)
                     .add_info(
                         target.span,
-                        format!("target type `{}`", target_value.value.ty.value_string(shared)),
+                        format!("target type `{}`", target_value.value.ty.value_string(refs)),
                     )
                     .add_footer_info(message_footer)
                     .report(diags);
@@ -689,7 +686,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type `{}`", target_value.value.ty.value_string(shared)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(refs)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -754,7 +751,7 @@ impl CompileItemContext<'_, '_> {
                         )
                         .add_info(
                             target.span,
-                            format!("target has type `{}`", target_value.value.ty.value_string(shared)),
+                            format!("target has type `{}`", target_value.value.ty.value_string(refs)),
                         )
                         .report(diags);
                         return Err(diag);
@@ -799,7 +796,7 @@ impl CompileItemContext<'_, '_> {
             )
             .add_info(
                 target.span,
-                format!("target type `{}`", target_value.value.ty.value_string(shared)),
+                format!("target type `{}`", target_value.value.ty.value_string(refs)),
             );
 
             if let MatchCoverage::Enum { target_ty, .. } = &coverage_remaining {

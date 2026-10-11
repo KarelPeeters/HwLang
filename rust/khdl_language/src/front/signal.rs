@@ -193,7 +193,7 @@ impl WireInfo {
                         let ir = ir_wires.push(IrWireInfo {
                             ty: suggest.inner.as_ir(refs),
                             debug_info_id: slf.id.spanned_string(&refs.shared.interner),
-                            debug_info_ty: suggest.inner.clone().value_string(refs.shared),
+                            debug_info_ty: suggest.inner.clone().value_string(refs),
                             // will be filled in later during the inference checking pass
                             debug_info_domain: String::new(),
                         });
@@ -482,7 +482,7 @@ impl Interface {
 
         let signal_index = info.signals.get_index_of(&id.inner).ok_or_else(|| {
             let id_str = id.inner.str(&refs.shared.interner);
-            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(refs.shared);
+            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(refs);
             DiagnosticError::new(
                 format!("signal `{id_str}` not found on interface"),
                 id.span,

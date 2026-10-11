@@ -12,6 +12,7 @@ use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
 use crate::syntax::ast::{FunctionDeclaration, ParameterSelf, StringPiece};
+use crate::syntax::hierarchy::HierarchyNode;
 use crate::syntax::pos::Span;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::VecExt;
@@ -47,6 +48,7 @@ pub enum SimpleCompileValue {
     Interface(ElaboratedInterface),
     InterfaceView(ElaboratedInterfaceView),
     Reference(ReferenceWrapper),
+    Package(HierarchyNode),
 }
 
 // TODO rework, for vars only store FlowRootId, for signal/interface only store module
@@ -415,7 +417,8 @@ impl ValueCommon for SimpleCompileValue {
             | SimpleCompileValue::Module(_)
             | SimpleCompileValue::Interface(_)
             | SimpleCompileValue::InterfaceView(_)
-            | SimpleCompileValue::Reference(_) => Err(err_type()),
+            | SimpleCompileValue::Reference(_)
+            | SimpleCompileValue::Package(_) => Err(err_type()),
         }
     }
 }
@@ -719,7 +722,8 @@ impl CompileValue {
                 | SimpleCompileValue::Function(_)
                 | SimpleCompileValue::Module(_)
                 | SimpleCompileValue::Interface(_)
-                | SimpleCompileValue::InterfaceView(_) => false,
+                | SimpleCompileValue::InterfaceView(_)
+                | SimpleCompileValue::Package(_) => false,
             },
             CompileValue::Compound(v) => match v {
                 CompileCompoundValue::Tuple(v) => v.iter().any(CompileValue::definitely_contains_reference),
@@ -741,8 +745,8 @@ fn internal_err_hw_type_mismatch(
 ) -> DiagnosticError {
     let title = format!(
         "wrong type when converting value with type {} to hardware value with type {}",
-        value.ty().value_string(refs.shared),
-        target_ty.value_string(refs.shared)
+        value.ty().value_string(refs),
+        target_ty.value_string(refs)
     );
     DiagnosticError::new_internal_compiler_error(title, span)
 }
@@ -1041,6 +1045,7 @@ impl Typed for SimpleCompileValue {
                 } => Type::Ref(Arc::clone(ty)),
                 ReferenceInner::Interface { intf: _, elab } => Type::RefInterface(elab),
             },
+            SimpleCompileValue::Package(_) => Type::HierarchyNode,
         }
     }
 }

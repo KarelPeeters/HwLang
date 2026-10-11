@@ -322,7 +322,7 @@ impl BodyContext {
                                     let _: NonHardwareType = e;
                                     let err_msg = format!(
                                         "value with type `{}` cannot be represented in hardware",
-                                        value.inner.ty().value_string(refs.shared)
+                                        value.inner.ty().value_string(refs)
                                     );
                                     let diag = DiagnosticError::new(
                                         "cannot assign non-hardware value to wire",
@@ -449,7 +449,7 @@ impl BodyContext {
                     let wire_ir_info = IrWireInfo {
                         ty: signal_ty.inner.as_ir(refs),
                         debug_info_id: Spanned::new(wire_id.span(), Some(ir_name)),
-                        debug_info_ty: signal_ty.inner.value_string(refs.shared),
+                        debug_info_ty: signal_ty.inner.value_string(refs),
                         // will be filled in later during the inference checking pass
                         debug_info_domain: String::new(),
                     };
@@ -1054,7 +1054,7 @@ impl BodyContext {
                                 ty: port_ty.inner.as_ir(refs),
                                 debug_info_id: connector_id
                                     .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
-                                debug_info_ty: port_ty.inner.clone().value_string(refs.shared),
+                                debug_info_ty: port_ty.inner.clone().value_string(refs),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(ctx),
                             });
 
@@ -1189,7 +1189,7 @@ impl BodyContext {
                                         ty: port_ty.inner.as_ir(refs),
                                         debug_info_id: connector_id
                                             .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
-                                        debug_info_ty: port_ty.inner.value_string(refs.shared),
+                                        debug_info_ty: port_ty.inner.value_string(refs),
                                         debug_info_domain: connector_domain.inner.diagnostic_string(ctx).to_owned(),
                                     });
 
@@ -1294,14 +1294,14 @@ impl BodyContext {
                             connector_view.span,
                             format!(
                                 "expected interface `{}` set here",
-                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(refs.shared)
+                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(refs)
                             ),
                         )
                         .add_info(
                             value_interface.span,
                             format!(
                                 "actual interface `{}` set here",
-                                SimpleCompileValue::Interface(value_interface.inner).value_string(refs.shared)
+                                SimpleCompileValue::Interface(value_interface.inner).value_string(refs)
                             ),
                         )
                         .report(diags);

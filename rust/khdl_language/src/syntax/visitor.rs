@@ -270,8 +270,8 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                     let final_id = as_.unwrap_or(MaybeIdentifier::Identifier(id));
                     slf.scope_declare(&mut scope, Conditional::Yes, final_id.into())
                 };
-                self.visitor.report_range(item.entry.span, None);
-                match &item.entry.inner {
+                self.visitor.report_range(item.final_.span, None);
+                match &item.final_.inner {
                     ImportFinalKind::Single(entry) => {
                         visit_entry(self, entry)?;
                     }

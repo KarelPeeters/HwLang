@@ -123,7 +123,7 @@ impl CompileItemContext<'_, '_> {
                             Err(_) => Err(diags.report_error_simple(
                                 "interface signals must have hardware types",
                                 ty.span,
-                                format!("got non-hardware type `{}`", ty.inner.value_string(refs.shared)),
+                                format!("got non-hardware type `{}`", ty.inner.value_string(refs)),
                             )),
                         });
 

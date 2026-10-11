@@ -93,22 +93,18 @@ impl Context<'_> {
     }
 
     fn fmt_import(&self, import: &ItemImport) -> HNode {
-        let ItemImport {
-            span: _,
-            parents,
-            entry,
-        } = import;
+        let ItemImport { span: _, steps, final_ } = import;
 
         let mut nodes = vec![];
         nodes.push(token(TT::Import));
         nodes.push(HNode::Space);
 
-        for &parent in &parents.inner {
-            nodes.push(self.fmt_id(parent));
+        for &step in &steps.inner {
+            nodes.push(self.fmt_id(step));
             nodes.push(token(TT::Dot));
         }
 
-        match &entry.inner {
+        match &final_.inner {
             ImportFinalKind::Single(entry) => {
                 nodes.push(self.fmt_import_entry(entry));
             }

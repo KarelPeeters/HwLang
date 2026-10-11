@@ -37,6 +37,7 @@ pub enum Type {
     Module,
     Interface,
     InterfaceView,
+    HierarchyNode,
 
     Ref(Arc<Type>),
     RefInterface(ElaboratedInterface),
@@ -123,6 +124,7 @@ impl Type {
             // TODO should we even allow unions for these?
             (Type::Range, Type::Range) => Type::Range,
             (Type::Function, Type::Function) => Type::Function,
+            (Type::HierarchyNode, Type::HierarchyNode) => Type::HierarchyNode,
             (Type::Module, Type::Module) => Type::Module,
             (Type::Interface, Type::Interface) => Type::Interface,
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
@@ -188,6 +190,7 @@ impl Type {
                 | Type::Module
                 | Type::Interface
                 | Type::InterfaceView
+                | Type::HierarchyNode
                 | Type::Int(_)
                 | Type::Array(_, _)
                 | Type::Tuple(_)
@@ -252,6 +255,7 @@ impl Type {
             | Type::Module
             | Type::Interface
             | Type::InterfaceView
+            | Type::HierarchyNode
             | Type::Ref(_)
             | Type::RefInterface(_) => Err(NonHardwareType),
         }

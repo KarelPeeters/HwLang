@@ -1,7 +1,7 @@
 use crate::convert::compile_value_from_py;
 use check::{check_diags, convert_diag_error, map_diag_error};
 use convert::{compile_value_to_py, convert_python_args_and_kwargs_to_args};
-use itertools::{Either, Itertools, enumerate, zip_eq};
+use itertools::{Either, Itertools, zip_eq};
 use khdl_language::back::lower_verilator::{LoweredVerilator, lower_verilator};
 use khdl_language::back::lower_verilog::{LoweredVerilog, lower_to_verilog};
 use khdl_language::back::wrap_verilator::{
@@ -14,12 +14,12 @@ use khdl_language::front::diagnostic::Diagnostics;
 use khdl_language::front::flow::{FlowCompile, FlowRoot};
 use khdl_language::front::item::ElaboratedModule;
 use khdl_language::front::print::{CollectPrintHandler, PrintHandler, StdoutPrintHandler};
-use khdl_language::front::scope::ScopedEntry;
 use khdl_language::front::steps::{SpannedStep, TargetStepCompile, TargetSteps};
-use khdl_language::front::types::Type as RustType;
+use khdl_language::front::string::StringRefs;
+use khdl_language::front::types::{Type as RustType, Typed};
 use khdl_language::front::value::{
-    CompileValue as RustCompileValue, EnumValue as RustEnumValue, NotCompile, StructValue as RustStructValue,
-    Value as RustValue,
+    CompileValue as RustCompileValue, EnumValue as RustEnumValue, NotCompile, SimpleCompileValue,
+    StructValue as RustStructValue, Value as RustValue,
 };
 use khdl_language::mid::ir::{IrDatabase, IrModule, IrPort, IrPortInfo};
 use khdl_language::syntax::collect::{
@@ -35,9 +35,9 @@ use khdl_language::syntax::source::SourceDatabase as RustSourceDatabase;
 use khdl_language::util::big_int::BigInt;
 use khdl_language::util::pool::ThreadPool;
 use khdl_language::util::range::Range as RustRange;
-use khdl_language::util::{NON_ZERO_USIZE_ONE, ResultExt, get_num_cpus};
+use khdl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
 use khdl_util::io::IoErrorExt;
-use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyValueError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyIOError, PyTypeError, PyValueError};
 use pyo3::types::{PyAnyMethods, PyDict, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple};
 use pyo3::{
     Bound, IntoPyObject, Py, PyAny, PyClassInitializer, PyErr, PyRef, PyResult, Python, create_exception, intern,
@@ -182,7 +182,6 @@ struct Diagnostic {
 }
 
 create_exception!(khdl, SourceSetException, KhdlException);
-create_exception!(khdl, ResolveException, KhdlException);
 create_exception!(khdl, GenerateVerilogException, KhdlException);
 create_exception!(khdl, VerilationException, KhdlException);
 create_exception!(khdl, SimulationFinishedException, KhdlException);
@@ -246,7 +245,6 @@ fn khdl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiagnosticPreviouslyReportedException",
         py.get_type::<DiagnosticPreviouslyReportedException>(),
     )?;
-    m.add("ResolveException", py.get_type::<ResolveException>())?;
     m.add("GenerateVerilogException", py.get_type::<GenerateVerilogException>())?;
     m.add("VerilationException", py.get_type::<VerilationException>())?;
     m.add(
@@ -336,7 +334,8 @@ impl Source {
         let file = self.source.add_file(debug_info_path, content);
         let result = self
             .hierarchy
-            .add_file(&diags, &self.source, self.dummy_span, &steps, file);
+            .add_file(&diags, &self.source, self.dummy_span, &steps, file)
+            .map(|_| ());
         map_diag_error(py, &diags, &self.source, result)
     }
 
@@ -426,112 +425,31 @@ impl Parsed {
 #[pymethods]
 impl Compile {
     fn resolve_module(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<Module>> {
-        let result = Self::resolve(slf, py, path)?;
-        result
-            .bind(py)
-            .extract::<Py<Module>>()
-            .map_err(|_| ResolveException::new_err(format!("path `{path}` does not resolve to a module")))
+        let value = Self::resolve_impl(&slf, py, path)?;
+        if let RustCompileValue::Simple(SimpleCompileValue::Module(_)) = value {
+            return compile_value_to_py(py, &slf, &value)?
+                .bind(py)
+                .extract::<Py<Module>>()
+                .map_err(PyErr::from);
+        }
+
+        // report error with the actual value type
+        let compile = slf.borrow(py);
+        let parsed_ref = compile.parsed.borrow(py);
+        let source_ref = parsed_ref.source.borrow(py);
+        let refs = StringRefs {
+            hierarchy: &source_ref.hierarchy,
+            interner: &compile.shared.interner,
+            elab: &compile.shared.elaboration_arenas,
+        };
+        let ty_str = value.ty().value_string(refs);
+        Err(PyTypeError::new_err(format!(
+            "path `{path}` does not resolve to a module, got value with type `{ty_str}`"
+        )))
     }
 
     fn resolve(slf: Py<Self>, py: Python, path: &str) -> PyResult<Py<PyAny>> {
-        // TODO move this somewhere common, the commandline will also need this
-        // unwrap self
-        let slf_ref = &mut *slf.borrow_mut(py);
-        let shared = &slf_ref.shared;
-
-        let parsed_ref = slf_ref.parsed.borrow(py);
-        let parsed = &parsed_ref.parsed;
-        let source_ref = parsed_ref.source.borrow(py);
-        let source = &source_ref.source;
-        let hierarchy = &source_ref.hierarchy;
-        let dummy_span = source_ref.dummy_span;
-
-        // find directory, file and scope
-        if path.is_empty() {
-            return Err(ResolveException::new_err("resolve path cannot be empty"));
-        }
-        let steps: Vec<&str> = path.split('.').collect_vec();
-        let (&item_name, steps) = steps.split_last().unwrap();
-
-        let mut curr_node = hierarchy.root_node();
-        for (i_step, &step) in enumerate(steps) {
-            curr_node = curr_node.children.get(step).ok_or_else(|| {
-                ResolveException::new_err(format!(
-                    "path `{}` does not have child `{}`",
-                    steps[..i_step].iter().join("."),
-                    step
-                ))
-            })?;
-        }
-        let file = curr_node.file.ok_or_else(|| {
-            ResolveException::new_err(format!(
-                "steps `{}` do not point to a file (in full path `{path}`)",
-                steps.iter().join(".")
-            ))
-        })?;
-        let scope = shared.file_scopes.get(&file).unwrap().as_ref_ok().unwrap();
-
-        // look up the item
-        let diags = Diagnostics::new();
-        let item_id = shared.interner.push(item_name);
-        let found = map_diag_error(
-            py,
-            &diags,
-            source,
-            scope.find(&diags, &shared.interner, Spanned::new(dummy_span, item_id)),
-        )?;
-        let item = match found.value {
-            ScopedEntry::Item(ast_ref_item) => ast_ref_item,
-            ScopedEntry::Named(_) | ScopedEntry::Captured(_) | ScopedEntry::Value(_) => {
-                let e = diags.report_error_internal(
-                    found.span_decl,
-                    "file scope should only contain items, not named/captured",
-                );
-                return Err(convert_diag_error(py, &diags, source, e));
-            }
-        };
-
-        // evaluate the item
-        // TODO release GIL during evaluation
-        let print_handler = slf_ref.start_collect_prints();
-        let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source,
-                hierarchy,
-                parsed,
-            },
-            shared,
-            diags: &diags,
-            print_handler: print_handler.handler(),
-            should_stop: &|| false,
-        };
-
-        // eval item and elaborate any necessary items
-        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
-        let value = item_ctx.eval_item(item).cloned();
-        refs.run_compile_loop(None);
-
-        // build ir database to run final checks
-        let ir_database = if value.is_ok() {
-            shared.finish_ir_database_ref(&diags, dummy_span).map(|_| ())
-        } else {
-            Ok(())
-        };
-
-        // propagate errors
-        let value = map_diag_error(py, &diags, source, value);
-        let database = map_diag_error(py, &diags, source, ir_database);
-        let result_diags = check_diags(py, source, &diags);
-
-        drop(source_ref);
-        drop(parsed_ref);
-        slf_ref.finish_collect_prints(py, print_handler);
-
-        let value = value?;
-        database?;
-        result_diags?;
-
+        let value = Self::resolve_impl(&slf, py, path)?;
         compile_value_to_py(py, &slf, &value)
     }
 
@@ -570,6 +488,65 @@ impl PyPrintHandler {
 }
 
 impl Compile {
+    fn resolve_impl(slf: &Py<Self>, py: Python, path: &str) -> PyResult<RustCompileValue> {
+        // unwrap self
+        let slf_ref = &mut *slf.borrow_mut(py);
+        let shared = &slf_ref.shared;
+
+        let parsed_ref = slf_ref.parsed.borrow(py);
+        let parsed = &parsed_ref.parsed;
+        let source_ref = parsed_ref.source.borrow(py);
+        let source = &source_ref.source;
+        let hierarchy = &source_ref.hierarchy;
+        let dummy_span = source_ref.dummy_span;
+
+        let diags = Diagnostics::new();
+        let print_handler = slf_ref.start_collect_prints();
+        let refs = CompileRefs {
+            fixed: CompileFixed {
+                settings: &COMPILE_SETTINGS,
+                source,
+                hierarchy,
+                parsed,
+            },
+            shared,
+            diags: &diags,
+            print_handler: print_handler.handler(),
+            should_stop: &|| false,
+        };
+
+        // resolve the path, python can always access private items for now
+        let resolved = refs.resolve_path(Spanned::new(dummy_span, path), true);
+        let resolved = map_diag_error(py, &diags, source, resolved)?;
+
+        // eval value and elaborate any necessary items
+        let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
+        let value = item_ctx.eval_import_value(resolved);
+        refs.run_compile_loop(None);
+
+        // build ir database to run final checks
+        let ir_database = if value.is_ok() {
+            shared.finish_ir_database_ref(&diags, dummy_span).map(|_| ())
+        } else {
+            Ok(())
+        };
+
+        // propagate errors
+        let value = map_diag_error(py, &diags, source, value);
+        let database = map_diag_error(py, &diags, source, ir_database);
+        let result_diags = check_diags(py, source, &diags);
+
+        drop(source_ref);
+        drop(parsed_ref);
+        slf_ref.finish_collect_prints(py, print_handler);
+
+        let value = value?;
+        database?;
+        result_diags?;
+
+        Ok(value)
+    }
+
     fn start_collect_prints(&self) -> PyPrintHandler {
         let collect_print_handler = self.capture_prints.as_ref().map(|_| CollectPrintHandler::new());
         PyPrintHandler { collect_print_handler }
@@ -628,7 +605,15 @@ impl CapturePrintsContext {
 impl Value {
     fn __repr__(&self, py: Python) -> String {
         let compile = self.compile.borrow(py);
-        self.value.value_string(&compile.shared)
+        let parsed_ref = compile.parsed.borrow(py);
+        let source_ref = parsed_ref.source.borrow(py);
+
+        let refs = StringRefs {
+            hierarchy: &source_ref.hierarchy,
+            interner: &compile.shared.interner,
+            elab: &compile.shared.elaboration_arenas,
+        };
+        self.value.value_string(refs)
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
@@ -642,7 +627,7 @@ impl Value {
         !self.__eq__(other)
     }
 
-    #[pyo3(signature = (*args, **kwargs))]
+    #[pyo3(signature=(*args, **kwargs))]
     fn __call__(
         &self,
         py: Python,
@@ -701,14 +686,14 @@ impl Value {
                 diags.report_error_internal(dummy_span, "compile-time call return non-compile value")
             })
         });
-        let returned = map_diag_error(py, &diags, source, returned)?;
+        let returned = map_diag_error(py, &diags, source, returned);
 
         // finish up
-        check_diags(py, source, &diags)?;
         drop(source_ref);
         drop(parsed_ref);
         compile_ref.finish_collect_prints(py, print_handler);
 
+        let returned = returned?;
         compile_value_to_py(py, &self.compile, &returned)
     }
 
@@ -764,20 +749,15 @@ impl Value {
         refs.run_compile_loop(compile.pool.as_ref());
 
         // handle result
-        let result = match result {
-            Ok(result) => result,
-            Err(_) => {
-                drop(source_ref);
-                drop(parsed_ref);
-                compile.finish_collect_prints(py, print_handler);
-                return Err(PyAttributeError::new_err(format!(
-                    "`value` object has no attribute `{attr}`"
-                )));
-            }
-        };
+        let result_diags = result.is_ok().then(|| check_diags(py, source, &diags));
+
         drop(source_ref);
         drop(parsed_ref);
         compile.finish_collect_prints(py, print_handler);
+
+        let result =
+            result.map_err(|_| PyAttributeError::new_err(format!("`value` object has no attribute `{attr}`")))?;
+        result_diags.transpose()?;
 
         compile_value_to_py(py, &self.compile, &result)
     }
@@ -890,7 +870,7 @@ impl Module {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    #[pyo3(signature=(build_dir,*,extra_verilog_files=None,optimization=None,compiler=None))]
+    #[pyo3(signature=(build_dir, *, extra_verilog_files=None, optimization=None, compiler=None))]
     fn as_verilated(
         slf: Py<Self>,
         py: Python,
@@ -1215,7 +1195,7 @@ impl VerilatedPort {
         let mut instance = self.instance.borrow_mut(py);
         let instance = instance.deref_mut();
         let module = instance.module.borrow(py);
-        let compile = module.compile.borrow(py);
+        let compile = &mut *module.compile.borrow_mut(py);
         let parsed = compile.parsed.borrow(py);
         let source = parsed.source.borrow(py);
 
@@ -1239,12 +1219,18 @@ impl VerilatedPort {
             .instance
             .set_port(refs, self.port, Spanned::new(dummy_span, &value));
 
-        result.map_err(|e| match e {
+        let result = result.map_err(|e| match e {
             Either::Left(e) => map_verilator_error(e),
             Either::Right(e) => convert_diag_error(py, &diags, &source.source, e),
-        })?;
+        });
+        let result_diags = check_diags(py, &source.source, &diags);
 
-        Ok(())
+        drop(source);
+        drop(parsed);
+        compile.finish_collect_prints(py, print_handler);
+
+        result?;
+        result_diags
     }
 
     #[getter]

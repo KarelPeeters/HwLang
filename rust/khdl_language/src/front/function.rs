@@ -364,7 +364,7 @@ impl CompileItemContext<'_, '_> {
             )
             .add_info(
                 span_call,
-                format!("non-{kind} expected type {:?}", expected_ty.value_string(refs.shared)),
+                format!("non-{kind} expected type {:?}", expected_ty.value_string(refs)),
             )
             .report(self.refs.diags)
         };
@@ -836,10 +836,7 @@ impl CompileItemContext<'_, '_> {
                                         span_value,
                                         format!("got bits `{:?}`", v),
                                     )
-                                    .add_info(
-                                        span_target,
-                                        format!("target type `{}`", ty_hw.value_string(refs.shared)),
-                                    )
+                                    .add_info(span_target, format!("target type `{}`", ty_hw.value_string(refs)))
                                     .report(diags)
                                 } else {
                                     diags.report_error_internal(
@@ -904,10 +901,7 @@ pub fn check_function_return_type_and_set_value(
             )
             .add_info(
                 ty.span,
-                format!(
-                    "function return type `{}` declared here",
-                    ty.inner.value_string(refs.shared)
-                ),
+                format!("function return type `{}` declared here", ty.inner.value_string(refs)),
             )
             .add_footer_hint("either return a value or remove the return type")
             .report(diags);
@@ -975,10 +969,7 @@ fn check_function_end(
                 )
                 .add_info(
                     return_type.span,
-                    format!(
-                        "return type `{}` declared here",
-                        return_type.inner.value_string(refs.shared)
-                    ),
+                    format!("return type `{}` declared here", return_type.inner.value_string(refs)),
                 )
                 .report(diags);
                 return Err(diag);

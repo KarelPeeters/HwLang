@@ -1,40 +1,62 @@
-use crate::front::diagnostic::{DiagError, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::new_index_type;
 use crate::syntax::pos::Span;
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::syntax::token::str_is_valid_identifier;
+use crate::util::arena::Arena;
+use crate::util::data::IndexMapExt;
 use indexmap::IndexMap;
+use itertools::enumerate;
+
+// TODO intern strings here?
+new_index_type!(pub HierarchyNode);
 
 #[derive(Debug)]
 pub struct SourceHierarchy {
     root: HierarchyNode,
-    files: IndexMap<FileId, Vec<String>>,
+    files: IndexMap<FileId, HierarchyNode>,
+    nodes: Arena<HierarchyNode, HierarchyNodeInfo>,
 }
 
-// TODO cross-platform ordering guarantees?
-#[derive(Debug, Default)]
-pub struct HierarchyNode {
+#[derive(Debug)]
+pub struct HierarchyNodeInfo {
     pub file: Option<FileId>,
+    pub steps: Vec<String>,
     pub children: IndexMap<String, HierarchyNode>,
 }
 
 impl SourceHierarchy {
     pub fn new() -> Self {
+        let mut nodes = Arena::new();
+
+        let root_info = HierarchyNodeInfo {
+            file: None,
+            steps: vec![],
+            children: IndexMap::new(),
+        };
+        let root = nodes.push(root_info);
+
         SourceHierarchy {
-            root: HierarchyNode::default(),
+            root,
             files: IndexMap::new(),
+            nodes,
         }
     }
 
-    pub fn root_node(&self) -> &HierarchyNode {
-        &self.root
+    pub fn root_node(&self) -> HierarchyNode {
+        self.root
     }
 
     pub fn files(&self) -> impl Iterator<Item = FileId> + '_ {
         self.files.keys().copied()
     }
 
+    pub fn file_node(&self, file: FileId) -> Option<HierarchyNode> {
+        self.files.get(&file).copied()
+    }
+
     pub fn file_steps(&self, file: FileId) -> Option<&[String]> {
-        self.files.get(&file).map(|steps| steps.as_slice())
+        self.file_node(file).map(|node| self.nodes[node].steps.as_slice())
     }
 
     pub fn add_file(
@@ -44,11 +66,11 @@ impl SourceHierarchy {
         span: Span,
         steps: &[String],
         file: FileId,
-    ) -> Result<(), DiagError> {
+    ) -> DiagResult<HierarchyNode> {
         // check file not yet added
         if self.files.contains_key(&file) {
             return Err(diags.report_error_simple(
-                format!("File `{}` already exists in hierarchy", source[file].debug_info_path),
+                format!("File `{}` was already added as a package", source[file].debug_info_path),
                 span,
                 "file added here",
             ));
@@ -58,49 +80,60 @@ impl SourceHierarchy {
         for step in steps {
             if !str_is_valid_identifier(step) {
                 return Err(diags.report_error_simple(
-                    format!("Invalid identifier `{step}` in hierarchy steps"),
+                    format!("Invalid identifier `{step}` in package path"),
                     span,
                     "file added here",
                 ));
             }
         }
 
-        // add the file to the right node
-        let mut curr_node = &mut self.root;
-        let mut steps_left = steps;
-        loop {
-            (curr_node, steps_left) = match steps_left.split_first() {
+        // create all necessary nodes
+        let mut curr_node = self.root;
+        for (step_index, step) in enumerate(steps) {
+            curr_node = match self.nodes[curr_node].children.get(step) {
+                Some(&child) => child,
                 None => {
-                    match curr_node.file {
-                        None => {
-                            curr_node.file = Some(file);
-                            break;
-                        }
-                        Some(prev_file) => {
-                            // TODO separate spans
-                            return Err(DiagnosticError::new(
-                                format!("file with hierarchy steps `{}` already exists", steps.join(".")),
-                                span,
-                                format!("file with path `{}` added here", source[file].debug_info_path),
-                            )
-                            .add_info(
-                                span,
-                                format!("file with path `{}` added here", source[prev_file].debug_info_path),
-                            )
-                            .report(diags));
-                        }
+                    let info = HierarchyNodeInfo {
+                        file: None,
+                        steps: steps[..=step_index].to_vec(),
+                        children: IndexMap::new(),
                     };
-                }
-                Some((step, steps_rest)) => {
-                    let next_node = curr_node.children.entry(step.clone()).or_default();
-                    (next_node, steps_rest)
+                    let child = self.nodes.push(info);
+                    self.nodes[curr_node].children.insert_first(step.to_owned(), child);
+                    child
                 }
             }
         }
 
-        // remember the file steps
-        self.files.insert(file, steps.to_vec());
+        // check that this is not a duplicate path
+        let curr_node_ref = &mut self.nodes[curr_node];
+        if let Some(prev_file) = curr_node_ref.file {
+            // TODO separate spans
+            return Err(DiagnosticError::new(
+                format!("package `{}` already exists", steps.join(".")),
+                span,
+                format!("file with path `{}` added here", source[file].debug_info_path),
+            )
+            .add_info(
+                span,
+                format!("file with path `{}` added here", source[prev_file].debug_info_path),
+            )
+            .report(diags));
+        }
 
-        Ok(())
+        // add the file to the current node
+        curr_node_ref.file = Some(file);
+
+        // remember the file node
+        self.files.insert(file, curr_node);
+
+        Ok(curr_node)
+    }
+}
+
+impl std::ops::Index<HierarchyNode> for SourceHierarchy {
+    type Output = HierarchyNodeInfo;
+    fn index(&self, node: HierarchyNode) -> &Self::Output {
+        &self.nodes[node]
     }
 }

@@ -135,6 +135,7 @@ impl CompileItemContext<'_, '_> {
             ("type", "Module", &[]) => Ok(Value::new_ty(Type::Module)),
             ("type", "Interface", &[]) => Ok(Value::new_ty(Type::Interface)),
             ("type", "InterfaceView", &[]) => Ok(Value::new_ty(Type::InterfaceView)),
+            ("type", "Package", &[]) => Ok(Value::new_ty(Type::HierarchyNode)),
             ("type", "Ref", &[ty]) => {
                 let ty_inner = self.eval_expression_as_ty(scope, flow, ty)?;
                 let ty = Type::Ref(Arc::new(ty_inner.inner));
@@ -167,7 +168,7 @@ impl CompileItemContext<'_, '_> {
                         self.refs.print_handler.print(&msg);
                     }
                     FlowKind::Hardware(flow) => {
-                        hardware_print_string(self.refs.shared, flow, &mut self.large, expr_span, &msg);
+                        hardware_print_string(self.refs, flow, &mut self.large, expr_span, &msg);
                     }
                 }
 
@@ -211,7 +212,7 @@ impl CompileItemContext<'_, '_> {
                         };
 
                         // TODO keep the message and assert failure connected, so backends can use them properly
-                        hardware_print_string(self.refs.shared, flow, &mut self.large, expr_span, &msg);
+                        hardware_print_string(self.refs, flow, &mut self.large, expr_span, &msg);
                         flow.push_ir_statement(Spanned::new(expr_span, IrStatement::AssertFailed));
 
                         Ok(Value::unit())

@@ -3,13 +3,15 @@ use crate::util::{ErrorExit, manifest_find_read_parse, print_diagnostics};
 use itertools::Itertools;
 use khdl_language::back::lower_cpp::lower_to_cpp;
 use khdl_language::back::lower_verilog::lower_to_verilog;
-use khdl_language::front::compile::{CompileFixed, CompileRefs, CompileSettings, CompileShared, QueueItems};
+use khdl_language::front::compile::{
+    CompileFixed, CompileRefs, CompileSettings, CompileShared, ImportValue, QueueItems,
+};
 use khdl_language::front::diagnostic::{DiagError, Diagnostics};
 use khdl_language::front::item::ElaboratedModule;
 use khdl_language::front::print::StdoutPrintHandler;
 use khdl_language::front::value::{CompileValue, SimpleCompileValue};
 use khdl_language::syntax::collect::collect_source_from_manifest;
-use khdl_language::syntax::hierarchy::HierarchyNode;
+use khdl_language::syntax::hierarchy::{HierarchyNode, SourceHierarchy};
 use khdl_language::syntax::manifest::Manifest;
 use khdl_language::syntax::parsed::ParsedDatabase;
 use khdl_language::syntax::pos::Spanned;
@@ -95,16 +97,17 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
             let file_info = &source[file];
             eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path);
         }
-        eprintln!("Collected hierarchy:");
-        fn print_node(prefix: &str, node: &HierarchyNode) {
-            if let Some(file) = node.file {
+        eprintln!("Collected packages:");
+        fn print_node(hierarchy: &SourceHierarchy, prefix: &str, node: HierarchyNode) {
+            let node_info = &hierarchy[node];
+            if let Some(file) = node_info.file {
                 eprintln!("{prefix}: [{:?}]", file.inner().index());
             }
-            for (key, child) in &node.children {
-                print_node(&format!("{prefix}/{key}"), child);
+            for (key, &child) in &node_info.children {
+                print_node(hierarchy, &format!("{prefix}/{key}"), child);
             }
         }
-        print_node("  ", hierarchy.root_node());
+        print_node(&hierarchy, "  ", hierarchy.root_node());
     }
 
     // parse source
@@ -140,10 +143,16 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
     let start_compile = Instant::now();
     let top_values = top
         .iter()
-        .map(|top| {
-            let item = refs.resolve_item_by_path(Spanned::new(manifest_span, top))?;
-            refs.eval_item(item)
-        })
+        .map(
+            |top| match refs.resolve_path(Spanned::new(manifest_span, top), false)? {
+                ImportValue::Item(item) => refs.eval_item(item),
+                ImportValue::HierarchyNode(_) => Err(refs.diags.report_error_simple(
+                    format!("top `{top}` must be an item, got a package"),
+                    manifest_span,
+                    "top set here",
+                )),
+            },
+        )
         .collect_vec();
 
     // run compilation loop

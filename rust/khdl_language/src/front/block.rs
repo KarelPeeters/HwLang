@@ -628,7 +628,7 @@ impl CompileItemContext<'_, '_> {
                                 diags.report_error_simple(
                                     "register reset value must be representable in hardware",
                                     reset_value.span,
-                                    format!("got type `{}`", reset_ty.value_string(refs.shared)),
+                                    format!("got type `{}`", reset_ty.value_string(refs)),
                                 )
                             })?;
                             signal.inner.suggest_ty(
