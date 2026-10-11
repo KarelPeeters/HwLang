@@ -829,7 +829,7 @@ impl BodyContext {
                 None => {
                     let connector_id_str = connector_info.id.inner.str(&refs.shared.interner);
                     let diag = DiagnosticError::new(
-                        format!("missing connection for port {connector_id_str}"),
+                        format!("missing connection for port `{connector_id_str}`"),
                         Span::empty_at(port_connections.span.end()),
                         "connections here",
                     )

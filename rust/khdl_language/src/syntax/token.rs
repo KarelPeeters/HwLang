@@ -791,7 +791,9 @@ impl TokenError {
             TokenError::InvalidToken { pos } => {
                 DiagnosticError::new("tokenization error", Span::empty_at(pos), "invalid start of token")
             }
-            TokenError::InvalidIntLiteral { span } => DiagnosticError::new("invalid integer literal", span, "here"),
+            TokenError::InvalidIntLiteral { span } => {
+                DiagnosticError::new("invalid integer literal", span, "invalid literal here")
+            }
             TokenError::BlockCommentMissingEnd { start, eof } => {
                 DiagnosticError::new("block comment missing end", Span::empty_at(eof), "end of file reached")
                     .add_info(Span::empty_at(start), "block comment started here")

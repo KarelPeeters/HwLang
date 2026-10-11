@@ -131,7 +131,8 @@ pub fn parse_error_to_diagnostic(error: ParseError) -> DiagnosticError {
         ParseError::UnrecognizedEof { location, expected } => {
             let span = Span::empty_at(location);
 
-            DiagnosticError::new("unexpected eof", span, "invalid token").add_footer_info(format_expected(&expected))
+            DiagnosticError::new("unexpected end of file", span, "end of file reached here")
+                .add_footer_info(format_expected(&expected))
         }
         ParseError::UnrecognizedToken { token, expected } => {
             let (start, ty, end) = token;

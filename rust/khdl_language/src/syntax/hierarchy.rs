@@ -70,7 +70,7 @@ impl SourceHierarchy {
         // check file not yet added
         if self.files.contains_key(&file) {
             return Err(diags.report_error_simple(
-                format!("File `{}` was already added as a package", source[file].debug_info_path),
+                format!("file `{}` was already added as a package", source[file].debug_info_path),
                 span,
                 "file added here",
             ));
@@ -80,7 +80,7 @@ impl SourceHierarchy {
         for step in steps {
             if !str_is_valid_identifier(step) {
                 return Err(diags.report_error_simple(
-                    format!("Invalid identifier `{step}` in package path"),
+                    format!("invalid identifier `{step}` in package path"),
                     span,
                     "file added here",
                 ));

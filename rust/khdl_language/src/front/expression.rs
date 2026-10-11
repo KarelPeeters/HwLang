@@ -913,7 +913,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 let err = DiagnosticError::new(
                                     "cannot access variable after its scope has ended",
                                     span_keyword,
-                                    "trying to deference here",
+                                    "trying to dereference here",
                                 )
                                 .add_info(rf.span_decl, "variable declared here")
                                 .add_info(rf.span_ref, "reference taken here")
@@ -1266,7 +1266,7 @@ impl<'a> CompileItemContext<'a, '_> {
     ) -> DiagResult<Spanned<DomainSignal>> {
         let diags = self.refs.diags;
         let build_err =
-            |actual: &str| diags.report_error_simple("expected domain signal", expr.span, format!("got `{actual}`"));
+            |actual: &str| diags.report_error_simple("expected domain signal", expr.span, format!("got {actual}"));
         self.try_eval_expression_as_domain_signal(scope, flow, expr, build_err)
             .map_err(|e| e.into_inner())
     }
@@ -1297,15 +1297,15 @@ impl<'a> CompileItemContext<'a, '_> {
                 let named = self.eval_scoped_as_named(scope, id).map_err(|e| Either::Right(e))?;
 
                 match named {
-                    NamedOrValue::Value(_) => Err(build_err("value")),
+                    NamedOrValue::Value(_) => Err(build_err("a value")),
                     NamedOrValue::Named(s) => match s {
                         NamedValue::Signal(s) => Ok(Polarized::new(s)),
-                        NamedValue::Variable(_) => Err(build_err("variable")),
-                        NamedValue::Interface(_) => Err(build_err("interface instance")),
+                        NamedValue::Variable(_) => Err(build_err("a variable")),
+                        NamedValue::Interface(_) => Err(build_err("an interface instance")),
                     },
                 }
             }
-            _ => Err(build_err("expression")),
+            _ => Err(build_err("a general expression")),
         };
 
         let result = result.map_err(|e| Either::Left(e))?;
@@ -1502,16 +1502,13 @@ fn eval_int_ty_call(
         }) => false,
         _ => {
             let diag = DiagnosticError::new(
-                "base type must be int or uint for int type constraining",
+                "only `int` and `uint` can be constrained",
                 span_call,
-                "attempt to constrain int type here",
+                "attempt to constrain type here",
             )
             .add_info(
                 target.span,
-                format!(
-                    "base type `{}` here",
-                    Type::Int(target.inner.clone()).value_string(refs)
-                ),
+                format!("base type is `{}`", Type::Int(target.inner.clone()).value_string(refs)),
             )
             .report(diags);
             return Err(diag);
@@ -1585,7 +1582,7 @@ fn eval_int_ty_call(
             CompileValue::Compound(CompileCompoundValue::Range(range)) => range,
             _ => {
                 let diag = DiagnosticError::new(
-                    "int type constraint must be a single int int or multiple int ranges",
+                    "int type constraint must be a single int or one or more ranges",
                     arg.span,
                     format!("got value with type `{}` here", arg.inner.ty().value_string(refs)),
                 )
@@ -1608,7 +1605,7 @@ fn eval_int_ty_call(
                 args_span,
                 format!("new range `{result}` is not a subrange"),
             )
-            .add_info(target.span, format!("base type {base_ty_name}"))
+            .add_info(target.span, format!("base type is `{base_ty_name}`"))
             .report(diags);
             return Err(diag);
         }

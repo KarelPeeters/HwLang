@@ -29,7 +29,7 @@ impl CompileItemContext<'_, '_> {
 
         // check single unnamed arg
         // TODO extract common code, there are probably other users of this pattern
-        const ARG_DIAG_TITLE: &str = "typeof only takes a single unnamed argument";
+        const ARG_DIAG_TITLE: &str = "`type(...)` only takes a single unnamed argument";
 
         let mut arg_expr = None;
         let mut scope_args = scope.new_child(args.span());
@@ -58,7 +58,7 @@ impl CompileItemContext<'_, '_> {
         // eval id
         let &ExpressionKind::Id(id) = self.refs.get_expr(arg_expr) else {
             return Err(diags.report_error_simple(
-                "typeof only works on identifiers, not general expressions",
+                "`type(...)` only works on identifiers, not general expressions",
                 arg_expr.span,
                 "tried to pass non-identifier here",
             ));
@@ -254,7 +254,7 @@ impl CompileItemContext<'_, '_> {
                         Ok(()) => {}
                         Err(ImplicationContradiction) => {
                             return Err(diags.report_error_simple(
-                                "contraction due to assume",
+                                "contradiction due to assume",
                                 expr_span,
                                 "assumption here",
                             ));

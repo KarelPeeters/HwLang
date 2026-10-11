@@ -325,7 +325,7 @@ impl<'a> ParamArgMacher<'a> {
         for (i, arg_used) in enumerate(self.arg_used) {
             if !arg_used {
                 let e = DiagnosticError::new(
-                    "argument did not match any param",
+                    "argument does not match any parameter",
                     self.args.inner[i].span,
                     "argument passed here",
                 )
@@ -354,7 +354,7 @@ impl CompileItemContext<'_, '_> {
         let diags = self.refs.diags;
 
         let err_infer_any = |kind: &str, span_decl: Span| {
-            error_cannot_infer_generic_params(kind, span_target, span_call, span_decl).report(diags)
+            error_cannot_infer_generic_params(kind, span_target, span_call, span_decl, None).report(diags)
         };
         let err_infer_mismatch = |kind: &str, actual_span: Span| {
             DiagnosticError::new(
@@ -364,7 +364,10 @@ impl CompileItemContext<'_, '_> {
             )
             .add_info(
                 span_call,
-                format!("non-{kind} expected type {:?}", expected_ty.value_string(refs)),
+                format!(
+                    "expected type `{}` does not match this {kind}",
+                    expected_ty.value_string(refs)
+                ),
             )
             .report(self.refs.diags)
         };
@@ -1034,10 +1037,10 @@ pub fn error_unique_mismatch(kind: &str, target_span: Span, expected_span: Span,
     DiagnosticError::new(
         format!("{kind} expected type mismatch"),
         target_span,
-        format!("actual {kind} type is set here"),
+        format!("this {kind} is different from the expected {kind}"),
     )
-    .add_info(expected_span, format!("expected {kind} type declared here"))
-    .add_info(actual_span, format!("actual {kind} type defined here"))
+    .add_info(expected_span, format!("expected {kind} declared here"))
+    .add_info(actual_span, format!("actual {kind} declared here"))
 }
 
 pub fn error_cannot_infer_generic_params(
@@ -1045,13 +1048,18 @@ pub fn error_cannot_infer_generic_params(
     span_target: Span,
     span_call: Span,
     span_decl: Span,
+    expected_ty: Option<String>,
 ) -> DiagnosticError {
+    let expected_info = match expected_ty {
+        None => "no expected type".to_owned(),
+        Some(expected_ty) => format!("expected type `{expected_ty}` does not match this {kind}"),
+    };
     DiagnosticError::new(
         format!("cannot infer {kind} parameters"),
         span_target,
         format!("this {kind} has unbound generic parameters"),
     )
-    .add_info(span_call, "no expected type")
+    .add_info(span_call, expected_info)
     .add_info(span_decl, format!("{kind} declared with generic parameters here"))
     .add_footer_hint("either set an expected type or use the full type")
 }

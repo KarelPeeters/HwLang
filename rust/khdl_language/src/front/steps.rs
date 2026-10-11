@@ -860,7 +860,17 @@ fn eval_dot_index_id(
                 Ok(Value::Simple(SimpleCompileValue::Function(func)))
             } else {
                 // non-payload variant, we need to know the type now
-                let err = error_cannot_infer_generic_params("enum", base.span, expr_span, unique.id().span());
+                let expected_ty_str = match expected_ty {
+                    Type::Any => None,
+                    _ => Some(expected_ty.value_string(refs)),
+                };
+                let err = error_cannot_infer_generic_params(
+                    "enum",
+                    base.span,
+                    expr_span,
+                    unique.id().span(),
+                    expected_ty_str,
+                );
                 return Err(err.report(diags));
             }
         };
@@ -1224,7 +1234,7 @@ pub fn check_range_slice(
 
         match slice_len {
             SliceLen::NoneButStartSingle(_) => format!("{start}.."),
-            SliceLen::Some(slice_len) => format!("{}..+{}", start, slice_len.inner),
+            SliceLen::Some(slice_len) => format!("{}+..{}", start, slice_len.inner),
         }
     };
 

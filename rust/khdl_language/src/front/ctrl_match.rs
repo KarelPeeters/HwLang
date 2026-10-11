@@ -188,7 +188,7 @@ impl CompileItemContext<'_, '_> {
 
                 let target_ty = target_ty.as_hardware_type(elab).map_err(|_: NonHardwareType| {
                     diags.report_error_simple(
-                        "failed to fully convert non-compile match target to hardware",
+                        "match target must be compile-time or have a hardware type",
                         target.span,
                         format!("match target has non-hardware type `{}`", target_ty.value_string(refs)),
                     )

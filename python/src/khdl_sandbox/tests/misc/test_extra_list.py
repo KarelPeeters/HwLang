@@ -137,7 +137,7 @@ def test_extra_list_in_params():
     assert g(True, True, 0) == 0
     assert g(True, True, 1) == 1
 
-    with diag_error("argument did not match any param"):
+    with diag_error("argument does not match any parameter"):
         assert g(False, True, 0) == 0
     with diag_error("missing argument for parameter `x`"):
         assert g(True, False, 0) == 0

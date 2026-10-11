@@ -390,8 +390,8 @@ fn compute_block_cones_impl(
                             stmt.span,
                             format!("dynamic array {kind_str} assignment here"),
                         )
-                            .add_footer_hint("This does not create valid combinatorial logic.\nUse a constant target or do a default full assignment beforehand.")
-                            .report(diags);
+                        .add_footer_hint("This would not create valid combinatorial logic.\nUse a constant target or do a default full assignment beforehand.")
+                        .report(diags);
                         signal_errors.insert_first(base, e);
                     }
                 }
@@ -489,7 +489,7 @@ fn compute_block_cones_impl(
                             "conditional branch here",
                         )
                             .add_info(signal.span(&module.signals), "for this signal")
-                            .add_footer_hint("This does not create valid combinatorial logic.\nEnsure both branches drive the same signal (subset) or do a default full assignment beforehand.")
+                            .add_footer_hint("This would not create valid combinatorial logic.\nEnsure both branches drive the same parts of the signal or do a default full assignment beforehand.")
                             .report(diags);
                         signal_errors.insert_first(signal, e);
                     }
@@ -684,7 +684,7 @@ fn check_combinatorial_self_loops(
         }
 
         return Err(diag
-            .add_footer_hint("This does not create valid combinatorial logic.")
+            .add_footer_hint("a combinatorial process cannot read a signal before it drives it, this would create a combinatorial loop")
             .report(diags));
     }
 

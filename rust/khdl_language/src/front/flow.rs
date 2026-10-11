@@ -1994,7 +1994,7 @@ fn merge_branch_variable(
 
     if !branch_errors.is_empty() {
         let mut diag = DiagnosticError::new(
-            "branch assignment merging only works hardware types",
+            "branch assignment merging only works for hardware types",
             span_merge,
             "merging due to this branch",
         )
