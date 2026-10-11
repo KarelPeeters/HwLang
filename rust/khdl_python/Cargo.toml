@@ -15,6 +15,11 @@ workspace = true
 name = "khdl"
 crate-type = ["cdylib"]
 
+[features]
+# Build against the stable python ABI, so a single wheel works for python 3.12 and all later versions.
+# Earlier versions don't support subclassing exceptions in the stable ABI, so they still need version-specific builds.
+abi3 = ["pyo3/abi3-py312"]
+
 [dependencies]
 khdl_language = { workspace = true, features = ["wrap_verilator"] }
 khdl_util = { workspace = true }
