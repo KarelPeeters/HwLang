@@ -90,6 +90,7 @@ jobs:
           rust-toolchain: ${{ env.RUST_VERSION }}
           args: --release --out dist --features abi3
           working-directory: rust/khdl_python
+          sccache: true
       # Older python versions don't support everything we need in the stable ABI, so they need version-specific wheels.
       - name: Build version-specific wheels
         uses: PyO3/maturin-action@v1
@@ -99,6 +100,7 @@ jobs:
           rust-toolchain: ${{ env.RUST_VERSION }}
           args: --release --out dist --interpreter python3.10 python3.11
           working-directory: rust/khdl_python
+          sccache: true
       - uses: actions/upload-artifact@v5
         with:
           name: dist-wheels-${{ matrix.platform.name }}
