@@ -633,7 +633,7 @@ fn resolve_import_steps<'s>(
                 None => {
                     let options = children.keys().map(String::as_str).collect_vec();
                     Err(report_import_not_found(
-                        diags, hierarchy, node, base_span, step.span, options,
+                        diags, hierarchy, node, base_span, step, options,
                     ))
                 }
             }
@@ -649,10 +649,19 @@ fn report_import_not_found(
     hierarchy: &SourceHierarchy,
     base: HierarchyNode,
     base_span: Option<Span>,
-    step_span: Span,
+    step: Spanned<&str>,
     mut options: Vec<&str>,
 ) -> DiagError {
-    let mut diag = DiagnosticError::new("import not found", step_span, "failed step");
+    let title = if base == hierarchy.root_node() {
+        format!("root package has no member `{}`", step.inner)
+    } else {
+        format!(
+            "package `{}` has no member `{}`",
+            hierarchy[base].steps.join("."),
+            step.inner
+        )
+    };
+    let mut diag = DiagnosticError::new(title, step.span, "failed step");
     diag = match base_span {
         Some(base_span) => diag.add_info(
             base_span,
@@ -742,12 +751,7 @@ pub fn resolve_import_final<S: Borrow<FrozenScope>>(
                 options.extend(items);
             }
             Err(report_import_not_found(
-                diags,
-                hierarchy,
-                base,
-                base_span,
-                final_.span,
-                options,
+                diags, hierarchy, base, base_span, final_, options,
             ))
         }
         (Some(_), Some(_)) => Err(diags.report_error_internal(

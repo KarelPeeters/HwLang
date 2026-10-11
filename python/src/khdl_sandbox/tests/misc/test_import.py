@@ -63,7 +63,7 @@ def test_package_does_not_expose_imports():
     }
     c = compile_custom_files(files)
     assert c.resolve("top.g")() == 5
-    with diag_error("import not found"):
+    with diag_error("package `lib` has no member `x`"):
         c.resolve("top.h")()
 
 
@@ -84,22 +84,27 @@ def test_item_child_conflict():
 
 
 def test_import_not_found():
-    for top in ["import lib.missing;", "import missing.lib;", "import lib.f.x;"]:
-        with diag_error("import not found"):
+    for top, title in [
+        ("import lib.missing;", "package `lib` has no member `missing`"),
+        ("import missing.lib;", "root package has no member `missing`"),
+        ("import lib.f.x;", "package `lib` has no member `f`"),
+    ]:
+        with diag_error(title):
             compile_custom_files({"lib": LIB, "top": top})
 
 
 def test_import_not_found_package():
     # the package the lookup happened in is pointed out, for imports, dot-indexing and python
     files = {"a.lib": LIB}
+    title = "package `a.lib` has no member `missing`"
     info = "looked up in package `a.lib`"
-    with diag_error("import not found", has_info=info):
+    with diag_error(title, has_info=info):
         compile_custom_files(files | {"top": "import a.lib.missing;"})
-    with diag_error("import not found", has_info="looked up in package `a`"):
+    with diag_error("package `a` has no member `missing`", has_info="looked up in package `a`"):
         compile_custom_files(files | {"top": "import a.missing.lib;"})
-    with diag_error("import not found", has_info=info):
+    with diag_error(title, has_info=info):
         compile_custom_files(files | {"top": "import a.lib; fn g() -> int { return lib.missing; }"}).resolve("top.g")()
-    with diag_error("import not found", has_info=info):
+    with diag_error(title, has_info=info):
         compile_custom_files(files).resolve("a.lib.missing")
 
 
@@ -120,7 +125,7 @@ def test_resolve_module_wrong_type():
 
 def test_package_missing_item():
     files = {"lib": LIB, "top": "import lib; fn g() -> int { return lib.missing; }"}
-    with diag_error("import not found"):
+    with diag_error("package `lib` has no member `missing`"):
         compile_custom_files(files).resolve("top.g")()
 
 
@@ -129,9 +134,9 @@ def test_resolve_does_not_find_imports():
     assert c.resolve("top.g")() == 1
 
     # resolve only sees items declared in the file itself, not imported or prelude items
-    with diag_error("import not found"):
+    with diag_error("package `top` has no member `f`"):
         c.resolve("top.f")
-    with diag_error("import not found"):
+    with diag_error("package `top` has no member `int`"):
         c.resolve("top.int")
 
 
@@ -152,13 +157,13 @@ def test_import_not_found_options():
 
     # child nodes and public items are suggested, private items are not
     (diag,) = e.value.diagnostics
-    assert diag.title == "import not found"
+    assert diag.title == "package `a` has no member `missing`"
     assert 'possible options: ["child", "dir", "x"]' in diag.full_string
 
 
 def test_lookups_share_messages():
     # imports, dot-indexing and python all use the same lookup, so they report the same error
-    title = "import not found"
+    title = "package `lib` has no member `missing`"
     with diag_error(title):
         compile_custom_files({"lib": LIB, "top": "import lib.missing;"})
     with diag_error(title):
