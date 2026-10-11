@@ -9,6 +9,7 @@ on:
     branches: [ "**" ]
   pull_request:
     branches: [ "**" ]
+  workflow_call:
 
 permissions:
   contents: read
@@ -128,7 +129,8 @@ jobs:
     name: Webdemo deploy
     runs-on: ubuntu-latest
     needs: [ webdemo-build, rust-build-test, python-build-test ]
-    if: github.ref == 'refs/heads/main'
+    # Only deploy for actual pushes to main, not when called from the release workflow.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/download-artifact@v4
         with:
