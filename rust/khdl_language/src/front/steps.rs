@@ -702,6 +702,7 @@ fn eval_dot_index_id(
             refs.fixed.hierarchy,
             &refs.shared.file_scopes,
             node,
+            Some(base.span),
             Spanned::new(index.span, index_str),
             false,
         )?;

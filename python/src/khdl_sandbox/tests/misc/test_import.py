@@ -89,6 +89,20 @@ def test_import_not_found():
             compile_custom_files({"lib": LIB, "top": top})
 
 
+def test_import_not_found_package():
+    # the package the lookup happened in is pointed out, for imports, dot-indexing and python
+    files = {"a.lib": LIB}
+    info = "looked up in package `a.lib`"
+    with diag_error("import not found", has_info=info):
+        compile_custom_files(files | {"top": "import a.lib.missing;"})
+    with diag_error("import not found", has_info="looked up in package `a`"):
+        compile_custom_files(files | {"top": "import a.missing.lib;"})
+    with diag_error("import not found", has_info=info):
+        compile_custom_files(files | {"top": "import a.lib; fn g() -> int { return lib.missing; }"}).resolve("top.g")()
+    with diag_error("import not found", has_info=info):
+        compile_custom_files(files).resolve("a.lib.missing")
+
+
 def test_private_through_own_file():
     # private items are blocked through package paths, even from within the declaring file
     files = {"lib": "import lib; fn p() -> int { return 1; } pub fn g() -> int { return lib.p(); }"}

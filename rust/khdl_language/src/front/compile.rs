@@ -1,4 +1,4 @@
-use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::DomainSignal;
 use crate::front::flow::NextFlowRootId;
 use crate::front::item::{ElaboratedModule, ElaborationArenas};
@@ -160,6 +160,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
             self.fixed.hierarchy,
             &self.shared.file_scopes,
             base,
+            (!steps.is_empty()).then_some(path.span),
             Spanned::new(path.span, final_),
             allow_private,
         )
@@ -477,6 +478,10 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
                 if let ast::Item::Import(item) = item {
                     let ast::ItemImport { span: _, steps, final_ } = item;
 
+                    let base_span = steps
+                        .inner
+                        .first()
+                        .map(|first| first.span.join(steps.inner.last().unwrap().span));
                     let steps = steps.inner.iter().map(|step| step.spanned_str(source));
                     let base = resolve_import_steps(diags, hierarchy, steps);
 
@@ -496,7 +501,16 @@ fn populate_file_scopes(diags: &Diagnostics, fixed: CompileFixed, interner: &Int
 
                         // find entry
                         let value = base.and_then(|base| {
-                            resolve_import_final(diags, interner, hierarchy, &file_scopes, base, id_str, false)
+                            resolve_import_final(
+                                diags,
+                                interner,
+                                hierarchy,
+                                &file_scopes,
+                                base,
+                                base_span,
+                                id_str,
+                                false,
+                            )
                         });
 
                         // map to entry
@@ -607,23 +621,52 @@ fn resolve_import_steps<'s>(
     hierarchy: &SourceHierarchy,
     path: impl IntoIterator<Item = Spanned<&'s str>>,
 ) -> DiagResult<HierarchyNode> {
-    path.into_iter().try_fold(hierarchy.root_node(), |node, step| {
-        let children = &hierarchy[node].children;
-        match children.get(step.inner) {
-            Some(&child_node) => Ok(child_node),
-            None => {
-                // TODO sort by similarity and only show top k?
-                let mut options = children.keys().cloned().collect_vec();
-                options.sort();
-
-                let mut diag = DiagnosticError::new("import not found", step.span, "failed step");
-                if !options.is_empty() {
-                    diag = diag.add_footer_hint(format!("possible options: {options:?}"));
+    let (node, _) = path.into_iter().try_fold(
+        (hierarchy.root_node(), None),
+        |(node, base_span): (_, Option<Span>), step| {
+            let children = &hierarchy[node].children;
+            match children.get(step.inner) {
+                Some(&child_node) => {
+                    let base_span = base_span.map_or(step.span, |base_span| base_span.join(step.span));
+                    Ok((child_node, Some(base_span)))
                 }
-                Err(diag.report(diags))
+                None => {
+                    let options = children.keys().map(String::as_str).collect_vec();
+                    Err(report_import_not_found(
+                        diags, hierarchy, node, base_span, step.span, options,
+                    ))
+                }
             }
-        }
-    })
+        },
+    )?;
+    Ok(node)
+}
+
+/// Report that `step` could not be found in package `base`.
+/// `base_span` is the span of the expression that evaluated to `base`, `None` for the root package.
+fn report_import_not_found(
+    diags: &Diagnostics,
+    hierarchy: &SourceHierarchy,
+    base: HierarchyNode,
+    base_span: Option<Span>,
+    step_span: Span,
+    mut options: Vec<&str>,
+) -> DiagError {
+    let mut diag = DiagnosticError::new("import not found", step_span, "failed step");
+    diag = match base_span {
+        Some(base_span) => diag.add_info(
+            base_span,
+            format!("looked up in package `{}`", hierarchy[base].steps.join(".")),
+        ),
+        None => diag.add_footer_info("looked up in the root package"),
+    };
+
+    // TODO sort by similarity and only show top k?
+    options.sort();
+    if !options.is_empty() {
+        diag = diag.add_footer_hint(format!("possible options: {options:?}"));
+    }
+    diag.report(diags)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -638,6 +681,7 @@ pub fn resolve_import_final<S: Borrow<FrozenScope>>(
     hierarchy: &SourceHierarchy,
     file_scopes: &FileScopes<S>,
     base: HierarchyNode,
+    base_span: Option<Span>,
     final_: Spanned<&str>,
     allow_private: bool,
 ) -> DiagResult<ImportValue> {
@@ -686,7 +730,6 @@ pub fn resolve_import_final<S: Borrow<FrozenScope>>(
             Ok(ImportValue::Item(item.item))
         }
         (None, None) => {
-            // TODO sort by similarity and only show top k?
             let mut options = base_info.children.keys().map(String::as_str).collect_vec();
             if let Some(file) = base_info.file
                 && let Ok(scope) = file_scopes.get(&file).unwrap()
@@ -698,13 +741,14 @@ pub fn resolve_import_final<S: Borrow<FrozenScope>>(
                 });
                 options.extend(items);
             }
-            options.sort();
-
-            let mut diag = DiagnosticError::new("import not found", final_.span, "failed step");
-            if !options.is_empty() {
-                diag = diag.add_footer_hint(format!("possible options: {options:?}"));
-            }
-            Err(diag.report(diags))
+            Err(report_import_not_found(
+                diags,
+                hierarchy,
+                base,
+                base_span,
+                final_.span,
+                options,
+            ))
         }
         (Some(_), Some(_)) => Err(diags.report_error_internal(
             final_.span,
