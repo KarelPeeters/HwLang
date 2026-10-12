@@ -168,7 +168,8 @@ impl BlockEnd {
                     can_continue: mask.can_continue & !mask_remove.can_continue,
                 };
 
-                let result_certain_exit = certain_exit && ExitMask::<1>::from_base(result_mask).is_some();
+                let any_removed = result_mask != mask;
+                let result_certain_exit = certain_exit && !any_removed;
 
                 BlockEnd::from_flags(BlockEndFlags::Normal {
                     certain_exit: result_certain_exit,

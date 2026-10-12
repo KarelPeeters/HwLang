@@ -130,3 +130,30 @@ def test_match_return(tmp_dir: Path):
     e = compare_body(["int(0..=1)"], "int(0..=1)", src, tmp_dir)
     e.eval_assert([0], 0)
     e.eval_assert([1], 1)
+
+
+def test_loop_return_or_break_hardware(tmp_dir: Path):
+    # the break should cause the code after the loop to become reachable
+    src = """
+    for (i in 0..4) {
+        if (a0) { return 1; } else { break; }
+    }
+    return 2;
+    """
+    e = compare_body(["bool"], "int(0..8)", src, tmp_dir)
+    e.eval_assert([True], 1)
+    e.eval_assert([False], 2)
+
+
+def test_loop_break_or_continue_hardware(tmp_dir: Path):
+    # the loop should continue unrolling after the first iteration
+    src = """
+    var v: int(0..8) = 0;
+    for (i in 0..4) {
+        if (a0) { break; } else { v += 1; continue; }
+    }
+    return v;
+    """
+    e = compare_body(["bool"], "int(0..8)", src, tmp_dir)
+    e.eval_assert([True], 0)
+    e.eval_assert([False], 4)
