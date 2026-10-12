@@ -7,8 +7,10 @@ use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
+use crate::util::edit_distance::hint_options_by_edit_distance;
 use crate::util::intern::{Id, Interner};
 use indexmap::map::{Entry, IndexMap};
+use khdl_util::constants::MAX_IDENTIFIER_SUGGESTIONS;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -136,29 +138,40 @@ impl FrozenScope {
         interner: &Interner,
         key: impl Into<ScopeKey<Spanned<Id>, Span>>,
     ) -> DiagResult<ScopeFound> {
-        self.find_impl(diags, interner, key.into(), self.content.span)
+        // find
+        let key = key.into();
+        if let Some(found) = self.try_find(key.without_span())? {
+            return Ok(found);
+        }
+
+        // failed, report err
+        let mut options = vec![];
+        self.collect_options(&mut options);
+        Err(error_not_found(interner, self.content.span, key, options).report(diags))
     }
 
-    fn find_impl(
-        &self,
-        diags: &Diagnostics,
-        interner: &Interner,
-        key: ScopeKey<Spanned<Id>, Span>,
-        start_span: Span,
-    ) -> DiagResult<ScopeFound> {
+    fn try_find(&self, key: ScopeKey<Id, ()>) -> DiagResult<Option<ScopeFound>> {
         let mut curr = self;
         loop {
-            if let Some(found) = curr.content.try_find(key.without_span())? {
-                return Ok(found);
+            if let Some(found) = curr.content.try_find(key)? {
+                return Ok(Some(found));
             }
+            curr = match &curr.parent {
+                Some(parent) => parent,
+                None => return Ok(None),
+            }
+        }
+    }
 
+    fn collect_options(&self, options: &mut Vec<ScopeKey<Id, ()>>) {
+        let mut curr = self;
+        loop {
+            options.extend(curr.content.values.keys().copied());
             curr = match &curr.parent {
                 Some(parent) => parent,
                 None => break,
             }
         }
-
-        Err(error_not_found(interner, start_span, key).report(diags))
     }
 
     pub fn for_each_immediate_entry(&self, f: impl FnMut(ScopeKey<Id, ()>, DeclaredValueSingle<&ScopedEntry>)) {
@@ -234,22 +247,43 @@ impl<'p> Scope<'p> {
         self.content.borrow_mut().declare_already_checked(id, value);
     }
 
-    /// Find the given identifier in this scope.
-    /// Walks up into the parent scopes until a scope without a parent is found,
-    /// then looks in the `root` scope. If no value is found returns `Err`.
     pub fn find(&self, refs: CompileRefs, key: impl Into<ScopeKey<Spanned<Id>, Span>>) -> DiagResult<ScopeFound> {
+        // find
         let key = key.into();
+        if let Some(found) = self.try_find(key.without_span())? {
+            return Ok(found);
+        }
 
+        // failed, report err
+        let mut options = vec![];
+        self.collect_options(&mut options);
+        Err(error_not_found(&refs.shared.interner, self.content.borrow().span, key, options).report(refs.diags))
+    }
+
+    fn try_find(&self, key: ScopeKey<Id, ()>) -> DiagResult<Option<ScopeFound>> {
         let mut curr = self;
         loop {
             let content = curr.content.borrow();
-            if let Some(found) = content.try_find(key.without_span())? {
-                return Ok(found);
+            if let Some(found) = content.try_find(key)? {
+                return Ok(Some(found));
             }
             curr = match &curr.parent {
                 ScopeParent::Normal(parent) => parent,
+                ScopeParent::Frozen(parent) => return parent.try_find(key),
+            };
+        }
+    }
+
+    fn collect_options(&self, options: &mut Vec<ScopeKey<Id, ()>>) {
+        let mut curr = self;
+        loop {
+            let content = curr.content.borrow();
+            options.extend(content.values.keys());
+            curr = match &curr.parent {
+                ScopeParent::Normal(parent) => parent,
                 ScopeParent::Frozen(parent) => {
-                    return parent.find_impl(refs.diags, &refs.shared.interner, key, self.content.borrow().span);
+                    parent.collect_options(options);
+                    return;
                 }
             };
         }
@@ -523,20 +557,33 @@ impl<S: Clone> DeclaredValueSingle<&S> {
     }
 }
 
-fn error_not_found(interner: &Interner, initial_scope_span: Span, key: ScopeKey<Spanned<Id>, Span>) -> DiagnosticError {
-    // TODO add fuzzy-matched suggestions as info
-    let (title, span) = match key {
+fn error_not_found(
+    interner: &Interner,
+    initial_scope_span: Span,
+    key: ScopeKey<Spanned<Id>, Span>,
+    options: Vec<ScopeKey<Id, ()>>,
+) -> DiagnosticError {
+    let (title, span, hint) = match key {
         ScopeKey::Id(id) => {
             let id_str = id.inner.str(interner);
-            (format!("undeclared identifier `{}`", id_str), id.span)
+            let options_str = options.iter().filter_map(|id| match id {
+                ScopeKey::Id(id) => Some(id.str(interner)),
+                ScopeKey::Slf(_) => None,
+            });
+            let hint = hint_options_by_edit_distance(id_str, options_str, MAX_IDENTIFIER_SUGGESTIONS);
+            (format!("undeclared identifier `{}`", id_str), id.span, hint)
         }
-        ScopeKey::Slf(span) => ("self is not bound in this scope".to_string(), span),
+        ScopeKey::Slf(span) => ("self is not bound in this scope".to_string(), span, None),
     };
 
-    DiagnosticError::new(title, span, "trying to access here").add_info(
+    let mut diag = DiagnosticError::new(title, span, "trying to access here").add_info(
         Span::empty_at(initial_scope_span.start()),
         "searched in the scope starting here and its parents",
-    )
+    );
+    if let Some(hint) = hint {
+        diag = diag.add_footer_hint(hint);
+    }
+    diag
 }
 
 impl CaptureFailed {

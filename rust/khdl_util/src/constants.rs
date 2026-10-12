@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 #[macro_export]
 macro_rules! khdl_manifest_file_name_macro {
     () => {
@@ -22,4 +24,5 @@ pub const STACK_OVERFLOW_ERROR_ENTRIES_SHOWN: usize = 15;
 
 pub const MAX_DRIVER_INFO_PATHS: usize = 20;
 
-pub const MAX_IMPORT_SUGGESTIONS: usize = 8;
+pub const MAX_IMPORT_SUGGESTIONS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+pub const MAX_IDENTIFIER_SUGGESTIONS: NonZeroUsize = NonZeroUsize::new(4).unwrap();

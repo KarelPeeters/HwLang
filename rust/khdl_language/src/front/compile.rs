@@ -21,7 +21,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::syntax::source::{FileId, SourceDatabase};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, NonEmptyVec};
-use crate::util::edit_distance::most_similar;
+use crate::util::edit_distance::hint_options_by_edit_distance;
 use crate::util::intern::{Id, Interner};
 use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
@@ -29,7 +29,6 @@ use crate::util::{ResultDoubleExt, ResultExt};
 use indexmap::IndexMap;
 use itertools::{Itertools, zip_eq};
 use khdl_util::constants::{MAX_IMPORT_SUGGESTIONS, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
-use khdl_util::swrite;
 use rand::seq::SliceRandom;
 use std::borrow::Borrow;
 use std::fmt::Debug;
@@ -663,23 +662,14 @@ fn report_import_not_found(
             step.inner
         )
     };
-    let mut diag = DiagnosticError::new(title, step.span, "failed step");
-    diag = match base_span {
-        Some(base_span) => diag.add_info(
+    let mut diag = DiagnosticError::new(title, step.span, "not found");
+    if let Some(base_span) = base_span {
+        diag = diag.add_info(
             base_span,
-            format!("looked up in package `{}`", hierarchy[base].steps.join(".")),
-        ),
-        None => diag.add_footer_info("looked up in the root package"),
-    };
-
-    // only suggest the most similar options
-    let option_count = options.len();
-    let options = most_similar(step.inner, options, MAX_IMPORT_SUGGESTIONS);
-    if !options.is_empty() {
-        let mut hint = format!("possible options: {options:?}");
-        if option_count > options.len() {
-            swrite!(hint, " and {} more", option_count - options.len());
-        }
+            format!("this is package `{}`", hierarchy[base].steps.join(".")),
+        );
+    }
+    if let Some(hint) = hint_options_by_edit_distance(step.inner, options, MAX_IMPORT_SUGGESTIONS) {
         diag = diag.add_footer_hint(hint);
     }
     diag.report(diags)

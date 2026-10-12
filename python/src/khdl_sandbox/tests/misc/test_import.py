@@ -97,10 +97,10 @@ def test_import_not_found_package():
     # the package the lookup happened in is pointed out, for imports, dot-indexing and python
     files = {"a.lib": LIB}
     title = "package `a.lib` has no member `missing`"
-    info = "looked up in package `a.lib`"
+    info = "this is package `a.lib`"
     with diag_error(title, has_info=info):
         compile_custom_files(files | {"top": "import a.lib.missing;"})
-    with diag_error("package `a` has no member `missing`", has_info="looked up in package `a`"):
+    with diag_error("package `a` has no member `missing`", has_info="this is package `a`"):
         compile_custom_files(files | {"top": "import a.missing.lib;"})
     with diag_error(title, has_info=info):
         compile_custom_files(files | {"top": "import a.lib; fn g() -> int { return lib.missing; }"}).resolve("top.g")()
@@ -147,18 +147,18 @@ def test_import_private_item():
 
 def test_import_not_found_options():
     files = {
-        "a": "pub const x = 1; const hidden = 2;",
+        "a": "pub const chilx = 1; const chill = 2;",
         "a.child": "",
         "a.dir.deep": "",
-        "top": "import a.missing;",
+        "top": "import a.chil;",
     }
     with pytest.raises(khdl.DiagnosticException) as e:
         compile_custom_files(files)
 
-    # child nodes and public items are suggested, private items are not
+    # similar child packages and public items are suggested, private items and dissimilar names are not
     (diag,) = e.value.diagnostics
-    assert diag.title == "package `a` has no member `missing`"
-    assert 'possible options: ["child", "dir", "x"]' in diag.full_string
+    assert diag.title == "package `a` has no member `chil`"
+    assert "did you mean `child` or `chilx`?" in diag.full_string
 
 
 def test_lookups_share_messages():
