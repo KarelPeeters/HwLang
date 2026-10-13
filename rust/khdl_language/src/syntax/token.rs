@@ -156,12 +156,11 @@ impl<'s> Tokenizer<'s> {
             }
             Mode::NormalInSubExpression { str_start, curly_depth } => {
                 if self.peek() == Some('}') {
+                    self.skip(1);
                     return if curly_depth == 0 {
-                        self.skip(1);
                         self.mode = Mode::StringMiddle { str_start, subs: true };
                         Ok(NextInnerResult::Ty(TokenType::StringSubEnd))
                     } else {
-                        self.skip(1);
                         self.mode = Mode::NormalInSubExpression {
                             str_start,
                             curly_depth: curly_depth - 1,
@@ -435,10 +434,10 @@ impl<'s> Tokenizer<'s> {
         if ty == TokenType::OpenC
             && let Mode::NormalInSubExpression {
                 str_start: _,
-                curly_depth: openc_depth,
+                curly_depth,
             } = &mut self.mode
         {
-            *openc_depth += 1;
+            *curly_depth += 1;
         }
 
         Ok(NextInnerResult::Ty(ty))

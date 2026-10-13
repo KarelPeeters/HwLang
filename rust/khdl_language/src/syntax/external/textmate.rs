@@ -25,13 +25,22 @@ pub fn generate_textmate_language_json() -> String {
         "patterns": [{ "include": "#block_comment" }],
     });
 
-    // strings, escapes are matched separately so they don't end the string or start a substitution
+    // strings, escapes are matched separately so they don't end the string or start a substitution.
+    // braces can nest inside a substitution, so they refer to themselves through the repository,
+    //   and the braces are scoped separately to match the OpenC/CloseC tokens the tokenizer emits.
     let escape = json!({ "match": format!("\\\\{}", REGEX_STRING_ESCAPE_CHARS) });
+    let nested_brace = json!({
+        "begin": "\\{",
+        "end": "\\}",
+        "beginCaptures": { "0": { "name": scope(TokenType::OpenC) } },
+        "endCaptures": { "0": { "name": scope(TokenType::CloseC) } },
+        "patterns": [{ "include": "#nested_brace" }, { "include": "$self" }],
+    });
     let substitution = json!({
         "name": scope(TokenType::StringSubStart),
         "begin": "\\{",
         "end": "\\}",
-        "patterns": [{ "include": "$self" }],
+        "patterns": [{ "include": "#nested_brace" }, { "include": "$self" }],
     });
     patterns.push(json!({
         "name": scope(TokenType::StringStart),
@@ -84,7 +93,10 @@ pub fn generate_textmate_language_json() -> String {
         "name": KHDL_LANGUAGE_NAME,
         "scopeName": source_scope(),
         "patterns": patterns,
-        "repository": { "block_comment": { "patterns": [block_comment] } },
+        "repository": {
+            "block_comment": { "patterns": [block_comment] },
+            "nested_brace": { "patterns": [nested_brace] },
+        },
     });
     serde_json::to_string_pretty(&lang).unwrap()
 }

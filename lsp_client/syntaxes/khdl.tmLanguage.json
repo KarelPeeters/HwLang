@@ -34,6 +34,9 @@
           "end": "\\}",
           "patterns": [
             {
+              "include": "#nested_brace"
+            },
+            {
               "include": "$self"
             }
           ]
@@ -427,6 +430,32 @@
           "patterns": [
             {
               "include": "#block_comment"
+            }
+          ]
+        }
+      ]
+    },
+    "nested_brace": {
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.openc.khdl"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.closec.khdl"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#nested_brace"
+            },
+            {
+              "include": "$self"
             }
           ]
         }
