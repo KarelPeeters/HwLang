@@ -29,3 +29,18 @@ def test_parse_ceil_div_comment(tmp_dir: Path):
     """
     e = compare_body(["int(0..4)", "int(0..4)"], "int(0..12)", body, tmp_dir)
     e.eval_assert([1, 2], 5)
+
+
+def test_parse_string_substitution_block_expr():
+    src = """
+    const a = \"{{val a = 1; a}}\";
+    const b = \"{ {val a = 2; a} }\";
+    const c = \"{{{3}}}\";
+    const d = \"{{\"x\"}}\";
+    """
+
+    c = compile_custom(src)
+    assert c.resolve("top.a") == "1"
+    assert c.resolve("top.b") == "2"
+    assert c.resolve("top.c") == "3"
+    assert c.resolve("top.d") == "x"

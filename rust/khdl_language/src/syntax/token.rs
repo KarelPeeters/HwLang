@@ -50,7 +50,7 @@ pub struct Tokenizer<'s> {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Mode {
     Normal,
-    NormalInSubExpression { str_start: Pos },
+    NormalInSubExpression { str_start: Pos, curly_depth: usize },
     StringMiddle { str_start: Pos, subs: bool },
 }
 
@@ -154,11 +154,20 @@ impl<'s> Tokenizer<'s> {
             Mode::Normal => {
                 // fallthrough
             }
-            Mode::NormalInSubExpression { str_start } => {
+            Mode::NormalInSubExpression { str_start, curly_depth } => {
                 if self.peek() == Some('}') {
-                    self.skip(1);
-                    self.mode = Mode::StringMiddle { str_start, subs: true };
-                    return Ok(NextInnerResult::Ty(TokenType::StringSubEnd));
+                    return if curly_depth == 0 {
+                        self.skip(1);
+                        self.mode = Mode::StringMiddle { str_start, subs: true };
+                        Ok(NextInnerResult::Ty(TokenType::StringSubEnd))
+                    } else {
+                        self.skip(1);
+                        self.mode = Mode::NormalInSubExpression {
+                            str_start,
+                            curly_depth: curly_depth - 1,
+                        };
+                        Ok(NextInnerResult::Ty(TokenType::CloseC))
+                    };
                 } else {
                     // fallthrough
                 }
@@ -180,7 +189,13 @@ impl<'s> Tokenizer<'s> {
                     }
                     Some('{') if allow_subs => {
                         self.skip(1);
-                        (TokenType::StringSubStart, Mode::NormalInSubExpression { str_start })
+                        (
+                            TokenType::StringSubStart,
+                            Mode::NormalInSubExpression {
+                                str_start,
+                                curly_depth: 0,
+                            },
+                        )
                     }
                     Some(_) => {
                         loop {
@@ -416,6 +431,16 @@ impl<'s> Tokenizer<'s> {
 
             _ => return Err(TokenError::InvalidToken { pos: start }),
         };
+
+        if ty == TokenType::OpenC
+            && let Mode::NormalInSubExpression {
+                str_start: _,
+                curly_depth: openc_depth,
+            } = &mut self.mode
+        {
+            *openc_depth += 1;
+        }
+
         Ok(NextInnerResult::Ty(ty))
     }
 
