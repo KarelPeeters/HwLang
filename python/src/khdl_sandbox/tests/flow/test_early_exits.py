@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from khdl_sandbox.common.compare import compare_body
+from khdl_sandbox.common.util import diag_error
 
 
 def test_simple_return(tmp_dir: Path):
@@ -157,3 +158,23 @@ def test_loop_break_or_continue_hardware(tmp_dir: Path):
     e = compare_body(["bool"], "int(0..8)", src, tmp_dir)
     e.eval_assert([True], 0)
     e.eval_assert([False], 4)
+
+
+def test_while_break_index_stays_compile(tmp_dir: Path):
+    # This is really an xfail test, hopefully at some point in the future this actually starts working.
+    # Currently the conditional break causes the `i` variable to become hardware,
+    #   even in the while loop condition itself, where technically we know it will always known at compile time.
+    src = """
+    var i = 0;
+    while (i < 4) {
+        if (a0) {
+            break;
+        }
+        i += 1;
+    }
+    return i;
+    """
+    with diag_error("accessing a hardware variable is only allowed in a hardware context"):
+        _ = compare_body(["bool"], "int(0..8)", src, tmp_dir)
+    # e.eval_assert([True], 0)
+    # e.eval_assert([False], 4)
