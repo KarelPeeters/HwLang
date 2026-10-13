@@ -1384,8 +1384,8 @@ impl BodyContext {
                 if any_input {
                     let r = ctx.check_valid_domain_crossing(
                         connection_span,
-                        value_domain,
                         connector_domain,
+                        value_domain,
                         "interface connection with input port",
                     );
                     any_err_domain = any_err_domain.and(r);
@@ -1393,8 +1393,8 @@ impl BodyContext {
                 if any_output {
                     let r = ctx.check_valid_domain_crossing(
                         connection_span,
-                        connector_domain,
                         value_domain,
+                        connector_domain,
                         "interface connection with output port",
                     );
                     any_err_domain = any_err_domain.and(r);
