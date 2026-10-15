@@ -1,0 +1,10 @@
+module top ports(
+    x_clk: in clock,
+    y_clk: in clock,
+    x_data: in sync(x_clk) bool,
+    y_data: out sync(y_clk) bool,
+) {
+    comb {
+        y_data = x_data;
+    }
+}

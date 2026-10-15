@@ -1,0 +1,19 @@
+# rendered video and audio
+out/
+audio/
+analysis/stems/
+*.mp4
+*.m4a
+*.wav
+
+# dependencies and build outputs (regenerate with npm install / wasm-pack, see README.md)
+node_modules/
+build/pkg/
+build/web_demo/dist/
+mv/vendor/
+
+# per-frame review snapshots (the contact sheets in shots/*.png are kept)
+shots/*/
+
+# caches
+.mypy_cache/

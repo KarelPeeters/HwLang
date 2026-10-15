@@ -1,0 +1,92 @@
+// Translation of https://github.com/MaartenBaert/axi_fifos/blob/gearbox/vhdl/rtl/axi_gearbox_v2.vhd
+import examples.axi_stream.axi_stream;
+
+pub module axi_gearbox_v2(input_width: positive, output_width: positive) ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, async rst) {
+        input: interface axi_stream([input_width]bool).input,
+        output: interface axi_stream([output_width]bool).output,
+    }
+) {
+    const step = gcd(input_width, output_width);
+    const buffer_size = input_width + output_width + min(input_width, output_width) - step;
+    const shift_bits = clog2((buffer_size - input_width) / step + 1);
+
+    wire buffer: sync(clk, async rst) [buffer_size]bool;
+    wire level: sync(clk, async rst) int(0..=(buffer_size / step));
+
+    comb {
+        output.data = buffer[..output_width];
+        output.valid = level >= output_width / step;
+        input.ready = level <= (buffer_size - input_width) / step;
+    }
+
+    clocked(clk, async rst) {
+        reg wire buffer = undef;
+        reg wire level = 0;
+
+        // handle input
+        // TODO use input_ready port here? but then the level type may overflow
+        if (input.valid && level <= (buffer_size - input_width) / step) {
+            const data_width = input_width + step * (2**shift_bits - 1);
+            const mask_width = input_width / step + (2**shift_bits - 1);
+
+            var data: [data_width]bool = [false] * data_width;
+            var mask: [mask_width]bool = [false] * mask_width;
+
+            data[..input_width] = input.data;
+            mask[..input_width / step] = [true] * (input_width / step);
+
+            var shift = uint(shift_bits).to_bits(level);
+            for (i in 0..shift_bits) {
+                if (shift[i]) {
+                    // note: the range `..` we use here and the `downto` in the original have opposite directions!
+                    if (input_width + 2**(i + 1) > buffer_size) {
+                        data[step * 2**i..buffer_size] = data[..buffer_size - step * 2**i];
+                        mask[2**i..buffer_size / step] = mask[..buffer_size / step - 2**i];
+                    } else {
+                        data[step * 2**i..input_width + step * (2**(i + 1) - 1)] = data[
+                            ..input_width + step * (2**i - 1),
+                        ];
+                        mask[2**i..input_width / step + (2**(i + 1) - 1)] = mask[..input_width / step + (2**i - 1)];
+                    }
+                    mask[..2**i] = [false] * 2**i;
+                } else {
+                    if (input_width + 2**(i + 1) > buffer_size) {
+                        mask[input_width / step + 2**i..buffer_size / step] = [false]
+                            * (buffer_size / step - input_width / step - 2**i);
+                    } else {
+                        mask[input_width / step + 2**i..input_width / step + (2**(i + 1) - 1)] = [false]
+                            * ((2**(i + 1) - 1) - 2**i);
+                    }
+                }
+            }
+
+            for (i in 0..buffer_size / step) {
+                if (mask[i]) {
+                    buffer[i * step..(i + 1) * step] = data[i * step..(i + 1) * step];
+                }
+            }
+
+            level = level + input_width / step;
+        }
+
+        // handle output
+        if (output.ready && level >= output_width / step) {
+            buffer[0..buffer_size - output_width] = buffer[output_width..buffer_size];
+            level = level - output_width / step;
+        }
+    }
+}
+
+const {
+    axi_gearbox_v2(input_width=8, output_width=8);
+
+    axi_gearbox_v2(input_width=8, output_width=16);
+    axi_gearbox_v2(input_width=16, output_width=8);
+
+    axi_gearbox_v2(input_width=8, output_width=3);
+    axi_gearbox_v2(input_width=3, output_width=8);
+}

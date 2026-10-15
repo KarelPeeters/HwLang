@@ -1,0 +1,14 @@
+import examples.axi_gearbox.axi_gearbox;
+
+// types are values
+type Pixel = [3]uint(8);
+
+// modules are functions
+const gearbox = axi_gearbox(T=bool, input_width=8, output_width=3);
+
+fn delay(T: type, next: T, reset: T) -> T {
+    reg d: T = reset;
+    val v = d;
+    d = next;
+    return v;
+}

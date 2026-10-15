@@ -1,0 +1,10 @@
+module top ports(
+    a: in async bool,
+    y: out async bool,
+) {
+    wire w: async bool;
+    comb {
+        y = w && a;
+        w = !a;
+    }
+}

@@ -1,0 +1,51 @@
+// TODO get this early return working in hardware
+fn index_of_first_set_bit(n: uint, x: [n]bool) -> Option(int(0..n)) {
+    for (i in 0..n) {
+        if (x[i]) {
+            return Option.Some(i);
+        }
+    }
+    return Option.None;
+}
+
+fn index_to_one_hot(n: uint, index: int(0..n)) -> [n]bool {
+    var result = [false] * n;
+    result[index] = true;
+    return result;
+}
+
+// example of in-file test case
+const {
+    // TODO implement enum equality in the language (if tys the same, then compare variant, then content)
+    fn option_eq(T: type, a: Option(T), b: Option(T)) -> bool {
+        match (a) {
+            .None => {
+                match (b) {
+                    .None => {
+                        return true;
+                    }
+                    .Some(_) => {
+                        return false;
+                    }
+                }
+            }
+            .Some(val a) => {
+                match (b) {
+                    .None => {
+                        return false;
+                    }
+                    .Some(val b) => {
+                        return a == b;
+                    }
+                }
+            }
+        }
+    }
+
+    const N = 4;
+    type T = int(0..N);
+    for (i in 0..N) {
+        assert(option_eq(T, index_of_first_set_bit(N, index_to_one_hot(N, i)), Option(T).Some(i)));
+    }
+    assert(option_eq(T, index_of_first_set_bit(N, [false] * N), Option(T).None));
+}

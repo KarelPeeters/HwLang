@@ -1,0 +1,86 @@
+[1m[91merror: invalid domain crossing: different clock[0m
+ [1m[94m--> [0msrc/cdc.kh:8:16
+  [1m[94m|[0m
+[1m[94m5[0m [1m[94m|[0m     y_data: out sync(y_clk) bool,
+  [1m[94m|[0m                 [1m[94m-----------[0m [1m[94mtarget domain is sync(y_clk)[0m
+[1m[94m...[0m
+[1m[94m8[0m [1m[94m|[0m         y_data = x_data;
+  [1m[94m|[0m                [1m[91m^[0m [1m[94m------[0m [1m[94msource domain is sync(x_clk)[0m
+  [1m[94m|[0m                [1m[91m|[0m
+  [1m[94m|[0m                [1m[91minvalid domain crossing here[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1m[91mnote[0m: crossing due to value to target in combinatorial block
+  [1m[94m= [0m[1m[91mhelp[0m: to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`
+
+[1m[91merror: driver mismatch between conditional branches[0m
+ [1m[94m--> [0msrc/latch.kh:7:9
+  [1m[94m|[0m
+[1m[94m4[0m [1m[94m|[0m     y: out async uint(8),
+  [1m[94m|[0m     [1m[94m-[0m [1m[94mfor this signal[0m
+[1m[94m...[0m
+[1m[94m7[0m [1m[94m|[0m         if (sel) {
+  [1m[94m|[0m         [1m[91m^^[0m [1m[91mconditional branch here[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1m[91mhelp[0m: This would not create valid combinatorial logic.
+          Ensure both branches drive the same parts of the signal or do a default full assignment beforehand.
+
+[1m[91merror: type mismatch[0m
+ [1m[94m--> [0msrc/trunc.kh:7:15
+  [1m[94m|[0m
+[1m[94m4[0m [1m[94m|[0m     sum: out async uint(8),
+  [1m[94m|[0m                    [1m[94m-------[0m [1m[94mtarget type set here[0m
+[1m[94m...[0m
+[1m[94m7[0m [1m[94m|[0m         sum = a + b;
+  [1m[94m|[0m         [1m[94m---[0m   [1m[91m^^^^^[0m [1m[91msource value with type `int(0..511)` does not fit[0m
+  [1m[94m|[0m         [1m[94m|[0m
+  [1m[94m|[0m         [1m[94mtarget requires type `int(0..256)`[0m
+
+[1m[91merror: clocked process cannot drive port without marking it as a register[0m
+ [1m[94m--> [0msrc/reg.kh:9:9
+  [1m[94m|[0m
+[1m[94m5[0m [1m[94m|[0m         count: out uint(32),
+  [1m[94m|[0m         [1m[94m-----[0m [1m[94mport declared here[0m
+[1m[94m...[0m
+[1m[94m9[0m [1m[94m|[0m         count = count + 1;
+  [1m[94m|[0m         [1m[91m^^^^^[0m [1m[91mdriven incorrectly here[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1m[91mhelp[0m: to mark the port as a register, add `reg wire <name> = <reset>;` to the body of the process
+  [1m[94m= [0m[1m[91mhelp[0m: to drive the port combinatorially, use a combinatorial process or an instance port
+
+[1m[91merror: invalid domain crossing: async to sync[0m
+  [1m[94m--> [0msrc/async.kh:11:13
+   [1m[94m|[0m
+[1m[94m 9[0m [1m[94m|[0m     clocked(clk, async rst) {
+   [1m[94m|[0m            [1m[94m----------------[0m [1m[94mtarget domain is sync(clk, rst)[0m
+[1m[94m10[0m [1m[94m|[0m         reg wire y = false;
+[1m[94m11[0m [1m[94m|[0m         y = x;
+   [1m[94m|[0m             [1m[91m^[0m
+   [1m[94m|[0m             [1m[94m|[0m
+   [1m[94m|[0m             [1m[91minvalid domain crossing here[0m
+   [1m[94m|[0m             [1m[94msource domain is async[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1m[91mnote[0m: crossing due to signal read in clocked block
+   [1m[94m= [0m[1m[91mhelp[0m: to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`
+
+[1m[91merror: port `y` has multiple drivers[0m
+ [1m[94m--> [0msrc/multi.kh:3:5
+  [1m[94m|[0m
+[1m[94m3[0m [1m[94m|[0m     y: out async bool,
+  [1m[94m|[0m     [1m[91m^[0m [1m[91mport defined here[0m
+[1m[94m4[0m [1m[94m|[0m ) {
+[1m[94m5[0m [1m[94m|[0m     comb { y = a; }
+  [1m[94m|[0m     [1m[94m----[0m [1m[94mdriven here[0m
+[1m[94m6[0m [1m[94m|[0m     comb { y = !a; }
+  [1m[94m|[0m     [1m[94m----[0m [1m[94mdriven here[0m
+
+[1m[91merror: combinatorial self-loop[0m
+ [1m[94m--> [0msrc/loop.kh:6:5
+  [1m[94m|[0m
+[1m[94m5[0m [1m[94m|[0m     wire w: async bool;
+  [1m[94m|[0m          [1m[94m-[0m [1m[94mfor wire `w`[0m
+[1m[94m6[0m [1m[94m|[0m     comb {
+  [1m[94m|[0m     [1m[91m^^^^[0m [1m[91mfor this combinatorial process[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1m[91mhelp[0m: a combinatorial process cannot read a signal before it drives it, this would create a combinatorial loop
+
+

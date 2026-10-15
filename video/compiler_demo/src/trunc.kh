@@ -1,0 +1,9 @@
+module top ports(
+    a: in async uint(8),
+    b: in async uint(8),
+    sum: out async uint(8),
+) {
+    comb {
+        sum = a + b;
+    }
+}

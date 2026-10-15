@@ -1,0 +1,4547 @@
+[
+ {
+  "section": "Intro",
+  "text": "Error: invalid domain crossing.",
+  "words": [
+   {
+    "text": "Error:",
+    "s": 2.76,
+    "e": 3.82
+   },
+   {
+    "text": "invalid",
+    "s": 3.84,
+    "e": 4.9
+   },
+   {
+    "text": "domain",
+    "s": 4.9,
+    "e": 5.22
+   },
+   {
+    "text": "crossing.",
+    "s": 5.22,
+    "e": 5.78
+   }
+  ],
+  "s": 2.76,
+  "e": 5.78
+ },
+ {
+  "section": "Intro",
+  "text": "Async... to sync.",
+  "words": [
+   {
+    "text": "Async...",
+    "s": 9.0,
+    "e": 10.06
+   },
+   {
+    "text": "to",
+    "s": 10.06,
+    "e": 10.48
+   },
+   {
+    "text": "sync.",
+    "s": 10.48,
+    "e": 10.76
+   }
+  ],
+  "s": 9.0,
+  "e": 10.76
+ },
+ {
+  "section": "Verse 1",
+  "text": "Three a.m. in the waveform viewer, staring at a sum gone wrong:",
+  "words": [
+   {
+    "text": "Three",
+    "s": 25.931,
+    "e": 26.381
+   },
+   {
+    "text": "a.m.",
+    "s": 26.7,
+    "e": 27.28
+   },
+   {
+    "text": "in",
+    "s": 27.427,
+    "e": 27.574
+   },
+   {
+    "text": "the",
+    "s": 27.58,
+    "e": 27.72
+   },
+   {
+    "text": "waveform",
+    "s": 27.72,
+    "e": 27.98
+   },
+   {
+    "text": "viewer,",
+    "s": 27.98,
+    "e": 28.36
+   },
+   {
+    "text": "staring",
+    "s": 28.36,
+    "e": 28.66
+   },
+   {
+    "text": "at",
+    "s": 28.66,
+    "e": 29.04
+   },
+   {
+    "text": "a",
+    "s": 29.04,
+    "e": 29.14
+   },
+   {
+    "text": "sum",
+    "s": 29.14,
+    "e": 29.26
+   },
+   {
+    "text": "gone",
+    "s": 29.26,
+    "e": 29.48
+   },
+   {
+    "text": "wrong:",
+    "s": 29.48,
+    "e": 29.86
+   }
+  ],
+  "s": 25.931,
+  "e": 29.86
+ },
+ {
+  "section": "Verse 1",
+  "text": "A plus B lost the carry, and it's been that way all along.",
+  "words": [
+   {
+    "text": "A",
+    "s": 29.86,
+    "e": 29.86
+   },
+   {
+    "text": "plus",
+    "s": 29.86,
+    "e": 30.42
+   },
+   {
+    "text": "B",
+    "s": 30.42,
+    "e": 30.64
+   },
+   {
+    "text": "lost",
+    "s": 30.64,
+    "e": 31.12
+   },
+   {
+    "text": "the",
+    "s": 31.12,
+    "e": 31.38
+   },
+   {
+    "text": "carry,",
+    "s": 31.38,
+    "e": 31.7
+   },
+   {
+    "text": "and",
+    "s": 31.7,
+    "e": 32.0
+   },
+   {
+    "text": "it's",
+    "s": 32.0,
+    "e": 32.14
+   },
+   {
+    "text": "been",
+    "s": 32.14,
+    "e": 32.34
+   },
+   {
+    "text": "that",
+    "s": 32.34,
+    "e": 32.56
+   },
+   {
+    "text": "way",
+    "s": 32.56,
+    "e": 32.8
+   },
+   {
+    "text": "all",
+    "s": 32.8,
+    "e": 33.1
+   },
+   {
+    "text": "along.",
+    "s": 33.1,
+    "e": 33.54
+   }
+  ],
+  "s": 29.86,
+  "e": 33.54
+ },
+ {
+  "section": "Verse 1",
+  "text": "Verilog just dropped the top bit, didn't even raise a flag,",
+  "words": [
+   {
+    "text": "Verilog",
+    "s": 33.971,
+    "e": 34.402
+   },
+   {
+    "text": "just",
+    "s": 34.42,
+    "e": 34.7
+   },
+   {
+    "text": "dropped",
+    "s": 34.7,
+    "e": 35.0
+   },
+   {
+    "text": "the",
+    "s": 35.0,
+    "e": 35.16
+   },
+   {
+    "text": "top",
+    "s": 35.16,
+    "e": 35.36
+   },
+   {
+    "text": "bit,",
+    "s": 35.36,
+    "e": 35.56
+   },
+   {
+    "text": "didn't",
+    "s": 35.56,
+    "e": 36.02
+   },
+   {
+    "text": "even",
+    "s": 36.02,
+    "e": 36.18
+   },
+   {
+    "text": "raise",
+    "s": 36.18,
+    "e": 36.42
+   },
+   {
+    "text": "a",
+    "s": 36.42,
+    "e": 36.62
+   },
+   {
+    "text": "flag,",
+    "s": 36.62,
+    "e": 37.0
+   }
+  ],
+  "s": 33.971,
+  "e": 37.0
+ },
+ {
+  "section": "Verse 1",
+  "text": "\"Context-determined width,\" it says, like that's a feature, not a gag.",
+  "words": [
+   {
+    "text": "\"Context-determined",
+    "s": 37.68,
+    "e": 38.1
+   },
+   {
+    "text": "width,\"",
+    "s": 38.1,
+    "e": 38.6
+   },
+   {
+    "text": "it",
+    "s": 38.6,
+    "e": 38.82
+   },
+   {
+    "text": "says,",
+    "s": 38.82,
+    "e": 39.12
+   },
+   {
+    "text": "like",
+    "s": 39.26,
+    "e": 39.46
+   },
+   {
+    "text": "that's",
+    "s": 39.5,
+    "e": 39.76
+   },
+   {
+    "text": "a",
+    "s": 39.76,
+    "e": 39.84
+   },
+   {
+    "text": "feature,",
+    "s": 39.84,
+    "e": 40.16
+   },
+   {
+    "text": "not",
+    "s": 40.32,
+    "e": 40.6
+   },
+   {
+    "text": "a",
+    "s": 40.6,
+    "e": 40.76
+   },
+   {
+    "text": "gag.",
+    "s": 40.76,
+    "e": 41.06
+   }
+  ],
+  "s": 37.68,
+  "e": 41.06
+ },
+ {
+  "section": "Verse 1",
+  "text": "I left one signal off the sensitivity list, and now",
+  "words": [
+   {
+    "text": "I",
+    "s": 41.06,
+    "e": 41.38
+   },
+   {
+    "text": "left",
+    "s": 41.38,
+    "e": 41.58
+   },
+   {
+    "text": "one",
+    "s": 41.58,
+    "e": 41.8
+   },
+   {
+    "text": "signal",
+    "s": 41.8,
+    "e": 42.16
+   },
+   {
+    "text": "off",
+    "s": 42.16,
+    "e": 42.54
+   },
+   {
+    "text": "the",
+    "s": 42.54,
+    "e": 42.72
+   },
+   {
+    "text": "sensitivity",
+    "s": 42.72,
+    "e": 43.24
+   },
+   {
+    "text": "list,",
+    "s": 43.24,
+    "e": 43.96
+   },
+   {
+    "text": "and",
+    "s": 43.96,
+    "e": 44.22
+   },
+   {
+    "text": "now",
+    "s": 44.22,
+    "e": 44.68
+   }
+  ],
+  "s": 41.06,
+  "e": 44.68
+ },
+ {
+  "section": "Verse 1",
+  "text": "The sim says zero, the board says one, and nobody knows how,",
+  "words": [
+   {
+    "text": "The",
+    "s": 44.68,
+    "e": 45.04
+   },
+   {
+    "text": "sim",
+    "s": 45.04,
+    "e": 45.26
+   },
+   {
+    "text": "says",
+    "s": 45.26,
+    "e": 45.54
+   },
+   {
+    "text": "zero,",
+    "s": 45.54,
+    "e": 45.86
+   },
+   {
+    "text": "the",
+    "s": 45.86,
+    "e": 46.02
+   },
+   {
+    "text": "board",
+    "s": 46.02,
+    "e": 46.3
+   },
+   {
+    "text": "says",
+    "s": 46.3,
+    "e": 46.5
+   },
+   {
+    "text": "one,",
+    "s": 46.5,
+    "e": 46.82
+   },
+   {
+    "text": "and",
+    "s": 46.82,
+    "e": 47.0
+   },
+   {
+    "text": "nobody",
+    "s": 47.0,
+    "e": 47.44
+   },
+   {
+    "text": "knows",
+    "s": 47.44,
+    "e": 47.98
+   },
+   {
+    "text": "how,",
+    "s": 47.98,
+    "e": 48.48
+   }
+  ],
+  "s": 44.68,
+  "e": 48.48
+ },
+ {
+  "section": "Verse 1",
+  "text": "And a missing else in a case I wrote last May",
+  "words": [
+   {
+    "text": "And",
+    "s": 48.48,
+    "e": 48.9
+   },
+   {
+    "text": "a",
+    "s": 48.978,
+    "e": 49.057
+   },
+   {
+    "text": "missing",
+    "s": 49.06,
+    "e": 49.14
+   },
+   {
+    "text": "else",
+    "s": 49.14,
+    "e": 49.66
+   },
+   {
+    "text": "in",
+    "s": 49.66,
+    "e": 50.02
+   },
+   {
+    "text": "a",
+    "s": 50.02,
+    "e": 50.14
+   },
+   {
+    "text": "case",
+    "s": 50.14,
+    "e": 50.48
+   },
+   {
+    "text": "I",
+    "s": 50.48,
+    "e": 50.86
+   },
+   {
+    "text": "wrote",
+    "s": 50.86,
+    "e": 51.34
+   },
+   {
+    "text": "last",
+    "s": 51.34,
+    "e": 51.8
+   },
+   {
+    "text": "May",
+    "s": 51.8,
+    "e": 52.28
+   }
+  ],
+  "s": 48.48,
+  "e": 52.28
+ },
+ {
+  "section": "Verse 1",
+  "text": "Grew a latch inside my netlist, and it's living there today.",
+  "words": [
+   {
+    "text": "Grew",
+    "s": 52.554,
+    "e": 52.829
+   },
+   {
+    "text": "a",
+    "s": 52.829,
+    "e": 53.103
+   },
+   {
+    "text": "latch",
+    "s": 53.103,
+    "e": 53.378
+   },
+   {
+    "text": "inside",
+    "s": 53.4,
+    "e": 53.82
+   },
+   {
+    "text": "my",
+    "s": 53.82,
+    "e": 54.08
+   },
+   {
+    "text": "netlist,",
+    "s": 54.08,
+    "e": 54.56
+   },
+   {
+    "text": "and",
+    "s": 54.56,
+    "e": 54.78
+   },
+   {
+    "text": "it's",
+    "s": 54.78,
+    "e": 55.02
+   },
+   {
+    "text": "living",
+    "s": 55.02,
+    "e": 55.3
+   },
+   {
+    "text": "there",
+    "s": 55.3,
+    "e": 55.64
+   },
+   {
+    "text": "today.",
+    "s": 55.64,
+    "e": 55.9
+   }
+  ],
+  "s": 52.554,
+  "e": 55.9
+ },
+ {
+  "section": "Verse 1",
+  "text": "So I tried VHDL instead, where you say it all three times:",
+  "words": [
+   {
+    "text": "So",
+    "s": 55.9,
+    "e": 56.38
+   },
+   {
+    "text": "I",
+    "s": 56.38,
+    "e": 56.52
+   },
+   {
+    "text": "tried",
+    "s": 56.52,
+    "e": 56.9
+   },
+   {
+    "text": "VHDL",
+    "s": 56.9,
+    "e": 57.6
+   },
+   {
+    "text": "instead,",
+    "s": 57.6,
+    "e": 57.86
+   },
+   {
+    "text": "where",
+    "s": 58.056,
+    "e": 58.252
+   },
+   {
+    "text": "you",
+    "s": 58.26,
+    "e": 58.42
+   },
+   {
+    "text": "say",
+    "s": 58.42,
+    "e": 58.6
+   },
+   {
+    "text": "it",
+    "s": 58.6,
+    "e": 58.78
+   },
+   {
+    "text": "all",
+    "s": 58.78,
+    "e": 59.0
+   },
+   {
+    "text": "three",
+    "s": 59.0,
+    "e": 59.26
+   },
+   {
+    "text": "times:",
+    "s": 59.26,
+    "e": 59.84
+   }
+  ],
+  "s": 55.9,
+  "e": 59.84
+ },
+ {
+  "section": "Verse 1",
+  "text": "Entity, component, port map, and it's longer than these rhymes.",
+  "words": [
+   {
+    "text": "Entity,",
+    "s": 60.16,
+    "e": 60.72
+   },
+   {
+    "text": "component,",
+    "s": 60.8,
+    "e": 61.32
+   },
+   {
+    "text": "port",
+    "s": 61.6,
+    "e": 61.9
+   },
+   {
+    "text": "map,",
+    "s": 61.94,
+    "e": 62.12
+   },
+   {
+    "text": "and",
+    "s": 62.12,
+    "e": 62.32
+   },
+   {
+    "text": "it's",
+    "s": 62.32,
+    "e": 62.48
+   },
+   {
+    "text": "longer",
+    "s": 62.48,
+    "e": 62.9
+   },
+   {
+    "text": "than",
+    "s": 62.9,
+    "e": 63.18
+   },
+   {
+    "text": "these",
+    "s": 63.18,
+    "e": 63.44
+   },
+   {
+    "text": "rhymes.",
+    "s": 63.44,
+    "e": 63.8
+   }
+  ],
+  "s": 60.16,
+  "e": 63.8
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Blocking or non-blocking, which arrow goes where?",
+  "words": [
+   {
+    "text": "Blocking",
+    "s": 63.8,
+    "e": 64.84
+   },
+   {
+    "text": "or",
+    "s": 64.84,
+    "e": 64.94
+   },
+   {
+    "text": "non-blocking,",
+    "s": 65.2,
+    "e": 65.86
+   },
+   {
+    "text": "which",
+    "s": 65.86,
+    "e": 66.1
+   },
+   {
+    "text": "arrow",
+    "s": 66.1,
+    "e": 66.58
+   },
+   {
+    "text": "goes",
+    "s": 66.58,
+    "e": 67.08
+   },
+   {
+    "text": "where?",
+    "s": 67.08,
+    "e": 67.5
+   }
+  ],
+  "s": 63.8,
+  "e": 67.5
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Is it a wire or a flop, and does the tool even care?",
+  "words": [
+   {
+    "text": "Is",
+    "s": 67.5,
+    "e": 67.86
+   },
+   {
+    "text": "it",
+    "s": 67.86,
+    "e": 68.02
+   },
+   {
+    "text": "a",
+    "s": 68.02,
+    "e": 68.1
+   },
+   {
+    "text": "wire",
+    "s": 68.1,
+    "e": 68.62
+   },
+   {
+    "text": "or",
+    "s": 68.62,
+    "e": 68.92
+   },
+   {
+    "text": "a",
+    "s": 68.92,
+    "e": 69.06
+   },
+   {
+    "text": "flop,",
+    "s": 69.06,
+    "e": 69.28
+   },
+   {
+    "text": "and",
+    "s": 69.36,
+    "e": 69.62
+   },
+   {
+    "text": "does",
+    "s": 69.62,
+    "e": 69.88
+   },
+   {
+    "text": "the",
+    "s": 69.88,
+    "e": 70.06
+   },
+   {
+    "text": "tool",
+    "s": 70.06,
+    "e": 70.32
+   },
+   {
+    "text": "even",
+    "s": 70.32,
+    "e": 70.68
+   },
+   {
+    "text": "care?",
+    "s": 70.68,
+    "e": 71.1
+   }
+  ],
+  "s": 67.5,
+  "e": 71.1
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Three months before tape-out the CDC tool finally ran:",
+  "words": [
+   {
+    "text": "Three",
+    "s": 71.34,
+    "e": 71.74
+   },
+   {
+    "text": "months",
+    "s": 71.74,
+    "e": 72.04
+   },
+   {
+    "text": "before",
+    "s": 72.04,
+    "e": 72.62
+   },
+   {
+    "text": "tape-out",
+    "s": 72.88,
+    "e": 73.26
+   },
+   {
+    "text": "the",
+    "s": 73.46,
+    "e": 73.62
+   },
+   {
+    "text": "CDC",
+    "s": 73.62,
+    "e": 74.3
+   },
+   {
+    "text": "tool",
+    "s": 74.3,
+    "e": 75.0
+   },
+   {
+    "text": "finally",
+    "s": 75.0,
+    "e": 75.42
+   },
+   {
+    "text": "ran:",
+    "s": 75.42,
+    "e": 75.78
+   }
+  ],
+  "s": 71.34,
+  "e": 75.78
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Forty-one violations and a freshly slipping plan.",
+  "words": [
+   {
+    "text": "Forty-one",
+    "s": 77.123,
+    "e": 78.465
+   },
+   {
+    "text": "violations",
+    "s": 78.52,
+    "e": 79.12
+   },
+   {
+    "text": "and",
+    "s": 80.45,
+    "e": 80.9
+   },
+   {
+    "text": "a",
+    "s": 80.9,
+    "e": 81.08
+   },
+   {
+    "text": "freshly",
+    "s": 81.08,
+    "e": 81.46
+   },
+   {
+    "text": "slipping",
+    "s": 81.46,
+    "e": 82.04
+   },
+   {
+    "text": "plan.",
+    "s": 82.04,
+    "e": 82.4
+   }
+  ],
+  "s": 77.123,
+  "e": 82.4
+ },
+ {
+  "section": "Chorus",
+  "text": "No more latches, no sensitivity lists,",
+  "words": [
+   {
+    "text": "No",
+    "s": 82.4,
+    "e": 83.42
+   },
+   {
+    "text": "more",
+    "s": 83.42,
+    "e": 83.92
+   },
+   {
+    "text": "latches,",
+    "s": 83.92,
+    "e": 84.76
+   },
+   {
+    "text": "no",
+    "s": 84.76,
+    "e": 85.04
+   },
+   {
+    "text": "sensitivity",
+    "s": 85.04,
+    "e": 85.6
+   },
+   {
+    "text": "lists,",
+    "s": 85.6,
+    "e": 86.3
+   }
+  ],
+  "s": 82.4,
+  "e": 86.3
+ },
+ {
+  "section": "Chorus",
+  "text": "One equals sign, and it does just what it says it is.",
+  "words": [
+   {
+    "text": "One",
+    "s": 86.3,
+    "e": 86.92
+   },
+   {
+    "text": "equals",
+    "s": 86.92,
+    "e": 87.58
+   },
+   {
+    "text": "sign,",
+    "s": 87.58,
+    "e": 88.16
+   },
+   {
+    "text": "and",
+    "s": 88.16,
+    "e": 88.46
+   },
+   {
+    "text": "it",
+    "s": 88.46,
+    "e": 88.54
+   },
+   {
+    "text": "does",
+    "s": 88.54,
+    "e": 88.9
+   },
+   {
+    "text": "just",
+    "s": 88.9,
+    "e": 89.28
+   },
+   {
+    "text": "what",
+    "s": 89.28,
+    "e": 89.56
+   },
+   {
+    "text": "it",
+    "s": 89.56,
+    "e": 89.76
+   },
+   {
+    "text": "says",
+    "s": 89.76,
+    "e": 90.0
+   },
+   {
+    "text": "it",
+    "s": 90.0,
+    "e": 90.2
+   },
+   {
+    "text": "is.",
+    "s": 90.2,
+    "e": 90.48
+   }
+  ],
+  "s": 86.3,
+  "e": 90.48
+ },
+ {
+  "section": "Chorus",
+  "text": "Every wire knows its clock, every flop knows its reset,",
+  "words": [
+   {
+    "text": "Every",
+    "s": 90.48,
+    "e": 90.7
+   },
+   {
+    "text": "wire",
+    "s": 90.7,
+    "e": 90.96
+   },
+   {
+    "text": "knows",
+    "s": 90.96,
+    "e": 91.24
+   },
+   {
+    "text": "its",
+    "s": 91.24,
+    "e": 91.5
+   },
+   {
+    "text": "clock,",
+    "s": 91.5,
+    "e": 91.78
+   },
+   {
+    "text": "every",
+    "s": 92.0,
+    "e": 92.3
+   },
+   {
+    "text": "flop",
+    "s": 92.3,
+    "e": 92.5
+   },
+   {
+    "text": "knows",
+    "s": 92.5,
+    "e": 92.72
+   },
+   {
+    "text": "its",
+    "s": 92.72,
+    "e": 93.0
+   },
+   {
+    "text": "reset,",
+    "s": 93.0,
+    "e": 93.6
+   }
+  ],
+  "s": 90.48,
+  "e": 93.6
+ },
+ {
+  "section": "Chorus",
+  "text": "And the compiler catches every crossing I forget!",
+  "words": [
+   {
+    "text": "And",
+    "s": 93.6,
+    "e": 93.82
+   },
+   {
+    "text": "the",
+    "s": 93.82,
+    "e": 94.08
+   },
+   {
+    "text": "compiler",
+    "s": 94.08,
+    "e": 94.64
+   },
+   {
+    "text": "catches",
+    "s": 94.64,
+    "e": 95.5
+   },
+   {
+    "text": "every",
+    "s": 95.5,
+    "e": 96.16
+   },
+   {
+    "text": "crossing",
+    "s": 96.16,
+    "e": 96.6
+   },
+   {
+    "text": "I",
+    "s": 96.6,
+    "e": 96.96
+   },
+   {
+    "text": "forget!",
+    "s": 96.96,
+    "e": 97.34
+   }
+  ],
+  "s": 93.6,
+  "e": 97.34
+ },
+ {
+  "section": "Chorus",
+  "text": "K! H! D! L! You give the range, it picks the bits.",
+  "words": [
+   {
+    "text": "K!",
+    "s": 97.34,
+    "e": 97.94
+   },
+   {
+    "text": "H!",
+    "s": 97.94,
+    "e": 98.54
+   },
+   {
+    "text": "D!",
+    "s": 98.697,
+    "e": 98.854
+   },
+   {
+    "text": "L!",
+    "s": 98.86,
+    "e": 99.12
+   },
+   {
+    "text": "You",
+    "s": 99.12,
+    "e": 99.4
+   },
+   {
+    "text": "give",
+    "s": 99.4,
+    "e": 99.7
+   },
+   {
+    "text": "the",
+    "s": 99.7,
+    "e": 99.9
+   },
+   {
+    "text": "range,",
+    "s": 99.9,
+    "e": 100.24
+   },
+   {
+    "text": "it",
+    "s": 100.377,
+    "e": 100.514
+   },
+   {
+    "text": "picks",
+    "s": 100.514,
+    "e": 100.652
+   },
+   {
+    "text": "the",
+    "s": 100.66,
+    "e": 100.84
+   },
+   {
+    "text": "bits.",
+    "s": 100.84,
+    "e": 101.14
+   }
+  ],
+  "s": 97.34,
+  "e": 101.14
+ },
+ {
+  "section": "Chorus",
+  "text": "K! H! D! L! If it compiles, then it fits.",
+  "words": [
+   {
+    "text": "K!",
+    "s": 101.14,
+    "e": 101.66
+   },
+   {
+    "text": "H!",
+    "s": 101.66,
+    "e": 102.2
+   },
+   {
+    "text": "D!",
+    "s": 102.386,
+    "e": 102.572
+   },
+   {
+    "text": "L!",
+    "s": 102.58,
+    "e": 102.84
+   },
+   {
+    "text": "If",
+    "s": 102.84,
+    "e": 103.22
+   },
+   {
+    "text": "it",
+    "s": 103.22,
+    "e": 103.38
+   },
+   {
+    "text": "compiles,",
+    "s": 103.38,
+    "e": 104.16
+   },
+   {
+    "text": "then",
+    "s": 104.18,
+    "e": 104.32
+   },
+   {
+    "text": "it",
+    "s": 104.32,
+    "e": 104.46
+   },
+   {
+    "text": "fits.",
+    "s": 104.46,
+    "e": 104.84
+   }
+  ],
+  "s": 101.14,
+  "e": 104.84
+ },
+ {
+  "section": "Verse 2",
+  "text": "I don't count the bits no more, I write the values that I need;",
+  "words": [
+   {
+    "text": "I",
+    "s": 111.4,
+    "e": 111.96
+   },
+   {
+    "text": "don't",
+    "s": 111.96,
+    "e": 112.52
+   },
+   {
+    "text": "count",
+    "s": 112.52,
+    "e": 112.7
+   },
+   {
+    "text": "the",
+    "s": 112.7,
+    "e": 112.88
+   },
+   {
+    "text": "bits",
+    "s": 112.88,
+    "e": 113.08
+   },
+   {
+    "text": "no",
+    "s": 113.08,
+    "e": 113.3
+   },
+   {
+    "text": "more,",
+    "s": 113.3,
+    "e": 113.62
+   },
+   {
+    "text": "I",
+    "s": 113.62,
+    "e": 114.16
+   },
+   {
+    "text": "write",
+    "s": 114.16,
+    "e": 114.46
+   },
+   {
+    "text": "the",
+    "s": 114.46,
+    "e": 114.72
+   },
+   {
+    "text": "values",
+    "s": 114.72,
+    "e": 115.12
+   },
+   {
+    "text": "that",
+    "s": 115.12,
+    "e": 115.44
+   },
+   {
+    "text": "I",
+    "s": 115.44,
+    "e": 115.58
+   },
+   {
+    "text": "need;",
+    "s": 115.58,
+    "e": 115.88
+   }
+  ],
+  "s": 111.4,
+  "e": 115.88
+ },
+ {
+  "section": "Verse 2",
+  "text": "The compiler does the c-log-two math at elaboration speed.",
+  "words": [
+   {
+    "text": "The",
+    "s": 115.88,
+    "e": 116.12
+   },
+   {
+    "text": "compiler",
+    "s": 116.12,
+    "e": 116.38
+   },
+   {
+    "text": "does",
+    "s": 116.38,
+    "e": 116.64
+   },
+   {
+    "text": "the",
+    "s": 116.64,
+    "e": 116.7
+   },
+   {
+    "text": "c-log-two",
+    "s": 116.965,
+    "e": 117.229
+   },
+   {
+    "text": "math",
+    "s": 117.24,
+    "e": 117.68
+   },
+   {
+    "text": "at",
+    "s": 117.68,
+    "e": 118.0
+   },
+   {
+    "text": "elaboration",
+    "s": 118.0,
+    "e": 119.22
+   },
+   {
+    "text": "speed.",
+    "s": 119.22,
+    "e": 119.5
+   }
+  ],
+  "s": 115.88,
+  "e": 119.5
+ },
+ {
+  "section": "Verse 2",
+  "text": "Add two numbers, keep the carry; squeeze it narrow? Type mismatch, friend,",
+  "words": [
+   {
+    "text": "Add",
+    "s": 119.686,
+    "e": 119.872
+   },
+   {
+    "text": "two",
+    "s": 119.88,
+    "e": 120.08
+   },
+   {
+    "text": "numbers,",
+    "s": 120.08,
+    "e": 120.5
+   },
+   {
+    "text": "keep",
+    "s": 120.64,
+    "e": 120.74
+   },
+   {
+    "text": "the",
+    "s": 120.74,
+    "e": 120.88
+   },
+   {
+    "text": "carry;",
+    "s": 120.88,
+    "e": 121.02
+   },
+   {
+    "text": "squeeze",
+    "s": 121.02,
+    "e": 121.2
+   },
+   {
+    "text": "it",
+    "s": 121.2,
+    "e": 121.34
+   },
+   {
+    "text": "narrow?",
+    "s": 121.34,
+    "e": 121.5
+   },
+   {
+    "text": "Type",
+    "s": 121.5,
+    "e": 121.72
+   },
+   {
+    "text": "mismatch,",
+    "s": 121.72,
+    "e": 122.74
+   },
+   {
+    "text": "friend,",
+    "s": 122.74,
+    "e": 123.14
+   }
+  ],
+  "s": 119.686,
+  "e": 123.14
+ },
+ {
+  "section": "Verse 2",
+  "text": "If you want the counter wrapping, write the modulo at the end.",
+  "words": [
+   {
+    "text": "If",
+    "s": 123.38,
+    "e": 123.56
+   },
+   {
+    "text": "you",
+    "s": 123.56,
+    "e": 123.66
+   },
+   {
+    "text": "want",
+    "s": 123.66,
+    "e": 123.84
+   },
+   {
+    "text": "the",
+    "s": 123.84,
+    "e": 123.98
+   },
+   {
+    "text": "counter",
+    "s": 123.98,
+    "e": 124.34
+   },
+   {
+    "text": "wrapping,",
+    "s": 124.34,
+    "e": 124.88
+   },
+   {
+    "text": "write",
+    "s": 125.02,
+    "e": 125.22
+   },
+   {
+    "text": "the",
+    "s": 125.22,
+    "e": 125.4
+   },
+   {
+    "text": "modulo",
+    "s": 125.4,
+    "e": 125.96
+   },
+   {
+    "text": "at",
+    "s": 125.96,
+    "e": 126.34
+   },
+   {
+    "text": "the",
+    "s": 126.34,
+    "e": 126.5
+   },
+   {
+    "text": "end.",
+    "s": 126.5,
+    "e": 127.0
+   }
+  ],
+  "s": 123.38,
+  "e": 127.0
+ },
+ {
+  "section": "Verse 2",
+  "text": "A one-flop synchronizer won't type-check anymore:",
+  "words": [
+   {
+    "text": "A",
+    "s": 127.0,
+    "e": 127.4
+   },
+   {
+    "text": "one-flop",
+    "s": 127.635,
+    "e": 127.87
+   },
+   {
+    "text": "synchronizer",
+    "s": 127.88,
+    "e": 128.9
+   },
+   {
+    "text": "won't",
+    "s": 129.02,
+    "e": 129.22
+   },
+   {
+    "text": "type-check",
+    "s": 129.8,
+    "e": 130.02
+   },
+   {
+    "text": "anymore:",
+    "s": 130.02,
+    "e": 130.46
+   }
+  ],
+  "s": 127.0,
+  "e": 130.46
+ },
+ {
+  "section": "Verse 2",
+  "text": "Two flops minimum, in the type, that's what range types are for.",
+  "words": [
+   {
+    "text": "Two",
+    "s": 130.46,
+    "e": 130.94
+   },
+   {
+    "text": "flops",
+    "s": 130.94,
+    "e": 131.36
+   },
+   {
+    "text": "minimum,",
+    "s": 131.36,
+    "e": 131.74
+   },
+   {
+    "text": "in",
+    "s": 131.74,
+    "e": 132.2
+   },
+   {
+    "text": "the",
+    "s": 132.2,
+    "e": 132.3
+   },
+   {
+    "text": "type,",
+    "s": 132.3,
+    "e": 132.58
+   },
+   {
+    "text": "that's",
+    "s": 132.7,
+    "e": 132.88
+   },
+   {
+    "text": "what",
+    "s": 132.88,
+    "e": 133.02
+   },
+   {
+    "text": "range",
+    "s": 133.02,
+    "e": 133.46
+   },
+   {
+    "text": "types",
+    "s": 133.46,
+    "e": 133.86
+   },
+   {
+    "text": "are",
+    "s": 133.86,
+    "e": 134.12
+   },
+   {
+    "text": "for.",
+    "s": 134.12,
+    "e": 134.38
+   }
+  ],
+  "s": 130.46,
+  "e": 134.38
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Comb or clocked, only two kinds of block.",
+  "words": [
+   {
+    "text": "Comb",
+    "s": 134.38,
+    "e": 134.96
+   },
+   {
+    "text": "or",
+    "s": 134.96,
+    "e": 134.96
+   },
+   {
+    "text": "clocked,",
+    "s": 134.96,
+    "e": 135.16
+   },
+   {
+    "text": "only",
+    "s": 135.32,
+    "e": 135.66
+   },
+   {
+    "text": "two",
+    "s": 135.66,
+    "e": 135.82
+   },
+   {
+    "text": "kinds",
+    "s": 135.82,
+    "e": 136.12
+   },
+   {
+    "text": "of",
+    "s": 136.12,
+    "e": 136.2
+   },
+   {
+    "text": "block.",
+    "s": 136.2,
+    "e": 136.36
+   }
+  ],
+  "s": 134.38,
+  "e": 136.36
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Want a flop? Then say \"reg wire\", it won't sneak in on the clock.",
+  "words": [
+   {
+    "text": "Want",
+    "s": 136.36,
+    "e": 136.54
+   },
+   {
+    "text": "a",
+    "s": 136.54,
+    "e": 136.54
+   },
+   {
+    "text": "flop?",
+    "s": 136.54,
+    "e": 136.78
+   },
+   {
+    "text": "Then",
+    "s": 136.92,
+    "e": 137.02
+   },
+   {
+    "text": "say",
+    "s": 137.02,
+    "e": 137.24
+   },
+   {
+    "text": "\"reg",
+    "s": 137.24,
+    "e": 137.24
+   },
+   {
+    "text": "wire\",",
+    "s": 137.24,
+    "e": 137.74
+   },
+   {
+    "text": "it",
+    "s": 137.799,
+    "e": 137.858
+   },
+   {
+    "text": "won't",
+    "s": 137.86,
+    "e": 138.06
+   },
+   {
+    "text": "sneak",
+    "s": 138.06,
+    "e": 138.18
+   },
+   {
+    "text": "in",
+    "s": 138.18,
+    "e": 138.3
+   },
+   {
+    "text": "on",
+    "s": 138.3,
+    "e": 138.42
+   },
+   {
+    "text": "the",
+    "s": 138.42,
+    "e": 138.52
+   },
+   {
+    "text": "clock.",
+    "s": 138.52,
+    "e": 138.66
+   }
+  ],
+  "s": 136.36,
+  "e": 138.66
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Skip the reset? Write \"equals undef\" and say it out loud:",
+  "words": [
+   {
+    "text": "Skip",
+    "s": 138.66,
+    "e": 138.84
+   },
+   {
+    "text": "the",
+    "s": 138.84,
+    "e": 138.94
+   },
+   {
+    "text": "reset?",
+    "s": 138.94,
+    "e": 139.22
+   },
+   {
+    "text": "Write",
+    "s": 139.347,
+    "e": 139.475
+   },
+   {
+    "text": "\"equals",
+    "s": 139.48,
+    "e": 139.64
+   },
+   {
+    "text": "undef\"",
+    "s": 139.64,
+    "e": 140.12
+   },
+   {
+    "text": "and",
+    "s": 140.12,
+    "e": 140.12
+   },
+   {
+    "text": "say",
+    "s": 140.12,
+    "e": 140.72
+   },
+   {
+    "text": "it",
+    "s": 140.72,
+    "e": 141.06
+   },
+   {
+    "text": "out",
+    "s": 141.06,
+    "e": 141.32
+   },
+   {
+    "text": "loud:",
+    "s": 141.32,
+    "e": 141.7
+   }
+  ],
+  "s": 138.66,
+  "e": 141.7
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "I didn't forget it, I declared it, and I'm proud.",
+  "words": [
+   {
+    "text": "I",
+    "s": 142.02,
+    "e": 142.16
+   },
+   {
+    "text": "didn't",
+    "s": 142.16,
+    "e": 142.46
+   },
+   {
+    "text": "forget",
+    "s": 142.46,
+    "e": 142.74
+   },
+   {
+    "text": "it,",
+    "s": 142.74,
+    "e": 143.14
+   },
+   {
+    "text": "I",
+    "s": 143.2,
+    "e": 143.32
+   },
+   {
+    "text": "declared",
+    "s": 143.32,
+    "e": 143.66
+   },
+   {
+    "text": "it,",
+    "s": 143.66,
+    "e": 144.34
+   },
+   {
+    "text": "and",
+    "s": 144.34,
+    "e": 144.68
+   },
+   {
+    "text": "I'm",
+    "s": 144.68,
+    "e": 145.12
+   },
+   {
+    "text": "proud.",
+    "s": 145.12,
+    "e": 145.5
+   }
+  ],
+  "s": 142.02,
+  "e": 145.5
+ },
+ {
+  "section": "Chorus",
+  "text": "No more latches, no sensitivity lists,",
+  "words": [
+   {
+    "text": "No",
+    "s": 146.08,
+    "e": 146.56
+   },
+   {
+    "text": "more",
+    "s": 146.56,
+    "e": 147.04
+   },
+   {
+    "text": "latches,",
+    "s": 147.04,
+    "e": 147.84
+   },
+   {
+    "text": "no",
+    "s": 147.84,
+    "e": 148.1
+   },
+   {
+    "text": "sensitivity",
+    "s": 148.1,
+    "e": 148.62
+   },
+   {
+    "text": "lists,",
+    "s": 148.62,
+    "e": 149.38
+   }
+  ],
+  "s": 146.08,
+  "e": 149.38
+ },
+ {
+  "section": "Chorus",
+  "text": "One equals sign, and it does just what it says it is.",
+  "words": [
+   {
+    "text": "One",
+    "s": 149.38,
+    "e": 149.96
+   },
+   {
+    "text": "equals",
+    "s": 149.96,
+    "e": 150.58
+   },
+   {
+    "text": "sign,",
+    "s": 150.58,
+    "e": 151.22
+   },
+   {
+    "text": "and",
+    "s": 151.22,
+    "e": 151.56
+   },
+   {
+    "text": "it",
+    "s": 151.56,
+    "e": 151.62
+   },
+   {
+    "text": "does",
+    "s": 151.62,
+    "e": 151.84
+   },
+   {
+    "text": "just",
+    "s": 151.84,
+    "e": 152.34
+   },
+   {
+    "text": "what",
+    "s": 152.34,
+    "e": 152.62
+   },
+   {
+    "text": "it",
+    "s": 152.62,
+    "e": 152.82
+   },
+   {
+    "text": "says",
+    "s": 152.82,
+    "e": 153.06
+   },
+   {
+    "text": "it",
+    "s": 153.06,
+    "e": 153.26
+   },
+   {
+    "text": "is.",
+    "s": 153.26,
+    "e": 153.5
+   }
+  ],
+  "s": 149.38,
+  "e": 153.5
+ },
+ {
+  "section": "Chorus",
+  "text": "Every wire knows its clock, every flop knows its reset,",
+  "words": [
+   {
+    "text": "Every",
+    "s": 153.5,
+    "e": 153.74
+   },
+   {
+    "text": "wire",
+    "s": 153.74,
+    "e": 154.04
+   },
+   {
+    "text": "knows",
+    "s": 154.04,
+    "e": 154.28
+   },
+   {
+    "text": "its",
+    "s": 154.28,
+    "e": 154.58
+   },
+   {
+    "text": "clock,",
+    "s": 154.58,
+    "e": 154.82
+   },
+   {
+    "text": "every",
+    "s": 155.02,
+    "e": 155.34
+   },
+   {
+    "text": "flop",
+    "s": 155.34,
+    "e": 155.58
+   },
+   {
+    "text": "knows",
+    "s": 155.58,
+    "e": 155.78
+   },
+   {
+    "text": "its",
+    "s": 155.78,
+    "e": 156.1
+   },
+   {
+    "text": "reset,",
+    "s": 156.1,
+    "e": 156.62
+   }
+  ],
+  "s": 153.5,
+  "e": 156.62
+ },
+ {
+  "section": "Chorus",
+  "text": "And the compiler catches every crossing I forget!",
+  "words": [
+   {
+    "text": "And",
+    "s": 156.62,
+    "e": 156.94
+   },
+   {
+    "text": "the",
+    "s": 156.94,
+    "e": 157.12
+   },
+   {
+    "text": "compiler",
+    "s": 157.12,
+    "e": 157.64
+   },
+   {
+    "text": "catches",
+    "s": 157.64,
+    "e": 158.58
+   },
+   {
+    "text": "every",
+    "s": 158.58,
+    "e": 159.2
+   },
+   {
+    "text": "crossing",
+    "s": 159.2,
+    "e": 159.66
+   },
+   {
+    "text": "I",
+    "s": 159.66,
+    "e": 159.98
+   },
+   {
+    "text": "forget!",
+    "s": 159.98,
+    "e": 160.38
+   }
+  ],
+  "s": 156.62,
+  "e": 160.38
+ },
+ {
+  "section": "Chorus",
+  "text": "K! H! D! L! You give the range, it picks the bits.",
+  "words": [
+   {
+    "text": "K!",
+    "s": 160.38,
+    "e": 160.82
+   },
+   {
+    "text": "H!",
+    "s": 160.82,
+    "e": 161.56
+   },
+   {
+    "text": "D!",
+    "s": 161.56,
+    "e": 161.9
+   },
+   {
+    "text": "L!",
+    "s": 161.9,
+    "e": 162.16
+   },
+   {
+    "text": "You",
+    "s": 162.16,
+    "e": 162.44
+   },
+   {
+    "text": "give",
+    "s": 162.44,
+    "e": 162.74
+   },
+   {
+    "text": "the",
+    "s": 162.74,
+    "e": 162.94
+   },
+   {
+    "text": "range,",
+    "s": 162.94,
+    "e": 163.26
+   },
+   {
+    "text": "it",
+    "s": 163.34,
+    "e": 163.48
+   },
+   {
+    "text": "picks",
+    "s": 163.48,
+    "e": 163.72
+   },
+   {
+    "text": "the",
+    "s": 163.72,
+    "e": 163.88
+   },
+   {
+    "text": "bits.",
+    "s": 163.88,
+    "e": 164.14
+   }
+  ],
+  "s": 160.38,
+  "e": 164.14
+ },
+ {
+  "section": "Chorus",
+  "text": "K! H! D! L! If it compiles, then it fits.",
+  "words": [
+   {
+    "text": "K!",
+    "s": 164.14,
+    "e": 164.72
+   },
+   {
+    "text": "H!",
+    "s": 164.72,
+    "e": 165.28
+   },
+   {
+    "text": "D!",
+    "s": 165.28,
+    "e": 165.62
+   },
+   {
+    "text": "L!",
+    "s": 165.62,
+    "e": 165.88
+   },
+   {
+    "text": "If",
+    "s": 165.88,
+    "e": 166.24
+   },
+   {
+    "text": "it",
+    "s": 166.24,
+    "e": 166.44
+   },
+   {
+    "text": "compiles,",
+    "s": 166.44,
+    "e": 167.2
+   },
+   {
+    "text": "then",
+    "s": 167.22,
+    "e": 167.38
+   },
+   {
+    "text": "it",
+    "s": 167.38,
+    "e": 167.54
+   },
+   {
+    "text": "fits.",
+    "s": 167.54,
+    "e": 167.86
+   }
+  ],
+  "s": 164.14,
+  "e": 167.86
+ },
+ {
+  "section": "Verse 3",
+  "text": "Remember wiring up a bus? Two hundred ports, line by line,",
+  "words": [
+   {
+    "text": "Remember",
+    "s": 168.9,
+    "e": 169.38
+   },
+   {
+    "text": "wiring",
+    "s": 169.38,
+    "e": 169.8
+   },
+   {
+    "text": "up",
+    "s": 169.8,
+    "e": 169.98
+   },
+   {
+    "text": "a",
+    "s": 169.98,
+    "e": 170.04
+   },
+   {
+    "text": "bus?",
+    "s": 170.04,
+    "e": 170.2
+   },
+   {
+    "text": "Two",
+    "s": 170.4,
+    "e": 170.8
+   },
+   {
+    "text": "hundred",
+    "s": 170.8,
+    "e": 171.18
+   },
+   {
+    "text": "ports,",
+    "s": 171.18,
+    "e": 171.46
+   },
+   {
+    "text": "line",
+    "s": 171.62,
+    "e": 171.78
+   },
+   {
+    "text": "by",
+    "s": 171.78,
+    "e": 172.0
+   },
+   {
+    "text": "line,",
+    "s": 172.0,
+    "e": 172.36
+   }
+  ],
+  "s": 168.9,
+  "e": 172.36
+ },
+ {
+  "section": "Verse 3",
+  "text": "Dot valid valid, dot ready ready, one got swapped, the lint says \"fine.\"",
+  "words": [
+   {
+    "text": "Dot",
+    "s": 172.36,
+    "e": 172.68
+   },
+   {
+    "text": "valid",
+    "s": 172.74,
+    "e": 173.0
+   },
+   {
+    "text": "valid,",
+    "s": 173.08,
+    "e": 173.22
+   },
+   {
+    "text": "dot",
+    "s": 173.28,
+    "e": 173.42
+   },
+   {
+    "text": "ready",
+    "s": 173.46,
+    "e": 173.66
+   },
+   {
+    "text": "ready,",
+    "s": 173.74,
+    "e": 173.9
+   },
+   {
+    "text": "one",
+    "s": 173.94,
+    "e": 174.06
+   },
+   {
+    "text": "got",
+    "s": 174.16,
+    "e": 174.28
+   },
+   {
+    "text": "swapped,",
+    "s": 174.28,
+    "e": 174.52
+   },
+   {
+    "text": "the",
+    "s": 174.52,
+    "e": 174.9
+   },
+   {
+    "text": "lint",
+    "s": 174.9,
+    "e": 175.08
+   },
+   {
+    "text": "says",
+    "s": 175.08,
+    "e": 175.34
+   },
+   {
+    "text": "\"fine.\"",
+    "s": 175.34,
+    "e": 175.76
+   }
+  ],
+  "s": 172.36,
+  "e": 175.76
+ },
+ {
+  "section": "Verse 3",
+  "text": "Now I write the interface once and give each side a view:",
+  "words": [
+   {
+    "text": "Now",
+    "s": 175.76,
+    "e": 176.38
+   },
+   {
+    "text": "I",
+    "s": 176.38,
+    "e": 176.5
+   },
+   {
+    "text": "write",
+    "s": 176.5,
+    "e": 176.66
+   },
+   {
+    "text": "the",
+    "s": 176.66,
+    "e": 176.76
+   },
+   {
+    "text": "interface",
+    "s": 176.76,
+    "e": 177.0
+   },
+   {
+    "text": "once",
+    "s": 177.0,
+    "e": 177.4
+   },
+   {
+    "text": "and",
+    "s": 177.4,
+    "e": 177.76
+   },
+   {
+    "text": "give",
+    "s": 177.76,
+    "e": 178.04
+   },
+   {
+    "text": "each",
+    "s": 178.04,
+    "e": 178.16
+   },
+   {
+    "text": "side",
+    "s": 178.16,
+    "e": 178.46
+   },
+   {
+    "text": "a",
+    "s": 178.571,
+    "e": 178.682
+   },
+   {
+    "text": "view:",
+    "s": 178.682,
+    "e": 178.793
+   }
+  ],
+  "s": 175.76,
+  "e": 178.793
+ },
+ {
+  "section": "Verse 3",
+  "text": "Input here and output there, and the compiler checks them too.",
+  "words": [
+   {
+    "text": "Input",
+    "s": 178.8,
+    "e": 179.3
+   },
+   {
+    "text": "here",
+    "s": 179.3,
+    "e": 179.7
+   },
+   {
+    "text": "and",
+    "s": 179.7,
+    "e": 180.14
+   },
+   {
+    "text": "output",
+    "s": 180.14,
+    "e": 180.38
+   },
+   {
+    "text": "there,",
+    "s": 180.38,
+    "e": 180.82
+   },
+   {
+    "text": "and",
+    "s": 180.82,
+    "e": 181.08
+   },
+   {
+    "text": "the",
+    "s": 181.08,
+    "e": 181.26
+   },
+   {
+    "text": "compiler",
+    "s": 181.26,
+    "e": 181.8
+   },
+   {
+    "text": "checks",
+    "s": 181.8,
+    "e": 182.08
+   },
+   {
+    "text": "them",
+    "s": 182.08,
+    "e": 182.34
+   },
+   {
+    "text": "too.",
+    "s": 182.34,
+    "e": 182.64
+   }
+  ],
+  "s": 178.8,
+  "e": 182.64
+ },
+ {
+  "section": "Verse 3",
+  "text": "Every stream is one port now, with its clock and type inside;",
+  "words": [
+   {
+    "text": "Every",
+    "s": 182.64,
+    "e": 183.2
+   },
+   {
+    "text": "stream",
+    "s": 183.2,
+    "e": 183.56
+   },
+   {
+    "text": "is",
+    "s": 183.56,
+    "e": 183.88
+   },
+   {
+    "text": "one",
+    "s": 183.88,
+    "e": 184.08
+   },
+   {
+    "text": "port",
+    "s": 184.08,
+    "e": 184.32
+   },
+   {
+    "text": "now,",
+    "s": 184.32,
+    "e": 184.72
+   },
+   {
+    "text": "with",
+    "s": 184.72,
+    "e": 185.0
+   },
+   {
+    "text": "its",
+    "s": 185.0,
+    "e": 185.12
+   },
+   {
+    "text": "clock",
+    "s": 185.12,
+    "e": 185.38
+   },
+   {
+    "text": "and",
+    "s": 185.38,
+    "e": 185.58
+   },
+   {
+    "text": "type",
+    "s": 185.58,
+    "e": 185.88
+   },
+   {
+    "text": "inside;",
+    "s": 185.88,
+    "e": 186.2
+   }
+  ],
+  "s": 182.64,
+  "e": 186.2
+ },
+ {
+  "section": "Verse 3",
+  "text": "The top level reads like the block diagram, nothing left to hide.",
+  "words": [
+   {
+    "text": "The",
+    "s": 186.2,
+    "e": 186.7
+   },
+   {
+    "text": "top",
+    "s": 186.7,
+    "e": 186.82
+   },
+   {
+    "text": "level",
+    "s": 186.82,
+    "e": 187.04
+   },
+   {
+    "text": "reads",
+    "s": 187.04,
+    "e": 187.34
+   },
+   {
+    "text": "like",
+    "s": 187.34,
+    "e": 187.54
+   },
+   {
+    "text": "the",
+    "s": 187.54,
+    "e": 187.64
+   },
+   {
+    "text": "block",
+    "s": 187.64,
+    "e": 187.8
+   },
+   {
+    "text": "diagram,",
+    "s": 187.8,
+    "e": 188.2
+   },
+   {
+    "text": "nothing",
+    "s": 188.96,
+    "e": 189.3
+   },
+   {
+    "text": "left",
+    "s": 189.3,
+    "e": 189.62
+   },
+   {
+    "text": "to",
+    "s": 189.62,
+    "e": 189.86
+   },
+   {
+    "text": "hide.",
+    "s": 189.86,
+    "e": 190.08
+   }
+  ],
+  "s": 186.2,
+  "e": 190.08
+ },
+ {
+  "section": "Verse 3",
+  "text": "The handshake lives behind an API you can't misuse,",
+  "words": [
+   {
+    "text": "The",
+    "s": 190.08,
+    "e": 190.32
+   },
+   {
+    "text": "handshake",
+    "s": 190.32,
+    "e": 190.8
+   },
+   {
+    "text": "lives",
+    "s": 190.8,
+    "e": 190.98
+   },
+   {
+    "text": "behind",
+    "s": 190.98,
+    "e": 191.34
+   },
+   {
+    "text": "an",
+    "s": 191.34,
+    "e": 191.62
+   },
+   {
+    "text": "API",
+    "s": 191.62,
+    "e": 191.86
+   },
+   {
+    "text": "you",
+    "s": 191.86,
+    "e": 192.42
+   },
+   {
+    "text": "can't",
+    "s": 192.42,
+    "e": 192.82
+   },
+   {
+    "text": "misuse,",
+    "s": 192.82,
+    "e": 193.16
+   }
+  ],
+  "s": 190.08,
+  "e": 193.16
+ },
+ {
+  "section": "Verse 3",
+  "text": "So the review is about the design, not a thousand lines of glue.",
+  "words": [
+   {
+    "text": "So",
+    "s": 193.46,
+    "e": 193.94
+   },
+   {
+    "text": "the",
+    "s": 193.94,
+    "e": 194.12
+   },
+   {
+    "text": "review",
+    "s": 194.12,
+    "e": 194.36
+   },
+   {
+    "text": "is",
+    "s": 194.36,
+    "e": 194.52
+   },
+   {
+    "text": "about",
+    "s": 194.52,
+    "e": 194.74
+   },
+   {
+    "text": "the",
+    "s": 194.74,
+    "e": 194.96
+   },
+   {
+    "text": "design,",
+    "s": 194.96,
+    "e": 195.26
+   },
+   {
+    "text": "not",
+    "s": 195.26,
+    "e": 195.84
+   },
+   {
+    "text": "a",
+    "s": 195.84,
+    "e": 196.0
+   },
+   {
+    "text": "thousand",
+    "s": 196.0,
+    "e": 196.3
+   },
+   {
+    "text": "lines",
+    "s": 196.3,
+    "e": 196.68
+   },
+   {
+    "text": "of",
+    "s": 196.68,
+    "e": 196.68
+   },
+   {
+    "text": "glue.",
+    "s": 196.68,
+    "e": 197.24
+   }
+  ],
+  "s": 193.46,
+  "e": 197.24
+ },
+ {
+  "section": "Bridge",
+  "text": "\"Driver mismatch!\" That's a latch you'll never meet.",
+  "words": [
+   {
+    "text": "\"Driver",
+    "s": 197.24,
+    "e": 198.06
+   },
+   {
+    "text": "mismatch!\"",
+    "s": 198.06,
+    "e": 198.9
+   },
+   {
+    "text": "That's",
+    "s": 199.047,
+    "e": 199.194
+   },
+   {
+    "text": "a",
+    "s": 199.2,
+    "e": 199.2
+   },
+   {
+    "text": "latch",
+    "s": 199.2,
+    "e": 199.4
+   },
+   {
+    "text": "you'll",
+    "s": 199.4,
+    "e": 199.64
+   },
+   {
+    "text": "never",
+    "s": 199.64,
+    "e": 199.84
+   },
+   {
+    "text": "meet.",
+    "s": 199.84,
+    "e": 200.14
+   }
+  ],
+  "s": 197.24,
+  "e": 200.14
+ },
+ {
+  "section": "Bridge",
+  "text": "\"Self-loop!\" Read before you drive? Take a seat.",
+  "words": [
+   {
+    "text": "\"Self-loop!\"",
+    "s": 200.14,
+    "e": 200.54
+   },
+   {
+    "text": "Read",
+    "s": 200.618,
+    "e": 200.697
+   },
+   {
+    "text": "before",
+    "s": 200.7,
+    "e": 200.92
+   },
+   {
+    "text": "you",
+    "s": 200.92,
+    "e": 201.1
+   },
+   {
+    "text": "drive?",
+    "s": 201.1,
+    "e": 201.34
+   },
+   {
+    "text": "Take",
+    "s": 201.34,
+    "e": 201.64
+   },
+   {
+    "text": "a",
+    "s": 201.64,
+    "e": 201.82
+   },
+   {
+    "text": "seat.",
+    "s": 201.859,
+    "e": 201.898
+   }
+  ],
+  "s": 200.14,
+  "e": 201.898
+ },
+ {
+  "section": "Bridge",
+  "text": "\"Multiple drivers!\" Two blocks fighting on one wire.",
+  "words": [
+   {
+    "text": "\"Multiple",
+    "s": 201.9,
+    "e": 202.2
+   },
+   {
+    "text": "drivers!\"",
+    "s": 202.2,
+    "e": 203.04
+   },
+   {
+    "text": "Two",
+    "s": 203.04,
+    "e": 203.36
+   },
+   {
+    "text": "blocks",
+    "s": 203.36,
+    "e": 203.58
+   },
+   {
+    "text": "fighting",
+    "s": 203.58,
+    "e": 204.04
+   },
+   {
+    "text": "on",
+    "s": 204.04,
+    "e": 204.28
+   },
+   {
+    "text": "one",
+    "s": 204.28,
+    "e": 204.52
+   },
+   {
+    "text": "wire.",
+    "s": 204.52,
+    "e": 204.92
+   }
+  ],
+  "s": 201.9,
+  "e": 204.92
+ },
+ {
+  "section": "Bridge",
+  "text": "\"Different clock!\" Caught before the chip's on fire.",
+  "words": [
+   {
+    "text": "\"Different",
+    "s": 204.92,
+    "e": 205.4
+   },
+   {
+    "text": "clock!\"",
+    "s": 205.4,
+    "e": 205.9
+   },
+   {
+    "text": "Caught",
+    "s": 206.125,
+    "e": 206.351
+   },
+   {
+    "text": "before",
+    "s": 206.36,
+    "e": 206.5
+   },
+   {
+    "text": "the",
+    "s": 206.5,
+    "e": 206.62
+   },
+   {
+    "text": "chip's",
+    "s": 206.62,
+    "e": 206.78
+   },
+   {
+    "text": "on",
+    "s": 206.78,
+    "e": 207.0
+   },
+   {
+    "text": "fire.",
+    "s": 207.0,
+    "e": 207.28
+   }
+  ],
+  "s": 204.92,
+  "e": 207.28
+ },
+ {
+  "section": "Bridge",
+  "text": "No Perl that writes the Verilog, no Python writing Perl,",
+  "words": [
+   {
+    "text": "No",
+    "s": 207.34,
+    "e": 207.44
+   },
+   {
+    "text": "Perl",
+    "s": 207.44,
+    "e": 207.8
+   },
+   {
+    "text": "that",
+    "s": 207.8,
+    "e": 207.92
+   },
+   {
+    "text": "writes",
+    "s": 207.92,
+    "e": 208.22
+   },
+   {
+    "text": "the",
+    "s": 208.22,
+    "e": 208.4
+   },
+   {
+    "text": "Verilog,",
+    "s": 208.4,
+    "e": 208.92
+   },
+   {
+    "text": "no",
+    "s": 208.92,
+    "e": 209.06
+   },
+   {
+    "text": "Python",
+    "s": 209.06,
+    "e": 209.38
+   },
+   {
+    "text": "writing",
+    "s": 209.38,
+    "e": 210.24
+   },
+   {
+    "text": "Perl,",
+    "s": 210.24,
+    "e": 210.58
+   }
+  ],
+  "s": 207.34,
+  "e": 210.58
+ },
+ {
+  "section": "Bridge",
+  "text": "No Jinja for the port lists, no Tcl to glue the world,",
+  "words": [
+   {
+    "text": "No",
+    "s": 210.58,
+    "e": 210.68
+   },
+   {
+    "text": "Jinja",
+    "s": 210.807,
+    "e": 210.935
+   },
+   {
+    "text": "for",
+    "s": 210.94,
+    "e": 211.14
+   },
+   {
+    "text": "the",
+    "s": 211.14,
+    "e": 211.26
+   },
+   {
+    "text": "port",
+    "s": 211.26,
+    "e": 211.44
+   },
+   {
+    "text": "lists,",
+    "s": 211.44,
+    "e": 211.62
+   },
+   {
+    "text": "no",
+    "s": 211.72,
+    "e": 211.82
+   },
+   {
+    "text": "Tcl",
+    "s": 211.82,
+    "e": 212.26
+   },
+   {
+    "text": "to",
+    "s": 212.26,
+    "e": 212.4
+   },
+   {
+    "text": "glue",
+    "s": 212.4,
+    "e": 212.5
+   },
+   {
+    "text": "the",
+    "s": 212.5,
+    "e": 212.64
+   },
+   {
+    "text": "world,",
+    "s": 212.64,
+    "e": 212.84
+   }
+  ],
+  "s": 210.58,
+  "e": 212.84
+ },
+ {
+  "section": "Bridge",
+  "text": "No homegrown lint in a nightly cron, no build script held with tape,",
+  "words": [
+   {
+    "text": "No",
+    "s": 212.94,
+    "e": 212.98
+   },
+   {
+    "text": "homegrown",
+    "s": 212.98,
+    "e": 213.5
+   },
+   {
+    "text": "lint",
+    "s": 213.5,
+    "e": 213.76
+   },
+   {
+    "text": "in",
+    "s": 213.76,
+    "e": 213.96
+   },
+   {
+    "text": "a",
+    "s": 213.96,
+    "e": 214.06
+   },
+   {
+    "text": "nightly",
+    "s": 214.06,
+    "e": 214.36
+   },
+   {
+    "text": "cron,",
+    "s": 214.36,
+    "e": 214.64
+   },
+   {
+    "text": "no",
+    "s": 214.64,
+    "e": 214.86
+   },
+   {
+    "text": "build",
+    "s": 214.86,
+    "e": 215.1
+   },
+   {
+    "text": "script",
+    "s": 215.1,
+    "e": 215.28
+   },
+   {
+    "text": "held",
+    "s": 215.28,
+    "e": 215.52
+   },
+   {
+    "text": "with",
+    "s": 215.52,
+    "e": 215.76
+   },
+   {
+    "text": "tape,",
+    "s": 215.76,
+    "e": 216.06
+   }
+  ],
+  "s": 212.94,
+  "e": 216.06
+ },
+ {
+  "section": "Bridge",
+  "text": "Types are values, modules are functions, and it all compiles in one take.",
+  "words": [
+   {
+    "text": "Types",
+    "s": 216.18,
+    "e": 216.52
+   },
+   {
+    "text": "are",
+    "s": 216.598,
+    "e": 216.677
+   },
+   {
+    "text": "values,",
+    "s": 216.68,
+    "e": 217.04
+   },
+   {
+    "text": "modules",
+    "s": 217.24,
+    "e": 217.46
+   },
+   {
+    "text": "are",
+    "s": 217.568,
+    "e": 217.676
+   },
+   {
+    "text": "functions,",
+    "s": 217.68,
+    "e": 218.0
+   },
+   {
+    "text": "and",
+    "s": 218.2,
+    "e": 218.32
+   },
+   {
+    "text": "it",
+    "s": 218.32,
+    "e": 218.44
+   },
+   {
+    "text": "all",
+    "s": 218.44,
+    "e": 218.64
+   },
+   {
+    "text": "compiles",
+    "s": 218.64,
+    "e": 219.54
+   },
+   {
+    "text": "in",
+    "s": 219.54,
+    "e": 219.72
+   },
+   {
+    "text": "one",
+    "s": 219.72,
+    "e": 219.96
+   },
+   {
+    "text": "take.",
+    "s": 219.96,
+    "e": 220.44
+   }
+  ],
+  "s": 216.18,
+  "e": 220.44
+ },
+ {
+  "section": "Breakdown",
+  "text": "And when I really have to cross,",
+  "words": [
+   {
+    "text": "And",
+    "s": 221.26,
+    "e": 221.72
+   },
+   {
+    "text": "when",
+    "s": 221.72,
+    "e": 221.94
+   },
+   {
+    "text": "I",
+    "s": 221.94,
+    "e": 222.16
+   },
+   {
+    "text": "really",
+    "s": 222.16,
+    "e": 222.52
+   },
+   {
+    "text": "have",
+    "s": 222.52,
+    "e": 222.82
+   },
+   {
+    "text": "to",
+    "s": 222.82,
+    "e": 223.04
+   },
+   {
+    "text": "cross,",
+    "s": 223.04,
+    "e": 223.34
+   }
+  ],
+  "s": 221.26,
+  "e": 223.34
+ },
+ {
+  "section": "Breakdown",
+  "text": "I'll do it, but I'll sign:",
+  "words": [
+   {
+    "text": "I'll",
+    "s": 223.64,
+    "e": 224.06
+   },
+   {
+    "text": "do",
+    "s": 224.06,
+    "e": 224.28
+   },
+   {
+    "text": "it,",
+    "s": 224.28,
+    "e": 224.48
+   },
+   {
+    "text": "but",
+    "s": 224.48,
+    "e": 224.6
+   },
+   {
+    "text": "I'll",
+    "s": 224.6,
+    "e": 224.82
+   },
+   {
+    "text": "sign:",
+    "s": 224.82,
+    "e": 225.16
+   }
+  ],
+  "s": 223.64,
+  "e": 225.16
+ },
+ {
+  "section": "Breakdown",
+  "text": "Unsafe value with domain...",
+  "words": [
+   {
+    "text": "Unsafe",
+    "s": 225.16,
+    "e": 225.64
+   },
+   {
+    "text": "value",
+    "s": 225.64,
+    "e": 226.24
+   },
+   {
+    "text": "with",
+    "s": 226.24,
+    "e": 226.58
+   },
+   {
+    "text": "domain...",
+    "s": 226.58,
+    "e": 226.96
+   }
+  ],
+  "s": 225.16,
+  "e": 226.96
+ },
+ {
+  "section": "Breakdown",
+  "text": "Grep knows every line.",
+  "words": [
+   {
+    "text": "Grep",
+    "s": 227.3,
+    "e": 227.62
+   },
+   {
+    "text": "knows",
+    "s": 227.62,
+    "e": 227.92
+   },
+   {
+    "text": "every",
+    "s": 227.92,
+    "e": 228.58
+   },
+   {
+    "text": "line.",
+    "s": 228.58,
+    "e": 229.0
+   }
+  ],
+  "s": 227.3,
+  "e": 229.0
+ },
+ {
+  "section": "Verse 4",
+  "text": "Hit save, and every core lights up, every module on its thread,",
+  "words": [
+   {
+    "text": "Hit",
+    "s": 229.255,
+    "e": 229.51
+   },
+   {
+    "text": "save,",
+    "s": 229.51,
+    "e": 229.764
+   },
+   {
+    "text": "and",
+    "s": 229.764,
+    "e": 230.019
+   },
+   {
+    "text": "every",
+    "s": 230.04,
+    "e": 230.26
+   },
+   {
+    "text": "core",
+    "s": 230.26,
+    "e": 230.52
+   },
+   {
+    "text": "lights",
+    "s": 230.6,
+    "e": 230.78
+   },
+   {
+    "text": "up,",
+    "s": 230.78,
+    "e": 231.0
+   },
+   {
+    "text": "every",
+    "s": 231.0,
+    "e": 231.26
+   },
+   {
+    "text": "module",
+    "s": 231.26,
+    "e": 231.72
+   },
+   {
+    "text": "on",
+    "s": 231.72,
+    "e": 232.1
+   },
+   {
+    "text": "its",
+    "s": 232.1,
+    "e": 232.24
+   },
+   {
+    "text": "thread,",
+    "s": 232.24,
+    "e": 232.48
+   }
+  ],
+  "s": 229.255,
+  "e": 232.48
+ },
+ {
+  "section": "Verse 4",
+  "text": "The squiggles hit my editor before the thought has left my head.",
+  "words": [
+   {
+    "text": "The",
+    "s": 232.48,
+    "e": 232.76
+   },
+   {
+    "text": "squiggles",
+    "s": 232.76,
+    "e": 233.14
+   },
+   {
+    "text": "hit",
+    "s": 233.14,
+    "e": 233.34
+   },
+   {
+    "text": "my",
+    "s": 233.34,
+    "e": 233.6
+   },
+   {
+    "text": "editor",
+    "s": 233.6,
+    "e": 234.06
+   },
+   {
+    "text": "before",
+    "s": 234.06,
+    "e": 234.56
+   },
+   {
+    "text": "the",
+    "s": 234.56,
+    "e": 234.82
+   },
+   {
+    "text": "thought",
+    "s": 234.82,
+    "e": 235.26
+   },
+   {
+    "text": "has",
+    "s": 235.26,
+    "e": 235.58
+   },
+   {
+    "text": "left",
+    "s": 235.58,
+    "e": 235.78
+   },
+   {
+    "text": "my",
+    "s": 235.78,
+    "e": 236.0
+   },
+   {
+    "text": "head.",
+    "s": 236.0,
+    "e": 236.3
+   }
+  ],
+  "s": 232.48,
+  "e": 236.3
+ },
+ {
+  "section": "Verse 4",
+  "text": "Elaborated, type-checked, Verilog written, all of it done",
+  "words": [
+   {
+    "text": "Elaborated,",
+    "s": 236.3,
+    "e": 236.94
+   },
+   {
+    "text": "type-checked,",
+    "s": 237.16,
+    "e": 237.38
+   },
+   {
+    "text": "Verilog",
+    "s": 237.46,
+    "e": 237.88
+   },
+   {
+    "text": "written,",
+    "s": 237.88,
+    "e": 238.12
+   },
+   {
+    "text": "all",
+    "s": 238.12,
+    "e": 238.74
+   },
+   {
+    "text": "of",
+    "s": 238.74,
+    "e": 239.24
+   },
+   {
+    "text": "it",
+    "s": 239.24,
+    "e": 239.46
+   },
+   {
+    "text": "done",
+    "s": 239.46,
+    "e": 239.7
+   }
+  ],
+  "s": 236.3,
+  "e": 239.7
+ },
+ {
+  "section": "Verse 4",
+  "text": "Before the license server's even checked if there's a seat. There's none.",
+  "words": [
+   {
+    "text": "Before",
+    "s": 239.7,
+    "e": 240.06
+   },
+   {
+    "text": "the",
+    "s": 240.06,
+    "e": 240.24
+   },
+   {
+    "text": "license",
+    "s": 240.24,
+    "e": 240.5
+   },
+   {
+    "text": "server's",
+    "s": 240.5,
+    "e": 241.14
+   },
+   {
+    "text": "even",
+    "s": 241.14,
+    "e": 241.32
+   },
+   {
+    "text": "checked",
+    "s": 241.32,
+    "e": 241.7
+   },
+   {
+    "text": "if",
+    "s": 241.7,
+    "e": 241.96
+   },
+   {
+    "text": "there's",
+    "s": 241.96,
+    "e": 242.32
+   },
+   {
+    "text": "a",
+    "s": 242.32,
+    "e": 242.4
+   },
+   {
+    "text": "seat.",
+    "s": 242.4,
+    "e": 242.72
+   },
+   {
+    "text": "There's",
+    "s": 242.84,
+    "e": 243.26
+   },
+   {
+    "text": "none.",
+    "s": 243.26,
+    "e": 243.58
+   }
+  ],
+  "s": 239.7,
+  "e": 243.58
+ },
+ {
+  "section": "Verse 4",
+  "text": "Four lines of Python for a testbench, pytest on the side,",
+  "words": [
+   {
+    "text": "Four",
+    "s": 243.58,
+    "e": 243.78
+   },
+   {
+    "text": "lines",
+    "s": 243.78,
+    "e": 244.06
+   },
+   {
+    "text": "of",
+    "s": 244.06,
+    "e": 244.32
+   },
+   {
+    "text": "Python",
+    "s": 244.32,
+    "e": 244.6
+   },
+   {
+    "text": "for",
+    "s": 244.6,
+    "e": 244.96
+   },
+   {
+    "text": "a",
+    "s": 244.96,
+    "e": 245.06
+   },
+   {
+    "text": "testbench,",
+    "s": 245.2,
+    "e": 245.52
+   },
+   {
+    "text": "pytest",
+    "s": 245.52,
+    "e": 246.46
+   },
+   {
+    "text": "on",
+    "s": 246.46,
+    "e": 246.82
+   },
+   {
+    "text": "the",
+    "s": 246.82,
+    "e": 246.98
+   },
+   {
+    "text": "side,",
+    "s": 246.98,
+    "e": 247.28
+   }
+  ],
+  "s": 243.58,
+  "e": 247.28
+ },
+ {
+  "section": "Verse 4",
+  "text": "Three hundred eighty tests in four seconds, Verilator for the ride.",
+  "words": [
+   {
+    "text": "Three",
+    "s": 247.427,
+    "e": 247.574
+   },
+   {
+    "text": "hundred",
+    "s": 247.574,
+    "e": 247.721
+   },
+   {
+    "text": "eighty",
+    "s": 247.721,
+    "e": 247.868
+   },
+   {
+    "text": "tests",
+    "s": 247.88,
+    "e": 248.2
+   },
+   {
+    "text": "in",
+    "s": 248.2,
+    "e": 248.42
+   },
+   {
+    "text": "four",
+    "s": 248.42,
+    "e": 248.64
+   },
+   {
+    "text": "seconds,",
+    "s": 248.64,
+    "e": 249.18
+   },
+   {
+    "text": "Verilator",
+    "s": 249.562,
+    "e": 249.944
+   },
+   {
+    "text": "for",
+    "s": 249.96,
+    "e": 250.16
+   },
+   {
+    "text": "the",
+    "s": 250.16,
+    "e": 250.44
+   },
+   {
+    "text": "ride.",
+    "s": 250.763,
+    "e": 251.087
+   }
+  ],
+  "s": 247.427,
+  "e": 251.087
+ },
+ {
+  "section": "Verse 4",
+  "text": "Rust-style errors with a caret pointing right at my crime,",
+  "words": [
+   {
+    "text": "Rust-style",
+    "s": 251.1,
+    "e": 251.78
+   },
+   {
+    "text": "errors",
+    "s": 251.888,
+    "e": 251.996
+   },
+   {
+    "text": "with",
+    "s": 252.0,
+    "e": 252.3
+   },
+   {
+    "text": "a",
+    "s": 252.3,
+    "e": 252.38
+   },
+   {
+    "text": "caret",
+    "s": 252.38,
+    "e": 252.6
+   },
+   {
+    "text": "pointing",
+    "s": 252.6,
+    "e": 253.04
+   },
+   {
+    "text": "right",
+    "s": 253.04,
+    "e": 253.52
+   },
+   {
+    "text": "at",
+    "s": 253.52,
+    "e": 253.9
+   },
+   {
+    "text": "my",
+    "s": 253.9,
+    "e": 254.08
+   },
+   {
+    "text": "crime,",
+    "s": 254.08,
+    "e": 254.48
+   }
+  ],
+  "s": 251.1,
+  "e": 254.48
+ },
+ {
+  "section": "Verse 4",
+  "text": "Your linter's three months late; my compiler's right on time.",
+  "words": [
+   {
+    "text": "Your",
+    "s": 254.48,
+    "e": 254.82
+   },
+   {
+    "text": "linter's",
+    "s": 254.82,
+    "e": 255.12
+   },
+   {
+    "text": "three",
+    "s": 255.26,
+    "e": 255.52
+   },
+   {
+    "text": "months",
+    "s": 255.52,
+    "e": 255.8
+   },
+   {
+    "text": "late;",
+    "s": 255.8,
+    "e": 256.24
+   },
+   {
+    "text": "my",
+    "s": 256.24,
+    "e": 256.62
+   },
+   {
+    "text": "compiler's",
+    "s": 256.62,
+    "e": 257.62
+   },
+   {
+    "text": "right",
+    "s": 257.62,
+    "e": 257.78
+   },
+   {
+    "text": "on",
+    "s": 257.78,
+    "e": 258.06
+   },
+   {
+    "text": "time.",
+    "s": 258.06,
+    "e": 258.42
+   }
+  ],
+  "s": 254.48,
+  "e": 258.42
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "It all comes out as Verilog two-thousand-five,",
+  "words": [
+   {
+    "text": "It",
+    "s": 258.42,
+    "e": 258.98
+   },
+   {
+    "text": "all",
+    "s": 258.98,
+    "e": 259.12
+   },
+   {
+    "text": "comes",
+    "s": 259.12,
+    "e": 259.44
+   },
+   {
+    "text": "out",
+    "s": 259.44,
+    "e": 259.78
+   },
+   {
+    "text": "as",
+    "s": 259.78,
+    "e": 259.92
+   },
+   {
+    "text": "Verilog",
+    "s": 259.92,
+    "e": 260.46
+   },
+   {
+    "text": "two-thousand-five,",
+    "s": 261.068,
+    "e": 261.675
+   }
+  ],
+  "s": 258.42,
+  "e": 261.675
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "Every tool you've ever cursed will keep it alive.",
+  "words": [
+   {
+    "text": "Every",
+    "s": 261.7,
+    "e": 262.22
+   },
+   {
+    "text": "tool",
+    "s": 262.22,
+    "e": 262.66
+   },
+   {
+    "text": "you've",
+    "s": 262.66,
+    "e": 263.22
+   },
+   {
+    "text": "ever",
+    "s": 263.22,
+    "e": 263.46
+   },
+   {
+    "text": "cursed",
+    "s": 263.46,
+    "e": 263.96
+   },
+   {
+    "text": "will",
+    "s": 264.04,
+    "e": 264.24
+   },
+   {
+    "text": "keep",
+    "s": 264.24,
+    "e": 264.52
+   },
+   {
+    "text": "it",
+    "s": 264.52,
+    "e": 265.0
+   },
+   {
+    "text": "alive.",
+    "s": 265.0,
+    "e": 265.32
+   }
+  ],
+  "s": 261.7,
+  "e": 265.32
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "No waiting ten more years for the vendors to parse a struct,",
+  "words": [
+   {
+    "text": "No",
+    "s": 265.32,
+    "e": 265.82
+   },
+   {
+    "text": "waiting",
+    "s": 265.82,
+    "e": 266.18
+   },
+   {
+    "text": "ten",
+    "s": 266.18,
+    "e": 266.48
+   },
+   {
+    "text": "more",
+    "s": 266.48,
+    "e": 266.76
+   },
+   {
+    "text": "years",
+    "s": 266.76,
+    "e": 267.18
+   },
+   {
+    "text": "for",
+    "s": 267.18,
+    "e": 267.5
+   },
+   {
+    "text": "the",
+    "s": 267.5,
+    "e": 267.64
+   },
+   {
+    "text": "vendors",
+    "s": 267.64,
+    "e": 267.9
+   },
+   {
+    "text": "to",
+    "s": 267.9,
+    "e": 268.1
+   },
+   {
+    "text": "parse",
+    "s": 268.1,
+    "e": 268.48
+   },
+   {
+    "text": "a",
+    "s": 268.48,
+    "e": 268.72
+   },
+   {
+    "text": "struct,",
+    "s": 268.72,
+    "e": 269.0
+   }
+  ],
+  "s": 265.32,
+  "e": 269.0
+ },
+ {
+  "section": "Pre-Chorus",
+  "text": "The language lives in the compiler, and we're finally unstuck.",
+  "words": [
+   {
+    "text": "The",
+    "s": 269.0,
+    "e": 269.34
+   },
+   {
+    "text": "language",
+    "s": 269.34,
+    "e": 269.7
+   },
+   {
+    "text": "lives",
+    "s": 269.7,
+    "e": 270.02
+   },
+   {
+    "text": "in",
+    "s": 270.02,
+    "e": 270.52
+   },
+   {
+    "text": "the",
+    "s": 270.52,
+    "e": 270.6
+   },
+   {
+    "text": "compiler,",
+    "s": 270.6,
+    "e": 270.92
+   },
+   {
+    "text": "and",
+    "s": 270.92,
+    "e": 272.06
+   },
+   {
+    "text": "we're",
+    "s": 272.06,
+    "e": 272.48
+   },
+   {
+    "text": "finally",
+    "s": 272.48,
+    "e": 273.0
+   },
+   {
+    "text": "unstuck.",
+    "s": 273.0,
+    "e": 274.28
+   }
+  ],
+  "s": 269.0,
+  "e": 274.28
+ },
+ {
+  "section": "Final Chorus",
+  "text": "No more latches, no sensitivity lists,",
+  "words": [
+   {
+    "text": "No",
+    "s": 283.86,
+    "e": 284.58
+   },
+   {
+    "text": "more",
+    "s": 284.58,
+    "e": 285.3
+   },
+   {
+    "text": "latches,",
+    "s": 285.3,
+    "e": 286.12
+   },
+   {
+    "text": "no",
+    "s": 286.12,
+    "e": 286.38
+   },
+   {
+    "text": "sensitivity",
+    "s": 286.38,
+    "e": 286.88
+   },
+   {
+    "text": "lists,",
+    "s": 286.88,
+    "e": 287.64
+   }
+  ],
+  "s": 283.86,
+  "e": 287.64
+ },
+ {
+  "section": "Final Chorus",
+  "text": "One equals sign, and it does just what it says it is.",
+  "words": [
+   {
+    "text": "One",
+    "s": 287.64,
+    "e": 288.22
+   },
+   {
+    "text": "equals",
+    "s": 288.22,
+    "e": 288.78
+   },
+   {
+    "text": "sign,",
+    "s": 288.78,
+    "e": 289.34
+   },
+   {
+    "text": "and",
+    "s": 289.34,
+    "e": 289.72
+   },
+   {
+    "text": "it",
+    "s": 289.72,
+    "e": 289.82
+   },
+   {
+    "text": "does",
+    "s": 289.82,
+    "e": 290.12
+   },
+   {
+    "text": "just",
+    "s": 290.12,
+    "e": 290.5
+   },
+   {
+    "text": "what",
+    "s": 290.5,
+    "e": 290.84
+   },
+   {
+    "text": "it",
+    "s": 290.84,
+    "e": 291.04
+   },
+   {
+    "text": "says",
+    "s": 291.04,
+    "e": 291.26
+   },
+   {
+    "text": "it",
+    "s": 291.26,
+    "e": 291.46
+   },
+   {
+    "text": "is.",
+    "s": 291.46,
+    "e": 291.7
+   }
+  ],
+  "s": 287.64,
+  "e": 291.7
+ },
+ {
+  "section": "Final Chorus",
+  "text": "Every wire knows its clock, every flop knows its reset,",
+  "words": [
+   {
+    "text": "Every",
+    "s": 291.7,
+    "e": 291.92
+   },
+   {
+    "text": "wire",
+    "s": 291.92,
+    "e": 292.2
+   },
+   {
+    "text": "knows",
+    "s": 292.2,
+    "e": 292.46
+   },
+   {
+    "text": "its",
+    "s": 292.46,
+    "e": 292.74
+   },
+   {
+    "text": "clock,",
+    "s": 292.74,
+    "e": 292.98
+   },
+   {
+    "text": "every",
+    "s": 293.18,
+    "e": 293.5
+   },
+   {
+    "text": "flop",
+    "s": 293.5,
+    "e": 293.7
+   },
+   {
+    "text": "knows",
+    "s": 293.7,
+    "e": 293.9
+   },
+   {
+    "text": "its",
+    "s": 293.9,
+    "e": 294.28
+   },
+   {
+    "text": "reset,",
+    "s": 294.28,
+    "e": 294.82
+   }
+  ],
+  "s": 291.7,
+  "e": 294.82
+ },
+ {
+  "section": "Final Chorus",
+  "text": "And the compiler catches every crossing I forget!",
+  "words": [
+   {
+    "text": "And",
+    "s": 294.82,
+    "e": 295.08
+   },
+   {
+    "text": "the",
+    "s": 295.08,
+    "e": 295.24
+   },
+   {
+    "text": "compiler",
+    "s": 295.24,
+    "e": 295.76
+   },
+   {
+    "text": "catches",
+    "s": 295.76,
+    "e": 296.68
+   },
+   {
+    "text": "every",
+    "s": 296.68,
+    "e": 297.32
+   },
+   {
+    "text": "crossing",
+    "s": 297.32,
+    "e": 297.78
+   },
+   {
+    "text": "I",
+    "s": 297.78,
+    "e": 298.08
+   },
+   {
+    "text": "forget!",
+    "s": 298.08,
+    "e": 298.44
+   }
+  ],
+  "s": 294.82,
+  "e": 298.44
+ },
+ {
+  "section": "Final Chorus",
+  "text": "K! H! D! L! You give the range, it picks the bits.",
+  "words": [
+   {
+    "text": "K!",
+    "s": 298.78,
+    "e": 299.06
+   },
+   {
+    "text": "H!",
+    "s": 299.06,
+    "e": 299.66
+   },
+   {
+    "text": "D!",
+    "s": 299.66,
+    "e": 299.92
+   },
+   {
+    "text": "L!",
+    "s": 299.92,
+    "e": 300.26
+   },
+   {
+    "text": "You",
+    "s": 300.32,
+    "e": 300.5
+   },
+   {
+    "text": "give",
+    "s": 300.5,
+    "e": 300.78
+   },
+   {
+    "text": "the",
+    "s": 300.78,
+    "e": 301.0
+   },
+   {
+    "text": "range,",
+    "s": 301.0,
+    "e": 301.34
+   },
+   {
+    "text": "it",
+    "s": 301.38,
+    "e": 301.52
+   },
+   {
+    "text": "picks",
+    "s": 301.52,
+    "e": 301.76
+   },
+   {
+    "text": "the",
+    "s": 301.76,
+    "e": 301.92
+   },
+   {
+    "text": "bits.",
+    "s": 301.92,
+    "e": 302.16
+   }
+  ],
+  "s": 298.78,
+  "e": 302.16
+ },
+ {
+  "section": "Final Chorus",
+  "text": "K! H! D! L! If it compiles...",
+  "words": [
+   {
+    "text": "K!",
+    "s": 302.16,
+    "e": 302.64
+   },
+   {
+    "text": "H!",
+    "s": 302.64,
+    "e": 303.24
+   },
+   {
+    "text": "D!",
+    "s": 303.24,
+    "e": 303.58
+   },
+   {
+    "text": "L!",
+    "s": 303.58,
+    "e": 303.88
+   },
+   {
+    "text": "If",
+    "s": 304.04,
+    "e": 304.2
+   },
+   {
+    "text": "it",
+    "s": 304.2,
+    "e": 304.4
+   },
+   {
+    "text": "compiles...",
+    "s": 304.4,
+    "e": 305.38
+   }
+  ],
+  "s": 302.16,
+  "e": 305.38
+ },
+ {
+  "section": "Final Chorus",
+  "text": "K! H! D! L! If it compiles, then it fits!",
+  "words": [
+   {
+    "text": "K!",
+    "s": 305.38,
+    "e": 306.24
+   },
+   {
+    "text": "H!",
+    "s": 306.24,
+    "e": 306.82
+   },
+   {
+    "text": "D!",
+    "s": 306.82,
+    "e": 307.22
+   },
+   {
+    "text": "L!",
+    "s": 307.22,
+    "e": 307.5
+   },
+   {
+    "text": "If",
+    "s": 307.72,
+    "e": 307.8
+   },
+   {
+    "text": "it",
+    "s": 307.8,
+    "e": 308.08
+   },
+   {
+    "text": "compiles,",
+    "s": 308.08,
+    "e": 308.82
+   },
+   {
+    "text": "then",
+    "s": 308.82,
+    "e": 308.96
+   },
+   {
+    "text": "it",
+    "s": 308.96,
+    "e": 309.16
+   },
+   {
+    "text": "fits!",
+    "s": 309.16,
+    "e": 309.6
+   }
+  ],
+  "s": 305.38,
+  "e": 309.6
+ },
+ {
+  "section": "Outro",
+  "text": "K H D L build: finished in twenty milliseconds.",
+  "words": [
+   {
+    "text": "K",
+    "s": 310.82,
+    "e": 311.38
+   },
+   {
+    "text": "H",
+    "s": 311.38,
+    "e": 311.8
+   },
+   {
+    "text": "D",
+    "s": 311.8,
+    "e": 312.1
+   },
+   {
+    "text": "L",
+    "s": 312.1,
+    "e": 312.36
+   },
+   {
+    "text": "build:",
+    "s": 312.4,
+    "e": 312.56
+   },
+   {
+    "text": "finished",
+    "s": 313.16,
+    "e": 313.72
+   },
+   {
+    "text": "in",
+    "s": 313.72,
+    "e": 314.08
+   },
+   {
+    "text": "twenty",
+    "s": 314.256,
+    "e": 314.433
+   },
+   {
+    "text": "milliseconds.",
+    "s": 314.44,
+    "e": 315.06
+   }
+  ],
+  "s": 310.82,
+  "e": 315.06
+ },
+ {
+  "section": "Outro",
+  "text": "Zero errors. Zero warnings.",
+  "words": [
+   {
+    "text": "Zero",
+    "s": 315.36,
+    "e": 316.42
+   },
+   {
+    "text": "errors.",
+    "s": 316.42,
+    "e": 316.98
+   },
+   {
+    "text": "Zero",
+    "s": 316.98,
+    "e": 317.4
+   },
+   {
+    "text": "warnings.",
+    "s": 317.4,
+    "e": 317.82
+   }
+  ],
+  "s": 315.36,
+  "e": 317.82
+ },
+ {
+  "section": "Outro",
+  "text": "If it compiles... it fits.",
+  "words": [
+   {
+    "text": "If",
+    "s": 319.51,
+    "e": 319.96
+   },
+   {
+    "text": "it",
+    "s": 319.96,
+    "e": 320.18
+   },
+   {
+    "text": "compiles...",
+    "s": 320.18,
+    "e": 320.94
+   },
+   {
+    "text": "it",
+    "s": 320.94,
+    "e": 321.16
+   },
+   {
+    "text": "fits.",
+    "s": 321.16,
+    "e": 321.44
+   }
+  ],
+  "s": 319.51,
+  "e": 321.44
+ }
+]

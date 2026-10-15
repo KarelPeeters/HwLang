@@ -1,0 +1,25 @@
+module cdc_sync_ff(N: int(2..) = 2) ports(
+    in_data: in async bool,
+    out_clk: in clock,
+    out_rst: in async bool,
+    out_data: out sync(out_clk, async out_rst) bool,
+) {
+    wire buffer: [N]bool;
+    clocked(out_clk, async out_rst) {
+        reg wire buffer = [false] * N;
+        val in_data_domain = unsafe_value_with_domain(in_data, sync(out_clk, async out_rst));
+        buffer = [*buffer[1..], in_data_domain];
+    }
+    comb {
+        out_data = buffer[0];
+    }
+}
+
+module top ports(
+    clk: in clock,
+    rst: in async bool,
+    button: in async bool,
+    pressed: out sync(clk, async rst) bool,
+) {
+    instance cdc_sync_ff(N=1) ports(in_data=button, out_clk=clk, out_rst=rst, out_data=pressed);
+}

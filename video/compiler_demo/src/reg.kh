@@ -1,0 +1,11 @@
+module top ports(
+    clk: in clock,
+    rst: in async bool,
+    sync(clk, async rst) {
+        count: out uint(32),
+    }
+) {
+    clocked(clk, async rst) {
+        count = count + 1;
+    }
+}

@@ -1,0 +1,11 @@
+module top ports(
+    sel: in async bool,
+    a: in async uint(8),
+    y: out async uint(8),
+) {
+    comb {
+        if (sel) {
+            y = a;
+        }
+    }
+}

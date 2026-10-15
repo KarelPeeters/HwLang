@@ -1,0 +1,13 @@
+module top ports(
+    clk: in clock,
+    rst: in async bool,
+    x: in async bool,
+    sync(clk, async rst) {
+        y: out bool,
+    }
+) {
+    clocked(clk, async rst) {
+        reg wire y = false;
+        y = x;
+    }
+}

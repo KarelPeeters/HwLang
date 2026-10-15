@@ -1,0 +1,53 @@
+import examples.axi_stream.axi_stream;
+
+// TODO check if this also works with input/output widths 0, it should!
+pub module axi_gearbox(T: type, input_width: positive, output_width: positive) ports(
+    clk: in clock,
+    rst: in async bool,
+
+    sync(clk, async rst) {
+        input: interface axi_stream([input_width]T).input,
+        output: interface axi_stream([output_width]T).output,
+    }
+) {
+    const buffer_size = input_width + output_width + max(input_width, output_width) - gcd(input_width, output_width);
+
+    wire buffer: [buffer_size]T;
+    wire level: int(0..=buffer_size);
+
+    // TODO range implications kind of suck for this, allow assert to add implications
+    // TODO store ValueWithImplications in variables, allowing them to later be used in conditions?
+    clocked(clk, async rst) {
+        reg wire buffer = [false] * buffer_size;
+        reg wire level = 0;
+
+        // TODO does the other of these matter?
+        // input
+        if (input.ready && input.valid && level <= buffer_size - input_width) {
+            buffer[level+..input_width] = input.data;
+            level += input_width;
+        }
+
+        // output
+        if (output.ready && output.valid && level >= output_width) {
+            level -= output_width;
+            buffer[..(buffer_size - output_width)] = buffer[output_width..];
+        }
+    }
+
+    comb {
+        input.ready = level <= buffer_size - input_width;
+        output.valid = level >= output_width;
+        output.data = buffer[..output_width];
+    }
+}
+
+const {
+    axi_gearbox(T=bool, input_width=8, output_width=8);
+
+    axi_gearbox(T=bool, input_width=8, output_width=16);
+    axi_gearbox(T=bool, input_width=16, output_width=8);
+
+    axi_gearbox(T=bool, input_width=8, output_width=3);
+    axi_gearbox(T=bool, input_width=3, output_width=8);
+}
