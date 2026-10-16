@@ -364,7 +364,7 @@ impl RandomCheck {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::util::arena::Arena;
     use itertools::Itertools;
 

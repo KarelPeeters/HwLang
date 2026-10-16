@@ -136,7 +136,7 @@ impl IntRepresentation {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::util::big_int::BigInt;
     use crate::util::int::{IntRepresentation, Signed};
     use crate::util::range::ClosedNonEmptyRange;

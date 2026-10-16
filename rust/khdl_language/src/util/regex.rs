@@ -69,7 +69,7 @@ impl RegexDfa {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::util::regex::RegexDfa;
     use itertools::Itertools;
 

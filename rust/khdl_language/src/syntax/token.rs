@@ -837,11 +837,15 @@ impl TokenError {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::syntax::pos::{Pos, Span};
     use crate::syntax::source::FileId;
-    use crate::syntax::token::{Token, TokenError, TokenType, Tokenizer, tokenize};
+    use crate::syntax::token::{
+        REGEX_ID_CONTINUE, REGEX_ID_START, REGEX_INT_CONTINUE, REGEX_INT_START, REGEX_STRING_ESCAPE_CHARS, Token,
+        TokenError, TokenType, Tokenizer, tokenize,
+    };
     use khdl_util::swriteln;
+    use regex::Regex;
     use std::collections::HashSet;
 
     fn tokenize_iter(file: FileId, source: &str, emit_incomplete_token: bool) -> Vec<Result<Token, TokenError>> {
@@ -1014,14 +1018,6 @@ mod test {
         let grammar = include_str!("grammar.lalrpop");
         assert!(grammar.contains(&expected));
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::syntax::token::{
-        REGEX_ID_CONTINUE, REGEX_ID_START, REGEX_INT_CONTINUE, REGEX_INT_START, REGEX_STRING_ESCAPE_CHARS,
-    };
-    use regex::Regex;
 
     /// Check that each regex matches exactly the same chars as the corresponding pattern macro.
     #[test]

@@ -485,7 +485,7 @@ impl_common!(ClosedMultiRange);
 impl_common!(ClosedNonEmptyMultiRange);
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::util::range::{NonEmptyRange, Range};
     use crate::util::range_multi::MultiRange;
     use itertools::Itertools;
