@@ -61,14 +61,14 @@ jobs:
         with:
           workspaces: rust -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: cargo build
-        run: cd rust && cargo build --all-features
       - name: cargo test
         run: cd rust && cargo test --all-features
 
   python-build-test:
     name: Python build and test
     runs-on: ubuntu-22.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,11 +89,22 @@ jobs:
         with:
           version: "5.040"
 
+      - name: Install ccache
+        run: sudo apt-get install -y --no-install-recommends ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-verilator-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-verilator-${{ runner.os }}-
+
       - name: Sync dependencies
         run: (cd python && uv sync)
 
       - name: Run pytest
         run: (cd python && uv run pytest -n auto)
+      - name: ccache statistics
+        run: ccache -s
 
   webdemo-build:
     name: Webdemo build
