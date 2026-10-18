@@ -962,11 +962,20 @@ impl Module {
                 "verilator",
             )?;
 
-            // compile
+            // compile and link
+            let name_mk = "combined.mk";
+            let source_mk = format!(
+                "include {top_class_name}.mk\n\n\
+                 {name_so}: $(VK_OBJS) $(VK_USER_OBJS) $(VK_GLOBAL_OBJS)\n\
+                 \t$(LINK) $(LDFLAGS) $^ -o $@ -shared $(LDLIBS)\n"
+            );
+            std::fs::write(obj_dir.join(name_mk), source_mk)?;
+
+            // TODO use faster linker
             run_command(
                 Command::new("make")
                     .arg("-f")
-                    .arg(format!("{top_class_name}.mk"))
+                    .arg(name_mk)
                     .arg("-j")
                     .arg(get_num_cpus().get().to_string())
                     .args(compiler.into_iter().flat_map(|(_, driver, pch_include, pch_suffix)| {
@@ -976,28 +985,10 @@ impl Module {
                             format!("CFG_CXXFLAGS_PCH_I={pch_include}"),
                             format!("CFG_GCH_IF_CLANG={pch_suffix}"),
                         ]
-                    })),
+                    }))
+                    .arg(&name_so),
                 &obj_dir,
                 "make",
-            )?;
-
-            // link
-            let objects = std::fs::read_dir(&obj_dir)
-                .map_err(|e| VerilationException::new_err(format!("failed to read obj_dir: {e}")))?
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "o"))
-                .map(|entry| entry.file_name())
-                .collect::<Vec<_>>();
-
-            // TODO use faster linker
-            run_command(
-                Command::new(compiler.map(|(_, driver, ..)| driver).unwrap_or("g++"))
-                    .args(objects)
-                    .arg("-o")
-                    .arg(&name_so)
-                    .arg("-shared"),
-                &obj_dir,
-                "linking",
             )?;
 
             Ok(())
