@@ -84,8 +84,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      # Fork that installs verilator into the tool cache, which has a stable path across runs (needed for ccache hits).
+      # TODO switch back to veryl-lang/setup-verilator@v1 once https://github.com/veryl-lang/setup-verilator/pull/1 is merged.
       - name: Install verilator
-        uses: veryl-lang/setup-verilator@v1
+        uses: KarelPeeters/setup-verilator@220929904b0d56dc210d44624b9cff5f2c145800
         with:
           version: "5.040"
 
