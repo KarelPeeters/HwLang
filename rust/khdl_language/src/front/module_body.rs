@@ -4,21 +4,21 @@ use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
-use crate::front::expression::LrValue;
+use crate::front::expression::{LeftInterfaceInfo, LrValue};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowHardwareRoot, FlowRoot, HardwareProcessKind, RegisterInfo};
 use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::ElaboratedModule;
 use crate::front::module_header::{
     ArenaConnectors, Connector, ConnectorInfo, ConnectorKind, ConnectorSingle, ElaboratedModuleExternalInfo,
-    ElaboratedModuleHeader, ElaboratedModuleInternalInfo,
+    ElaboratedModuleHeader, ElaboratedModuleInternalInfo, interface_array_element_names, interface_array_shape,
 };
 use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeParent, ScopedEntry};
 use crate::front::signal::{
-    Interface, Polarized, PortOrWire, Signal, SignalOrVariable, WireInfo, WireInfoInInterface, WireInfoSingle,
-    WireInterfaceInfo,
+    Interface, Polarized, Signal, SignalOrVariable, WireInfo, WireInfoInInterface, WireInfoSingle, WireInterfaceInfo,
 };
 use crate::front::steps::TargetStep;
+use crate::front::string::shape_string;
 use crate::front::types::{HardwareType, NonHardwareType, Type, Typed};
 use crate::front::value::{CompileValue, HardwareValue, MaybeUndefined, SimpleCompileValue, ValueCommon};
 use crate::mid::cleanup::cleanup_module;
@@ -39,6 +39,7 @@ use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::intern::Id;
+use crate::util::nd_array::{NdArray, NdArrayShape, try_for_each_nd_index};
 use crate::util::{ResultExt, result_pair};
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
@@ -399,80 +400,101 @@ impl BodyContext {
                     .eval_expression_as_compile(
                         scope,
                         flow_parent,
-                        &Type::Interface,
+                        &Type::Any,
                         interface,
                         Spanned::new(span_keyword, "wire interface"),
                     )
-                    .and_then(|interface| {
-                        let reason = TypeContainsReason::InterfaceWire(span_keyword);
-                        check_type_contains_value(refs, reason, &Type::Interface, interface.as_ref())?;
-
-                        match interface.inner {
-                            CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
-                                Ok(Spanned::new(interface.span, interface_inner))
-                            }
-                            _ => Err(diags.report_error_internal(interface.span, "expected interface")),
+                    .and_then(|interface| match interface.inner {
+                        CompileValue::Simple(SimpleCompileValue::Interface(interface_inner)) => {
+                            Ok((vec![], Spanned::new(interface.span, interface_inner)))
+                        }
+                        CompileValue::Simple(SimpleCompileValue::InterfaceArray(lengths, interface_inner)) => {
+                            let shape = interface_array_shape(diags, interface.span, &lengths)?;
+                            Ok((shape, Spanned::new(interface.span, interface_inner)))
+                        }
+                        value => {
+                            let diag = DiagnosticError::new(
+                                "expected interface or interface array",
+                                interface.span,
+                                format!("got value with type `{}`", value.ty().value_string(refs)),
+                            )
+                            .add_info(span_keyword, "interface wire requires interface")
+                            .report(diags);
+                            Err(diag)
                         }
                     });
 
                 let domain = domain?;
-                let interface = interface?;
-
-                // create interface wire
-                let wire_interface = ctx.wire_interfaces.push(WireInterfaceInfo {
-                    id: wire_id,
-                    domain: Ok(domain),
-                    interface,
-                    // these will be filled in immediately after this
-                    wires: vec![],
-                    ir_wires: vec![],
-                });
-
-                // create inner wires
-                let mut wires = vec![];
-                let mut ir_wires = vec![];
+                let (shape, interface) = interface?;
 
                 let wire_id_str = wire_id.diagnostic_str(&refs.shared.interner);
                 let interface_info = elab.interface_info(interface.inner);
 
-                for (signal_index, (_, signal_info)) in enumerate(&interface_info.signals) {
-                    let ElaboratedInterfaceSignalInfo {
-                        id: signal_id,
-                        ty: signal_ty,
-                    } = signal_info;
-                    let signal_ty = signal_ty.as_ref_ok()?;
+                let mut intfs = vec![];
+                try_for_each_nd_index(&shape, |index| {
+                    let (element_str, element_ir_str) = interface_array_element_names(wire_id_str, index);
 
-                    let signal_id_str = signal_id.inner.str(&refs.shared.interner);
-                    let diagnostic_str = format!("{}.{}", wire_id_str, signal_id_str);
-                    let ir_name = format!("{}_{}", wire_id_str, signal_id_str);
+                    // create interface wire
+                    let wire_interface = ctx.wire_interfaces.push(WireInterfaceInfo {
+                        id: wire_id,
+                        domain: Ok(domain),
+                        interface,
+                        // these will be filled in immediately after this
+                        wires: vec![],
+                        ir_wires: vec![],
+                    });
 
-                    let wire_ir_info = IrWireInfo {
-                        ty: signal_ty.inner.as_ir(refs),
-                        debug_info_id: Spanned::new(wire_id.span(), Some(ir_name)),
-                        debug_info_ty: signal_ty.inner.value_string(refs),
-                        // will be filled in later during the inference checking pass
-                        debug_info_domain: String::new(),
-                    };
-                    let wire_ir = self.ir_signals.wires.push(wire_ir_info);
+                    // create inner wires
+                    let mut wires = vec![];
+                    let mut ir_wires = vec![];
 
-                    let wire_info = WireInfoInInterface {
-                        decl_span: stmt.span,
-                        interface: Spanned::new(interface.span, wire_interface),
-                        index: signal_index,
-                        diagnostic_string: diagnostic_str,
-                        ir: wire_ir,
-                    };
-                    let wire = ctx.wires.push(WireInfo::Interface(wire_info));
+                    for (signal_index, (_, signal_info)) in enumerate(&interface_info.signals) {
+                        let ElaboratedInterfaceSignalInfo {
+                            id: signal_id,
+                            ty: signal_ty,
+                        } = signal_info;
+                        let signal_ty = signal_ty.as_ref_ok()?;
 
-                    wires.push(wire);
-                    ir_wires.push(wire_ir);
-                }
+                        let signal_id_str = signal_id.inner.str(&refs.shared.interner);
+                        let diagnostic_str = format!("{element_str}.{signal_id_str}");
+                        let ir_name = format!("{element_ir_str}_{signal_id_str}");
 
-                let wire_interface_info = &mut ctx.wire_interfaces[wire_interface];
-                wire_interface_info.wires = wires;
-                wire_interface_info.ir_wires = ir_wires;
+                        let wire_ir_info = IrWireInfo {
+                            ty: signal_ty.inner.as_ir(refs),
+                            debug_info_id: Spanned::new(wire_id.span(), Some(ir_name)),
+                            debug_info_ty: signal_ty.inner.value_string(refs),
+                            // will be filled in later during the inference checking pass
+                            debug_info_domain: String::new(),
+                        };
+                        let wire_ir = self.ir_signals.wires.push(wire_ir_info);
 
-                NamedValue::Interface(Interface::Wire(wire_interface))
+                        let wire_info = WireInfoInInterface {
+                            decl_span: stmt.span,
+                            interface: Spanned::new(interface.span, wire_interface),
+                            index: signal_index,
+                            diagnostic_string: diagnostic_str,
+                            ir: wire_ir,
+                        };
+                        let wire = ctx.wires.push(WireInfo::Interface(wire_info));
+
+                        wires.push(wire);
+                        ir_wires.push(wire_ir);
+                    }
+
+                    let wire_interface_info = &mut ctx.wire_interfaces[wire_interface];
+                    wire_interface_info.wires = wires;
+                    wire_interface_info.ir_wires = ir_wires;
+
+                    intfs.push(Interface::Wire(wire_interface));
+                    Ok(())
+                })?;
+                let intf = NdArray::new(shape, intfs);
+
+                NamedValue::Interface(LeftInterfaceInfo {
+                    span_id: wire_id.span(),
+                    elab: interface,
+                    intf,
+                })
             }
         };
 
@@ -1257,7 +1279,7 @@ impl BodyContext {
 
                 // expect interface
                 let value_eval = match value_eval {
-                    LrValue::LeftInterface(intf) => intf,
+                    LrValue::LeftInterface(info) => info,
                     LrValue::LeftTarget(_) | LrValue::Right(_) => {
                         let e = DiagnosticError::new("expected interface value", expr.span, "got non-interface value")
                             .add_info(connector_id.span(), "port defined as interface here")
@@ -1266,28 +1288,8 @@ impl BodyContext {
                     }
                 };
 
-                // get interface details
-                let (value_interface, value_domain, value_signals) = match value_eval {
-                    Interface::Port(port_interface) => {
-                        let info = &ctx.port_interfaces[port_interface];
-                        let port_interface = info.view.map_inner(|v| v.interface);
-                        let port_domain = info
-                            .domain
-                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port))));
-                        let port_signals = PortOrWire::Port(&info.ports);
-                        (port_interface, port_domain, port_signals)
-                    }
-                    Interface::Wire(wire_interface) => {
-                        let info = &mut ctx.wire_interfaces[wire_interface];
-                        let wire_domain = info.suggest_domain(connector_domain)?;
-                        // reborrow immutably
-                        let info = &ctx.wire_interfaces[wire_interface];
-                        let wire_signals = PortOrWire::Wire((&info.wires, &info.ir_wires));
-                        (info.interface, wire_domain, wire_signals)
-                    }
-                };
-
                 // check interface match (including generics)
+                let value_interface = value_eval.elab;
                 if value_interface.inner != connector_view.inner.interface {
                     let diag = DiagnosticError::new("interface mismatch", expr.span, "got mismatching interface")
                         .add_info(
@@ -1308,98 +1310,123 @@ impl BodyContext {
                     return Err(diag);
                 }
 
-                // check directions and build connections
+                // check shape match
+                let Ok(elements) = connector_singles.zip(&value_eval.intf) else {
+                    let describe = |shape: NdArrayShape| match shape {
+                        NdArrayShape::Scalar => "single interface".to_owned(),
+                        NdArrayShape::Array { .. } => {
+                            format!("interface array with shape `{}`", shape_string(&shape.to_vec()))
+                        }
+                    };
+                    let diag = DiagnosticError::new(
+                        "interface array shape mismatch",
+                        expr.span,
+                        format!("got {}", describe(value_eval.intf.shape())),
+                    )
+                    .add_info(
+                        connector_id.span(),
+                        format!("expected {}", describe(connector_singles.shape())),
+                    )
+                    .report(diags);
+                    return Err(diag);
+                };
+
                 let interface_info = refs
                     .shared
                     .elaboration_arenas
                     .interface_info(connector_view.inner.interface);
                 let view_info = &interface_info.views[connector_view.inner.view_index];
 
-                let mut any_input = false;
-                let mut any_output = false;
+                let port_dirs = view_info.port_dirs.as_ref_ok()?;
+                let any_input = port_dirs.iter().any(|(_, d)| d.inner == PortDirection::Input);
+                let any_output = port_dirs.iter().any(|(_, d)| d.inner == PortDirection::Output);
 
+                // check directions and build connections
                 let mut result_connections = vec![];
+                for (element_singles, &element_intf) in elements {
+                    for (port_index, &(_, connector_dir)) in enumerate(port_dirs.iter()) {
+                        let (value_dir, value_signal, value_ir) = match element_intf {
+                            Interface::Port(port_interface) => {
+                                let port = ctx.port_interfaces[port_interface].ports[port_index];
+                                let info = &ctx.ports[port];
+                                (Some(info.direction), Signal::Port(port), IrSignal::Port(info.ir))
+                            }
+                            Interface::Wire(wire_interface) => {
+                                let info = &ctx.wire_interfaces[wire_interface];
+                                let wire = info.wires[port_index];
+                                (None, Signal::Wire(wire), IrSignal::Wire(info.ir_wires[port_index]))
+                            }
+                        };
 
-                for port_index in 0..interface_info.signals.len() {
-                    let (_, connector_dir) = &view_info.port_dirs.as_ref_ok()?[port_index];
+                        // check direction
+                        if let Some(value_dir) = value_dir
+                            && connector_dir.inner != value_dir.inner
+                        {
+                            let signal_id_str = interface_info.signals[port_index].id.inner.str(&refs.shared.interner);
+                            let diag = DiagnosticError::new(
+                                format!("direction mismatch for interface port `{}`", signal_id_str),
+                                expr.span,
+                                format!("got direction `{}`", value_dir.inner.diagnostic_string()),
+                            )
+                            .add_info(
+                                connection_id.span(),
+                                format!("expected direction `{}`", connector_dir.inner.diagnostic_string()),
+                            )
+                            .add_info(connector_dir.span, "expected direction set here")
+                            .add_info(value_dir.span, "actual direction set here")
+                            .report(diags);
+                            return Err(diag);
+                        }
 
-                    // check direction
-                    let (value_dir, value_signal, value_ir) = match value_signals {
-                        PortOrWire::Port(ports) => {
-                            let port = ports[port_index];
-                            let info = &ctx.ports[port];
-                            (Some(info.direction), Signal::Port(port), IrSignal::Port(info.ir))
-                        }
-                        PortOrWire::Wire((wires, ir_wires)) => {
-                            let wire = wires[port_index];
-                            (None, Signal::Wire(wire), IrSignal::Wire(ir_wires[port_index]))
-                        }
-                    };
-                    if let Some(value_dir) = value_dir
-                        && connector_dir.inner != value_dir.inner
-                    {
-                        let signal_id_str = interface_info.signals[port_index].id.inner.str(&refs.shared.interner);
-                        let diag = DiagnosticError::new(
-                            format!("direction mismatch for interface port `{}`", signal_id_str),
-                            expr.span,
-                            format!("got direction `{}`", value_dir.inner.diagnostic_string()),
-                        )
-                        .add_info(
-                            connection_id.span(),
-                            format!("expected direction `{}`", connector_dir.inner.diagnostic_string()),
-                        )
-                        .add_info(connector_dir.span, "expected direction set here")
-                        .add_info(value_dir.span, "actual direction set here")
-                        .report(diags);
-                        return Err(diag);
+                        // build connection
+                        let ir_connection = match connector_dir.inner {
+                            PortDirection::Input => IrPortConnection::Input(value_ir),
+                            PortDirection::Output => IrPortConnection::Output(Some(value_ir)),
+                        };
+                        let signal = ConnectionSignal::Signal(Polarized {
+                            inverted: false,
+                            signal: value_signal,
+                        });
+                        result_connections.push((
+                            element_singles[port_index],
+                            signal,
+                            Spanned::new(connection_span, ir_connection),
+                        ))
                     }
-                    let dir = connector_dir.inner;
+                }
 
-                    // build connection
-                    let ir_connection = match dir {
-                        PortDirection::Input => {
-                            any_input = true;
-                            IrPortConnection::Input(value_ir)
-                        }
-                        PortDirection::Output => {
-                            any_output = true;
-                            IrPortConnection::Output(Some(value_ir))
+                // check domains, only after all other checks have passed since this can infer wire domains
+                for &element_intf in value_eval.intf.flat_values() {
+                    let value_domain = match element_intf {
+                        Interface::Port(port_interface) => ctx.port_interfaces[port_interface]
+                            .domain
+                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))),
+                        Interface::Wire(wire_interface) => {
+                            ctx.wire_interfaces[wire_interface].suggest_domain(connector_domain)?
                         }
                     };
 
-                    // build signal
-                    let signal = ConnectionSignal::Signal(Polarized {
-                        inverted: false,
-                        signal: value_signal,
-                    });
-                    result_connections.push((
-                        connector_singles[port_index],
-                        signal,
-                        Spanned::new(connection_span, ir_connection),
-                    ))
+                    let mut any_err_domain = Ok(());
+                    if any_input {
+                        let r = ctx.check_valid_domain_crossing(
+                            connection_span,
+                            connector_domain,
+                            value_domain,
+                            "interface connection with input port",
+                        );
+                        any_err_domain = any_err_domain.and(r);
+                    }
+                    if any_output {
+                        let r = ctx.check_valid_domain_crossing(
+                            connection_span,
+                            value_domain,
+                            connector_domain,
+                            "interface connection with output port",
+                        );
+                        any_err_domain = any_err_domain.and(r);
+                    }
+                    any_err_domain?;
                 }
-
-                // check domains
-                let mut any_err_domain = Ok(());
-                if any_input {
-                    let r = ctx.check_valid_domain_crossing(
-                        connection_span,
-                        connector_domain,
-                        value_domain,
-                        "interface connection with input port",
-                    );
-                    any_err_domain = any_err_domain.and(r);
-                }
-                if any_output {
-                    let r = ctx.check_valid_domain_crossing(
-                        connection_span,
-                        value_domain,
-                        connector_domain,
-                        "interface connection with output port",
-                    );
-                    any_err_domain = any_err_domain.and(r);
-                }
-                any_err_domain?;
 
                 Ok(result_connections)
             }

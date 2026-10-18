@@ -787,7 +787,7 @@ pub enum ExpressionKind {
     ArrayType {
         span_brackets: Span,
         lengths: Vec<ArrayLiteralElement<Expression>>,
-        inner_ty: Expression,
+        element: Expression,
     },
     ArrayIndex {
         span_brackets: Span,

@@ -1,26 +1,28 @@
-use crate::front::check::{TypeContainsReason, check_type_contains_value};
 use crate::front::compile::{ArenaPortInterfaces, ArenaPorts, CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
 use crate::front::domain::PortDomain;
+use crate::front::expression::LeftInterfaceInfo;
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{FlowCompile, FlowCompileContent, FlowRoot, FlowRootContent};
 use crate::front::item::{ElaboratedInterfaceView, ElaboratedItemParams, ElaboratedModule, UniqueDeclaration};
 use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeContent, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, PortInfo, PortInterfaceInfo, Signal};
+use crate::front::string::shape_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, SimpleCompileValue};
 use crate::mid::ir::{IrModule, IrPort, IrPortInfo, IrPorts};
 use crate::new_index_type;
 use crate::syntax::ast::{
-    DomainKind, ExtraList, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    DomainKind, Expression, ExtraList, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
     ModulePortSingle, ModulePortSingleKind, PortDirection, PortSingleKindInner,
 };
 use crate::syntax::parsed::{AstRefItemKind, AstRefModuleExternal, AstRefModuleInternal};
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::arena::Arena;
-use crate::util::big_int::BigInt;
+use crate::util::big_int::{BigInt, BigUint};
 use crate::util::data::NonEmptyVec;
 use crate::util::intern::Id;
+use crate::util::nd_array::{NdArray, try_for_each_nd_index};
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
 use itertools::{Itertools, enumerate};
@@ -47,7 +49,7 @@ pub enum ConnectorKind {
     Interface {
         domain: Spanned<DomainKind<Polarized<ConnectorSingle>>>,
         view: Spanned<ElaboratedInterfaceView>,
-        singles: Vec<ConnectorSingle>,
+        singles: NdArray<Vec<ConnectorSingle>>,
     },
 }
 
@@ -185,7 +187,7 @@ impl CompileRefs<'_, '_> {
         for (port, port_info) in &ir_ports {
             let prev = ir_ports_named.insert(port_info.name.clone(), port);
             if prev.is_some() {
-                return Err(diags.report_error_internal(module_def_span, "duplicate ir port name"))?;
+                return Err(diags.report_error_internal(module_def_span, "duplicate ir port name"));
             }
         }
 
@@ -214,7 +216,6 @@ impl ModulePortsContext<'_> {
         port_item: &ModulePortItem,
     ) -> DiagResult<()> {
         let refs = ctx.refs;
-        let diags = refs.diags;
 
         match port_item {
             ModulePortItem::Single(port_item) => {
@@ -252,25 +253,7 @@ impl ModulePortsContext<'_> {
                         let domain = ctx.eval_port_domain(scope.as_scope(), flow, domain);
 
                         // eval interface view
-                        let interface_view = ctx
-                            .eval_expression_as_compile(
-                                scope.as_scope(),
-                                flow,
-                                &Type::InterfaceView,
-                                interface,
-                                Spanned::new(interface.span, "interface view"),
-                            )
-                            .and_then(|view| {
-                                let reason = TypeContainsReason::InterfacePortView(span_keyword);
-                                check_type_contains_value(refs, reason, &Type::InterfaceView, view.as_ref())?;
-
-                                match view.inner {
-                                    CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
-                                        Ok(Spanned::new(view.span, inner))
-                                    }
-                                    _ => Err(diags.report_error_internal(view.span, "expected interface view")),
-                                }
-                            });
+                        let interface_view = eval_port_interface_view(ctx, scope, flow, span_keyword, interface);
 
                         // record
                         let entry = self.push_connector_interface(ctx, id, domain, interface_view);
@@ -315,7 +298,6 @@ impl ModulePortsContext<'_> {
         port_item_in_block: &ModulePortInBlock,
     ) -> DiagResult<()> {
         let refs = ctx.refs;
-        let diags = refs.diags;
 
         let &ModulePortInBlock { span: _, id, ref kind } = port_item_in_block;
 
@@ -336,28 +318,11 @@ impl ModulePortsContext<'_> {
                 scope.declare_root(refs, id, entry);
             }
             ModulePortInBlockKind::Interface {
-                span_keyword: _,
+                span_keyword,
                 interface,
             } => {
                 // eval interface view
-                let interface_view = ctx
-                    .eval_expression_as_compile(
-                        scope.as_scope(),
-                        flow,
-                        &Type::InterfaceView,
-                        interface,
-                        Spanned::new(interface.span, "interface"),
-                    )
-                    .and_then(|view| match view.inner {
-                        CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => {
-                            Ok(Spanned::new(view.span, inner))
-                        }
-                        value => Err(diags.report_error_simple(
-                            "expected interface view",
-                            view.span,
-                            format!("got other value with type `{}`", value.ty().value_string(refs)),
-                        )),
-                    });
+                let interface_view = eval_port_interface_view(ctx, scope, flow, span_keyword, interface);
 
                 // record
                 let entry = self.push_connector_interface(ctx, id, domain, interface_view);
@@ -424,75 +389,110 @@ impl ModulePortsContext<'_> {
         ctx: &mut CompileItemContext,
         id: Spanned<Id>,
         domain: DiagResult<Spanned<DomainKind<Polarized<Port>>>>,
-        view: DiagResult<Spanned<ElaboratedInterfaceView>>,
+        view: DiagResult<(Vec<BigUint>, Spanned<ElaboratedInterfaceView>)>,
     ) -> DiagResult<ScopedEntry> {
-        let kind_and_entry = result_pair(domain, view).and_then(|(domain, view)| {
-            let ElaboratedInterfaceView { interface, view_index } = view.inner;
-            let interface = ctx.refs.shared.elaboration_arenas.interface_info(interface);
-            let view_info = &interface.views[view_index];
+        let kind_and_entry = result_pair(domain, view).and_then(|(domain, (lengths, view))| {
+            let shape = interface_array_shape(ctx.refs.diags, view.span, &lengths)?;
+            let id_str = id.inner.str(&ctx.refs.shared.interner).to_owned();
 
-            let port_dirs = view_info.port_dirs.as_ref_ok()?;
-
-            let mut declared_ports = vec![];
+            let mut intfs = vec![];
             let mut singles = vec![];
+            try_for_each_nd_index(&shape, |index| {
+                let (name, ir_name) = interface_array_element_names(&id_str, index);
+                let (intf, element_singles) = self.push_port_interface(ctx, id, &name, &ir_name, domain, view)?;
+                intfs.push(intf);
+                singles.push(element_singles);
+                Ok(())
+            })?;
+            let intf = NdArray::new(shape.clone(), intfs);
+            let singles = NdArray::new(shape, singles);
 
-            // TODO rework interface port names, to ensure unique but still readable names
-            let id_str = id.inner.str(&ctx.refs.shared.interner);
-            for (port_index, (_, port)) in enumerate(&interface.signals) {
-                let port_id_str = port.id.inner.str(&ctx.refs.shared.interner);
-                let name = format!("{id_str}.{port_id_str}");
-                let ir_name = format!("{id_str}_{port_id_str}");
-
-                self.record_ir_port_name(ir_name.clone(), id.span(), true);
-
-                let direction = port_dirs[port_index].1;
-                let ty = port.ty.as_ref_ok()?;
-
-                let ir_port_info = IrPortInfo {
-                    name: ir_name,
-                    direction: direction.inner,
-                    ty: ty.inner.as_ir(ctx.refs),
-                    debug_span: id.span(),
-                    debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(ctx.refs)),
-                    debug_info_domain: domain.inner.diagnostic_string(ctx),
-                };
-                let ir_port = self.ir_ports.push(ir_port_info);
-
-                let port = ctx.ports.push(PortInfo {
-                    span: id.span(),
-                    name,
-                    direction,
-                    domain: domain.map_inner(PortDomain::Kind),
-                    ty: ty.clone(),
-                    ir: ir_port,
-                });
-
-                declared_ports.push(port);
-
-                let single = self.create_port_single(port);
-                singles.push(single);
-            }
-
-            let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
-                id,
-                view,
-                domain,
-                ports: declared_ports,
-            });
-            let connector_domain = domain.map_inner(|d| d.map_signal(|p| p.map_inner(|p| self.get_port_single(p))));
             let kind = ConnectorKind::Interface {
-                domain: connector_domain,
+                domain: self.map_connector_domain(domain),
                 view,
                 singles,
             };
-
-            let entry = ScopedEntry::Named(NamedValue::Interface(Interface::Port(port_interface)));
+            let entry = ScopedEntry::Named(NamedValue::Interface(LeftInterfaceInfo {
+                span_id: id.span,
+                elab: view.map_inner(|v| v.interface),
+                intf,
+            }));
             Ok((kind, entry))
         });
 
         let (kind, entry) = result_pair_split(kind_and_entry);
         self.connectors.push(ConnectorInfo { id, kind });
         entry
+    }
+
+    fn push_port_interface(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        id: Spanned<Id>,
+        name: &str,
+        ir_name: &str,
+        domain: Spanned<DomainKind<Polarized<Port>>>,
+        view: Spanned<ElaboratedInterfaceView>,
+    ) -> DiagResult<(Interface, Vec<ConnectorSingle>)> {
+        let ElaboratedInterfaceView { interface, view_index } = view.inner;
+        let interface = ctx.refs.shared.elaboration_arenas.interface_info(interface);
+        let view_info = &interface.views[view_index];
+
+        let port_dirs = view_info.port_dirs.as_ref_ok()?;
+
+        let mut declared_ports = vec![];
+        let mut singles = vec![];
+
+        // TODO rework interface port names, to ensure unique but still readable names
+        for (port_index, (_, port)) in enumerate(&interface.signals) {
+            let port_id_str = port.id.inner.str(&ctx.refs.shared.interner);
+            let port_name = format!("{name}.{port_id_str}");
+            let port_ir_name = format!("{ir_name}_{port_id_str}");
+
+            self.record_ir_port_name(port_ir_name.clone(), id.span(), true);
+
+            let direction = port_dirs[port_index].1;
+            let ty = port.ty.as_ref_ok()?;
+
+            let ir_port_info = IrPortInfo {
+                name: port_ir_name,
+                direction: direction.inner,
+                ty: ty.inner.as_ir(ctx.refs),
+                debug_span: id.span(),
+                debug_info_ty: ty.as_ref().map_inner(|ty| ty.value_string(ctx.refs)),
+                debug_info_domain: domain.inner.diagnostic_string(ctx),
+            };
+            let ir_port = self.ir_ports.push(ir_port_info);
+
+            let port = ctx.ports.push(PortInfo {
+                span: id.span(),
+                name: port_name,
+                direction,
+                domain: domain.map_inner(PortDomain::Kind),
+                ty: ty.clone(),
+                ir: ir_port,
+            });
+
+            declared_ports.push(port);
+
+            let single = self.create_port_single(port);
+            singles.push(single);
+        }
+
+        let port_interface = ctx.port_interfaces.push(PortInterfaceInfo {
+            id,
+            view,
+            domain,
+            ports: declared_ports,
+        });
+        Ok((Interface::Port(port_interface), singles))
+    }
+
+    fn map_connector_domain(
+        &self,
+        domain: Spanned<DomainKind<Polarized<Port>>>,
+    ) -> Spanned<DomainKind<Polarized<ConnectorSingle>>> {
+        domain.map_inner(|d| d.map_signal(|p| p.map_inner(|p| self.get_port_single(p))))
     }
 
     fn create_port_single(&mut self, port: Port) -> ConnectorSingle {
@@ -543,4 +543,61 @@ impl ModulePortsContext<'_> {
 
         any_err
     }
+}
+
+fn eval_port_interface_view(
+    ctx: &mut CompileItemContext,
+    scope: &mut ExtraScope,
+    flow: &mut FlowCompile,
+    span_keyword: Span,
+    interface: Expression,
+) -> DiagResult<(Vec<BigUint>, Spanned<ElaboratedInterfaceView>)> {
+    let refs = ctx.refs;
+
+    let view = ctx.eval_expression_as_compile(
+        scope.as_scope(),
+        flow,
+        &Type::Any,
+        interface,
+        Spanned::new(interface.span, "interface view"),
+    )?;
+
+    match view.inner {
+        CompileValue::Simple(SimpleCompileValue::InterfaceView(inner)) => Ok((vec![], Spanned::new(view.span, inner))),
+        CompileValue::Simple(SimpleCompileValue::InterfaceViewArray(lengths, inner)) => {
+            Ok((lengths, Spanned::new(view.span, inner)))
+        }
+        value => {
+            let diag = DiagnosticError::new(
+                "expected interface view",
+                view.span,
+                format!("got value with type `{}`", value.ty().value_string(refs)),
+            )
+            .add_info(span_keyword, "interface port requires interface view")
+            .report(refs.diags);
+            Err(diag)
+        }
+    }
+}
+
+/// Convert the lengths of an interface array to a shape, checking that the total element count does not overflow.
+pub fn interface_array_shape(diags: &Diagnostics, span: Span, lengths: &[BigUint]) -> DiagResult<Vec<usize>> {
+    let err_too_large = || diags.report_error_simple("interface array too large", span, "array declared here");
+
+    let shape = lengths
+        .iter()
+        .map(|len| len.as_usize_if_lt(usize::MAX).ok_or_else(err_too_large))
+        .collect::<DiagResult<Vec<usize>>>()?;
+    shape
+        .iter()
+        .try_fold(1usize, |total, &len| total.checked_mul(len))
+        .ok_or_else(err_too_large)?;
+    Ok(shape)
+}
+
+/// The diagnostic name (`id[i][j]`) and IR name (`id_i_j`) of an element of an interface array.
+pub fn interface_array_element_names(id_str: &str, index: &[usize]) -> (String, String) {
+    let name = format!("{id_str}{}", shape_string(index));
+    let ir_name = format!("{id_str}{}", index.iter().map(|i| format!("_{i}")).join(""));
+    (name, ir_name)
 }

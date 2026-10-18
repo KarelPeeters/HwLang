@@ -1,13 +1,14 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::{DiagResult, DiagnosticError};
 use crate::front::domain::ValueDomain;
+use crate::front::expression::LeftInterfaceInfo;
 use crate::front::flow::{Flow, FlowRootId, Variable};
 use crate::front::function::FunctionValue;
 use crate::front::item::{
     ElaboratedEnum, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule, ElaboratedStruct,
 };
 use crate::front::scope::FrozenScope;
-use crate::front::signal::{Interface, Signal};
+use crate::front::signal::Signal;
 use crate::front::types::{HardwareType, Type, TypeBool, Typed};
 use crate::mid::ir::{IrArrayLiteralElement, IrExpression, IrExpressionLarge, IrLargeArena};
 use crate::mid::steps::{IrTargetStepScalar, IrTargetSteps};
@@ -46,7 +47,9 @@ pub enum SimpleCompileValue {
     Function(FunctionValue),
     Module(ElaboratedModule),
     Interface(ElaboratedInterface),
+    InterfaceArray(Vec<BigUint>, ElaboratedInterface),
     InterfaceView(ElaboratedInterfaceView),
+    InterfaceViewArray(Vec<BigUint>, ElaboratedInterfaceView),
     Reference(ReferenceWrapper),
     Package(HierarchyNode),
 }
@@ -80,8 +83,7 @@ enum ReferenceWrapperInner {
     },
     Interface {
         module: ElaboratedModule,
-        intf: Interface,
-        elab: ElaboratedInterface,
+        info: LeftInterfaceInfo,
     },
 }
 
@@ -96,10 +98,7 @@ pub enum ReferenceInner<'a> {
         ty: &'a Arc<Type>,
         ty_hw: &'a Arc<HardwareType>,
     },
-    Interface {
-        intf: Interface,
-        elab: ElaboratedInterface,
-    },
+    Interface(&'a LeftInterfaceInfo),
 }
 
 impl ReferenceWrapper {
@@ -133,14 +132,9 @@ impl ReferenceWrapper {
         }
     }
 
-    pub fn new_interface(
-        module: ElaboratedModule,
-        intf: Interface,
-        elab: ElaboratedInterface,
-        span_decl: Span,
-        span_ref: Span,
-    ) -> Self {
-        let inner = ReferenceWrapperInner::Interface { module, intf, elab };
+    pub fn new_interface(module: ElaboratedModule, info: LeftInterfaceInfo, span_ref: Span) -> Self {
+        let span_decl = info.span_id;
+        let inner = ReferenceWrapperInner::Interface { module, info };
         ReferenceWrapper {
             span_decl,
             span_ref,
@@ -176,11 +170,7 @@ impl ReferenceWrapper {
                     return Err(build_error("signal", "module"));
                 }
             }
-            ReferenceWrapperInner::Interface {
-                module,
-                intf: _,
-                elab: _,
-            } => {
+            ReferenceWrapperInner::Interface { module, info: _ } => {
                 if ctx.curr_module != Some(module) {
                     return Err(build_error("interface", "module"));
                 }
@@ -204,7 +194,7 @@ impl ReferenceWrapper {
                 ref ty,
                 ref ty_hw,
             } => ReferenceInner::Signal { signal, ty, ty_hw },
-            ReferenceWrapperInner::Interface { module: _, intf, elab } => ReferenceInner::Interface { intf, elab },
+            ReferenceWrapperInner::Interface { module: _, ref info } => ReferenceInner::Interface(info),
         }
     }
 }
@@ -416,6 +406,8 @@ impl ValueCommon for SimpleCompileValue {
             SimpleCompileValue::Function(_)
             | SimpleCompileValue::Module(_)
             | SimpleCompileValue::Interface(_)
+            | SimpleCompileValue::InterfaceArray(_, _)
+            | SimpleCompileValue::InterfaceViewArray(_, _)
             | SimpleCompileValue::InterfaceView(_)
             | SimpleCompileValue::Reference(_)
             | SimpleCompileValue::Package(_) => Err(err_type()),
@@ -722,7 +714,9 @@ impl CompileValue {
                 | SimpleCompileValue::Function(_)
                 | SimpleCompileValue::Module(_)
                 | SimpleCompileValue::Interface(_)
+                | SimpleCompileValue::InterfaceArray(_, _)
                 | SimpleCompileValue::InterfaceView(_)
+                | SimpleCompileValue::InterfaceViewArray(_, _)
                 | SimpleCompileValue::Package(_) => false,
             },
             CompileValue::Compound(v) => match v {
@@ -1035,7 +1029,9 @@ impl Typed for SimpleCompileValue {
             SimpleCompileValue::Function(_) => Type::Function,
             SimpleCompileValue::Module(_) => Type::Module,
             SimpleCompileValue::Interface(_) => Type::Interface,
+            SimpleCompileValue::InterfaceArray(lengths, _) => Type::InterfaceArray(lengths.clone()),
             SimpleCompileValue::InterfaceView(_) => Type::InterfaceView,
+            SimpleCompileValue::InterfaceViewArray(lengths, _) => Type::InterfaceViewArray(lengths.clone()),
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
                 ReferenceInner::Variable { var: _, ty } => Type::Ref(Arc::clone(ty)),
                 ReferenceInner::Signal {
@@ -1043,12 +1039,13 @@ impl Typed for SimpleCompileValue {
                     ty,
                     ty_hw: _,
                 } => Type::Ref(Arc::clone(ty)),
-                ReferenceInner::Interface { intf: _, elab } => Type::RefInterface(elab),
+                ReferenceInner::Interface(info) => Type::RefInterface(info.intf.shape().to_vec(), info.elab.inner),
             },
             SimpleCompileValue::Package(_) => Type::HierarchyNode,
         }
     }
 }
+
 impl Typed for HardwareValue<HardwareType> {
     fn ty(&self) -> Type {
         self.ty.as_type()

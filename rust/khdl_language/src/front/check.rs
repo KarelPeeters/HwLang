@@ -113,8 +113,6 @@ pub enum TypeContainsReason {
         span_target_ty: Span,
         span_port_ty: Span,
     },
-    InterfacePortView(Span),
-    InterfaceWire(Span),
     Return {
         span_keyword: Span,
         span_return_ty: Span,
@@ -150,10 +148,6 @@ impl TypeContainsReason {
             TypeContainsReason::InstanceModule(span) => {
                 diag.add_info(span, format!("module instance requires type `{target_ty_str}`"))
             }
-            TypeContainsReason::InterfacePortView(span) => {
-                diag.add_info(span, "interface port requires interface view")
-            }
-            TypeContainsReason::InterfaceWire(span) => diag.add_info(span, "interface wire requires interface"),
             TypeContainsReason::InstancePortInput {
                 span_connection_port_id,
                 span_port_ty,

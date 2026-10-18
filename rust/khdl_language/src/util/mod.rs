@@ -11,6 +11,7 @@ pub mod exhaust;
 pub mod int;
 pub mod intern;
 pub mod iter;
+pub mod nd_array;
 pub mod pool;
 pub mod range;
 pub mod range_multi;

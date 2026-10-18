@@ -768,9 +768,9 @@ ExprLevelArrayImpl<allow_block, allow_array_type, allow_array_literal>: Expressi
     //   eventually we want to support those anyway, so it's not that bad
     // array type
     <start_brackets:@L> "[" <lengths:Separated<ArrayLiteralElement,",">> "]" <end_brackets:@R>
-    <inner_ty:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
+    <element:SpannedPushArena<ExprLevelArrayImpl<allow_block, allow_array_type, "false">>>
         if allow_array_type == "true"
-        => ExpressionKind::ArrayType { span_brackets: ctx.span(start_brackets, end_brackets), lengths, inner_ty },
+        => ExpressionKind::ArrayType { span_brackets: ctx.span(start_brackets, end_brackets), lengths, element },
 
     // array literal
     "[" <Separated<ArrayLiteralElement,",">> "]"

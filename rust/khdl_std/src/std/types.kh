@@ -18,7 +18,7 @@ pub type InterfaceView = __builtin("type", "InterfaceView");
 pub type Package = __builtin("type", "Package");
 
 pub type Ref(T: type) = __builtin("type", "Ref", T);
-pub type RefInterface(T: Interface) = __builtin("type", "RefInterface", T);
+pub type RefInterface(T: any) = __builtin("type", "RefInterface", T);
 
 pub enum Option(T: type) {
     None,

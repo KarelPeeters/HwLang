@@ -9,10 +9,13 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::ValueVersion;
 use crate::front::function::EvaluatedArgs;
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::ElaboratedModule;
+use crate::front::item::{ElaboratedInterface, ElaboratedModule};
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
-use crate::front::steps::{SpannedStep, TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps};
+use crate::front::steps::{
+    SliceInfo, SpannedStep, TargetStep, TargetStepCompile, TargetStepHardware, TargetSteps, check_range_index_compile,
+    check_range_slice_compile,
+};
 use crate::front::types::{HardwareType, NonHardwareType, Type, TypeBool, Typed};
 use crate::front::value::{
     BoundMethod, CompileCompoundValue, CompileValue, HardwareInt, HardwareUInt, HardwareValue, MaybeCompile,
@@ -46,6 +49,7 @@ use crate::util::ResultDoubleExt;
 use crate::util::int::IntRepresentation;
 use crate::util::intern::Id;
 use crate::util::iter::IterExt;
+use crate::util::nd_array::NdArray;
 use crate::util::range::{ClosedNonEmptyRange, NonEmptyRange, Range};
 use crate::util::range_multi::{AnyMultiRange, ClosedNonEmptyMultiRange, MultiRange};
 use itertools::{Either, zip_eq};
@@ -61,8 +65,15 @@ pub enum NamedOrValue {
 #[derive(Debug)]
 pub enum LrValue {
     LeftTarget(AssignmentTarget),
-    LeftInterface(Interface),
+    LeftInterface(LeftInterfaceInfo),
     Right(ValueWithImplications),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct LeftInterfaceInfo {
+    pub span_id: Span,
+    pub elab: Spanned<ElaboratedInterface>,
+    pub intf: NdArray<Interface>,
 }
 
 impl LrValue {
@@ -90,13 +101,22 @@ impl LrValue {
                 let AssignmentTarget { base, steps } = v;
                 flow.signal_or_var_eval(ctx, base, &steps)
             }
-            LrValue::LeftInterface(intf) => {
-                let e = DiagnosticError::new("cannot evaluate interface as value", span, "evaluating interface here")
-                    .add_info(intf.span_decl(ctx), "interface set here")
-                    .add_footer_hint("to access individual signals, use dot indexing: `<intf>.<signal>`")
-                    .add_footer_hint("to get a reference to the whole interface, use `ref(<intf>)`")
-                    .report(diags);
-                Err(e)
+            LrValue::LeftInterface(info) => {
+                let e = if info.intf.as_single().is_some() {
+                    DiagnosticError::new("cannot evaluate interface as value", span, "evaluating interface here")
+                        .add_info(info.span_id, "interface declared here")
+                        .add_footer_hint("to access individual signals, use dot indexing: `<intf>.<signal>`")
+                        .add_footer_hint("to get a reference to the whole interface, use `ref(<intf>)`")
+                } else {
+                    DiagnosticError::new(
+                        "cannot evaluate interface array as value",
+                        span,
+                        "evaluating interface array here",
+                    )
+                    .add_info(info.span_id, "interface array declared here")
+                    .add_footer_hint("to access individual interfaces, use array indexing: `<array>[<index>]`")
+                };
+                Err(e.report(diags))
             }
             LrValue::Right(v) => Ok(v),
         }
@@ -108,9 +128,9 @@ impl LrValue {
 
         match self {
             LrValue::LeftTarget(t) => Ok(t),
-            LrValue::LeftInterface(intf) => {
+            LrValue::LeftInterface(info) => {
                 let e = DiagnosticError::new("cannot use interface as target", span, "interface used as target here")
-                    .add_info(intf.span_decl(ctx), "interface declared here")
+                    .add_info(info.span_id, "interface declared here")
                     .report(diags);
                 Err(e)
             }
@@ -600,7 +620,7 @@ impl<'a> CompileItemContext<'a, '_> {
             &ExpressionKind::ArrayType {
                 span_brackets: _,
                 ref lengths,
-                inner_ty,
+                element,
             } => {
                 // TODO support nd arrays
                 // evaluate length
@@ -634,9 +654,67 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 };
 
-                // eval inner type and construct new array type
-                let inner_ty = self.eval_expression_as_ty(scope, flow, inner_ty)?;
-                let result = Value::new_ty(Type::Array(Arc::new(inner_ty.inner), length));
+                // eval inner type or interface view
+                let inner = self.eval_expression_as_compile(
+                    scope,
+                    flow,
+                    &Type::Any,
+                    element,
+                    Spanned::new(expr.span, "array type element"),
+                )?;
+
+                let length_for_interface = |length: Option<BigUint>| {
+                    length.ok_or_else(|| {
+                        diags.report_error_simple(
+                            "interface arrays must have a known length",
+                            expr.span,
+                            "missing length here",
+                        )
+                    })
+                };
+                let prepend_length = |length: BigUint, mut prev_lengths: Vec<BigUint>| {
+                    prev_lengths.insert(0, length);
+                    prev_lengths
+                };
+
+                let result = match inner.inner {
+                    // array type
+                    CompileValue::Simple(SimpleCompileValue::Type(element_ty)) => {
+                        Value::new_ty(Type::Array(Arc::new(element_ty), length))
+                    }
+
+                    // array interfaces and views
+                    CompileValue::Simple(SimpleCompileValue::Interface(intf)) => {
+                        let length = length_for_interface(length)?;
+                        Value::Simple(SimpleCompileValue::InterfaceArray(vec![length], intf))
+                    }
+                    CompileValue::Simple(SimpleCompileValue::InterfaceArray(prev_lengths, intf)) => {
+                        let lengths = prepend_length(length_for_interface(length)?, prev_lengths);
+                        Value::Simple(SimpleCompileValue::InterfaceArray(lengths, intf))
+                    }
+                    CompileValue::Simple(SimpleCompileValue::InterfaceView(view)) => {
+                        let length = length_for_interface(length)?;
+                        Value::Simple(SimpleCompileValue::InterfaceViewArray(vec![length], view))
+                    }
+                    CompileValue::Simple(SimpleCompileValue::InterfaceViewArray(prev_lengths, view)) => {
+                        let lengths = prepend_length(length_for_interface(length)?, prev_lengths);
+                        Value::Simple(SimpleCompileValue::InterfaceViewArray(lengths, view))
+                    }
+
+                    // error, invalid element
+                    value => {
+                        let mut diag = DiagnosticError::new(
+                            "array element must be a type, interface or interface view",
+                            inner.span,
+                            format!("got value with type `{}`", value.ty().value_string(refs)),
+                        );
+                        if let ExpressionKind::TupleLiteral(_) = refs.get_expr(element) {
+                            diag = diag.add_footer_hint("tuple types are written `Tuple(...)`, not `(...)`")
+                        }
+                        return Err(diag.report(diags));
+                    }
+                };
+
                 LrValue::Right(ValueWithImplications::simple(result))
             }
             &ExpressionKind::ArrayIndex {
@@ -674,16 +752,55 @@ impl<'a> CompileItemContext<'a, '_> {
                         result.steps.push(step);
                         LrValue::LeftTarget(result)
                     }
-                    LrValue::LeftInterface(intf) => {
-                        let e = DiagnosticError::new(
-                            "cannot index into interface",
-                            expr.span,
-                            "trying to index into interface here",
-                        )
-                        .add_info(base_span, "base evaluates to an interface")
-                        .add_info(intf.span_decl(self), "interface declared here")
-                        .report(diags);
-                        return Err(e);
+                    LrValue::LeftInterface(info) => {
+                        let Some(array_len) = info.intf.first_len() else {
+                            let e = DiagnosticError::new(
+                                "cannot index into interface",
+                                expr.span,
+                                "trying to index into interface here",
+                            )
+                            .add_info(base_span, "base evaluates to an interface")
+                            .add_info(info.span_id, "interface declared here")
+                            .report(diags);
+                            return Err(e);
+                        };
+                        let array_len = Spanned::new(base_span, array_len);
+
+                        let intf = match step.step {
+                            // index
+                            TargetStep::Compile(TargetStepCompile::ArrayIndex(index)) => {
+                                let index =
+                                    check_range_index_compile(diags, Spanned::new(step.span_step, &index), array_len)?;
+                                info.intf.step_index(index).expect("already checked range")
+                            }
+                            // slice
+                            TargetStep::Compile(TargetStepCompile::ArraySlice { start, length }) => {
+                                let SliceInfo { start, length } = check_range_slice_compile(
+                                    diags,
+                                    Spanned::new(step.span_step, &start),
+                                    length.as_ref().map(|length| Spanned::new(step.span_step, length)),
+                                    array_len,
+                                )?;
+                                info.intf.step_slice(start, length).expect("already checked range")
+                            }
+                            // hardware index/slice not yet supported
+                            TargetStep::Hardware(TargetStepHardware::ArrayIndex(_)) => {
+                                let msg = "indexing interface arrays with a hardware value";
+                                return Err(diags.report_error_todo(step.span_step, msg));
+                            }
+                            TargetStep::Hardware(TargetStepHardware::ArraySlice { .. }) => {
+                                let msg = "slicing interface arrays with a hardware start";
+                                return Err(diags.report_error_todo(step.span_step, msg));
+                            }
+                            // impossible case
+                            TargetStep::Compile(
+                                TargetStepCompile::DotIndexInt(_) | TargetStepCompile::DotIndexId(_),
+                            ) => {
+                                let msg = "dot index step from array index expression";
+                                return Err(diags.report_error_internal(step.span_step, msg));
+                            }
+                        };
+                        LrValue::LeftInterface(LeftInterfaceInfo { intf, ..info })
                     }
                     LrValue::Right(base) => {
                         let steps = TargetSteps::single(step);
@@ -723,7 +840,18 @@ impl<'a> CompileItemContext<'a, '_> {
                         result.steps.push(index_to_step(index));
                         LrValue::LeftTarget(result)
                     }
-                    LrValue::LeftInterface(base) => {
+                    LrValue::LeftInterface(info) => {
+                        let &base = info.intf.as_single().ok_or_else(|| {
+                            DiagnosticError::new(
+                                "cannot access signal of interface array",
+                                index_span,
+                                "attempt to access signal here",
+                            )
+                            .add_info(base_span, "base evaluates to an interface array")
+                            .add_info(info.span_id, "interface array declared here")
+                            .add_footer_hint("to access individual interfaces, use array indexing: `<array>[<index>]`")
+                            .report(diags)
+                        })?;
                         let index = index.left().ok_or_else(|| {
                             DiagnosticError::new(
                                 "cannot tuple index into interface",
@@ -731,7 +859,7 @@ impl<'a> CompileItemContext<'a, '_> {
                                 "trying to tuple index here",
                             )
                             .add_info(base_span, "base evaluates to an interface")
-                            .add_info(base.span_decl(self), "interface declared here")
+                            .add_info(info.span_id, "interface declared here")
                             .report(diags)
                         })?;
 
@@ -752,7 +880,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 match target.inner {
                     Value::Simple(SimpleCompileValue::Type(Type::Type)) => {
                         // typeof operator
-                        let ty = self.eval_type_of(scope, flow, expr.span, args)?;
+                        let ty = self.eval_type_of(scope, flow, args)?;
                         return Ok(LrValue::Right(ValueWithImplications::new_ty(ty)));
                     }
                     _ => {
@@ -836,7 +964,7 @@ impl<'a> CompileItemContext<'a, '_> {
             &ExpressionKind::Ref(span_keyword, operand) => {
                 let expected_ty_inner = match expected_ty {
                     Type::Ref(expected_ty_inner) => expected_ty_inner,
-                    Type::RefInterface(_) => &Type::Interface,
+                    Type::RefInterface(_, _) => &Type::Interface,
                     _ => &Type::Any,
                 };
 
@@ -880,13 +1008,11 @@ impl<'a> CompileItemContext<'a, '_> {
                             }
                         }
                     }
-                    LrValue::LeftInterface(intf) => {
+                    LrValue::LeftInterface(info) => {
                         let curr_module = self.curr_module.ok_or_else(|| {
                             diags.report_error_internal(expr.span, "reference to interface outside module")
                         })?;
-                        let intf_elab = intf.elab_interface(self);
-
-                        ReferenceWrapper::new_interface(curr_module, intf, intf_elab.inner, intf_elab.span, expr.span)
+                        ReferenceWrapper::new_interface(curr_module, info, span_keyword)
                     }
                     LrValue::Right(_) => {
                         let e = DiagnosticError::new(
@@ -927,7 +1053,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             ty: _,
                             ty_hw: _,
                         } => LrValue::LeftTarget(AssignmentTarget::simple(Spanned::new(expr.span, signal.into()))),
-                        ReferenceInner::Interface { intf, elab: _ } => LrValue::LeftInterface(intf),
+                        ReferenceInner::Interface(info) => LrValue::LeftInterface(info.clone()),
                     }
                 } else {
                     let diag = DiagnosticError::new(
@@ -2598,14 +2724,16 @@ fn valid_type_for_eq(refs: CompileRefs, ty: &Type) -> bool {
         | Type::Function
         | Type::Module
         | Type::Interface
+        | Type::InterfaceArray(_)
         | Type::InterfaceView
+        | Type::InterfaceViewArray(_)
         | Type::HierarchyNode => true,
 
         // this comes up for empty arrays and for values that are undefined after merging flows, allow it
         Type::Undefined => true,
 
         // these could maybe be compared but are sketchy, so don't allow them for now
-        Type::Any | Type::Ref(_) | Type::RefInterface(_) => false,
+        Type::Any | Type::Ref(_) | Type::RefInterface(_, _) => false,
 
         // compound types are valid iff their subtypes are
         Type::Array(inner, len) => len.is_some() && valid_type_for_eq(refs, inner),

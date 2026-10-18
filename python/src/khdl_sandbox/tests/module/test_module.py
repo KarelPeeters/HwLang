@@ -76,31 +76,6 @@ def test_wire_driven_by_child(tmp_dir: Path):
     assert parent_inst.ports.y.value is True
 
 
-def test_interface_access(tmp_dir: Path):
-    src = """
-    interface Foo {
-        x: bool,
-        view input { x: in }
-        view output { x: out }
-    }
-    module top ports(a: interface async Foo.input, b: interface async Foo.output) {
-        comb {
-            b.x = a.x;
-        }   
-    }
-    """
-    c = compile_custom(src)
-    top: khdl.Module = c.resolve("top.top")
-    print(top.as_verilog().source)
-    top_verilated: khdl.ModuleVerilated = top.as_verilated(tmp_dir)
-    top_inst: khdl.VerilatedInstance = top_verilated.instance()
-
-    for v in [False, True, False, True]:
-        top_inst.ports.a_x.value = v
-        top_inst.step(1)
-        assert top_inst.ports.b_x.value == v
-
-
 def test_instantiate_external_module(tmp_dir: Path):
     src = """
     external module external_module(W: uint) ports(x: in async uint(W), y: out async uint(W+1))
@@ -259,31 +234,6 @@ def test_diamond_instantiation():
     """
     m = compile_custom(src).resolve("top.a")
     print(m.as_verilog().source)
-
-
-def test_interface_chain(tmp_dir: Path):
-    src = """
-    interface foo {
-        d: uint(8),
-        view input { d: in }
-        view output { d: out }
-    }
-    module top ports(x: interface async foo.input, y: interface async foo.output) {
-        wire w: interface foo;
-        instance pass ports(x=x, y=w);  
-        instance pass ports(x=w, y=y);  
-    }
-    module pass ports(x: interface async foo.input, y: interface async foo.output) {
-        comb { y.d = x.d; } 
-    }
-    """
-    m: khdl.Module = compile_custom(src).resolve("top.top")
-    inst = m.as_verilated(tmp_dir).instance()
-
-    for v in [0, 1, 2, 3]:
-        inst.ports.x_d.value = v
-        inst.step(1)
-        assert inst.ports.y_d.value == v
 
 
 def test_self_instance():

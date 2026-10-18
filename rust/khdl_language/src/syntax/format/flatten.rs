@@ -1164,12 +1164,12 @@ impl Context<'_> {
             &ExpressionKind::ArrayType {
                 span_brackets: _,
                 ref lengths,
-                inner_ty,
+                element,
             } => {
                 let node_lengths = fmt_comma_list(SurroundKind::Square, lengths, |&len| {
                     self.fmt_array_literal_element(len)
                 });
-                HNode::Sequence(vec![node_lengths, self.fmt_expr(inner_ty)])
+                HNode::Sequence(vec![node_lengths, self.fmt_expr(element)])
             }
             &ExpressionKind::ArrayIndex {
                 span_brackets: _,

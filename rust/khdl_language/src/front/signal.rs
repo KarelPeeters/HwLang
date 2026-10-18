@@ -12,6 +12,7 @@ use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::ResultExt;
 use crate::util::arena::Arena;
 use crate::util::intern::Id;
+
 use derive_more::From;
 
 new_index_type!(pub Port);
@@ -90,22 +91,6 @@ pub struct WireInterfaceInfo {
     pub wires: Vec<Wire>,
     // TODO rename
     pub ir_wires: Vec<IrWire>,
-}
-
-impl Interface {
-    pub fn span_decl(self, ctx: &CompileItemContext) -> Span {
-        match self {
-            PortOrWire::Port(intf) => ctx.port_interfaces[intf].id.span(),
-            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].id.span(),
-        }
-    }
-
-    pub fn elab_interface(self, ctx: &CompileItemContext) -> Spanned<ElaboratedInterface> {
-        match self {
-            PortOrWire::Port(intf) => ctx.port_interfaces[intf].view.map_inner(|v| v.interface),
-            PortOrWire::Wire(intf) => ctx.wire_interfaces[intf].interface,
-        }
-    }
 }
 
 #[derive(Debug)]

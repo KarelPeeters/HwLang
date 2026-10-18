@@ -5,6 +5,7 @@ use crate::front::domain::ValueDomain;
 use crate::front::expression::NamedOrValue;
 use crate::front::flow::{Flow, FlowKind, ImplicationContradiction};
 use crate::front::implication::ValueWithImplications;
+use crate::front::module_header::interface_array_shape;
 use crate::front::scope::{NamedValue, Scope};
 use crate::front::signal::SignalOrVariable;
 use crate::front::string::hardware_print_string;
@@ -18,13 +19,7 @@ use crate::util::range_multi::MultiRange;
 use std::sync::Arc;
 
 impl CompileItemContext<'_, '_> {
-    pub fn eval_type_of(
-        &mut self,
-        scope: &Scope,
-        flow: &mut impl Flow,
-        expr_span: Span,
-        args: &Args,
-    ) -> DiagResult<Type> {
+    pub fn eval_type_of(&mut self, scope: &Scope, flow: &mut impl Flow, args: &Args) -> DiagResult<Type> {
         let diags = self.refs.diags;
 
         // check single unnamed arg
@@ -78,7 +73,21 @@ impl CompileItemContext<'_, '_> {
                 NamedValue::Signal(signal) => {
                     flow.type_of(self, Spanned::new(id.span, SignalOrVariable::Signal(signal)))?
                 }
-                NamedValue::Interface(_) => return Err(diags.report_error_todo(expr_span, "typeof for interfaces")),
+                NamedValue::Interface(info) => {
+                    let ref_ty = Type::RefInterface(info.intf.shape().to_vec(), info.elab.inner);
+                    let e = DiagnosticError::new(
+                        "interface instances do not have a type",
+                        id.span,
+                        "interface instance used here",
+                    )
+                    .add_info(info.span_id, "interface declared here")
+                    .add_footer_hint(format!(
+                        "a reference to this interface, `ref(<intf>)`, has type `{}`",
+                        ref_ty.value_string(self.refs)
+                    ))
+                    .report(diags);
+                    return Err(e);
+                }
             },
         };
         Ok(ty)
@@ -143,14 +152,22 @@ impl CompileItemContext<'_, '_> {
             }
             ("type", "RefInterface", &[intf]) => {
                 let reason = Spanned::new(expr_span, "interface reference inner type");
-                let intf = self.eval_expression_as_compile(scope, flow, &Type::Interface, intf, reason)?;
+                let intf = self.eval_expression_as_compile(scope, flow, &Type::Any, intf, reason)?;
 
-                if let CompileValue::Simple(SimpleCompileValue::Interface(intf)) = intf.inner {
-                    let ty = Type::RefInterface(intf);
-                    Ok(Value::new_ty(ty))
-                } else {
-                    Err(diags.report_error_internal(intf.span, "expected interface"))
-                }
+                let (shape, elab) = match intf.inner {
+                    CompileValue::Simple(SimpleCompileValue::Interface(elab)) => (vec![], elab),
+                    CompileValue::Simple(SimpleCompileValue::InterfaceArray(lengths, elab)) => {
+                        (interface_array_shape(diags, intf.span, &lengths)?, elab)
+                    }
+                    value => {
+                        return Err(diags.report_error_simple(
+                            "expected interface or interface array",
+                            intf.span,
+                            format!("got value with type `{}`", value.ty().value_string(refs)),
+                        ));
+                    }
+                };
+                Ok(Value::new_ty(Type::RefInterface(shape, elab)))
             }
 
             // print

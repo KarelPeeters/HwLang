@@ -47,7 +47,9 @@ pub fn compile_value_to_py(py: Python, state: &Py<Compile>, value: &CompileValue
             SimpleCompileValue::Type(_)
             | SimpleCompileValue::Function(_)
             | SimpleCompileValue::Interface(_)
+            | SimpleCompileValue::InterfaceArray(_, _)
             | SimpleCompileValue::InterfaceView(_)
+            | SimpleCompileValue::InterfaceViewArray(_, _)
             | SimpleCompileValue::Reference(_)
             | SimpleCompileValue::Package(_) => fallback(),
         },

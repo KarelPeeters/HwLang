@@ -36,11 +36,13 @@ pub enum Type {
     Function,
     Module,
     Interface,
+    InterfaceArray(Vec<BigUint>),
     InterfaceView,
+    InterfaceViewArray(Vec<BigUint>),
     HierarchyNode,
 
     Ref(Arc<Type>),
-    RefInterface(ElaboratedInterface),
+    RefInterface(Vec<usize>, ElaboratedInterface),
 }
 
 // TODO change this to be a struct with some properties (size, ir, all valid, ...) plus a kind enum
@@ -128,6 +130,8 @@ impl Type {
             (Type::Module, Type::Module) => Type::Module,
             (Type::Interface, Type::Interface) => Type::Interface,
             (Type::InterfaceView, Type::InterfaceView) => Type::InterfaceView,
+            (Type::InterfaceArray(a), Type::InterfaceArray(b)) if a == b => Type::InterfaceArray(a.clone()),
+            (Type::InterfaceViewArray(a), Type::InterfaceViewArray(b)) if a == b => Type::InterfaceViewArray(a.clone()),
 
             (Type::Int(a), Type::Int(b)) => Type::Int(a.union(b)),
 
@@ -172,9 +176,9 @@ impl Type {
                     Type::Any
                 }
             }
-            (&Type::RefInterface(a), &Type::RefInterface(b)) => {
-                if a == b {
-                    Type::RefInterface(a)
+            (Type::RefInterface(a_shape, a), Type::RefInterface(b_shape, b)) => {
+                if a_shape == b_shape && a == b {
+                    Type::RefInterface(a_shape.clone(), *a)
                 } else {
                     Type::Any
                 }
@@ -189,7 +193,9 @@ impl Type {
                 | Type::Function
                 | Type::Module
                 | Type::Interface
+                | Type::InterfaceArray(_)
                 | Type::InterfaceView
+                | Type::InterfaceViewArray(_)
                 | Type::HierarchyNode
                 | Type::Int(_)
                 | Type::Array(_, _)
@@ -197,7 +203,7 @@ impl Type {
                 | Type::Struct(_)
                 | Type::Enum(_)
                 | Type::Ref(_)
-                | Type::RefInterface(_),
+                | Type::RefInterface(_, _),
                 _,
             ) => Type::Any,
         }
@@ -254,10 +260,12 @@ impl Type {
             | Type::Function
             | Type::Module
             | Type::Interface
+            | Type::InterfaceArray(_)
             | Type::InterfaceView
+            | Type::InterfaceViewArray(_)
             | Type::HierarchyNode
             | Type::Ref(_)
-            | Type::RefInterface(_) => Err(NonHardwareType),
+            | Type::RefInterface(_, _) => Err(NonHardwareType),
         }
     }
 }

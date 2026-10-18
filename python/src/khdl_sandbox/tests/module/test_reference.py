@@ -158,3 +158,39 @@ def test_ref_var_write_dropped():
     f = compile_custom(src).resolve("top.f")
     with diag_error("cannot access variable after its scope has ended"):
         f(4)
+
+
+def test_ref_interface_array(tmp_dir: Path):
+    src = """
+    interface Foo { value: uint(4), view In { value: in } view Out { value: out } }
+    module child ports(a: interface async [2]Foo.In, b: interface async [2]Foo.Out) {
+        comb {
+            for (i in 0..2) { b[i].value = a[i].value; }
+        }
+    }
+    module top ports(x: interface async [3][2]Foo.In, y: interface async [2]Foo.Out) {
+        const rx: RefInterface([3][2]Foo) = ref(x);
+        const ry: RefInterface([2]Foo) = ref(y);
+        instance child ports(a=deref(rx)[2], b=deref(ry));
+    }
+    """
+    m = compile_custom(src).resolve_module("top.top")
+    inst = m.as_verilated(tmp_dir).instance()
+
+    for i in range(3):
+        for j in range(2):
+            inst.ports[f"x_{i}_{j}_value"].value = 2 * i + j
+    inst.step(1)
+    for j in range(2):
+        assert inst.ports[f"y_{j}_value"].value == 4 + j
+
+
+def test_ref_interface_array_ty_mismatch():
+    src = """
+    interface Foo { value: uint(4), view In { value: in } }
+    module top ports(x: interface async [3]Foo.In) {
+        const r: RefInterface([2]Foo) = ref(x);
+    }
+    """
+    with diag_error("type mismatch"):
+        compile_custom(src).resolve("top.top")

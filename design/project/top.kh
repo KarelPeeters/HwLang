@@ -1,26 +1,26 @@
-const N = 1024 * 1024;
+const N = 4;
 
-//module top ports(
-//    i: in async int(0..2),
-//    b: in async bool,
-//    d: in async [N]bool,
-//) {
-//    wire w: async [N]bool;
-//    comb {
-//        w[..N / 2] = d[..N / 2];
-//    }
-//    comb {
-//        w[N / 2..] = d[N / 2..];
-//    }
-//}
+module top ports(
+    clk: in clock,
+    sync(clk) {
+        data_in: interface [N]Stream(bool).Input,
+        data_out: interface [N]Stream(bool).Output,
+    }
+) {
+    comb {
+        for (i in 0..N) {
+            data_out[i].data = data_in[i].data;
+            data_out[i].valid = data_in[i].valid;
+            data_in[i].ready = data_out[i].ready;
+        }
+    }
+}
 
-//module top ports(x: in async bool, y: out async bool) {
-//    wire w: async [2]bool;
-//    comb {
-//        y = w[0];
-//        w[1] = x;
-//    }
-//    comb {
-//        w[0] = x;
-//    }
-//}
+interface Stream(T: type) {
+    data: T,
+    valid: bool,
+    ready: bool,
+
+    view Input { data: in, valid: in, ready: out }
+    view Output { data: out, valid: out, ready: in }
+}

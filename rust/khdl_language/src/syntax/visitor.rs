@@ -1247,13 +1247,13 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
             &ExpressionKind::ArrayType {
                 span_brackets,
                 ref lengths,
-                inner_ty,
+                element,
             } => {
                 self.visitor.report_range(span_brackets, None);
                 for &len in lengths {
                     self.visit_array_literal_element(scope, len)?;
                 }
-                self.visit_expression(scope, inner_ty)?;
+                self.visit_expression(scope, element)?;
             }
             &ExpressionKind::ArrayIndex {
                 span_brackets,

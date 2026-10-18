@@ -516,7 +516,13 @@ impl SimpleCompileValue {
                 format!("<package {}>", refs.hierarchy[node].steps.join("."))
             }
             &SimpleCompileValue::Interface(v) => {
-                format!("<interface {}>", refs.elab.interface_info(v).debug_info_name)
+                let intf = &refs.elab.interface_info(v).debug_info_name;
+                format!("<interface {intf}>")
+            }
+            &SimpleCompileValue::InterfaceArray(ref lens, v) => {
+                let lens = shape_string(lens);
+                let intf = &refs.elab.interface_info(v).debug_info_name;
+                format!("{lens}<interface {intf}>")
             }
             &SimpleCompileValue::InterfaceView(v) => {
                 let ElaboratedInterfaceView { interface, view_index } = v;
@@ -524,6 +530,16 @@ impl SimpleCompileValue {
                 let view_info = &info.views[view_index];
                 format!(
                     "<interface view {}.{}>",
+                    info.debug_info_name, view_info.debug_info_name
+                )
+            }
+            &SimpleCompileValue::InterfaceViewArray(ref lens, v) => {
+                let lens = shape_string(lens);
+                let ElaboratedInterfaceView { interface, view_index } = v;
+                let info = refs.elab.interface_info(interface);
+                let view_info = &info.views[view_index];
+                format!(
+                    "{lens}<interface view {}.{}>",
                     info.debug_info_name, view_info.debug_info_name
                 )
             }
@@ -535,15 +551,20 @@ impl SimpleCompileValue {
                     let kind_str = signal.kind_str();
                     format!("<ref to {kind_str} with type `{}`>", ty.value_string(refs))
                 }
-                ReferenceInner::Interface {
-                    intf: signal,
-                    elab: intf,
-                } => {
-                    let kind_str = signal.kind_str();
-                    format!(
-                        "<ref to {kind_str} instance of interface `{}`>",
-                        refs.elab.interface_info(intf).debug_info_name
-                    )
+                ReferenceInner::Interface(info) => {
+                    let intf_str = &refs.elab.interface_info(info.elab.inner).debug_info_name;
+                    // all elements have the same kind, except that an empty array has no elements
+                    let kind_str = match info.intf.flat_values().first() {
+                        Some(intf) => format!("{} ", intf.kind_str()),
+                        None => String::new(),
+                    };
+                    match info.intf.as_single() {
+                        Some(_) => format!("<ref to {kind_str}instance of interface `{intf_str}`>"),
+                        None => format!(
+                            "<ref to {kind_str}array of interface `{intf_str}` with shape `{}`>",
+                            shape_string(&info.intf.shape().to_vec())
+                        ),
+                    }
                 }
             },
         }
@@ -603,13 +624,17 @@ impl Type {
             Type::Function => "Function".to_string(),
             Type::Module => "Module".to_string(),
             Type::Interface => "Interface".to_string(),
+            Type::InterfaceArray(lens) => format!("{}Interface", shape_string(lens)),
             Type::InterfaceView => "InterfaceView".to_string(),
+            Type::InterfaceViewArray(lens) => format!("{}InterfaceView", shape_string(lens)),
             Type::HierarchyNode => "Package".to_string(),
             Type::Ref(ty) => {
                 format!("Ref({})", ty.value_string(refs))
             }
-            Type::RefInterface(intf) => {
-                format!("RefInterface({})", refs.elab.interface_info(*intf).debug_info_name)
+            Type::RefInterface(shape, intf) => {
+                let shape_str = shape_string(shape);
+                let intf_str = &refs.elab.interface_info(*intf).debug_info_name;
+                format!("RefInterface({shape_str}{intf_str})")
             }
         }
     }
@@ -713,4 +738,9 @@ impl CompileCompoundValue {
             }
         }
     }
+}
+
+/// Format an array shape as `[a][b][c]`.
+pub fn shape_string<T: std::fmt::Display>(shape: &[T]) -> String {
+    shape.iter().map(|len| format!("[{len}]")).join("")
 }

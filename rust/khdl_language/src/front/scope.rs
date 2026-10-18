@@ -1,7 +1,8 @@
 use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError, Diagnostics};
+use crate::front::expression::LeftInterfaceInfo;
 use crate::front::flow::{Flow, Variable};
-use crate::front::signal::{Interface, Signal};
+use crate::front::signal::Signal;
 use crate::front::value::{CompileValue, Value};
 use crate::syntax::ast::MaybeIdentifier;
 use crate::syntax::parsed::AstRefItem;
@@ -61,11 +62,11 @@ pub enum ScopedEntry {
     Value(Value),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub enum NamedValue {
     Variable(Variable),
     Signal(Signal),
-    Interface(Interface),
+    Interface(LeftInterfaceInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -347,7 +348,7 @@ impl<'p> Scope<'p> {
                     DeclaredValueSingle::Value { span, value } => {
                         let captured_entry = match value {
                             &ScopedEntry::Item(item) => Ok(ScopedEntry::Item(item)),
-                            &ScopedEntry::Named(named) => match named {
+                            ScopedEntry::Named(named) => match *named {
                                 NamedValue::Variable(var) => {
                                     flow.var_capture(Spanned::new(span_capture, var)).map(|value| {
                                         ScopedEntry::Captured(CapturedValue {
@@ -357,7 +358,7 @@ impl<'p> Scope<'p> {
                                     })
                                 }
                                 NamedValue::Signal(_) | NamedValue::Interface(_) if keep_signals => {
-                                    Ok(ScopedEntry::Named(named))
+                                    Ok(ScopedEntry::Named(named.clone()))
                                 }
                                 NamedValue::Signal(_) | NamedValue::Interface(_) => {
                                     Ok(ScopedEntry::Captured(CapturedValue {

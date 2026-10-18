@@ -356,3 +356,9 @@ def test_array_too_large():
         c.resolve("top.repeat")()
     with diag_error("array too large"):
         c.resolve("top.comprehension")()
+
+
+def test_array_type_tuple_element_hint():
+    src = "const c = [3](bool, bool);"
+    with diag_error("array element must be a type, interface or interface view"):
+        _ = compile_custom(src).resolve_module("top.c")

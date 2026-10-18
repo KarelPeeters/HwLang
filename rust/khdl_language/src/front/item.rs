@@ -853,7 +853,7 @@ impl CompileItemContext<'_, '_> {
                         let ports = header
                             .ports
                             .values()
-                            .map(|info| (info.name.clone(), info.ty.inner.clone()))
+                            .map(|info| (header.ir_ports[info.ir].name.clone(), info.ty.inner.clone()))
                             .collect();
                         Ok(ElaboratedModuleExternalInfo {
                             ast_ref,
@@ -1203,8 +1203,8 @@ fn collect_static_members_from_body(
                     Err(err_member_duplicate(ty_kind, prev_span, prev_kind, span, "member").report(diags))
                 } else {
                     match value {
-                        &ScopedEntry::Named(value) => match value {
-                            NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
+                        ScopedEntry::Named(value) => match value {
+                            &NamedValue::Variable(var) => flow.var_capture(Spanned::new(span, var)).and_then(|value| {
                                 value.map_err(|e: CaptureFailed| {
                                     diags.report_error_internal(span, format!("failed to capture member: {e:?}"))
                                 })
