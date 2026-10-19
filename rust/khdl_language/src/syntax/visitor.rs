@@ -414,8 +414,9 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
 
                             slf.visitor.report_range(span, Some(FoldRangeKind::Region));
 
-                            slf.visit_extra_list(scope_body, port_dirs, &mut |slf, _, &(port_name, port_dir)| {
-                                slf.visitor.report_range(port_name.span().join(port_dir.span), None);
+                            slf.visit_extra_list(scope_body, port_dirs, &mut |slf, _, port| {
+                                let (port_name, _) = port.inner;
+                                slf.visitor.report_range(port.span, None);
                                 all_view_ports.push(port_name);
                                 ControlFlow::Continue(())
                             })?;

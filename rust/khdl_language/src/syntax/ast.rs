@@ -185,7 +185,7 @@ pub struct InterfaceSignal {
 pub struct InterfaceView {
     pub span: Span,
     pub id: MaybeIdentifier,
-    pub port_dirs: ExtraList<(Identifier, Spanned<PortDirection>)>,
+    pub port_dirs: ExtraList<Spanned<(Identifier, Spanned<PortDirection>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1250,6 +1250,25 @@ impl_has_span!(ModulePortInBlock);
 impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
+impl_has_span!(Arg);
+
+impl HasSpan for StructBodyItem {
+    fn span(&self) -> Span {
+        match self {
+            StructBodyItem::Field(field) => field.span,
+            StructBodyItem::Method(method) => method.span,
+        }
+    }
+}
+
+impl HasSpan for EnumBodyItem {
+    fn span(&self) -> Span {
+        match self {
+            EnumBodyItem::Variant(variant) => variant.span,
+            EnumBodyItem::Method(method) => method.span,
+        }
+    }
+}
 
 impl<T> HasSpan for FunctionDeclaration<T> {
     fn span(&self) -> Span {

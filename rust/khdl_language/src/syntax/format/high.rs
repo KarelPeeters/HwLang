@@ -1,9 +1,14 @@
 use crate::syntax::format::common::swrite_indent;
 use crate::syntax::format::low::LNode;
-use crate::syntax::pos::{LineOffsets, SpanFull};
-use crate::syntax::token::{Token, TokenCategory as TC, TokenType as TT};
+use crate::syntax::pos::{LineOffsets, Span, SpanFull};
+use crate::syntax::token::{
+    FailedTokenParse, Token, TokenCategory as TC, TokenType as TT, char_is_newline, char_is_whitespace,
+    parse_token_comment_content,
+};
 use crate::util::data::VecExt;
+use indexmap::IndexSet;
 use itertools::enumerate;
+use khdl_util::constants::KHDL_FMT_DIRECTIVE;
 use khdl_util::swriteln;
 
 /// High-level formatting nodes.
@@ -25,6 +30,7 @@ pub enum HNode {
     Sequence(Vec<HNode>),
     Group(Box<HNode>),
     PreserveBlankLines(PreserveKind),
+    Skippable(Span, Box<HNode>),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -46,6 +52,16 @@ pub struct TokenMismatch {
 #[derive(Debug, Copy, Clone)]
 pub struct SourceTokenIndex(pub usize);
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum FormatDirective {
+    /// Disable formatting until the matching _on_ directive.
+    Off,
+    /// Re-enable formatting after the matching _off_ directive.
+    On,
+    /// Disable formatting for the next [HNode::Skippable] node.
+    Skip,
+}
+
 pub fn lower_nodes<'s>(
     source: &'s str,
     offsets: &LineOffsets,
@@ -57,8 +73,53 @@ pub fn lower_nodes<'s>(
         offsets,
         source_tokens,
         next_source_index: 0,
+        skip_targets: find_skip_targets(source, source_tokens),
+        curr_raw_end_byte: None,
     };
     ctx.map_root(node)
+}
+
+/// Find the start bytes of all skipped groups.
+/// These are the tokens that follow right after a skip directive.
+fn find_skip_targets(source: &str, tokens: &[Token]) -> IndexSet<usize> {
+    let mut targets = IndexSet::new();
+    for (i, &token) in enumerate(tokens) {
+        if FormatDirective::parse(source, token) == Some(FormatDirective::Skip)
+            && let Some(next) = tokens.get(i + 1)
+            && next.ty.category() != TC::Comment
+        {
+            targets.insert(next.span.start_byte);
+        }
+    }
+    targets
+}
+
+impl FormatDirective {
+    fn parse(source: &str, token: Token) -> Option<FormatDirective> {
+        // if comment, extract content
+        let token_src = &source[token.span.range_bytes()];
+        let content = match parse_token_comment_content(token.ty, token_src) {
+            Ok(content) => content,
+            Err(FailedTokenParse) => return None,
+        };
+
+        // parse content
+        let mut words = content.split(char_is_whitespace).filter(|w| !w.is_empty());
+        if words.next() != Some(KHDL_FMT_DIRECTIVE) {
+            return None;
+        }
+        let kind = match words.next()? {
+            "off" => FormatDirective::Off,
+            "on" => FormatDirective::On,
+            "skip" => FormatDirective::Skip,
+            _ => return None,
+        };
+        if words.next().is_some() {
+            return None;
+        }
+
+        Some(kind)
+    }
 }
 
 impl HNode {
@@ -104,6 +165,10 @@ impl HNode {
             &HNode::PreserveBlankLines(kind) => {
                 swriteln!(f, "PreserveBlankLines({kind:?})")
             }
+            HNode::Skippable(span, child) => {
+                swriteln!(f, "Skippable({}..{})", span.start_byte, span.end_byte);
+                child.debug_str_impl(f, indent + 1);
+            }
         }
     }
 }
@@ -113,6 +178,12 @@ struct LowerContext<'s, 'r> {
     offsets: &'r LineOffsets,
     source_tokens: &'r [Token],
     next_source_index: usize,
+
+    /// Start bytes of all tokens annotated with a skip directive.
+    skip_targets: IndexSet<usize>,
+    /// If set, the source up to this byte has already been emitted as [LNode::RawStart].
+    /// The matching [LNode::RawEnd] still has to be emitted.
+    curr_raw_end_byte: Option<usize>,
 }
 
 // TODO reverse order of functions
@@ -148,6 +219,56 @@ impl<'s, 'r> LowerContext<'s, 'r> {
         None
     }
 
+    /// Whether the previous or next token is in the ongoing raw region.
+    fn in_raw(&self, next: bool) -> bool {
+        let Some(end) = self.curr_raw_end_byte else {
+            return false;
+        };
+        if next {
+            self.peek_token().is_some_and(|token| token.span.start_byte < end)
+        } else {
+            self.prev_token().is_some_and(|token| token.span.end_byte < end)
+        }
+    }
+
+    /// Find the end of the raw region that was started by `start_token`.
+    /// Handles nesting of directives.
+    fn find_raw_region_end(&self, start_token: usize) -> usize {
+        let mut depth: usize = 1;
+        for &token in &self.source_tokens[start_token + 1..] {
+            match FormatDirective::parse(self.source, token) {
+                Some(FormatDirective::Off) => depth += 1,
+                Some(FormatDirective::On) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return token.span.start_byte;
+                    }
+                }
+                Some(FormatDirective::Skip) | None => {}
+            }
+        }
+        self.source.len()
+    }
+
+    /// Start a raw sequence for bytes `start..end`.
+    fn start_raw(&mut self, seq: &mut Vec<LNode<'s>>, start: usize, end: usize) {
+        let text = self.source[start..end].trim_end_matches(|c| char_is_whitespace(c) && !char_is_newline(c));
+        seq.push(LNode::RawStart(text));
+        self.curr_raw_end_byte = Some(end);
+    }
+
+    /// End the raw region if the previous or next token is no longer part of it.
+    ///
+    /// This function must be called:
+    /// * Right after pushing the output for a non-comment token, before any trailing output, with `next=false`.
+    /// * Right after collecting comments and before pushing the next token, with `next=true`.
+    fn maybe_end_raw(&mut self, seq: &mut Vec<LNode<'s>>, next: bool) {
+        if self.curr_raw_end_byte.is_some() && !self.in_raw(next) {
+            seq.push(LNode::RawEnd);
+            self.curr_raw_end_byte = None;
+        }
+    }
+
     fn collect_comments(
         &mut self,
         prev_space: bool,
@@ -166,7 +287,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
         };
 
-        while let Some(token) = self.peek_token() {
+        while let Some(&token) = self.peek_token() {
             // check whether we should include this token
             let is_line_comment = match token.ty {
                 TT::LineComment => true,
@@ -181,6 +302,8 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             let is_first_comment = next_is_first_comment;
             next_is_first_comment = false;
 
+            self.maybe_end_raw(seq, true);
+
             // preserve newlines
             // TODO allow blanks before comments too?
             let len_before = seq.len();
@@ -190,12 +313,12 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             }
 
             // pop the comment token itself
-            let _ = self.pop_token().unwrap();
+            let token_index = self.pop_token().unwrap();
 
             // add the comment nodes, de-dented if necessary
             // TODO start escaping if there is a newline in the comment
             let comment_str_all = &self.source[token.span.range_bytes()];
-            let (comment_str_first, comment_str_rest) = match comment_str_all.find(LineOffsets::LINE_ENDING_CHARS) {
+            let (comment_str_first, comment_str_rest) = match comment_str_all.find(char_is_newline) {
                 None => (comment_str_all, None),
                 Some(pos) => (&comment_str_all[..pos], Some(&comment_str_all[pos..])),
             };
@@ -211,6 +334,14 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             if let Some(comment_str_rest) = comment_str_rest {
                 report_newline(seq.len());
                 seq.push(LNode::Dedent(Box::new(LNode::AlwaysStr(comment_str_rest))));
+            }
+
+            // start a raw region if this is the right format directive
+            if self.curr_raw_end_byte.is_none()
+                && FormatDirective::parse(self.source, token) == Some(FormatDirective::Off)
+            {
+                let end = self.find_raw_region_end(token_index.0);
+                self.start_raw(seq, token.span.end_byte, end);
             }
 
             // add a suffix if necessary
@@ -329,6 +460,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
     fn map_root(&mut self, node: &HNode) -> Result<LNode<'s>, TokenMismatch> {
         let mut seq = vec![self.map(false, false, node)?];
         self.collect_comments_all(false, true, &mut seq);
+        self.maybe_end_raw(&mut seq, true);
         Ok(LNode::Sequence(seq))
     }
 
@@ -338,6 +470,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
             &HNode::AlwaysToken(expected) => {
                 let mut seq = vec![];
                 self.collect_comments_all(prev_space, true, &mut seq);
+                self.maybe_end_raw(&mut seq, true);
 
                 let token_index = match self.pop_token() {
                     Some(index) => index,
@@ -356,6 +489,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
                 let token_str = &self.source[token.span.range_bytes()];
                 seq.push(LNode::AlwaysStr(token_str));
+                self.maybe_end_raw(&mut seq, false);
 
                 self.collect_comments_on_prev_line_maybe(prev_space, next_wrap_comma, &mut seq);
 
@@ -378,6 +512,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     seq.push(LNode::ForceWrap(()));
                 }
                 seq.push(LNode::WrapStr(","));
+                self.maybe_end_raw(&mut seq, false);
 
                 self.collect_comments_on_prev_line_maybe(prev_space, next_wrap_comma, &mut seq);
 
@@ -456,6 +591,17 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                     LNode::EscapeGroupIfLast((), Box::new(LNode::Sequence(seq)))
                 }
             }
+            &HNode::Skippable(span, ref inner) => {
+                if !self.in_raw(true) && self.skip_targets.contains(&span.start_byte) {
+                    let mut seq = vec![];
+                    self.collect_comments_all(prev_space, true, &mut seq);
+                    self.start_raw(&mut seq, span.start_byte, span.end_byte);
+                    seq.push(self.map(prev_space, next_wrap_comma, inner)?);
+                    LNode::Sequence(seq)
+                } else {
+                    self.map(prev_space, next_wrap_comma, inner)?
+                }
+            }
         };
         Ok(result)
     }
@@ -476,6 +622,8 @@ fn node_ends_with_space(node: &LNode) -> Option<bool> {
         LNode::Sequence(seq) => seq_ends_with_space(seq),
         LNode::Group { force_wrap: _, child } => node_ends_with_space(child),
         LNode::EscapeGroupIfLast(_, child) => node_ends_with_space(child),
+        LNode::RawStart(_) => Some(false),
+        LNode::RawEnd => None,
     }
 }
 
@@ -496,6 +644,7 @@ fn node_starts_with_wrap_comma(node: &HNode) -> Option<bool> {
         HNode::Dedent(inner) => node_starts_with_wrap_comma(inner),
         HNode::Sequence(seq) => seq_starts_with_wrap_comma(seq),
         HNode::Group(inner) => node_starts_with_wrap_comma(inner),
+        HNode::Skippable(_span, inner) => node_starts_with_wrap_comma(inner),
         HNode::PreserveBlankLines(_kind) => None,
     }
 }

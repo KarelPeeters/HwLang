@@ -168,7 +168,7 @@ InterfacePortType: InterfaceListItem = {
 }
 
 InterfaceView: InterfaceListItem = {
-    <start:@L> "view" <id:MaybeId> "{" <port_dirs:ExtraList<InterfacePortDir>> "}" <end:@R> =>
+    <start:@L> "view" <id:MaybeId> "{" <port_dirs:ExtraList<Spanned<InterfacePortDir>>> "}" <end:@R> =>
         InterfaceListItem::View(InterfaceView { id, port_dirs, span: ctx.span(start, end) }),
 }
 

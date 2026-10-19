@@ -1,7 +1,6 @@
 use crate::syntax::format::FormatSettings;
 use crate::syntax::format::common::swrite_indent;
-use crate::syntax::pos::LineOffsets;
-use crate::syntax::token::{char_is_whitespace, str_is_whitespace_or_empty};
+use crate::syntax::token::{char_is_newline, char_is_whitespace, str_is_whitespace_or_empty};
 use crate::util::Never;
 use crate::util::data::VecExt;
 use crate::util::iter::IterExt;
@@ -61,6 +60,11 @@ pub enum LNodeImpl<'s, E> {
     /// If this is the last child of a group, acts as if it was actually a sibling outside of the group.
     /// This also works recursively through multiple nested groups.
     EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
+
+    /// Emit the given string literally, and supress all output until the next [LNodeImpl::RawEnd].
+    RawStart(&'s str),
+    /// Stop suppressing output.
+    RawEnd,
 }
 
 pub struct StringOutput {
@@ -107,6 +111,8 @@ impl<E: Debug> LNodeImpl<'_, E> {
                 swriteln!(f, "EscapeGroup({e:?})");
                 child.debug_str_impl(f, indent + 1);
             }
+            LNodeImpl::RawStart(s) => swriteln!(f, "RawStart({s:?})"),
+            LNodeImpl::RawEnd => swriteln!(f, "RawEnd"),
         }
     }
 }
@@ -188,7 +194,7 @@ impl<'s> LNode<'s> {
             },
             LNode::AlwaysStr(s) => SimplifyResult {
                 node: LNodeSimple::AlwaysStr(s),
-                force_wrap: s.contains(LineOffsets::LINE_ENDING_CHARS),
+                force_wrap: s.contains(char_is_newline),
             },
             LNode::WrapStr(s) => SimplifyResult {
                 node: LNodeSimple::WrapStr(s),
@@ -209,6 +215,14 @@ impl<'s> LNode<'s> {
             LNode::ForceWrap(()) => SimplifyResult {
                 node: LNodeSimple::EMPTY,
                 force_wrap: true,
+            },
+            LNode::RawStart(s) => SimplifyResult {
+                node: LNodeSimple::RawStart(s),
+                force_wrap: s.contains(char_is_newline),
+            },
+            LNode::RawEnd => SimplifyResult {
+                node: LNodeSimple::RawEnd,
+                force_wrap: false,
             },
         }
     }
@@ -272,6 +286,7 @@ struct StringBuilderState {
     curr_line_start: usize,
     indent: usize,
     emit_space: bool,
+    supress_output: bool,
 }
 
 #[derive(Debug)]
@@ -308,6 +323,7 @@ impl<'f> StringBuilder<'f> {
                 curr_line_start: 0,
                 indent: 0,
                 emit_space: false,
+                supress_output: false,
             },
         }
     }
@@ -341,7 +357,7 @@ impl<'f> StringBuilder<'f> {
         };
 
         if end <= self.buffer.len() {
-            !self.buffer[line.start..end].contains(LineOffsets::LINE_ENDING_CHARS)
+            !self.buffer[line.start..end].contains(char_is_newline)
         } else {
             false
         }
@@ -349,8 +365,12 @@ impl<'f> StringBuilder<'f> {
 
     #[must_use]
     fn write_str(&mut self, s: &str) -> MaybeNewline {
+        if self.state.supress_output {
+            return MaybeNewline::No;
+        }
+
         // strings containing newlines need the parent to wrap
-        let last_line_end = s.rfind(LineOffsets::LINE_ENDING_CHARS);
+        let last_line_end = s.rfind(char_is_newline);
 
         // emit indent if this is the first text on the line
         if self.at_line_start() && !str_is_whitespace_or_empty(s) {
@@ -391,6 +411,10 @@ impl<'f> StringBuilder<'f> {
     /// Ensure the buffer ends in at least `n` newlines.
     /// This is used to avoid duplicate newlines being emitted where not necessary.
     fn ensure_newlines(&mut self, n: usize) {
+        if self.state.supress_output {
+            return;
+        }
+
         // count current ending newlines
         let mut curr = self.buffer.as_str();
         let mut curr_count = 0;
@@ -575,7 +599,9 @@ fn visit_node<'n, 's>(
 ) -> VisitResult<'n, 's> {
     let result = match node {
         LNodeSimple::Space => {
-            builder.state.emit_space = true;
+            if !builder.state.supress_output {
+                builder.state.emit_space = true;
+            }
             MaybeNewline::No
         }
         LNodeSimple::AlwaysStr(s) => builder.write_str(s),
@@ -625,6 +651,15 @@ fn visit_node<'n, 's>(
                 assert!(wrapping);
             }
             return VisitResult::Group { force_wrap, child };
+        }
+        LNodeSimple::RawStart(s) => {
+            let result = builder.write_str(s);
+            builder.state.supress_output = true;
+            result
+        }
+        LNodeSimple::RawEnd => {
+            builder.state.supress_output = false;
+            MaybeNewline::No
         }
         LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),
     };

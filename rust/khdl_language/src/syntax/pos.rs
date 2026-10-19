@@ -231,7 +231,6 @@ impl LineOffsets {
     // This set of line endings was chosen because it matches what the LSP protocol wants,
     // and we don't really care that much about the specifics.
     pub const LINE_ENDINGS: &'static [&'static str] = &["\r\n", "\n", "\r"];
-    pub const LINE_ENDING_CHARS: &'static [char] = &['\r', '\n'];
 
     // TODO switch to memchr, benchmark the difference
     pub fn new(src: &str) -> Self {
@@ -442,6 +441,19 @@ impl<L: HasSpan, R: HasSpan> HasSpan for Either<L, R> {
         match self {
             Either::Left(l) => l.span(),
             Either::Right(r) => r.span(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::syntax::pos::LineOffsets;
+    use crate::syntax::token::char_is_newline;
+
+    #[test]
+    fn line_endings_match_tokenizer() {
+        for e in LineOffsets::LINE_ENDINGS {
+            assert!(e.chars().all(char_is_newline));
         }
     }
 }

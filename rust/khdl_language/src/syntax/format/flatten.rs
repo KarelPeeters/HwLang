@@ -16,6 +16,7 @@ use crate::syntax::ast::{
 };
 use crate::syntax::format::high::{HNode, PreserveKind};
 use crate::syntax::parser::RecoveredParseError;
+use crate::syntax::pos::{HasSpan, Span};
 use crate::syntax::token::TokenType as TT;
 use crate::util::iter::IterExt;
 use itertools::Either;
@@ -84,7 +85,7 @@ impl Context<'_> {
                 }
                 Item::Interface(decl) => self.fmt_interface_decl(decl),
             };
-            nodes.push(item_node);
+            nodes.push(skippable(item.info().span_full, item_node));
 
             nodes.push(HNode::PreserveBlankLines(PreserveKind::Always))
         }
@@ -145,7 +146,7 @@ impl Context<'_> {
         HNode::Sequence(nodes)
     }
 
-    fn fmt_extra_list<T>(
+    fn fmt_extra_list<T: HasSpan>(
         &self,
         surround: SurroundKind,
         force_wrap: bool,
@@ -156,7 +157,7 @@ impl Context<'_> {
         self.fmt_extra_list_items(surround, force_wrap, None, items, f)
     }
 
-    fn fmt_extra_list_block<T>(
+    fn fmt_extra_list_block<T: HasSpan>(
         &self,
         force_wrap: bool,
         block: &ExtraListBlock<T>,
@@ -166,11 +167,11 @@ impl Context<'_> {
         self.fmt_extra_list_items(SurroundKind::Curly, force_wrap, None, items, f)
     }
 
-    fn fmt_extra_list_items<T>(
+    fn fmt_extra_list_items<T: HasSpan>(
         &self,
         surround: SurroundKind,
         force_wrap: bool,
-        first: Option<HNodeAndComma>,
+        first: Option<(Span, HNodeAndComma)>,
         items: &[ExtraListItem<T>],
         f: &impl Fn(&T) -> HNodeAndComma,
     ) -> HNode {
@@ -183,10 +184,10 @@ impl Context<'_> {
             seq.push(HNode::PreserveBlankLines(PreserveKind::AfterComment));
         }
 
-        let push_leaf = |seq: &mut Vec<HNode>, leaf: HNodeAndComma, last: bool| {
+        let push_leaf = |seq: &mut Vec<HNode>, span: Span, leaf: HNodeAndComma, last: bool| {
             let HNodeAndComma { node, comma } = leaf;
 
-            seq.push(node);
+            seq.push(skippable(span, node));
             if comma {
                 seq.push(comma_nodes(last));
             } else {
@@ -197,28 +198,31 @@ impl Context<'_> {
             }
         };
 
-        if let Some(first) = first {
+        if let Some((first_span, first)) = first {
             let last = items.is_empty();
-            push_leaf(&mut seq, first, last);
+            push_leaf(&mut seq, first_span, first, last);
             seq.push(preserve_blank_lines_after_item(last));
         }
 
         for (item, last) in items.iter().with_last() {
             match item {
                 ExtraListItem::Leaf(leaf) => {
-                    push_leaf(&mut seq, f(leaf), last);
+                    push_leaf(&mut seq, leaf.span(), f(leaf), last);
                 }
                 ExtraListItem::Declaration(decl) => {
-                    seq.push(self.fmt_common_decl(decl));
+                    seq.push(skippable(decl.span(), self.fmt_common_decl(decl)));
                 }
                 ExtraListItem::If(stmt) => {
-                    seq.push(self.fmt_if(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f)));
+                    let node = self.fmt_if(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f));
+                    seq.push(skippable(stmt.span(), node));
                 }
                 ExtraListItem::Match(stmt) => {
-                    seq.push(self.fmt_match(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f)));
+                    let node = self.fmt_match(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f));
+                    seq.push(skippable(stmt.span(), node));
                 }
                 ExtraListItem::For(stmt) => {
-                    seq.push(self.fmt_for(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f)));
+                    let node = self.fmt_for(stmt, |inner| self.fmt_extra_list_block(force_wrap, inner, f));
+                    seq.push(skippable(stmt.span(), node));
                 }
             }
 
@@ -445,7 +449,8 @@ impl Context<'_> {
             SurroundKind::CurlySpace
         };
 
-        let token_ports = self.fmt_extra_list(surround, false, port_dirs, &|&(port_id, port_dir)| {
+        let token_ports = self.fmt_extra_list(surround, false, port_dirs, &|port| {
+            let (port_id, port_dir) = port.inner;
             let node = HNode::Sequence(vec![
                 self.fmt_id(port_id),
                 token(TT::Colon),
@@ -503,7 +508,7 @@ impl Context<'_> {
             let node = match slf.inner {
                 ParameterSelfKind::Slf => token(TT::Slf),
             };
-            HNodeAndComma { node, comma: true }
+            (slf.span, HNodeAndComma { node, comma: true })
         });
         let ExtraList { span: _, items } = items;
 
@@ -599,7 +604,7 @@ impl Context<'_> {
 
     fn fmt_block_ext(&self, statements: &[BlockStatement], final_expression: Option<Expression>) -> HNode {
         let node_final_expression = final_expression.map(|expr| self.fmt_expr(expr));
-        let f = |stmt: &BlockStatement| self.fmt_block_statement(stmt);
+        let f = |stmt: &BlockStatement| skippable(stmt.span, self.fmt_block_statement(stmt));
         fmt_block_impl(statements, node_final_expression, f)
     }
 
@@ -1039,6 +1044,10 @@ impl Context<'_> {
     }
 
     fn fmt_expr(&self, expr: Expression) -> HNode {
+        skippable(expr.span, self.fmt_expr_inner(expr))
+    }
+
+    fn fmt_expr_inner(&self, expr: Expression) -> HNode {
         match &self.arena_expressions[expr.inner] {
             &ExpressionKind::ParseError(e) => self.report_parse_error(e),
             ExpressionKind::Dummy => token(TT::Underscore),
@@ -1299,6 +1308,10 @@ impl Context<'_> {
             },
         }
     }
+}
+
+fn skippable(span: Span, node: HNode) -> HNode {
+    HNode::Skippable(span, Box::new(node))
 }
 
 fn fmt_block_impl<T>(statements: &[T], final_expression: Option<HNode>, f: impl Fn(&T) -> HNode) -> HNode {

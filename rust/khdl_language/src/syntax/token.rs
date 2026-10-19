@@ -55,7 +55,9 @@ enum Mode {
 }
 
 #[rustfmt::skip]
-macro_rules! pattern_whitespace { () => { ' ' | '\t' | '\n' | '\r' }; }
+macro_rules! pattern_whitespace { () => { ' ' | '\t' | pattern_newline!() }; }
+#[rustfmt::skip]
+macro_rules! pattern_newline { () => { '\n' | '\r' }; }
 
 #[rustfmt::skip]
 macro_rules! pattern_string_escape_chars { () => { '\\' | '"' | '{' | 'n' | 'r' | 't' | '0' }; }
@@ -523,6 +525,17 @@ pub fn parse_token_string_middle(raw: &str) -> Result<Cow<'_, str>, FailedTokenP
     Ok(Cow::Owned(result))
 }
 
+pub fn parse_token_comment_content(ty: TokenType, raw: &str) -> Result<&str, FailedTokenParse> {
+    match ty {
+        TokenType::LineComment => raw.strip_prefix("//").ok_or(FailedTokenParse),
+        TokenType::BlockComment => raw
+            .strip_prefix("/*")
+            .and_then(|body| body.strip_suffix("*/"))
+            .ok_or(FailedTokenParse),
+        _ => Err(FailedTokenParse),
+    }
+}
+
 pub fn parse_token_int_literal_binary(raw: &str) -> Result<BigUint, FailedTokenParse> {
     parse_token_int_literal_any(raw, "0b", 2)
 }
@@ -561,6 +574,10 @@ pub fn str_is_whitespace_or_empty(s: &str) -> bool {
 
 pub fn char_is_whitespace(c: char) -> bool {
     matches!(c, pattern_whitespace!())
+}
+
+pub fn char_is_newline(c: char) -> bool {
+    matches!(c, pattern_newline!())
 }
 
 impl<'s> IntoIterator for Tokenizer<'s> {

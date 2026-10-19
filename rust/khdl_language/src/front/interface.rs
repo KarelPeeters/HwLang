@@ -158,7 +158,8 @@ impl CompileItemContext<'_, '_> {
                         flow,
                         port_dirs,
                         true,
-                        &mut |slf, scope, flow, &(port_id, port_dir)| {
+                        &mut |slf, scope, flow, port| {
+                            let (port_id, port_dir) = port.inner;
                             let port_id = slf.eval_id(scope.as_scope(), flow, port_id)?;
                             port_dirs_partial.push((port_id, port_dir));
                             Ok(())
