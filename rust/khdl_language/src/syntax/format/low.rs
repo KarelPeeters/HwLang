@@ -61,7 +61,7 @@ pub enum LNodeImpl<'s, E> {
     /// This also works recursively through multiple nested groups.
     EscapeGroupIfLast(E, Box<LNodeImpl<'s, E>>),
 
-    /// Emit the given string literally, and supress all output until the next [LNodeImpl::RawEnd].
+    /// Emit the given string literally, and suppress all output until the next [LNodeImpl::RawEnd].
     RawStart(&'s str),
     /// Stop suppressing output.
     RawEnd,
@@ -286,7 +286,7 @@ struct StringBuilderState {
     curr_line_start: usize,
     indent: usize,
     emit_space: bool,
-    supress_output: bool,
+    suppress_output: bool,
 }
 
 #[derive(Debug)]
@@ -323,7 +323,7 @@ impl<'f> StringBuilder<'f> {
                 curr_line_start: 0,
                 indent: 0,
                 emit_space: false,
-                supress_output: false,
+                suppress_output: false,
             },
         }
     }
@@ -365,7 +365,7 @@ impl<'f> StringBuilder<'f> {
 
     #[must_use]
     fn write_str(&mut self, s: &str) -> MaybeNewline {
-        if self.state.supress_output {
+        if self.state.suppress_output {
             return MaybeNewline::No;
         }
 
@@ -411,7 +411,7 @@ impl<'f> StringBuilder<'f> {
     /// Ensure the buffer ends in at least `n` newlines.
     /// This is used to avoid duplicate newlines being emitted where not necessary.
     fn ensure_newlines(&mut self, n: usize) {
-        if self.state.supress_output {
+        if self.state.suppress_output {
             return;
         }
 
@@ -599,7 +599,7 @@ fn visit_node<'n, 's>(
 ) -> VisitResult<'n, 's> {
     let result = match node {
         LNodeSimple::Space => {
-            if !builder.state.supress_output {
+            if !builder.state.suppress_output {
                 builder.state.emit_space = true;
             }
             MaybeNewline::No
@@ -654,11 +654,11 @@ fn visit_node<'n, 's>(
         }
         LNodeSimple::RawStart(s) => {
             let result = builder.write_str(s);
-            builder.state.supress_output = true;
+            builder.state.suppress_output = true;
             result
         }
         LNodeSimple::RawEnd => {
-            builder.state.supress_output = false;
+            builder.state.suppress_output = false;
             MaybeNewline::No
         }
         LNodeSimple::ForceWrap(never) | LNodeSimple::EscapeGroupIfLast(never, _) => never.unreachable(),

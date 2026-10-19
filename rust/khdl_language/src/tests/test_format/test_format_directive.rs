@@ -54,6 +54,12 @@ fn skip_trailing_comment() {
 }
 
 #[test]
+fn skip_after_on_with_comment_inside_off() {
+    let src = "const x = /* khdl-fmt off */ a + /* c */ /* khdl-fmt on */ /* khdl-fmt skip */ b  *  c;\n";
+    assert_formatted(src);
+}
+
+#[test]
 fn skip_without_target() {
     let src = "// khdl-fmt skip\n";
     assert_formatted(src);

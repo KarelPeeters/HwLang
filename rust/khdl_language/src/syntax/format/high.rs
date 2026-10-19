@@ -252,6 +252,7 @@ impl<'s, 'r> LowerContext<'s, 'r> {
 
     /// Start a raw sequence for bytes `start..end`.
     fn start_raw(&mut self, seq: &mut Vec<LNode<'s>>, start: usize, end: usize) {
+        assert!(self.curr_raw_end_byte.is_none());
         let text = self.source[start..end].trim_end_matches(|c| char_is_whitespace(c) && !char_is_newline(c));
         seq.push(LNode::RawStart(text));
         self.curr_raw_end_byte = Some(end);
@@ -592,10 +593,13 @@ impl<'s, 'r> LowerContext<'s, 'r> {
                 }
             }
             &HNode::Skippable(span, ref inner) => {
-                if !self.in_raw(true) && self.skip_targets.contains(&span.start_byte) {
+                if self.skip_targets.contains(&span.start_byte) {
                     let mut seq = vec![];
                     self.collect_comments_all(prev_space, true, &mut seq);
-                    self.start_raw(&mut seq, span.start_byte, span.end_byte);
+                    self.maybe_end_raw(&mut seq, true);
+                    if self.curr_raw_end_byte.is_none() {
+                        self.start_raw(&mut seq, span.start_byte, span.end_byte);
+                    }
                     seq.push(self.map(prev_space, next_wrap_comma, inner)?);
                     LNode::Sequence(seq)
                 } else {
