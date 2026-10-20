@@ -415,6 +415,13 @@ impl<T> Spanned<Option<T>> {
 
 #[macro_export]
 macro_rules! impl_has_span {
+    ($id:ident<$gen:tt>) => {
+        impl<$gen> $crate::syntax::pos::HasSpan for $id<$gen> {
+            fn span(&self) -> $crate::syntax::pos::Span {
+                self.span
+            }
+        }
+    };
     ($ty:ty) => {
         impl $crate::syntax::pos::HasSpan for $ty {
             fn span(&self) -> $crate::syntax::pos::Span {
@@ -430,11 +437,7 @@ impl HasSpan for Span {
     }
 }
 
-impl<T> HasSpan for Spanned<T> {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
+impl_has_span!(Spanned<T>);
 
 impl<L: HasSpan, R: HasSpan> HasSpan for Either<L, R> {
     fn span(&self) -> Span {

@@ -1251,6 +1251,11 @@ impl_has_span!(StructField);
 impl_has_span!(EnumDeclaration);
 impl_has_span!(EnumVariant);
 impl_has_span!(Arg);
+impl_has_span!(FunctionDeclaration<T>);
+impl_has_span!(ExtraList<T>);
+impl_has_span!(ExtraListBlock<T>);
+impl_has_span!(IfStatement<B>);
+impl_has_span!(Block<B>);
 
 impl HasSpan for StructBodyItem {
     fn span(&self) -> Span {
@@ -1270,24 +1275,6 @@ impl HasSpan for EnumBodyItem {
     }
 }
 
-impl<T> HasSpan for FunctionDeclaration<T> {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-impl<T> HasSpan for ExtraList<T> {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-impl<T> HasSpan for ExtraListBlock<T> {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
 impl HasSpan for WhileStatement {
     fn span(&self) -> Span {
         self.span_keyword.join(self.body.span)
@@ -1297,12 +1284,6 @@ impl HasSpan for WhileStatement {
 impl<B: HasSpan> HasSpan for ForStatement<B> {
     fn span(&self) -> Span {
         self.span_keyword.join(self.body.span())
-    }
-}
-
-impl<B> HasSpan for IfStatement<B> {
-    fn span(&self) -> Span {
-        self.span
     }
 }
 
@@ -1389,12 +1370,6 @@ impl<B: HasSpan> HasSpan for MatchBranch<B> {
     fn span(&self) -> Span {
         let MatchBranch { pattern, block } = self;
         pattern.span.join(block.span())
-    }
-}
-
-impl<B> HasSpan for Block<B> {
-    fn span(&self) -> Span {
-        self.span
     }
 }
 
