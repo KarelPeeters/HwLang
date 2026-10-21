@@ -4,7 +4,7 @@ use crate::front::domain::{PortDomain, ValueDomain};
 use crate::front::flow::Variable;
 use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView};
 use crate::front::types::HardwareType;
-use crate::front::value::{HardwareValue, SimpleCompileValue};
+use crate::front::value::HardwareValue;
 use crate::mid::ir::{IrExpression, IrPort, IrSignal, IrWire, IrWireInfo, IrWires};
 use crate::new_index_type;
 use crate::syntax::ast::{DomainKind, MaybeIdentifier, PortDirection};
@@ -496,7 +496,7 @@ impl Interface {
 
         let signal_index = info.signals.get_index_of(&id.inner).ok_or_else(|| {
             let id_str = id.inner.str(&refs.shared.interner);
-            let interface_str = SimpleCompileValue::Interface(elab_intf).value_string(refs);
+            let interface_str = elab_intf.value_string(refs);
             DiagnosticError::new(
                 format!("signal `{id_str}` not found on interface"),
                 id.span,

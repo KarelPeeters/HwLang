@@ -519,28 +519,11 @@ impl SimpleCompileValue {
             }
             &SimpleCompileValue::Interface(v) => v.value_string(refs),
             &SimpleCompileValue::InterfaceArray(ref lens, v) => {
-                let lens = shape_string(lens);
-                let intf = &refs.elab.interface_info(v).debug_info_name;
-                format!("{lens}<interface {intf}>")
+                format!("{}{}", shape_string(lens), v.value_string(refs))
             }
-            &SimpleCompileValue::InterfaceView(v) => {
-                let ElaboratedInterfaceView { interface, view_index } = v;
-                let info = refs.elab.interface_info(interface);
-                let view_info = &info.views[view_index];
-                format!(
-                    "<interface view {}.{}>",
-                    info.debug_info_name, view_info.debug_info_name
-                )
-            }
+            &SimpleCompileValue::InterfaceView(v) => v.value_string(refs),
             &SimpleCompileValue::InterfaceViewArray(ref lens, v) => {
-                let lens = shape_string(lens);
-                let ElaboratedInterfaceView { interface, view_index } = v;
-                let info = refs.elab.interface_info(interface);
-                let view_info = &info.views[view_index];
-                format!(
-                    "{lens}<interface view {}.{}>",
-                    info.debug_info_name, view_info.debug_info_name
-                )
+                format!("{}{}", shape_string(lens), v.value_string(refs))
             }
             SimpleCompileValue::Reference(rf) => match rf.get_unchecked() {
                 ReferenceInner::Variable { var: _, ty } => {
@@ -744,6 +727,19 @@ impl ElaboratedInterface {
         let refs = refs.into();
         let intf = &refs.elab.interface_info(self).debug_info_name;
         format!("<interface {intf}>")
+    }
+}
+
+impl ElaboratedInterfaceView {
+    pub fn value_string<'a>(self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
+        let ElaboratedInterfaceView { interface, view_index } = self;
+        let info = refs.elab.interface_info(interface);
+        let view_info = &info.views[view_index];
+        format!(
+            "<interface view {}.{}>",
+            info.debug_info_name, view_info.debug_info_name
+        )
     }
 }
 
