@@ -46,6 +46,7 @@ use pyo3::{
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 mod check;
 mod convert;
@@ -513,6 +514,7 @@ impl Compile {
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
+            interrupted_local: &OnceLock::new(),
         };
 
         // resolve the path, python can always access private items for now
@@ -663,6 +665,7 @@ impl Value {
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
+            interrupted_local: &OnceLock::new(),
         };
 
         let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
@@ -732,6 +735,7 @@ impl Value {
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
+            interrupted_local: &OnceLock::new(),
         };
         let mut item_ctx = CompileItemContext::new_empty(refs, None, None);
 
@@ -1205,6 +1209,7 @@ impl VerilatedPort {
             diags: &diags,
             print_handler: print_handler.handler(),
             should_stop: &|| false,
+            interrupted_local: &OnceLock::new(),
         };
         let result = instance
             .instance

@@ -33,7 +33,7 @@ use rand::seq::SliceRandom;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug)]
 pub enum ResolveError {
@@ -53,6 +53,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
                     shared: self.shared,
                     print_handler: self.print_handler,
                     should_stop: self.should_stop,
+                    interrupted_local: &OnceLock::new(),
                 };
                 thread_refs.run_compile_loop_inner();
                 thread_diags
@@ -75,6 +76,7 @@ impl<'a, 's> CompileRefs<'a, 's> {
                 shared: self.shared,
                 print_handler: self.print_handler,
                 should_stop: self.should_stop,
+                interrupted_local: &OnceLock::new(),
             };
             local_refs.run_compile_loop_inner();
 
@@ -110,13 +112,19 @@ impl<'a, 's> CompileRefs<'a, 's> {
     }
 
     pub fn check_should_stop(self, span: Span) -> DiagResult {
-        if (self.should_stop)() {
-            Err(self
-                .diags
-                .report_error_simple("compilation interrupted", span, "while elaborating here"))
-        } else {
-            Ok(())
+        if let Some(&e) = self.interrupted_local.get() {
+            return Err(e);
         }
+        if (self.should_stop)() {
+            self.shared.work_queue.abort();
+            let e = *self.interrupted_local.get_or_init(|| {
+                self.diags
+                    .report_error_simple("compilation interrupted", span, "while elaborating here")
+            });
+            let _ = self.shared.interrupted.set(e);
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn get_expr(self, expr: Expression) -> &'a ExpressionKind {
@@ -213,6 +221,8 @@ pub struct CompileShared {
     //   or maybe just another sharded DashMap
     pub ir_database: Mutex<IrDatabase<Option<DiagResult<IrModuleInfo>>>>,
     pub next_flow_root_id: NextFlowRootId,
+    // interrupted by any thread
+    pub interrupted: OnceLock<DiagError>,
 }
 
 pub type FileScopes<S> = IndexMap<FileId, DiagResult<FileScope<S>>>;
@@ -238,6 +248,8 @@ pub struct CompileRefs<'a, 's> {
     // TODO is there a reasonable way to get deterministic prints?
     pub print_handler: &'a (dyn PrintHandler + Sync),
     pub should_stop: &'a (dyn Fn() -> bool + Sync),
+    // interrupted by the current thread
+    pub interrupted_local: &'a OnceLock<DiagError>,
 }
 
 pub type ArenaPorts = Arena<Port, PortInfo>;
@@ -828,6 +840,7 @@ impl CompileShared {
                 external_modules,
             }),
             next_flow_root_id: NextFlowRootId::default(),
+            interrupted: OnceLock::new(),
         }
     }
 
@@ -840,6 +853,7 @@ impl CompileShared {
             diags,
             dummy_span,
             &self.work_queue,
+            &self.interrupted,
             self.ir_database.into_inner().unwrap(),
         )
     }
@@ -850,7 +864,7 @@ impl CompileShared {
         dummy_span: Span,
     ) -> DiagResult<IrDatabase<IrModuleInfo>> {
         let ir_database = self.ir_database.lock().unwrap().clone();
-        finish_ir_database_impl(diags, dummy_span, &self.work_queue, ir_database)
+        finish_ir_database_impl(diags, dummy_span, &self.work_queue, &self.interrupted, ir_database)
     }
 }
 
@@ -858,8 +872,13 @@ fn finish_ir_database_impl(
     diags: &Diagnostics,
     dummy_span: Span,
     work_queue: &SharedQueue<WorkItem>,
+    interrupted: &OnceLock<DiagError>,
     ir_database: IrDatabase<Option<DiagResult<IrModuleInfo>>>,
 ) -> DiagResult<IrDatabase<IrModuleInfo>> {
+    if let Some(&e) = interrupted.get() {
+        return Err(e);
+    }
+
     // check that work queue is empty
     if work_queue.pop().is_some() {
         return Err(diags.report_error_internal(dummy_span, "not all work items have been processed"));

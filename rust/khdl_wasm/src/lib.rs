@@ -16,6 +16,7 @@ use khdl_language::syntax::pos::Spanned;
 use khdl_language::syntax::source::{FileId, SourceDatabase};
 use khdl_language::syntax::token::{TokenCategory, Tokenizer};
 use khdl_language::util::{NON_ZERO_USIZE_ONE, ResultExt};
+use std::sync::OnceLock;
 use std::time::Duration;
 use strum::IntoEnumIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -79,6 +80,7 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
             shared: &shared,
             print_handler: &print_handler,
             should_stop: &should_stop,
+            interrupted_local: &OnceLock::new(),
         };
 
         // compile everything with real diagnostics first

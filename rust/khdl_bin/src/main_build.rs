@@ -22,8 +22,8 @@ use khdl_language::util::pool::ThreadPool;
 use khdl_language::util::{NON_ZERO_USIZE_ONE, get_num_cpus};
 use khdl_util::io::IoErrorExt;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 pub fn main_build(args: ArgsBuild) -> ExitCode {
@@ -135,6 +135,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         shared: &shared,
         print_handler: &StdoutPrintHandler,
         should_stop: &|| should_stop.load(Ordering::Relaxed),
+        interrupted_local: &OnceLock::new(),
     };
     let thread_pool = thread_count.map(ThreadPool::new);
 

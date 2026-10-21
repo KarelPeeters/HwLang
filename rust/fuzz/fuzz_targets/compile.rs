@@ -8,6 +8,7 @@ use khdl_language::syntax::parsed::ParsedDatabase;
 use khdl_language::syntax::source::SourceDatabase;
 use khdl_language::util::NON_ZERO_USIZE_ONE;
 use libfuzzer_sys::fuzz_target;
+use std::sync::OnceLock;
 
 // TODO we can be a lot smarter here, generate only valid asts, reuse identifiers from a limited pool, ...
 fuzz_target!(|data: String| target(data));
@@ -40,6 +41,7 @@ fn target(data: String) {
         shared: &shared,
         print_handler: &IgnorePrintHandler,
         should_stop: &|| false,
+        interrupted_local: &OnceLock::new(),
     };
     refs.run_compile_loop(None);
 }

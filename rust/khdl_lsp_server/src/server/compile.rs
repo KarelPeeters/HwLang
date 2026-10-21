@@ -28,6 +28,7 @@ use lsp_types::{
 };
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
@@ -137,6 +138,7 @@ impl ServerState {
                     shared: &shared,
                     print_handler: &IgnorePrintHandler,
                     should_stop: &should_stop_inner,
+                    interrupted_local: &OnceLock::new(),
                 };
 
                 self.log("compile: start compile loop");

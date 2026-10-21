@@ -313,6 +313,7 @@ struct SharedQueueInner<T> {
     queue: VecDeque<T>,
     waiting_count: usize,
     done: bool,
+    aborted: bool,
 }
 
 impl<T> SharedQueue<T> {
@@ -323,6 +324,7 @@ impl<T> SharedQueue<T> {
                 queue: VecDeque::new(),
                 waiting_count: 0,
                 done: false,
+                aborted: false,
             }),
             cond: Condvar::new(),
         }
@@ -331,6 +333,9 @@ impl<T> SharedQueue<T> {
     pub fn push(&self, item: T) {
         {
             let mut inner = self.mutex.lock().unwrap();
+            if inner.aborted {
+                return;
+            }
             inner.queue.push_back(item);
 
             // TODO this weird behavior was created for the python API, think about a more correct solution
@@ -346,6 +351,9 @@ impl<T> SharedQueue<T> {
     pub fn push_batch(&self, items: impl IntoIterator<Item = T>) {
         let delta = {
             let mut inner = self.mutex.lock().unwrap();
+            if inner.aborted {
+                return;
+            }
 
             let len_before = inner.queue.len();
             inner.queue.extend(items);
@@ -367,7 +375,7 @@ impl<T> SharedQueue<T> {
         let mut inner = self.mutex.lock().unwrap();
 
         loop {
-            if inner.done {
+            if inner.done || inner.aborted {
                 return None;
             }
             if let Some(item) = inner.queue.pop_front() {
@@ -383,6 +391,15 @@ impl<T> SharedQueue<T> {
             inner = self.cond.wait(inner).unwrap();
             inner.waiting_count -= 1;
         }
+    }
+
+    pub fn abort(&self) {
+        {
+            let mut inner = self.mutex.lock().unwrap();
+            inner.aborted = true;
+            inner.queue.clear();
+        }
+        self.cond.notify_all();
     }
 }
 
