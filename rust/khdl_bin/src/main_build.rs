@@ -95,7 +95,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         eprintln!("Collected sources:");
         for file in source.files() {
             let file_info = &source[file];
-            eprintln!("  [{}]: {:?}", file.inner().index(), &file_info.debug_info_path);
+            eprintln!("  [{}]: {:?}", file.inner().index(), file_info.debug_info_path);
         }
         eprintln!("Collected packages:");
         fn print_node(hierarchy: &SourceHierarchy, prefix: &str, node: HierarchyNode) {
