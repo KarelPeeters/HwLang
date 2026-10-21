@@ -319,8 +319,8 @@ impl BodyContext {
                             Some(domain) => ctx
                                 .check_valid_domain_crossing(
                                     assign_span,
-                                    domain,
                                     value_domain,
+                                    domain,
                                     "wire declaration value",
                                 )
                                 .map(|()| domain),
@@ -602,7 +602,7 @@ impl BodyContext {
 
                     let source_domain = signal.inner.signal.domain(ctx, signal.span)?;
                     let source = Spanned::new(reset.span, source_domain.inner);
-                    ctx.check_valid_domain_crossing(span_domain, target, source, "sync reset")?;
+                    ctx.check_valid_domain_crossing(span_domain, source, target, "sync reset")?;
                 }
             }
         };
@@ -1345,8 +1345,8 @@ impl BodyContext {
                         let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
                         let check_domain = ctx.check_valid_domain_crossing(
                             connection_span,
-                            target_domain,
                             source_domain,
+                            target_domain,
                             "input port connection",
                         );
 
@@ -1492,8 +1492,8 @@ impl BodyContext {
                                 // check domain
                                 let err_domain = ctx.check_valid_domain_crossing(
                                     connection_span,
-                                    base_domain,
                                     connector_domain,
+                                    base_domain,
                                     "output port connection",
                                 );
 
@@ -1699,8 +1699,8 @@ impl BodyContext {
                     if any_input {
                         let r = ctx.check_valid_domain_crossing(
                             connection_span,
-                            connector_domain,
                             value_domain,
+                            connector_domain,
                             "interface connection with input port",
                         );
                         any_err_domain = any_err_domain.and(r);
@@ -1708,8 +1708,8 @@ impl BodyContext {
                     if any_output {
                         let r = ctx.check_valid_domain_crossing(
                             connection_span,
-                            value_domain,
                             connector_domain,
+                            value_domain,
                             "interface connection with output port",
                         );
                         any_err_domain = any_err_domain.and(r);
@@ -1759,8 +1759,8 @@ fn connect_domains_suggest_and_check(
                 let sink_domain = sink_entry.inner.suggest_domain(ctx, source_domain)?;
                 let curr_err = ctx.check_valid_domain_crossing(
                     sink_entry.span,
-                    sink_domain,
                     source_domain,
+                    sink_domain,
                     "interface connection",
                 );
                 any_err = any_err.and(curr_err);

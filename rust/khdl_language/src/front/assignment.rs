@@ -446,16 +446,16 @@ impl CompileItemContext<'_, '_> {
             BlockKind::Combinatorial => {
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
-                    target_base_domain,
                     value_domain,
+                    target_base_domain,
                     "value to target in combinatorial block",
                 );
 
                 steps.for_each_domain(|d| {
                     let c = self.check_valid_domain_crossing(
                         op_span,
-                        target_base_domain,
                         d,
+                        target_base_domain,
                         "step to target in combinatorial block",
                     );
                     check = check.and(c);
@@ -464,8 +464,8 @@ impl CompileItemContext<'_, '_> {
                 for condition_domain in condition_domains {
                     let c = self.check_valid_domain_crossing(
                         op_span,
-                        target_base_domain,
                         condition_domain,
+                        target_base_domain,
                         "condition to target in combinatorial block",
                     );
                     check = check.and(c);
@@ -477,17 +477,17 @@ impl CompileItemContext<'_, '_> {
                 let block_domain = block_domain.map_inner(ValueDomain::Sync);
                 let mut check = self.check_valid_domain_crossing(
                     op_span,
-                    target_base_domain,
                     block_domain,
+                    target_base_domain,
                     "clocked block to target",
                 );
 
                 steps.for_each_domain(|d| {
-                    let c = self.check_valid_domain_crossing(op_span, block_domain, d, "step to clocked block");
+                    let c = self.check_valid_domain_crossing(op_span, d, block_domain, "step to clocked block");
                     check = check.and(c);
                 });
 
-                let c = self.check_valid_domain_crossing(op_span, block_domain, value_domain, "value to clocked block");
+                let c = self.check_valid_domain_crossing(op_span, value_domain, block_domain, "value to clocked block");
                 check = check.and(c);
 
                 check

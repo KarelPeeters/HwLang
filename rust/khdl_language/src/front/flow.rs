@@ -639,8 +639,8 @@ pub trait Flow: FlowPrivate {
                         &HardwareProcessKind::ClockedProcessBody { domain, .. } => {
                             ctx.check_valid_domain_crossing(
                                 signal.span,
-                                domain.map_inner(ValueDomain::Sync),
                                 Spanned::new(signal.span, value_full_raw_without_copy.domain()),
+                                domain.map_inner(ValueDomain::Sync),
                                 "signal read in clocked block",
                             )?;
                         }

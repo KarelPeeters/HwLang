@@ -602,7 +602,7 @@ impl CompileItemContext<'_, '_> {
                 // suggest domain
                 let domain = domain.map_inner(ValueDomain::Sync);
                 let domain_signal = signal.inner.suggest_domain(self, domain)?;
-                self.check_valid_domain_crossing(span_keyword, domain_signal, domain, "register driving signal")?;
+                self.check_valid_domain_crossing(span_keyword, domain, domain_signal, "register driving signal")?;
 
                 // eval reset value, possibly suggesting a type
                 let reset_value = match self.refs.get_expr_inner(reset) {
