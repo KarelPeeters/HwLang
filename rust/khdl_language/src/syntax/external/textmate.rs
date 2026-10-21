@@ -176,6 +176,7 @@ fn fixed_token_category(ty: TokenType) -> Option<&'static str> {
         | TokenType::Port
         | TokenType::Slf
         | TokenType::Instance
+        | TokenType::Connect
         | TokenType::Fn
         | TokenType::Comb
         | TokenType::Clock

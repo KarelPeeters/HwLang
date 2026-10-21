@@ -685,7 +685,7 @@ fn eval_dot_index_id(
     // interface views
     if let &Value::Simple(SimpleCompileValue::Interface(base_interface)) = &base.inner {
         let info = ctx.refs.shared.elaboration_arenas.interface_info(base_interface);
-        let (view_index, _) = info.get_view(diags, index)?;
+        let (view_index, _) = info.get_view(diags, &refs.shared.interner, index)?;
 
         let interface_view = ElaboratedInterfaceView {
             interface: base_interface,

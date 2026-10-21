@@ -9,7 +9,7 @@ use crate::front::domain::{DomainSignal, ValueDomain};
 use crate::front::flow::ValueVersion;
 use crate::front::function::EvaluatedArgs;
 use crate::front::implication::{BoolImplications, HardwareValueWithImplications, Implication, ValueWithImplications};
-use crate::front::item::{ElaboratedInterface, ElaboratedModule};
+use crate::front::item::{ElaboratedInterface, ElaboratedInterfaceView, ElaboratedModule};
 use crate::front::scope::{CapturedValue, NamedValue, Scope, ScopeKey, ScopedEntry};
 use crate::front::signal::{Interface, Polarized, Port, Signal, SignalOrVariable};
 use crate::front::steps::{
@@ -72,7 +72,12 @@ pub enum LrValue {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct LeftInterfaceInfo {
     pub span_id: Span,
+    /// The interface.
     pub elab: Spanned<ElaboratedInterface>,
+    /// The view, only set if this is a port.
+    pub port_view: Option<Spanned<ElaboratedInterfaceView>>,
+
+    /// The actual interface instances.
     pub intf: NdArray<Interface>,
 }
 

@@ -711,6 +711,7 @@ declare_tokens! {
         Interface("interface", TC::Keyword),
         View("view", TC::Keyword),
         Instance("instance", TC::Keyword),
+        Connect("connect", TC::Keyword),
         Fn("fn", TC::Keyword),
         Comb("comb", TC::Keyword),
         Clock("clock", TC::Keyword),

@@ -33,6 +33,7 @@ extern {
         "interface" => TokenType::Interface,
         "view" => TokenType::View,
         "instance" => TokenType::Instance,
+        "connect" => TokenType::Connect,
         "fn" => TokenType::Fn,
         "comb" => TokenType::Comb,
         "clock" => TokenType::Clock,
@@ -266,6 +267,20 @@ ModuleStatementKind: ModuleStatementKind = {
         };
         ModuleStatementKind::Instance(instance)
     },
+    // interface connection
+    <span_keyword:Span<"connect">> "(" <entries:ExtraList<ConnectEntry>> ")" ";" => {
+        let connect = ConnectStatement { span_keyword, entries };
+        ModuleStatementKind::Connect(connect)
+    },
+}
+
+ConnectEntry: ConnectEntry = {
+    <start:@L> <expr:Expr> <view:ConnectEntryView?> <end:@R> =>
+        ConnectEntry { span: ctx.span(start, end), expr, view },
+}
+
+ConnectEntryView: ConnectEntryView = {
+    <span_keyword:Span<"view">> <id:Id> => ConnectEntryView { span_keyword, id },
 }
 
 InstancePortConnections: ExtraList<PortConnection> = {

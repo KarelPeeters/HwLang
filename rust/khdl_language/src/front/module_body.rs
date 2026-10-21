@@ -8,7 +8,7 @@ use crate::front::expression::{LeftInterfaceInfo, LrValue};
 use crate::front::extra::ExtraScope;
 use crate::front::flow::{Flow, FlowCompile, FlowHardwareRoot, FlowRoot, HardwareProcessKind, RegisterInfo};
 use crate::front::interface::ElaboratedInterfaceSignalInfo;
-use crate::front::item::ElaboratedModule;
+use crate::front::item::{ElaboratedInterface, ElaboratedModule};
 use crate::front::module_header::{
     ArenaConnectors, Connector, ConnectorInfo, ConnectorKind, ConnectorSingle, ElaboratedModuleExternalInfo,
     ElaboratedModuleHeader, ElaboratedModuleInternalInfo, interface_array_element_names, interface_array_shape,
@@ -30,9 +30,9 @@ use crate::mid::ir::{
 };
 use crate::syntax::ast;
 use crate::syntax::ast::{
-    ClockedProcess, ClockedProcessReset, CombinatorialProcess, DomainKind, ExpressionKind, ModuleInstance,
-    ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, ResetKind, SyncDomain, Visibility,
-    WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
+    ClockedProcess, ClockedProcessReset, CombinatorialProcess, ConnectEntry, ConnectStatement, DomainKind,
+    ExpressionKind, ModuleInstance, ModuleStatement, ModuleStatementKind, PortConnection, PortDirection, ResetKind,
+    SyncDomain, Visibility, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::parsed::AstRefModuleInternal;
 use crate::syntax::pos::{HasSpan, Span, Spanned};
@@ -44,6 +44,7 @@ use crate::util::{ResultExt, result_pair};
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, enumerate, zip_eq};
+use std::convert::identity;
 use std::sync::Arc;
 
 impl CompileRefs<'_, '_> {
@@ -186,6 +187,13 @@ enum ConnectionSignal {
     Expression(Span),
 }
 
+struct ConnectEntryEval<'a> {
+    span: Span,
+    interface: Spanned<ElaboratedInterface>,
+    port_dirs: &'a [(Spanned<Id>, Spanned<PortDirection>)],
+    intf: NdArray<Interface>,
+}
+
 impl BodyContext {
     fn elaborate_module_statement(
         &mut self,
@@ -210,6 +218,9 @@ impl BodyContext {
             }
             ModuleStatementKind::Instance(inst) => {
                 self.elaborate_instance(ctx, scope.as_scope(), flow, Spanned::new(stmt.span, inst))
+            }
+            ModuleStatementKind::Connect(connect) => {
+                self.elaborate_connect(ctx, scope.as_scope(), flow, Spanned::new(stmt.span, connect))
             }
         }
     }
@@ -493,6 +504,7 @@ impl BodyContext {
                 NamedValue::Interface(LeftInterfaceInfo {
                     span_id: wire_id.span(),
                     elab: interface,
+                    port_view: None,
                     intf,
                 })
             }
@@ -728,6 +740,293 @@ impl BodyContext {
         Ok(())
     }
 
+    fn elaborate_connect(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        scope: &Scope,
+        flow_parent: &mut FlowCompile,
+        stmt: Spanned<&ConnectStatement>,
+    ) -> DiagResult {
+        let refs = ctx.refs;
+        let diags = refs.diags;
+        let elab = &refs.shared.elaboration_arenas;
+        let interner = &refs.shared.interner;
+
+        let &ConnectStatement {
+            span_keyword,
+            ref entries,
+        } = stmt.inner;
+
+        // eval entries
+        let mut entries_eval: Vec<ConnectEntryEval> = vec![];
+        let mut scope_entries = scope.new_child(entries.span);
+        let mut any_err_entries = Ok(());
+        ctx.elaborate_extra_list(
+            &mut scope_entries,
+            flow_parent,
+            entries,
+            false,
+            &mut |ctx, scope, flow, entry| {
+                let &ConnectEntry { span: _, expr, view } = entry;
+
+                // eval value
+                let value =
+                    ctx.eval_expression_as_lr(scope.as_scope(), &mut flow.new_child_isolated(), &Type::Any, expr)?;
+                // eval view
+                let view_id = view
+                    .map(|view| ctx.eval_id(scope.as_scope(), flow, view.id))
+                    .transpose()?;
+
+                // check that value is an interface
+                let LrValue::LeftInterface(value) = value else {
+                    return Err(
+                        DiagnosticError::new("expected interface value", expr.span, "got non-interface value")
+                            .add_info(span_keyword, "connect requires interface values")
+                            .report(diags),
+                    );
+                };
+                let interface_info = elab.interface_info(value.elab.inner);
+
+                // figure out the view
+                let (view_span, view_index) = if let Some(view_id) = view_id {
+                    // we explicit have one here, use it
+                    let (view_index, _) = interface_info.get_view(diags, interner, view_id)?;
+                    (view_id.span, view_index)
+                } else if let Some(port_view) = value.port_view {
+                    // this is a port, which has a view, default to it
+                    (port_view.span, port_view.inner.view_index)
+                } else {
+                    // no view info, error
+                    let e = DiagnosticError::new(
+                        "missing view for wire interface",
+                        expr.span,
+                        "wire interface used here without a view",
+                    )
+                    .add_footer_hint("only port interfaces have a declared view, add `view <name>` to select one")
+                    .report(diags);
+                    any_err_entries = Err(e);
+                    return Ok(());
+                };
+
+                // for ports, check that the view directions match the declared port directions
+                let view_info = &interface_info.views[view_index];
+                let view_dirs = view_info.port_dirs.as_ref_ok()?;
+                if let Some(port_view) = value.port_view
+                    && port_view.inner.view_index != view_index
+                {
+                    let port_view_info = &interface_info.views[port_view.inner.view_index];
+                    let port_view_dirs = port_view_info.port_dirs.as_ref_ok()?;
+                    let mismatches = enumerate(zip_eq(view_dirs, port_view_dirs))
+                        .filter(|(_, ((_, dir), (_, port_dir)))| dir.inner != port_dir.inner)
+                        .collect_vec();
+
+                    if !mismatches.is_empty() {
+                        let view_name = &view_info.debug_info_name;
+                        let port_view_name = &port_view_info.debug_info_name;
+
+                        let mut diag = DiagnosticError::new(
+                            format!("view `{view_name}` does not match the directions of the port interface"),
+                            view_span,
+                            format!("view `{view_name}` used here"),
+                        )
+                        .add_info(
+                            port_view.span,
+                            format!("port interface declared with view `{port_view_name}` here"),
+                        );
+                        for (signal_index, ((_, dir), (_, port_dir))) in mismatches {
+                            let signal_id_str = interface_info.signals[signal_index].id.inner.str(interner);
+                            diag = diag.add_footer_info(format!(
+                                "signal `{signal_id_str}` is `{}` in view `{view_name}`, but `{}` in view `{port_view_name}`",
+                                dir.inner.diagnostic_string(),
+                                port_dir.inner.diagnostic_string(),
+                            ));
+                        }
+                        any_err_entries = Err(diag.report(diags));
+                    }
+                }
+
+                // store entry
+                entries_eval.push(ConnectEntryEval {
+                    span: entry.span,
+                    interface: value.elab,
+                    port_dirs: view_dirs,
+                    intf: value.intf,
+                });
+                Ok(())
+            },
+        )?;
+        any_err_entries?;
+
+        // check that there are at least two entries
+        let [first, rest @ ..] = entries_eval.as_slice() else {
+            return Err(diags.report_error_simple(
+                "connect requires at least two entries",
+                entries.span,
+                "got no entries here",
+            ));
+        };
+        if rest.is_empty() {
+            return Err(diags.report_error_simple(
+                "connect requires at least two entries",
+                entries.span,
+                "got only a single entry here",
+            ));
+        }
+
+        // check that all interfaces match
+        let interface_mismatches = rest
+            .iter()
+            .filter(|other| first.interface.inner != other.interface.inner)
+            .collect_vec();
+        if !interface_mismatches.is_empty() {
+            let mut diag = DiagnosticError::new(
+                "interface mismatch",
+                stmt.span,
+                "connect entries must have matching interfaces",
+            )
+            .add_info(
+                first.span,
+                format!(
+                    "first entry has interface `{}`",
+                    first.interface.inner.value_string(refs)
+                ),
+            );
+            for other in interface_mismatches {
+                diag = diag.add_info(
+                    other.span,
+                    format!(
+                        "this entry has interface `{}`",
+                        other.interface.inner.value_string(refs)
+                    ),
+                );
+            }
+            return Err(diag.report(diags));
+        }
+
+        // check that all shapes match
+        let shape_mismatches = rest
+            .iter()
+            .filter(|other| first.intf.shape() != other.intf.shape())
+            .collect_vec();
+        if !shape_mismatches.is_empty() {
+            let mut diag = DiagnosticError::new(
+                "interface array shape mismatch",
+                stmt.span,
+                "connect entries must have matching interface shapes",
+            )
+            .add_info(
+                first.span,
+                format!("first entry is {}", describe_interface_shape(first.intf.shape())),
+            );
+            for other in shape_mismatches {
+                diag = diag.add_info(
+                    other.span,
+                    format!("this entry is {}", describe_interface_shape(other.intf.shape())),
+                );
+            }
+            return Err(diag.report(diags));
+        }
+
+        // for each signal, find the single driver entry, grouping errors by the set of driving entries
+        let interface_info = elab.interface_info(first.interface.inner);
+
+        let mut signal_drivers = vec![];
+        let mut signal_driver_errors: IndexMap<Vec<bool>, Vec<usize>> = IndexMap::new();
+        for signal_index in 0..interface_info.signals.len() {
+            let mask_input = entries_eval
+                .iter()
+                .map(|e| e.port_dirs[signal_index].1.inner.is_input())
+                .collect_vec();
+
+            // find single source
+            let sources = mask_input.iter().copied().positions(identity).collect_vec();
+            if let &[source] = sources.as_slice() {
+                signal_drivers.push(source);
+                continue;
+            }
+
+            // failed, collect error info
+            signal_driver_errors.entry(mask_input).or_default().push(signal_index);
+        }
+
+        // report driver errors if any
+        let mut any_driver_err = Ok(());
+        for (entry_drives, signals) in signal_driver_errors {
+            assert!(!signals.is_empty());
+
+            let signals_str = {
+                let (plural_s, plural_has) = if signals.len() > 1 { ("s", "have") } else { ("", "has") };
+                let list = signals
+                    .iter()
+                    .map(|&s| {
+                        let s = interface_info.signals[s].id.inner.str(interner);
+                        format!("`{s}`")
+                    })
+                    .join(", ");
+                format!("signal{plural_s} {list} {plural_has}")
+            };
+
+            let multiple_drivers = entry_drives.iter().copied().any(identity);
+            let title = if multiple_drivers {
+                "multiple drivers"
+            } else {
+                "no driver"
+            };
+
+            let mut diag = DiagnosticError::new(format!("{signals_str} {title}"), span_keyword, "connection here");
+
+            if multiple_drivers {
+                for (entry, &drives) in zip_eq(&entries_eval, &entry_drives) {
+                    if drives {
+                        diag = diag.add_info(entry.span, "driven here");
+                    }
+                }
+            } else {
+                diag = diag.add_footer_info("all entries only read");
+            }
+
+            any_driver_err = Err(diag.report(diags));
+        }
+        any_driver_err?;
+        assert_eq!(signal_drivers.len(), interface_info.signals.len());
+
+        // for each element of the arrays, suggest and check domains, and then emit the processes
+        let mut any_err_domain = Ok(());
+        for element_index in 0..first.intf.flat_values().len() {
+            let element = |entry: &ConnectEntryEval| entry.intf.flat_values()[element_index];
+
+            // suggest and check domains
+            let entries = entries_eval
+                .iter()
+                .map(|entry| Spanned::new(entry.span, element(entry)))
+                .collect_vec();
+            if let Err(e) = connect_domains_suggest_and_check(ctx, span_keyword, &entries, &signal_drivers) {
+                any_err_domain = Err(e);
+                continue;
+            }
+
+            // build a combinatorial process for each source signal, driving all of its sinks
+            for (signal_index, &source) in enumerate(&signal_drivers) {
+                let source_ir = element(&entries_eval[source]).signal_ir(ctx, signal_index);
+                let statements = enumerate(&entries_eval)
+                    .filter(|&(sink, _)| sink != source)
+                    .map(|(_, sink)| {
+                        let target = IrAssignmentTarget::simple(element(sink).signal_ir(ctx, signal_index));
+                        Spanned::new(sink.span, IrStatement::Assign(target, IrExpression::Signal(source_ir)))
+                    })
+                    .collect_vec();
+                let process = IrCombinatorialProcess {
+                    variables: IrVariables::new(),
+                    block: IrBlock { statements },
+                };
+                self.children
+                    .push(Spanned::new(stmt.span, IrModuleChild::CombinatorialProcess(process)));
+            }
+        }
+
+        any_err_domain
+    }
+
     fn elaborate_instance(
         &mut self,
         ctx: &mut CompileItemContext,
@@ -737,6 +1036,7 @@ impl BodyContext {
     ) -> DiagResult {
         let refs = ctx.refs;
         let diags = refs.diags;
+        let interner = &refs.shared.interner;
 
         let &ModuleInstance {
             ref name,
@@ -849,7 +1149,7 @@ impl BodyContext {
                     }
                 }
                 None => {
-                    let connector_id_str = connector_info.id.inner.str(&refs.shared.interner);
+                    let connector_id_str = connector_info.id.inner.str(interner);
                     let diag = DiagnosticError::new(
                         format!("missing connection for port `{connector_id_str}`"),
                         Span::empty_at(port_connections.span.end()),
@@ -916,6 +1216,7 @@ impl BodyContext {
     ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
         let refs = ctx.refs;
         let diags = refs.diags;
+        let interner = &refs.shared.interner;
 
         // connector, declared in the module being instantiated
         let ConnectorInfo {
@@ -1074,8 +1375,7 @@ impl BodyContext {
                         } else {
                             let extra_ir_wire = self.ir_signals.wires.push(IrWireInfo {
                                 ty: port_ty.inner.as_ir(refs),
-                                debug_info_id: connector_id
-                                    .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
+                                debug_info_id: connector_id.map_inner(|id| Some(id.str(interner).to_owned())),
                                 debug_info_ty: port_ty.inner.clone().value_string(refs),
                                 debug_info_domain: connection_value.inner.domain().diagnostic_string(ctx),
                             });
@@ -1209,8 +1509,7 @@ impl BodyContext {
                                     // create intermediate wire, with the port type
                                     let wire_raw = self.ir_signals.wires.push(IrWireInfo {
                                         ty: port_ty.inner.as_ir(refs),
-                                        debug_info_id: connector_id
-                                            .map_inner(|id| Some(id.str(&refs.shared.interner).to_owned())),
+                                        debug_info_id: connector_id.map_inner(|id| Some(id.str(interner).to_owned())),
                                         debug_info_ty: port_ty.inner.value_string(refs),
                                         debug_info_domain: connector_domain.inner.diagnostic_string(ctx).to_owned(),
                                     });
@@ -1288,48 +1587,43 @@ impl BodyContext {
                     }
                 };
 
-                // check interface match (including generics)
-                let value_interface = value_eval.elab;
-                if value_interface.inner != connector_view.inner.interface {
+                // check interface (including generics) and shape match
+                let connector_interface = connector_view.map_inner(|v| v.interface);
+                if connector_interface.inner != value_eval.elab.inner {
                     let diag = DiagnosticError::new("interface mismatch", expr.span, "got mismatching interface")
                         .add_info(
-                            connector_view.span,
+                            connector_interface.span,
                             format!(
                                 "expected interface `{}` set here",
-                                SimpleCompileValue::Interface(connector_view.inner.interface).value_string(refs)
+                                connector_interface.inner.value_string(refs)
                             ),
                         )
                         .add_info(
-                            value_interface.span,
+                            value_eval.elab.span,
                             format!(
                                 "actual interface `{}` set here",
-                                SimpleCompileValue::Interface(value_interface.inner).value_string(refs)
+                                value_eval.elab.inner.value_string(refs)
                             ),
                         )
                         .report(diags);
                     return Err(diag);
                 }
-
-                // check shape match
-                let Ok(elements) = connector_singles.zip(&value_eval.intf) else {
-                    let describe = |shape: NdArrayShape| match shape {
-                        NdArrayShape::Scalar => "single interface".to_owned(),
-                        NdArrayShape::Array { .. } => {
-                            format!("interface array with shape `{}`", shape_string(&shape.to_vec()))
-                        }
-                    };
+                if connector_singles.shape() != value_eval.intf.shape() {
                     let diag = DiagnosticError::new(
                         "interface array shape mismatch",
                         expr.span,
-                        format!("got {}", describe(value_eval.intf.shape())),
+                        format!("got {}", describe_interface_shape(value_eval.intf.shape())),
                     )
                     .add_info(
                         connector_id.span(),
-                        format!("expected {}", describe(connector_singles.shape())),
+                        format!("expected {}", describe_interface_shape(connector_singles.shape())),
                     )
                     .report(diags);
                     return Err(diag);
-                };
+                }
+                let elements = connector_singles
+                    .zip(&value_eval.intf)
+                    .map_err(|_| diags.report_error_internal(expr.span, "interface shape mismatch after check"))?;
 
                 let interface_info = refs
                     .shared
@@ -1338,31 +1632,32 @@ impl BodyContext {
                 let view_info = &interface_info.views[connector_view.inner.view_index];
 
                 let port_dirs = view_info.port_dirs.as_ref_ok()?;
-                let any_input = port_dirs.iter().any(|(_, d)| d.inner == PortDirection::Input);
-                let any_output = port_dirs.iter().any(|(_, d)| d.inner == PortDirection::Output);
+                let any_input = port_dirs.iter().any(|(_, d)| d.inner.is_input());
+                let any_output = port_dirs.iter().any(|(_, d)| d.inner.is_output());
 
                 // check directions and build connections
                 let mut result_connections = vec![];
                 for (element_singles, &element_intf) in elements {
                     for (port_index, &(_, connector_dir)) in enumerate(port_dirs.iter()) {
-                        let (value_dir, value_signal, value_ir) = match element_intf {
+                        let value_ir = element_intf.signal_ir(ctx, port_index);
+                        let (value_dir, value_signal) = match element_intf {
                             Interface::Port(port_interface) => {
-                                let port = ctx.port_interfaces[port_interface].ports[port_index];
-                                let info = &ctx.ports[port];
-                                (Some(info.direction), Signal::Port(port), IrSignal::Port(info.ir))
+                                let port_interface_info = &ctx.port_interfaces[port_interface];
+                                let port = port_interface_info.ports[port_index];
+                                let dir = (ctx.ports[port].direction, port_interface_info.view.span);
+                                (Some(dir), Signal::Port(port))
                             }
-                            Interface::Wire(wire_interface) => {
-                                let info = &ctx.wire_interfaces[wire_interface];
-                                let wire = info.wires[port_index];
-                                (None, Signal::Wire(wire), IrSignal::Wire(info.ir_wires[port_index]))
-                            }
+                            Interface::Wire(wire_interface) => (
+                                None,
+                                Signal::Wire(ctx.wire_interfaces[wire_interface].wires[port_index]),
+                            ),
                         };
 
                         // check direction
-                        if let Some(value_dir) = value_dir
+                        if let Some((value_dir, value_view_span)) = value_dir
                             && connector_dir.inner != value_dir.inner
                         {
-                            let signal_id_str = interface_info.signals[port_index].id.inner.str(&refs.shared.interner);
+                            let signal_id_str = interface_info.signals[port_index].id.inner.str(interner);
                             let diag = DiagnosticError::new(
                                 format!("direction mismatch for interface port `{}`", signal_id_str),
                                 expr.span,
@@ -1374,6 +1669,7 @@ impl BodyContext {
                             )
                             .add_info(connector_dir.span, "expected direction set here")
                             .add_info(value_dir.span, "actual direction set here")
+                            .add_info(value_view_span, "port interface view set here")
                             .report(diags);
                             return Err(diag);
                         }
@@ -1397,14 +1693,7 @@ impl BodyContext {
 
                 // check domains, only after all other checks have passed since this can infer wire domains
                 for &element_intf in value_eval.intf.flat_values() {
-                    let value_domain = match element_intf {
-                        Interface::Port(port_interface) => ctx.port_interfaces[port_interface]
-                            .domain
-                            .map_inner(|d| ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))),
-                        Interface::Wire(wire_interface) => {
-                            ctx.wire_interfaces[wire_interface].suggest_domain(connector_domain)?
-                        }
-                    };
+                    let value_domain = element_intf.suggest_domain(ctx, connector_domain)?;
 
                     let mut any_err_domain = Ok(());
                     if any_input {
@@ -1434,6 +1723,75 @@ impl BodyContext {
     }
 }
 
+/// Suggest and check domains in an interface connect statement.
+///
+/// Implemented by repeatedly finding any driver with a known domain, and then suggesting that domain to all sinks.
+/// This allows domains to propagate as much as possible.
+fn connect_domains_suggest_and_check(
+    ctx: &mut CompileItemContext,
+    span_keyword: Span,
+    entries: &[Spanned<Interface>],
+    signal_drivers: &[usize],
+) -> DiagResult {
+    let diags = ctx.refs.diags;
+
+    let mut any_err = Ok(());
+    let mut pending = signal_drivers.iter().copied().unique().collect_vec();
+    loop {
+        let pending_len_before = pending.len();
+
+        // find the next driver with a known domain
+        let mut i = 0;
+        while i < pending.len() {
+            let source = pending[i];
+            let Some(source_domain) = entries[source].inner.domain(ctx)? else {
+                i += 1;
+                continue;
+            };
+
+            // iterate over all sinks
+            for (sink, sink_entry) in enumerate(entries) {
+                if sink == source {
+                    continue;
+                }
+
+                // suggest and check domain source->sink
+                let sink_domain = sink_entry.inner.suggest_domain(ctx, source_domain)?;
+                let curr_err = ctx.check_valid_domain_crossing(
+                    sink_entry.span,
+                    sink_domain,
+                    source_domain,
+                    "interface connection",
+                );
+                any_err = any_err.and(curr_err);
+            }
+            pending.remove(i);
+        }
+
+        // if done or not making progress
+        if pending.is_empty() || pending.len() == pending_len_before {
+            break;
+        }
+    }
+
+    // if we're not done, report error
+    if !pending.is_empty() {
+        let mut diag = DiagnosticError::new(
+            "cannot infer domain for connection between wires",
+            span_keyword,
+            "connection here",
+        );
+        for &driver in &pending {
+            diag = diag.add_info(entries[driver].span, "driver has no known domain");
+        }
+        return Err(diag
+            .add_footer_hint("declare the domain of the driving wires")
+            .report(diags));
+    }
+
+    any_err
+}
+
 fn try_extract_simple_port_input_signal(block: &IrBlock, expr: &IrExpression) -> Option<IrSignal> {
     let IrBlock { statements } = block;
 
@@ -1461,4 +1819,13 @@ fn try_extract_simple_port_input_signal(block: &IrBlock, expr: &IrExpression) ->
     }
 
     None
+}
+
+pub fn describe_interface_shape(shape: NdArrayShape) -> String {
+    match shape {
+        NdArrayShape::Scalar => "a single interface".to_owned(),
+        NdArrayShape::Array { .. } => {
+            format!("an interface array with shape `{}`", shape_string(&shape.to_vec()))
+        }
+    }
 }

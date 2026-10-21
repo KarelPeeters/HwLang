@@ -72,6 +72,10 @@
       "match": "external(?![_a-zA-Z0-9])"
     },
     {
+      "name": "keyword.other.connect.khdl",
+      "match": "connect(?![_a-zA-Z0-9])"
+    },
+    {
       "name": "keyword.other.clocked.khdl",
       "match": "clocked(?![_a-zA-Z0-9])"
     },

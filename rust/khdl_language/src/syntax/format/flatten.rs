@@ -1,15 +1,15 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, AssignBinaryOp, Assignment, BinaryOp,
     BinaryOpLevel, Block, BlockExpression, BlockStatement, BlockStatementKind, ClockedProcess, ClockedProcessReset,
-    CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock,
-    ConstDeclaration, DomainKind, DotIndexKind, EnumBodyItem, EnumDeclaration, EnumVariant, Expression, ExpressionKind,
-    ExtraList, ExtraListBlock, ExtraListItem, FileContent, ForStatement, FunctionDeclaration, Identifier,
-    IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind, IntLiteral, InterfaceListItem, InterfaceSignal,
-    InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal, ItemDefModuleInternal, ItemImport, MatchBranch,
-    MatchPattern, MatchStatement, MaybeIdentifier, MaybeParameterSelf, MaybeVisibility, ModuleInstance,
-    ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelfKind, Parameters,
-    PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegisterDeclaration,
+    CombinatorialProcess, CommonDeclaration, CommonDeclarationNamed, CommonDeclarationNamedKind, ConnectEntry,
+    ConnectEntryView, ConnectStatement, ConstBlock, ConstDeclaration, DomainKind, DotIndexKind, EnumBodyItem,
+    EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent,
+    ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
+    IntLiteral, InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal,
+    ItemDefModuleInternal, ItemImport, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, MaybeParameterSelf,
+    MaybeVisibility, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
+    ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelfKind,
+    Parameters, PortConnection, PortConnectionExpression, PortSingleKindInner, RangeLiteral, RegisterDeclaration,
     RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement, StringPiece,
     StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility,
     WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
@@ -762,6 +762,32 @@ impl Context<'_> {
                 seq.push(token(TT::Semi));
                 seq.push(HNode::AlwaysNewline);
                 HNode::Sequence(seq)
+            }
+            ModuleStatementKind::Connect(connect) => {
+                let ConnectStatement {
+                    span_keyword: _,
+                    entries,
+                } = connect;
+
+                let node_entries = self.fmt_extra_list(SurroundKind::Round, false, entries, &|entry| {
+                    let &ConnectEntry { span: _, expr, view } = entry;
+                    let mut seq = vec![self.fmt_expr(expr)];
+                    if let Some(view) = view {
+                        let ConnectEntryView { span_keyword: _, id } = view;
+                        seq.extend([HNode::Space, token(TT::View), HNode::Space, self.fmt_id(id)]);
+                    }
+                    HNodeAndComma {
+                        node: HNode::Sequence(seq),
+                        comma: true,
+                    }
+                });
+
+                HNode::Sequence(vec![
+                    token(TT::Connect),
+                    node_entries,
+                    token(TT::Semi),
+                    HNode::AlwaysNewline,
+                ])
             }
         }
     }

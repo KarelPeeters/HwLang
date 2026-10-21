@@ -1,7 +1,9 @@
 use crate::front::compile::{CompileItemContext, CompileRefs};
 use crate::front::diagnostic::DiagResult;
 use crate::front::flow::{Flow, FlowHardware};
-use crate::front::item::{ElaboratedEnumInfo, ElaboratedInterfaceView, ElaboratedStructInfo, ElaborationArenas};
+use crate::front::item::{
+    ElaboratedEnumInfo, ElaboratedInterface, ElaboratedInterfaceView, ElaboratedStructInfo, ElaborationArenas,
+};
 use crate::front::scope::Scope;
 use crate::front::types::{HardwareType, Type};
 use crate::front::value::{
@@ -515,10 +517,7 @@ impl SimpleCompileValue {
             &SimpleCompileValue::Package(node) => {
                 format!("<package {}>", refs.hierarchy[node].steps.join("."))
             }
-            &SimpleCompileValue::Interface(v) => {
-                let intf = &refs.elab.interface_info(v).debug_info_name;
-                format!("<interface {intf}>")
-            }
+            &SimpleCompileValue::Interface(v) => v.value_string(refs),
             &SimpleCompileValue::InterfaceArray(ref lens, v) => {
                 let lens = shape_string(lens);
                 let intf = &refs.elab.interface_info(v).debug_info_name;
@@ -737,6 +736,14 @@ impl CompileCompoundValue {
                 )
             }
         }
+    }
+}
+
+impl ElaboratedInterface {
+    pub fn value_string<'a>(self, refs: impl Into<StringRefs<'a>>) -> String {
+        let refs = refs.into();
+        let intf = &refs.elab.interface_info(self).debug_info_name;
+        format!("<interface {intf}>")
     }
 }
 

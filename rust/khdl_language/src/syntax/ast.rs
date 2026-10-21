@@ -441,6 +441,22 @@ impl PortDirection {
             PortDirection::Output => TokenType::Out,
         }
     }
+
+    pub fn is_input(self) -> bool {
+        // enforce exhaustiveness
+        match self {
+            PortDirection::Input => true,
+            PortDirection::Output => false,
+        }
+    }
+
+    pub fn is_output(self) -> bool {
+        // enforce exhaustiveness
+        match self {
+            PortDirection::Input => false,
+            PortDirection::Output => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -467,6 +483,7 @@ pub enum ModuleStatementKind {
     CombinatorialProcess(CombinatorialProcess),
     ClockedProcess(ClockedProcess),
     Instance(ModuleInstance),
+    Connect(ConnectStatement),
 }
 
 #[derive(Debug, Clone)]
@@ -719,6 +736,25 @@ pub struct ModuleInstance {
     pub span_keyword: Span,
     pub module: Expression,
     pub port_connections: Spanned<ExtraList<PortConnection>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectStatement {
+    pub span_keyword: Span,
+    pub entries: ExtraList<ConnectEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectEntry {
+    pub span: Span,
+    pub expr: Expression,
+    pub view: Option<ConnectEntryView>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ConnectEntryView {
+    pub span_keyword: Span,
+    pub id: Identifier,
 }
 
 #[derive(Debug, Clone)]
@@ -1256,6 +1292,7 @@ impl_has_span!(ExtraList<T>);
 impl_has_span!(ExtraListBlock<T>);
 impl_has_span!(IfStatement<B>);
 impl_has_span!(Block<B>);
+impl_has_span!(ConnectEntry);
 
 impl HasSpan for StructBodyItem {
     fn span(&self) -> Span {

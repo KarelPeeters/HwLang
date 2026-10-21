@@ -88,6 +88,17 @@ module module_instance ports() {
     instance f = foo ports();
 }
 
+module module_connect ports() {
+    connect(x view In, y view Out);
+    connect(x, y, z view Out);
+    connect(
+        x view In,
+        for (i in 0..4) {
+            y[i] view Out,
+        }
+    );
+}
+
 module module_regs ports(
     clk: in clock,
     data: out sync(clk) uint(8),

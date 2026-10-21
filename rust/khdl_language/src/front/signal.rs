@@ -450,6 +450,35 @@ impl Signal {
 }
 
 impl Interface {
+    pub fn signal_ir(self, ctx: &CompileItemContext, signal_index: usize) -> IrSignal {
+        match self {
+            Interface::Port(intf) => IrSignal::Port(ctx.ports[ctx.port_interfaces[intf].ports[signal_index]].ir),
+            Interface::Wire(intf) => IrSignal::Wire(ctx.wire_interfaces[intf].ir_wires[signal_index]),
+        }
+    }
+
+    pub fn domain(self, ctx: &CompileItemContext) -> DiagResult<Option<Spanned<ValueDomain>>> {
+        match self {
+            Interface::Port(intf) => {
+                Ok(Some(ctx.port_interfaces[intf].domain.map_inner(|d| {
+                    ValueDomain::from_domain_kind(d.map_signal(|s| s.map_inner(Signal::Port)))
+                })))
+            }
+            Interface::Wire(intf) => ctx.wire_interfaces[intf].domain.as_ref_ok().copied(),
+        }
+    }
+
+    pub fn suggest_domain(
+        self,
+        ctx: &mut CompileItemContext,
+        suggest: Spanned<ValueDomain>,
+    ) -> DiagResult<Spanned<ValueDomain>> {
+        match self {
+            Interface::Port(_) => Ok(self.domain(ctx)?.unwrap_or(suggest)),
+            Interface::Wire(intf) => ctx.wire_interfaces[intf].suggest_domain(suggest),
+        }
+    }
+
     pub fn get_signal(self, ctx: &CompileItemContext, base_span: Span, id: Spanned<Id>) -> DiagResult<Signal> {
         let refs = ctx.refs;
 

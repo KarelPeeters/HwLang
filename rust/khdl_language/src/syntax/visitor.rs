@@ -1,17 +1,17 @@
 use crate::syntax::ast::{
     ArenaExpressions, Arg, ArrayComprehension, ArrayLiteralElement, Assignment, Block, BlockExpression, BlockStatement,
     BlockStatementKind, ClockedProcess, ClockedProcessReset, CombinatorialProcess, CommonDeclaration,
-    CommonDeclarationNamed, CommonDeclarationNamedKind, ConstBlock, ConstDeclaration, DomainKind, EnumBodyItem,
-    EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock, ExtraListItem, FileContent,
-    ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair, IfStatement, ImportEntry, ImportFinalKind,
-    InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface, ItemDefModuleExternal,
-    ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier, MaybeParameterSelf,
-    ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem, ModulePortSingle,
-    ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter, ParameterSelf, ParameterSelfKind,
-    Parameters, PortConnection, PortSingleKindInner, RangeLiteral, RegisterDeclaration, RegisterDeclarationKind,
-    RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement, StringPiece, StructBodyItem, StructDeclaration,
-    StructField, SyncDomain, TypeDeclaration, VariableDeclaration, Visibility, WhileStatement, WireDeclaration,
-    WireDeclarationDomainTyKind, WireDeclarationKind,
+    CommonDeclarationNamed, CommonDeclarationNamedKind, ConnectEntry, ConnectStatement, ConstBlock, ConstDeclaration,
+    DomainKind, EnumBodyItem, EnumDeclaration, EnumVariant, Expression, ExpressionKind, ExtraList, ExtraListBlock,
+    ExtraListItem, FileContent, ForStatement, FunctionDeclaration, Identifier, IfCondBlockPair, IfStatement,
+    ImportEntry, ImportFinalKind, InterfaceListItem, InterfaceSignal, InterfaceView, Item, ItemDefInterface,
+    ItemDefModuleExternal, ItemDefModuleInternal, MatchBranch, MatchPattern, MatchStatement, MaybeIdentifier,
+    MaybeParameterSelf, ModuleInstance, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind,
+    ModulePortItem, ModulePortSingle, ModulePortSingleKind, ModuleStatement, ModuleStatementKind, Parameter,
+    ParameterSelf, ParameterSelfKind, Parameters, PortConnection, PortSingleKindInner, RangeLiteral,
+    RegisterDeclaration, RegisterDeclarationKind, RegisterDeclarationNew, RegisterDeclarationWire, ReturnStatement,
+    StringPiece, StructBodyItem, StructDeclaration, StructField, SyncDomain, TypeDeclaration, VariableDeclaration,
+    Visibility, WhileStatement, WireDeclaration, WireDeclarationDomainTyKind, WireDeclarationKind,
 };
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::syntax::source::SourceDatabase;
@@ -1105,6 +1105,26 @@ impl<V: SyntaxVisitor> VisitContext<'_, '_, V> {
                         ControlFlow::Continue(())
                     },
                 )?;
+            }
+            ModuleStatementKind::Connect(stmt) => {
+                let ConnectStatement {
+                    span_keyword: _,
+                    entries,
+                } = stmt;
+
+                self.visitor.report_range(entries.span, None);
+
+                let mut scope_entries = DeclScope::new_child(scope);
+                self.visit_extra_list(&mut scope_entries, entries, &mut |slf, scope_entries, entry| {
+                    slf.visitor.report_range(entry.span, None);
+
+                    let &ConnectEntry { span: _, expr, view } = entry;
+                    // TODO try resolving view name, needs type info
+                    let _ = view;
+                    slf.visit_expression(scope_entries, expr)?;
+
+                    ControlFlow::Continue(())
+                })?;
             }
         }
 

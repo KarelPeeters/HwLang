@@ -415,6 +415,7 @@ impl ModulePortsContext<'_> {
             let entry = ScopedEntry::Named(NamedValue::Interface(LeftInterfaceInfo {
                 span_id: id.span,
                 elab: view.map_inner(|v| v.interface),
+                port_view: Some(view),
                 intf,
             }));
             Ok((kind, entry))

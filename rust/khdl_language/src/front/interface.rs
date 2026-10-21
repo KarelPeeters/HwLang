@@ -11,10 +11,11 @@ use crate::syntax::ast::{
 use crate::syntax::parsed::AstRefInterface;
 use crate::syntax::pos::{HasSpan, Spanned};
 use crate::util::ResultDoubleExt;
-use crate::util::intern::Id;
+use crate::util::intern::{Id, Interner};
 use crate::util::iter::IterExt;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use itertools::Itertools;
 
 #[derive(Debug)]
 pub struct ElaboratedInterfaceInfo {
@@ -25,36 +26,30 @@ pub struct ElaboratedInterfaceInfo {
 }
 
 impl ElaboratedInterfaceInfo {
-    pub fn get_port(
-        &self,
-        diags: &Diagnostics,
-        index: Spanned<Id>,
-    ) -> DiagResult<(usize, &ElaboratedInterfaceSignalInfo)> {
-        match self.signals.get_index_of(&index.inner) {
-            None => Err(DiagnosticError::new(
-                "dot index does not match any interface port",
-                index.span,
-                "this identifier should match a port",
-            )
-            .add_info(self.id.span(), "interface declared here")
-            .report(diags)),
-            Some(index) => Ok((index, &self.signals[index])),
-        }
-    }
-
     pub fn get_view(
         &self,
         diags: &Diagnostics,
+        interner: &Interner,
         index: Spanned<Id>,
     ) -> DiagResult<(usize, &ElaboratedInterfaceViewInfo)> {
         match self.views.get_index_of(&index.inner) {
-            None => Err(DiagnosticError::new(
-                "dot index does not match any interface view",
-                index.span,
-                "this identifier should match a view",
-            )
-            .add_info(self.id.span(), "interface declared here")
-            .report(diags)),
+            None => {
+                let title = format!("view `{}` not found in interface", index.inner.str(interner));
+                let info = format!("interface `{}` declared here", self.debug_info_name);
+
+                let footer = if self.views.is_empty() {
+                    "this interface does not declare any views".to_owned()
+                } else {
+                    let available = self.views.keys().map(|id| format!("`{}`", id.str(interner))).join(", ");
+                    format!("available views: {available}")
+                };
+
+                let diag = DiagnosticError::new(title, index.span, "unknown view used here")
+                    .add_info(self.id.span(), info)
+                    .add_footer_hint(footer)
+                    .report(diags);
+                Err(diag)
+            }
             Some(index) => Ok((index, &self.views[index])),
         }
     }
