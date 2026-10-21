@@ -15,6 +15,7 @@ import {
 import {Input, NodeSet, NodeType, Parser, PartialParse, Tree} from "@lezer/common"
 import {styleTags, tags} from "@lezer/highlight"
 import {oneDark} from "@codemirror/theme-one-dark";
+import {diff} from "@codemirror/merge";
 import * as khdl_wasm from "khdl_wasm";
 import {verilog as mode_verilog} from "@codemirror/legacy-modes/mode/verilog";
 import {cpp as mode_cpp} from "@codemirror/legacy-modes/mode/clike";
@@ -266,12 +267,15 @@ function formatCurrentCode() {
     const currentCode = editor_view_input.state.doc.toString();
     const formatted = khdl_wasm.format_source(currentCode);
     if (formatted !== undefined) {
+        // set input through diff to try to preserve the cursor position
+        const changes = diff(currentCode, formatted).map(change => ({
+            from: change.fromA,
+            to: change.toA,
+            insert: formatted.slice(change.fromB, change.toB),
+        }));
         editor_view_input.dispatch({
-            changes: {
-                from: 0,
-                to: editor_view_input.state.doc.length,
-                insert: formatted,
-            }
+            changes,
+            userEvent: "format",
         });
     }
 }
