@@ -23,6 +23,8 @@ import {cpp as mode_cpp} from "@codemirror/legacy-modes/mode/clike";
 import AnsiToHtmlClass from "ansi-to-html";
 import Cookies from "js-cookie";
 import pako from "pako";
+import type {CompileRequest, CompileResponse, CompileResult, WorkerRequest} from "./worker_protocol";
+import {wasm_module} from "./wasm_module";
 
 function build_node_types() {
     const node_types_string = khdl_wasm.codemirror_node_types();
@@ -149,50 +151,80 @@ function diagnostics_ansi_to_html(ansi: string): string {
 const EMPTY_DOC = "/* empty */";
 const COOKIE_SOURCE = "source";
 
-function onDocumentChanged(source: string, editor_view_output_verilog: EditorView, editor_view_output_cpp: EditorView, editor_view_output_format: EditorView, editor_view_output_ir: EditorView, format_visible: boolean, ir_visible: boolean) {
-    // store code in cookie
-    Cookies.set(COOKIE_SOURCE, source);
+let compile_worker: Worker | null = null;
+let compile_running = false;
 
-    // store code in share link, as the parameter "source", compressed and base64 encoded
-    // https://developer.mozilla.org/en-US/docs/Glossary/Base64#the_unicode_problem
-    const url = new URL(window.location.href);
-    url.searchParams.set("source", "cb64-" + btoa(String.fromCharCode.apply(null, pako.deflate(source))));
-    element_share_link.href = url.toString()
+function request_compile(request: CompileRequest) {
+    if (compile_running) {
+        stop_compile_worker();
+    }
 
-    // run the compiler
-    let compile_diags_ansi, lowered_verilog, lowered_cpp, format_diags_ansi, format_debug_str, ir_debug_str;
-    try {
-        const result = khdl_wasm.run_all(source, format_visible, ir_visible);
-        compile_diags_ansi = result.compile_diags_ansi;
-        lowered_verilog = result.lowered_verilog;
-        lowered_cpp = result.lowered_cpp;
-        format_diags_ansi = result.format_diags_ansi;
-        format_debug_str = result.format_debug_str;
-        ir_debug_str = result.ir_debug_str;
-
-        if (result.compile_prints.length > 0) {
-            let combined_prints = "// prints:\n";
-            for (const print of result.compile_prints) {
-                if (combined_prints.endsWith("\n")) {
-                    combined_prints += "//  ";
-                }
-                combined_prints += print;
+    if (compile_worker === null) {
+        const worker = new Worker(new URL("./compile_worker.ts", import.meta.url), {type: "module"});
+        worker.onmessage = (event: MessageEvent<CompileResponse>) => {
+            if (worker === compile_worker) {
+                handle_compile_response(event.data);
             }
-            combined_prints += "\n";
-            lowered_verilog = combined_prints + lowered_verilog;
+        };
+        worker.onerror = (event) => {
+            if (worker === compile_worker) {
+                handle_compile_response({type: "error", message: event.message || "compile worker failed"});
+            }
+        };
+        compile_worker = worker;
+        worker.postMessage({type: "init", module: wasm_module} satisfies WorkerRequest);
+    }
+
+    compile_running = true;
+    compile_worker.postMessage({type: "compile", request} satisfies WorkerRequest);
+}
+
+function stop_compile_worker() {
+    compile_worker?.terminate();
+    compile_worker = null;
+    compile_running = false;
+}
+
+function handle_compile_response(response: CompileResponse) {
+    compile_running = false;
+    if (response.type === "result") {
+        apply_compile_result(response.result);
+    } else {
+        // the wasm instance might be in a broken state after a panic, start a new worker for the next compile
+        stop_compile_worker();
+        apply_compile_result({
+            compile_diags_ansi: `compiler panicked\nsee console for the stack trace\n${response.message}`,
+            compile_prints: [],
+            lowered_verilog: "",
+            lowered_cpp: "",
+            format_diags_ansi: `compiler panicked\n${response.message}`,
+            format_debug_str: "",
+            ir_debug_str: "",
+        });
+    }
+}
+
+function apply_compile_result(result: CompileResult) {
+    let lowered_verilog = result.lowered_verilog;
+    let lowered_cpp = result.lowered_cpp;
+    let format_debug_str = result.format_debug_str;
+    let ir_debug_str = result.ir_debug_str;
+
+    if (result.compile_prints.length > 0) {
+        let combined_prints = "// prints:\n";
+        for (const print of result.compile_prints) {
+            if (combined_prints.endsWith("\n")) {
+                combined_prints += "//  ";
+            }
+            combined_prints += print;
         }
-    } catch (e) {
-        compile_diags_ansi = "compiler panicked\nsee console for the error message and stack trace";
-        lowered_verilog = "";
-        lowered_cpp = "";
-        format_diags_ansi = compile_diags_ansi;
-        format_debug_str = "";
-        ir_debug_str = "";
+        combined_prints += "\n";
+        lowered_verilog = combined_prints + lowered_verilog;
     }
 
     // display diagnostics as html
-    element_diags_compile.innerHTML = diagnostics_ansi_to_html(compile_diags_ansi);
-    element_diags_format.innerHTML = diagnostics_ansi_to_html(format_diags_ansi);
+    element_diags_compile.innerHTML = diagnostics_ansi_to_html(result.compile_diags_ansi);
+    element_diags_format.innerHTML = diagnostics_ansi_to_html(result.format_diags_ansi);
 
     // replace output contents with newly generated source,
     // put at least some text to prevent confusion
@@ -237,6 +269,19 @@ function onDocumentChanged(source: string, editor_view_output_verilog: EditorVie
             insert: ir_debug_str,
         }
     })
+}
+
+function onDocumentChanged(source: string, format_visible: boolean, ir_visible: boolean) {
+    // store code in cookie
+    Cookies.set(COOKIE_SOURCE, source);
+
+    // store code in share link, as the parameter "source", compressed and base64 encoded
+    // https://developer.mozilla.org/en-US/docs/Glossary/Base64#the_unicode_problem
+    const url = new URL(window.location.href);
+    url.searchParams.set("source", "cb64-" + btoa(String.fromCharCode.apply(null, pako.deflate(source))));
+    element_share_link.href = url.toString()
+
+    request_compile({source, include_format: format_visible, include_ir: ir_visible});
 }
 
 function color_scheme_extension(): Extension {
@@ -325,17 +370,16 @@ let editor_view_output_ir = new EditorView({
     parent: element_editor_output_ir
 })
 
-// TODO get this out of the typing event loop, run this async or on a separate thread
 let format_visible = false;
 let ir_visible = false;
 
 function force_update() {
-    onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, editor_view_output_ir, format_visible, ir_visible);
+    onDocumentChanged(editor_view_input.state.doc.toString(), format_visible, ir_visible);
 }
 
 let updateListenerExtension = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-        onDocumentChanged(editor_view_input.state.doc.toString(), editor_view_output_verilog, editor_view_output_cpp, editor_view_output_format, editor_view_output_ir, format_visible, ir_visible);
+        onDocumentChanged(editor_view_input.state.doc.toString(), format_visible, ir_visible);
     }
 })
 

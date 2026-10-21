@@ -3,7 +3,4 @@ set -ue
 
 cd "$(dirname "$0")"/..
 
-# TODO collect commands to install and setup npm
-
-(cd rust/khdl_wasm && wasm-pack build --dev)
-(cd web_demo && npm ci && npm run start)
+web_demo/build_and_run.sh

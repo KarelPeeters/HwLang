@@ -61,8 +61,9 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
     let compiled = hierarchy_file.as_ref_ok().and_then(|&(ref hierarchy, top_file)| {
         let parsed = ParsedDatabase::new(&diags, &source, hierarchy);
 
-        let start = wasm_timer::Instant::now();
-        let should_stop = || start.elapsed() >= TIMEOUT;
+        let start = js_sys::Date::now();
+        let timeout_ms = TIMEOUT.as_millis() as f64;
+        let should_stop = || js_sys::Date::now() - start >= timeout_ms;
         let dummy_span = source.full_span(top_file);
 
         let fixed = CompileFixed {
