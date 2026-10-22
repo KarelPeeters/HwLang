@@ -6,6 +6,18 @@ import pytest
 from khdl_sandbox.common.util import compile_custom, diag_error
 
 
+def test_module_name_set():
+    """Check that all items defined in the package have the correct module set"""
+    wrong = {}
+    for name, item in vars(khdl).items():
+        if name.startswith("__") or name == "khdl":
+            continue
+        module = getattr(item, "__module__", None)
+        if module != "khdl":
+            wrong[name] = module
+    assert wrong == {}
+
+
 def test_interact_add():
     c = compile_custom("fn f(a: int, b: int) -> int { return a + b; }")
     f = c.resolve("top.f")

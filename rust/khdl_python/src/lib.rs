@@ -222,7 +222,10 @@ impl DiagnosticException {
 // TODO switch to adding a prefix to python wrappers instead of the original rust types, then rename back in pyclass
 #[pymodule]
 fn khdl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(format_file, m)?)?;
+    let f_format_file = wrap_pyfunction!(format_file, m)?;
+    f_format_file.setattr("__module__", "khdl")?;
+    m.add_function(f_format_file)?;
+
     m.add_class::<Source>()?;
     m.add_class::<Parsed>()?;
     m.add_class::<Compile>()?;
