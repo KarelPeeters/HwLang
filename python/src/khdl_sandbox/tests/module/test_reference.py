@@ -17,9 +17,9 @@ def test_ref_port_read(tmp_dir: Path):
     top: khdl.Module = compile_custom(src).resolve("top.top")
     inst = top.as_verilated(tmp_dir).instance()
     for v in [0, 4]:
-        inst.ports.x.value = v
+        inst.ports.x = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
 
 
 def test_ref_port_write(tmp_dir: Path):
@@ -34,9 +34,9 @@ def test_ref_port_write(tmp_dir: Path):
     top: khdl.Module = compile_custom(src).resolve("top.top")
     inst = top.as_verilated(tmp_dir).instance()
     for v in [0, 4]:
-        inst.ports.x.value = v
+        inst.ports.x = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
 
 
 def test_ref_port_write_input_error():
@@ -179,10 +179,10 @@ def test_ref_interface_array(tmp_dir: Path):
 
     for i in range(3):
         for j in range(2):
-            inst.ports.x[i][j].value.value = 2 * i + j
+            inst.ports.x[i][j].value = 2 * i + j
     inst.step(1)
     for j in range(2):
-        assert inst.ports.y[j].value.value == 4 + j
+        assert inst.ports.y[j].value == 4 + j
 
 
 def test_ref_interface_array_ty_mismatch():

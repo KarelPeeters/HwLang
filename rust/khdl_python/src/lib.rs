@@ -150,30 +150,62 @@ struct VerilatedPorts {
 }
 
 #[pyclass(module = "khdl", unsendable)]
-struct VerilatedPortsFlat {
-    instance: Py<VerilatedInstance>,
-}
-
-#[pyclass(module = "khdl", unsendable)]
 struct VerilatedInterface {
-    instance: Py<VerilatedInstance>,
-    path: String,
-    ports: IndexMap<String, IrPort>,
+    inner: InterfaceSelection,
 }
 
 #[pyclass(module = "khdl", unsendable)]
 struct VerilatedInterfaceArray {
+    inner: InterfaceArraySelection,
+}
+
+#[pyclass(module = "khdl", unsendable)]
+struct VerilatedInfoPorts {
     instance: Py<VerilatedInstance>,
+}
+
+#[pyclass(module = "khdl", unsendable)]
+struct VerilatedInfoPortsFlat {
+    instance: Py<VerilatedInstance>,
+}
+
+#[pyclass(module = "khdl", unsendable)]
+struct VerilatedInfoInterface {
+    inner: InterfaceSelection,
+}
+
+#[pyclass(module = "khdl", unsendable)]
+struct VerilatedInfoInterfaceArray {
+    inner: InterfaceArraySelection,
+}
+
+#[pyclass(module = "khdl", unsendable)]
+struct VerilatedInfoPort {
+    instance: Py<VerilatedInstance>,
+    port: IrPort,
+}
+
+/// Whether ports are exposed as their values or as their info.
+#[derive(Debug, Copy, Clone)]
+enum PortsKind {
+    Values,
+    Info,
+}
+
+struct InterfaceSelection {
+    instance: Py<VerilatedInstance>,
+    kind: PortsKind,
+    path: String,
+    ports: IndexMap<String, IrPort>,
+}
+
+struct InterfaceArraySelection {
+    instance: Py<VerilatedInstance>,
+    kind: PortsKind,
     path: String,
     elements: NdArray<IndexMap<String, IrPort>>,
     // the selected indices of the first axis of `elements`, after slicing this can be a subset
     indices: Vec<usize>,
-}
-
-#[pyclass(module = "khdl", unsendable)]
-struct VerilatedPort {
-    instance: Py<VerilatedInstance>,
-    port: IrPort,
 }
 
 #[pyclass(module = "khdl", subclass, extends=PyException)]
@@ -266,10 +298,13 @@ fn khdl(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModuleVerilated>()?;
     m.add_class::<VerilatedInstance>()?;
     m.add_class::<VerilatedPorts>()?;
-    m.add_class::<VerilatedPortsFlat>()?;
     m.add_class::<VerilatedInterface>()?;
     m.add_class::<VerilatedInterfaceArray>()?;
-    m.add_class::<VerilatedPort>()?;
+    m.add_class::<VerilatedInfoPorts>()?;
+    m.add_class::<VerilatedInfoPortsFlat>()?;
+    m.add_class::<VerilatedInfoInterface>()?;
+    m.add_class::<VerilatedInfoInterfaceArray>()?;
+    m.add_class::<VerilatedInfoPort>()?;
     m.add_class::<Diagnostic>()?;
     m.add("KhdlException", py.get_type::<KhdlException>())?;
     m.add("SourceSetException", py.get_type::<SourceSetException>())?;
@@ -1126,8 +1161,13 @@ impl VerilatedInstance {
     }
 
     #[getter]
-    fn ports_flat(slf: Py<Self>) -> VerilatedPortsFlat {
-        VerilatedPortsFlat { instance: slf }
+    fn info_ports(slf: Py<Self>) -> VerilatedInfoPorts {
+        VerilatedInfoPorts { instance: slf }
+    }
+
+    #[getter]
+    fn info_ports_flat(slf: Py<Self>) -> VerilatedInfoPortsFlat {
+        VerilatedInfoPortsFlat { instance: slf }
     }
 
     fn step(&mut self, increment_time: u64) -> PyResult<()> {
@@ -1148,62 +1188,88 @@ impl VerilatedInstance {
 #[pymethods]
 impl VerilatedPorts {
     fn __getattr__(&self, attr: &str, py: Python) -> PyResult<Py<PyAny>> {
-        self.get_port(attr, py)
+        get_declared_port(py, &self.instance, PortsKind::Values, attr)
     }
 
     fn __getitem__(&self, key: &str, py: Python) -> PyResult<Py<PyAny>> {
-        self.get_port(key, py)
+        get_declared_port(py, &self.instance, PortsKind::Values, key)
     }
 
-    fn __setattr__(&mut self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
-        let _ = self.get_port(attr, py)?;
-        let _ = value;
-        Err(err_set_port_directly(&format!("ports.{attr}")))
+    fn __setattr__(&self, attr: &str, value: &Bound<PyAny>) -> PyResult<()> {
+        self.set_port(attr, &format!("ports.{attr}"), value)
     }
 
-    fn __setitem__(&mut self, key: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
-        let _ = self.get_port(key, py)?;
-        let _ = value;
-        Err(err_set_port_directly(&format!("ports[\"{key}\"]")))
+    fn __setitem__(&self, key: &str, value: &Bound<PyAny>) -> PyResult<()> {
+        self.set_port(key, &format!("ports[\"{key}\"]"), value)
     }
 
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
-        let names = self
-            .instance
-            .borrow(py)
-            .instance
-            .ports_declared()
-            .keys()
-            .cloned()
-            .collect_vec();
-        names.into_pyobject(py)?.try_iter()
+        declared_port_names(py, &self.instance)
+    }
+}
+
+impl VerilatedPorts {
+    fn set_port(&self, name: &str, path: &str, value: &Bound<PyAny>) -> PyResult<()> {
+        let py = value.py();
+        let port = match find_declared_port(py, &self.instance, name)? {
+            IrPortDeclared::Single(port) => port,
+            IrPortDeclared::Interface(_) => return Err(err_set_interface(path)),
+        };
+        set_port_value(&self.instance, port, value)
     }
 }
 
 #[pymethods]
-impl VerilatedPortsFlat {
-    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<VerilatedPort> {
+impl VerilatedInfoPorts {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<Py<PyAny>> {
+        get_declared_port(py, &self.instance, PortsKind::Info, attr)
+    }
+
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<Py<PyAny>> {
+        get_declared_port(py, &self.instance, PortsKind::Info, key)
+    }
+
+    fn __setattr__(&self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+        let _ = find_declared_port(py, &self.instance, attr)?;
+        let _ = value;
+        Err(err_set_info(&format!("info_ports.{attr}")))
+    }
+
+    fn __setitem__(&self, key: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+        let _ = find_declared_port(py, &self.instance, key)?;
+        let _ = value;
+        Err(err_set_info(&format!("info_ports[\"{key}\"]")))
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        declared_port_names(py, &self.instance)
+    }
+}
+
+#[pymethods]
+impl VerilatedInfoPortsFlat {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<VerilatedInfoPort> {
         let port = self.get_port(attr, py)?;
-        Ok(VerilatedPort {
+        Ok(VerilatedInfoPort {
             instance: self.instance.clone_ref(py),
             port,
         })
     }
 
-    fn __getitem__(&self, key: &str, py: Python) -> PyResult<VerilatedPort> {
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<VerilatedInfoPort> {
         self.__getattr__(key, py)
     }
 
-    fn __setattr__(&mut self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+    fn __setattr__(&self, attr: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
         let _ = self.get_port(attr, py)?;
         let _ = value;
-        Err(err_set_port_directly(&format!("ports_flat.{attr}")))
+        Err(err_set_info(&format!("info_ports_flat.{attr}")))
     }
 
-    fn __setitem__(&mut self, key: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
+    fn __setitem__(&self, key: &str, value: Py<PyAny>, py: Python) -> PyResult<()> {
         let _ = self.get_port(key, py)?;
         let _ = value;
-        Err(err_set_port_directly(&format!("ports_flat[\"{key}\"]")))
+        Err(err_set_info(&format!("info_ports_flat[\"{key}\"]")))
     }
 
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
@@ -1219,31 +1285,7 @@ impl VerilatedPortsFlat {
     }
 }
 
-impl VerilatedPorts {
-    fn get_port(&self, name: &str, py: Python) -> PyResult<Py<PyAny>> {
-        let instance = self.instance.borrow(py);
-        let ports_declared = instance.instance.ports_declared();
-        let declared = ports_declared
-            .get(name)
-            .ok_or_else(|| PyAttributeError::new_err(format!("port `{name}` not found")))?;
-
-        match declared {
-            &IrPortDeclared::Single(port) => {
-                let port = VerilatedPort {
-                    instance: self.instance.clone_ref(py),
-                    port,
-                };
-                port.into_py_any(py)
-            }
-            IrPortDeclared::Interface(elements) => {
-                let path = format!("ports.{name}");
-                interface_elements_to_py(py, &self.instance, path, elements)
-            }
-        }
-    }
-}
-
-impl VerilatedPortsFlat {
+impl VerilatedInfoPortsFlat {
     fn get_port(&self, name: &str, py: Python) -> PyResult<IrPort> {
         let instance = &self.instance.borrow(py).instance;
         instance
@@ -1254,58 +1296,173 @@ impl VerilatedPortsFlat {
     }
 }
 
-#[pymethods]
-impl VerilatedInterface {
-    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<VerilatedPort> {
-        let port = self.get_port(attr)?;
-        Ok(VerilatedPort {
-            instance: self.instance.clone_ref(py),
-            port,
-        })
-    }
+fn find_declared_port(py: Python, instance: &Py<VerilatedInstance>, name: &str) -> PyResult<IrPortDeclared> {
+    instance
+        .borrow(py)
+        .instance
+        .ports_declared()
+        .get(name)
+        .cloned()
+        .ok_or_else(|| PyAttributeError::new_err(format!("port `{name}` not found")))
+}
 
-    fn __getitem__(&self, key: &str, py: Python) -> PyResult<VerilatedPort> {
-        let port = self.get_port(key)?;
-        Ok(VerilatedPort {
-            instance: self.instance.clone_ref(py),
-            port,
-        })
-    }
-
-    fn __setattr__(&mut self, attr: &str, value: Py<PyAny>) -> PyResult<()> {
-        let _ = self.get_port(attr)?;
-        let _ = value;
-        Err(err_set_port_directly(&format!("{}.{attr}", self.path)))
-    }
-
-    fn __setitem__(&mut self, key: &str, value: Py<PyAny>) -> PyResult<()> {
-        let _ = self.get_port(key)?;
-        let _ = value;
-        Err(err_set_port_directly(&format!("{}[\"{key}\"]", self.path)))
-    }
-
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
-        let names = self.ports.keys().cloned().collect_vec();
-        names.into_pyobject(py)?.try_iter()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("VerilatedInterface({})", self.path)
+fn get_declared_port(py: Python, instance: &Py<VerilatedInstance>, kind: PortsKind, name: &str) -> PyResult<Py<PyAny>> {
+    match find_declared_port(py, instance, name)? {
+        IrPortDeclared::Single(port) => port_to_py(py, instance, kind, port),
+        IrPortDeclared::Interface(elements) => {
+            let path = format!("{}.{name}", kind.root());
+            interface_elements_to_py(py, instance, kind, path, &elements)
+        }
     }
 }
 
+fn declared_port_names<'py>(py: Python<'py>, instance: &Py<VerilatedInstance>) -> PyResult<Bound<'py, PyIterator>> {
+    let names = instance
+        .borrow(py)
+        .instance
+        .ports_declared()
+        .keys()
+        .cloned()
+        .collect_vec();
+    names.into_pyobject(py)?.try_iter()
+}
+
+#[pymethods]
 impl VerilatedInterface {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<Py<PyAny>> {
+        self.inner.get(py, attr)
+    }
+
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<Py<PyAny>> {
+        self.inner.get(py, key)
+    }
+
+    fn __setattr__(&self, attr: &str, value: &Bound<PyAny>) -> PyResult<()> {
+        let port = self.inner.get_port(attr)?;
+        set_port_value(&self.inner.instance, port, value)
+    }
+
+    fn __setitem__(&self, key: &str, value: &Bound<PyAny>) -> PyResult<()> {
+        let port = self.inner.get_port(key)?;
+        set_port_value(&self.inner.instance, port, value)
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.inner.names(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("VerilatedInterface({})", self.inner.path)
+    }
+}
+
+#[pymethods]
+impl VerilatedInfoInterface {
+    fn __getattr__(&self, attr: &str, py: Python) -> PyResult<Py<PyAny>> {
+        self.inner.get(py, attr)
+    }
+
+    fn __getitem__(&self, key: &str, py: Python) -> PyResult<Py<PyAny>> {
+        self.inner.get(py, key)
+    }
+
+    fn __setattr__(&self, attr: &str, value: Py<PyAny>) -> PyResult<()> {
+        let _ = self.inner.get_port(attr)?;
+        let _ = value;
+        Err(err_set_info(&format!("{}.{attr}", self.inner.path)))
+    }
+
+    fn __setitem__(&self, key: &str, value: Py<PyAny>) -> PyResult<()> {
+        let _ = self.inner.get_port(key)?;
+        let _ = value;
+        Err(err_set_info(&format!("{}[\"{key}\"]", self.inner.path)))
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.inner.names(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("VerilatedInfoInterface({})", self.inner.path)
+    }
+}
+
+impl InterfaceSelection {
     fn get_port(&self, name: &str) -> PyResult<IrPort> {
         self.ports
             .get(name)
             .copied()
             .ok_or_else(|| PyAttributeError::new_err(format!("interface `{}` does not have port `{name}`", self.path)))
     }
+
+    fn get(&self, py: Python, name: &str) -> PyResult<Py<PyAny>> {
+        let port = self.get_port(name)?;
+        port_to_py(py, &self.instance, self.kind, port)
+    }
+
+    fn names<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        let names = self.ports.keys().cloned().collect_vec();
+        names.into_pyobject(py)?.try_iter()
+    }
+
+    fn into_py(self, py: Python) -> PyResult<Py<PyAny>> {
+        match self.kind {
+            PortsKind::Values => VerilatedInterface { inner: self }.into_py_any(py),
+            PortsKind::Info => VerilatedInfoInterface { inner: self }.into_py_any(py),
+        }
+    }
 }
 
 #[pymethods]
 impl VerilatedInterfaceArray {
+    #[getter]
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        self.inner.shape(py)
+    }
+
     fn __getitem__(&self, index: &Bound<PyAny>) -> PyResult<Py<PyAny>> {
+        self.inner.get_item(index)
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.indices.len()
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.inner.iter(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("VerilatedInterfaceArray([{}])", self.inner.element_paths())
+    }
+}
+
+#[pymethods]
+impl VerilatedInfoInterfaceArray {
+    #[getter]
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        self.inner.shape(py)
+    }
+
+    fn __getitem__(&self, index: &Bound<PyAny>) -> PyResult<Py<PyAny>> {
+        self.inner.get_item(index)
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.indices.len()
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.inner.iter(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("VerilatedInfoInterfaceArray([{}])", self.inner.element_paths())
+    }
+}
+
+impl InterfaceArraySelection {
+    fn get_item(&self, index: &Bound<PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let len = self.indices.len();
 
@@ -1335,13 +1492,14 @@ impl VerilatedInterfaceArray {
                 .map(|i| self.indices[(start + i as isize * step) as usize])
                 .collect();
 
-            let result = VerilatedInterfaceArray {
+            let result = InterfaceArraySelection {
                 instance: self.instance.clone_ref(py),
+                kind: self.kind,
                 path: self.path.clone(),
                 elements: self.elements.clone(),
                 indices,
             };
-            return result.into_py_any(py);
+            return result.into_py(py);
         }
 
         // error
@@ -1352,132 +1510,155 @@ impl VerilatedInterfaceArray {
         Err(PyTypeError::new_err(msg))
     }
 
-    fn __len__(&self) -> usize {
-        self.indices.len()
-    }
-
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+    fn iter<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
         let elements: Vec<_> = self.indices.iter().map(|&i| self.get_element(py, i)).try_collect()?;
         elements.into_pyobject(py)?.try_iter()
     }
 
-    fn __repr__(&self) -> String {
-        let paths = self.indices.iter().map(|i| format!("{}[{i}]", self.path)).join(", ");
-        format!("VerilatedInterfaceArray([{paths}])")
-    }
-
-    #[getter]
     fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let rest = match self.elements.shape() {
-            NdArrayShape::Scalar => &[],
+            NdArrayShape::Scalar => &[][..],
             NdArrayShape::Array { first: _, rest } => rest,
         };
         PyTuple::new(py, chain([self.indices.len()], rest.iter().copied()).collect_vec())
     }
-}
 
-impl VerilatedInterfaceArray {
+    fn element_paths(&self) -> String {
+        self.indices.iter().map(|i| format!("{}[{i}]", self.path)).join(", ")
+    }
+
     fn get_element(&self, py: Python, index_inner: usize) -> PyResult<Py<PyAny>> {
         let element = self.elements.step_index(index_inner).unwrap();
-        interface_elements_to_py(py, &self.instance, format!("{}[{index_inner}]", self.path), &element)
+        let path = format!("{}[{index_inner}]", self.path);
+        interface_elements_to_py(py, &self.instance, self.kind, path, &element)
+    }
+
+    fn into_py(self, py: Python) -> PyResult<Py<PyAny>> {
+        match self.kind {
+            PortsKind::Values => VerilatedInterfaceArray { inner: self }.into_py_any(py),
+            PortsKind::Info => VerilatedInfoInterfaceArray { inner: self }.into_py_any(py),
+        }
+    }
+}
+
+impl PortsKind {
+    fn root(self) -> &'static str {
+        match self {
+            PortsKind::Values => "ports",
+            PortsKind::Info => "info_ports",
+        }
     }
 }
 
 fn interface_elements_to_py(
     py: Python,
     instance: &Py<VerilatedInstance>,
+    kind: PortsKind,
     path: String,
     elements: &NdArray<IndexMap<String, IrPort>>,
 ) -> PyResult<Py<PyAny>> {
     let instance = instance.clone_ref(py);
     match elements.first_len() {
         None => {
-            let result = VerilatedInterface {
+            let result = InterfaceSelection {
                 instance,
+                kind,
                 path,
                 ports: elements.as_single().unwrap().clone(),
             };
-            result.into_py_any(py)
+            result.into_py(py)
         }
         Some(len) => {
-            let result = VerilatedInterfaceArray {
+            let result = InterfaceArraySelection {
                 instance,
+                kind,
                 path,
                 elements: elements.clone(),
                 indices: (0..len).collect(),
             };
-            result.into_py_any(py)
+            result.into_py(py)
         }
     }
 }
 
-/// Nice error message for when someone tries to assign ports directly
-fn err_set_port_directly(path: &str) -> PyErr {
+fn port_to_py(py: Python, instance: &Py<VerilatedInstance>, kind: PortsKind, port: IrPort) -> PyResult<Py<PyAny>> {
+    match kind {
+        PortsKind::Values => get_port_value(py, instance, port),
+        PortsKind::Info => VerilatedInfoPort {
+            instance: instance.clone_ref(py),
+            port,
+        }
+        .into_py_any(py),
+    }
+}
+
+fn err_set_interface(path: &str) -> PyErr {
     PyValueError::new_err(format!(
-        "cannot set port value directly, use `{path}.value = value` instead"
+        "cannot set interface `{path}` directly, set its individual ports instead"
     ))
 }
 
-// TODO change this so .value is no longer needed, probably with separate `ports` and `info_ports` fields on the simulator
+fn err_set_info(path: &str) -> PyErr {
+    PyValueError::new_err(format!(
+        "cannot set port info `{path}`, set port values through `ports` instead"
+    ))
+}
+
+fn get_port_value(py: Python, instance: &Py<VerilatedInstance>, port: IrPort) -> PyResult<Py<PyAny>> {
+    let instance = instance.borrow(py);
+    let compile = &instance.module.borrow(py).compile;
+
+    let value = instance.instance.get_port(port).map_err(map_verilator_error)?;
+    compile_value_to_py(py, compile, &value)
+}
+
+fn set_port_value(instance: &Py<VerilatedInstance>, port: IrPort, value: &Bound<PyAny>) -> PyResult<()> {
+    let py = value.py();
+    let compile = instance.borrow(py).module.borrow(py).compile.clone_ref(py);
+    let value = compile_value_from_py(value, Some(&compile))?;
+
+    let mut instance = instance.borrow_mut(py);
+    let instance = instance.deref_mut();
+    let module = instance.module.borrow(py);
+    let compile = &mut *module.compile.borrow_mut(py);
+    let parsed = compile.parsed.borrow(py);
+    let source = parsed.source.borrow(py);
+
+    let dummy_span = source.dummy_span;
+
+    let diags = Diagnostics::new();
+    let print_handler = compile.start_collect_prints();
+    let refs = CompileRefs {
+        fixed: CompileFixed {
+            settings: &COMPILE_SETTINGS,
+            source: &source.source,
+            hierarchy: &source.hierarchy,
+            parsed: &parsed.parsed,
+        },
+        shared: &compile.shared,
+        diags: &diags,
+        print_handler: print_handler.handler(),
+        should_stop: &|| false,
+        interrupted_local: &OnceLock::new(),
+    };
+    let result = instance.instance.set_port(refs, port, Spanned::new(dummy_span, &value));
+
+    let result = result.map_err(|e| match e {
+        Either::Left(e) => map_verilator_error(e),
+        Either::Right(e) => convert_diag_error(py, &diags, &source.source, e),
+    });
+    let result_diags = check_diags(py, &source.source, &diags);
+
+    drop(source);
+    drop(parsed);
+    compile.finish_collect_prints(py, print_handler);
+
+    result?;
+    result_diags
+}
+
 #[pymethods]
-impl VerilatedPort {
-    #[getter]
-    fn get_value(&self, py: Python) -> PyResult<Py<PyAny>> {
-        let instance = self.instance.borrow(py);
-        let compile = &instance.module.borrow(py).compile;
-
-        let value = instance.instance.get_port(self.port).map_err(map_verilator_error)?;
-        compile_value_to_py(py, compile, &value)
-    }
-
-    #[setter]
-    fn set_value(&mut self, value: &Bound<PyAny>) -> PyResult<()> {
-        let py = value.py();
-        let compile = self.instance.borrow(py).module.borrow(py).compile.clone_ref(py);
-        let value = compile_value_from_py(value, Some(&compile))?;
-
-        let mut instance = self.instance.borrow_mut(py);
-        let instance = instance.deref_mut();
-        let module = instance.module.borrow(py);
-        let compile = &mut *module.compile.borrow_mut(py);
-        let parsed = compile.parsed.borrow(py);
-        let source = parsed.source.borrow(py);
-
-        let dummy_span = source.dummy_span;
-
-        let diags = Diagnostics::new();
-        let print_handler = compile.start_collect_prints();
-        let refs = CompileRefs {
-            fixed: CompileFixed {
-                settings: &COMPILE_SETTINGS,
-                source: &source.source,
-                hierarchy: &source.hierarchy,
-                parsed: &parsed.parsed,
-            },
-            shared: &compile.shared,
-            diags: &diags,
-            print_handler: print_handler.handler(),
-            should_stop: &|| false,
-            interrupted_local: &OnceLock::new(),
-        };
-        let result = instance
-            .instance
-            .set_port(refs, self.port, Spanned::new(dummy_span, &value));
-
-        let result = result.map_err(|e| match e {
-            Either::Left(e) => map_verilator_error(e),
-            Either::Right(e) => convert_diag_error(py, &diags, &source.source, e),
-        });
-        let result_diags = check_diags(py, &source.source, &diags);
-
-        drop(source);
-        drop(parsed);
-        compile.finish_collect_prints(py, print_handler);
-
-        result?;
-        result_diags
-    }
-
+impl VerilatedInfoPort {
     #[getter]
     fn r#type(&self, py: Python) -> Value {
         let ty = self.map_port_info(py, |info| info.ty.clone()).as_type_hw().as_type();
@@ -1499,12 +1680,12 @@ impl VerilatedPort {
 
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyValueError::new_err(
-            "port cannot be used as a boolean, to read a boolean port use `port.value` instead",
+            "port info cannot be used as a boolean, read port values through `ports` instead",
         ))
     }
 }
 
-impl VerilatedPort {
+impl VerilatedInfoPort {
     pub fn map_port_info<T>(&self, py: Python, f: impl FnOnce(&IrPortInfo) -> T) -> T {
         let instance = self.instance.borrow(py);
         let module = instance.module.borrow(py);

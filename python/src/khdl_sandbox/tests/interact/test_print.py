@@ -82,8 +82,8 @@ def test_print_hardware_array_length_using_all_bits(tmp_dir: Path):
     print(f.as_verilog().source)
     inst = f.as_verilated(tmp_dir).instance()
 
-    inst.ports.x.value = [False, True, False, True]
-    inst.ports.clk.value = False
+    inst.ports.x = [False, True, False, True]
+    inst.ports.clk = False
     inst.step(1)
-    inst.ports.clk.value = True
+    inst.ports.clk = True
     inst.step(1)

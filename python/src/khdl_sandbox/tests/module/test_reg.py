@@ -117,24 +117,24 @@ def test_reg_decl_in_function(tmp_dir: Path):
 
     ports = inst.ports
 
-    ports.rst.value = False
+    ports.rst = False
     inst.step(1)
-    ports.rst.value = True
+    ports.rst = True
     inst.step(1)
-    ports.rst.value = False
+    ports.rst = False
     inst.step(1)
 
     values = range(4)
     for i in values:
-        ports.x.value = i
+        ports.x = i
 
-        ports.clk.value = True
+        ports.clk = True
         inst.step(1)
-        ports.clk.value = False
+        ports.clk = False
         inst.step(1)
 
         expected = ([-1] * 2 + list(values))[i:i + 3]
-        actual = [ports.y3.value, ports.y2.value, ports.y1.value]
+        actual = [ports.y3, ports.y2, ports.y1]
         assert expected == actual
 
 

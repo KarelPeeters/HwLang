@@ -25,9 +25,9 @@ def test_interface_access(tmp_dir: Path):
     top_inst: khdl.VerilatedInstance = top_verilated.instance()
 
     for v in [False, True, False, True]:
-        top_inst.ports.a.x.value = v
+        top_inst.ports.a.x = v
         top_inst.step(1)
-        assert top_inst.ports.b.x.value == v
+        assert top_inst.ports.b.x == v
 
 
 def test_interface_chain(tmp_dir: Path):
@@ -50,9 +50,9 @@ def test_interface_chain(tmp_dir: Path):
     inst = m.as_verilated(tmp_dir).instance()
 
     for v in [0, 1, 2, 3]:
-        inst.ports.x.d.value = v
+        inst.ports.x.d = v
         inst.step(1)
-        assert inst.ports.y.d.value == v
+        assert inst.ports.y.d == v
 
 
 def test_interface_array_1d_index(tmp_dir: Path):
@@ -75,9 +75,9 @@ def test_interface_array_1d_index(tmp_dir: Path):
     inst = m.as_verilated(tmp_dir).instance()
 
     for i in range(4):
-        inst.ports.x[i].value.value = i + 1
+        inst.ports.x[i].value = i + 1
     inst.step(1)
-    assert inst.ports.y.value == 10
+    assert inst.ports.y == 10
 
 
 def test_interface_array_2d_index(tmp_dir: Path):
@@ -101,11 +101,11 @@ def test_interface_array_2d_index(tmp_dir: Path):
 
     for i in range(2):
         for j in range(3):
-            inst.ports.x[i][j].value.value = 3 * i + j
+            inst.ports.x[i][j].value = 3 * i + j
     inst.step(1)
     for i in range(2):
         for j in range(3):
-            assert inst.ports.y[j][i].value.value == 3 * i + j
+            assert inst.ports.y[j][i].value == 3 * i + j
 
 
 def test_interface_array_instance_for_loop(tmp_dir: Path):
@@ -129,10 +129,10 @@ def test_interface_array_instance_for_loop(tmp_dir: Path):
     inst = m.as_verilated(tmp_dir).instance()
 
     for i in range(4):
-        inst.ports.x[i].value.value = i + 5
+        inst.ports.x[i].value = i + 5
     inst.step(1)
     for i in range(4):
-        assert inst.ports.y[3 - i].value.value == i + 5
+        assert inst.ports.y[3 - i].value == i + 5
 
 
 def test_interface_array_instance_whole(tmp_dir: Path):
@@ -160,10 +160,10 @@ def test_interface_array_instance_whole(tmp_dir: Path):
     for i in range(3):
         for j in range(2):
             for k in range(2):
-                inst.ports.x[i][j][k].value.value = i + 2 * j + k
+                inst.ports.x[i][j][k].value = i + 2 * j + k
     inst.step(1)
     for j in range(2):
-        assert inst.ports.y[j].value.value == 1 + 2 * j + 1
+        assert inst.ports.y[j].value == 1 + 2 * j + 1
 
 
 def test_interface_array_instance_shape_mismatch():
@@ -253,10 +253,10 @@ def test_interface_array_generic_length(tmp_dir: Path):
     inst = m.as_verilated(tmp_dir).instance()
 
     for i in range(3):
-        inst.ports.x[i].value.value = i + 7
+        inst.ports.x[i].value = i + 7
     inst.step(1)
     for i in range(3):
-        assert inst.ports.y[i].value.value == i + 7
+        assert inst.ports.y[i].value == i + 7
 
 
 def test_interface_array_empty_slice():
@@ -341,11 +341,11 @@ def test_interface_array_slice(tmp_dir: Path):
     inst = m.as_verilated(tmp_dir).instance()
 
     for i in range(6):
-        inst.ports.x[i].value.value = i + 1
+        inst.ports.x[i].value = i + 1
     inst.step(1)
     expected = [2, 3, 4, 5, 6, 1]
     for i in range(6):
-        assert inst.ports.y[i].value.value == expected[i]
+        assert inst.ports.y[i].value == expected[i]
 
 
 def test_interface_array_slice_out_of_bounds():
@@ -394,11 +394,11 @@ def test_interface_wire_array(tmp_dir: Path):
 
     for i in range(2):
         for j in range(2):
-            inst.ports.x[i][j].value.value = 2 * i + j + 1
+            inst.ports.x[i][j].value = 2 * i + j + 1
     inst.step(1)
     for i in range(2):
         for j in range(2):
-            assert inst.ports.y[1 - i][j].value.value == 2 * i + j + 1
+            assert inst.ports.y[1 - i][j].value == 2 * i + j + 1
 
 
 def test_interface_wire_array_domain_per_element():

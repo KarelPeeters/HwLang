@@ -82,14 +82,14 @@ def test_read_range_from_signal(tmp_dir: Path):
 #
 #     def cycle():
 #         foo_inst.step(1)
-#         ports.clk.value = 1
+#         ports.clk = 1
 #         foo_inst.step(1)
-#         ports.clk.value = 0
+#         ports.clk = 0
 #
-#     ports.clk.value = 0
-#     ports.x.value = 0
+#     ports.clk = 0
+#     ports.x = 0
 #     cycle()
-#     assert ports.y.value == 255
+#     assert ports.y == 255
 
 
 def test_write_after_read_var(tmp_dir: Path):
@@ -164,9 +164,9 @@ def check_write_after_read(tmp_dir: Path, src: str):
     print(foo.as_verilog().source)
     foo_inst = foo.as_verilated(tmp_dir).instance()
 
-    foo_inst.ports.x.value = 4
+    foo_inst.ports.x = 4
     foo_inst.step(1)
-    assert foo_inst.ports.y.value == 5
+    assert foo_inst.ports.y == 5
 
 
 def test_const_assign_outside_var():

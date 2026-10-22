@@ -13,7 +13,7 @@ def test_verilator_creates_build_dir(tmp_dir: Path):
     src = "module top ports(y: out async bool) { comb { y = true; } }"
     inst = compile_custom(src).resolve("top.top").as_verilated(build_dir).instance()
     inst.step(1)
-    assert inst.ports.y.value is True
+    assert inst.ports.y is True
 
 
 def test_verilator_rebuild_same_dir(tmp_dir: Path):
@@ -24,9 +24,9 @@ def test_verilator_rebuild_same_dir(tmp_dir: Path):
     inst_inv = compile_custom(src_inv).resolve("top.top").as_verilated(tmp_dir).instance()
 
     def check(inst: khdl.VerilatedInstance, x: bool, y: bool):
-        inst.ports.x.value = x
+        inst.ports.x = x
         inst.step(1)
-        assert inst.ports.y.value is y
+        assert inst.ports.y is y
 
     check(inst_pass, False, False)
     check(inst_pass, True, True)
@@ -45,6 +45,6 @@ def test_verilator_rebuild_with_stale_objects(tmp_dir: Path):
     shutil.copyfile(obj, obj_dir / "obsolete.o")
 
     inst = top.as_verilated(tmp_dir).instance()
-    inst.ports.x.value = True
+    inst.ports.x = True
     inst.step(1)
-    assert inst.ports.y.value is True
+    assert inst.ports.y is True

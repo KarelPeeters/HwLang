@@ -53,9 +53,9 @@ def test_module_collide_port_wire(tmp_dir: Path):
     inst = top.as_verilated(tmp_dir).instance()
 
     for v in [False, True]:
-        inst.ports.my_name.value = v
+        inst.ports.my_name = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
 
 
 def test_module_collide_port_process(tmp_dir: Path):

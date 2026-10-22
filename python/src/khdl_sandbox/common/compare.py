@@ -28,9 +28,9 @@ class CompiledCompare:
         # eval module
         ports = self.eval_mod_inst.ports
         for p_name, v in zip(ports, values):
-            ports[p_name].value = v
+            ports[p_name] = v
         self.eval_mod_inst.step(1)
-        val_res_mod = ports.p_res.value
+        val_res_mod = ports.p_res
 
         return val_res_func, val_res_mod
 

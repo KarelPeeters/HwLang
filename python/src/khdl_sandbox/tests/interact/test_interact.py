@@ -183,44 +183,46 @@ def _verilated_port_test_module(tmp_dir: Path) -> khdl.VerilatedInstance:
 def test_port_interaction_errors(tmp_dir: Path):
     inst = _verilated_port_test_module(tmp_dir)
 
-    # assigning a port directly should point at the correct `.value` syntax
-    with pytest.raises(ValueError, match=r"cannot set port value directly, use `ports\.x\.value = value`"):
-        inst.ports.x = True
-    with pytest.raises(ValueError, match=r'cannot set port value directly, use `ports\["x"\]\.value = value`'):
-        inst.ports["x"] = True
-    with pytest.raises(ValueError, match=r"cannot set port value directly, use `ports\.y\.value = value`"):
-        inst.ports.y = True
-    with pytest.raises(ValueError, match=r'cannot set port value directly, use `ports\["y"\]\.value = value`'):
-        inst.ports["y"] = True
+    # port info cannot be assigned
+    with pytest.raises(ValueError, match=r"cannot set port info `info_ports\.x`, set port values through `ports`"):
+        inst.info_ports.x = True
+    with pytest.raises(ValueError, match=r'cannot set port info `info_ports\["x"\]`'):
+        inst.info_ports["x"] = True
+    with pytest.raises(ValueError, match=r"cannot set port info `info_ports_flat\.x`"):
+        inst.info_ports_flat.x = True
 
     # accessing a port that does not exist is a plain attribute error
     with pytest.raises(AttributeError, match="port `missing` not found"):
         _ = inst.ports.missing
     with pytest.raises(AttributeError, match="port `missing` not found"):
         _ = inst.ports["missing"]
+    with pytest.raises(AttributeError, match="port `missing` not found"):
+        inst.ports.missing = True
+    with pytest.raises(AttributeError, match="port `missing` not found"):
+        _ = inst.info_ports.missing
 
-    # a port object is not a bool, reading a boolean port requires `.value`
+    # port info is not a bool, mixing up `info_ports` and `ports` should be caught
     with pytest.raises(ValueError, match="cannot be used as a boolean"):
-        bool(inst.ports.x)
+        bool(inst.info_ports.x)
     with pytest.raises(ValueError, match="cannot be used as a boolean"):
-        if inst.ports.x:
+        if inst.info_ports.x:
             pass
 
     # setting a value of the wrong type is reported as a normal compiler diagnostic
     with diag_error("type mismatch"):
-        inst.ports.x.value = "hello"
+        inst.ports.x = "hello"
     with diag_error("type mismatch"):
-        inst.ports.n.value = 999
+        inst.ports.n = 999
 
     # output ports cannot be driven from the python side
     with pytest.raises(khdl.VerilationException, match="Cannot set output port"):
-        inst.ports.y.value = True
+        inst.ports.y = True
 
     # the correct way to set and read a port works
-    inst.ports.x.value = True
+    inst.ports.x = True
     inst.step(1)
-    assert inst.ports.y.value is True
-    assert inst.ports["y"].value is True
+    assert inst.ports.y is True
+    assert inst.ports["y"] is True
 
 
 def test_port_interaction_structured(tmp_dir: Path):
@@ -252,52 +254,56 @@ def test_port_interaction_structured(tmp_dir: Path):
     """
     inst = compile_custom(src).resolve("top.top").as_verilated(tmp_dir).instance()
     ports = inst.ports
+    info = inst.info_ports
 
     # structure and naming
-    assert list(ports) == ["s", "x", "y", "t"]
+    assert list(ports) == list(info) == ["s", "x", "y", "t"]
     assert isinstance(ports.x[0], khdl.VerilatedInterface)
     assert isinstance(ports.y, khdl.VerilatedInterfaceArray)
-    assert list(ports.x[0]) == ["a", "b"]
-    assert len(ports.y) == 2
-    assert len(ports.y[0]) == 3
-    assert ports["y"][-1][-1].a.name == "y_1_2_a"
-    assert list(inst.ports_flat)[:3] == ["s", "x_0_a", "x_0_b"]
-    assert ports.y.shape == (2, 3)
-    assert ports.y[1:].shape == (1, 3)
-    assert ports.y[0].shape == (3,)
+    assert isinstance(info.x[0], khdl.VerilatedInfoInterface)
+    assert isinstance(info.y, khdl.VerilatedInfoInterfaceArray)
+    assert isinstance(info.s, khdl.VerilatedInfoPort)
+    assert list(ports.x[0]) == list(info.x[0]) == ["a", "b"]
+    assert len(info.y) == 2
+    assert len(info.y[0]) == 3
+    assert info["y"][-1][-1].a.name == "y_1_2_a"
+    assert list(inst.info_ports_flat)[:3] == ["s", "x_0_a", "x_0_b"]
+    assert ports.y.shape == info.y.shape == (2, 3)
+    assert info.y[1:].shape == (1, 3)
+    assert info.y[0].shape == (3,)
 
     # slicing
-    assert [e.a.name for e in ports.y[1][::-2]] == ["y_1_2_a", "y_1_0_a"]
-    assert [e.a.name for e in ports.y[1][::-1][1:]] == ["y_1_1_a", "y_1_0_a"]
-    assert [e.a.name for e in ports.y[1][1:][::-1][:1]] == ["y_1_2_a"]
-    assert len(ports.y[5:]) == 0
+    assert [e.a.name for e in info.y[1][::-2]] == ["y_1_2_a", "y_1_0_a"]
+    assert [e.a.name for e in info.y[1][::-1][1:]] == ["y_1_1_a", "y_1_0_a"]
+    assert [e.a.name for e in info.y[1][1:][::-1][:1]] == ["y_1_2_a"]
+    assert len(info.y[5:]) == 0
     assert repr(ports.y[::-1][0]) == "VerilatedInterfaceArray([ports.y[1][0], ports.y[1][1], ports.y[1][2]])"
+    assert repr(info.y[::-1][0][2]) == "VerilatedInfoInterface(info_ports.y[1][2])"
 
-    # values, through structured, flat and sliced access
-    ports.s.value = 3
-    ports.x[1].a.value = 5
-    inst.ports_flat.x_1_b.value = True
+    # values, through structured and sliced access
+    ports.s = 3
+    ports.x[1].a = 5
+    ports.x[1]["b"] = True
     inst.step(1)
-    assert ports.t.value == 3
-    assert [e.a.value for e in ports.y[0]] == [0, 5, 0]
-    assert ports.y[1][1]["b"].value is True
-    assert inst.ports_flat["y_0_1_a"].value == 5
-    assert ports.y[1:][0][1].a.value == 5
+    assert ports.t == 3
+    assert [e.a for e in ports.y[0]] == [0, 5, 0]
+    assert ports.y[1][1]["b"] is True
+    assert ports.y[1:][0][1].a == 5
 
     # errors
     with pytest.raises(AttributeError, match="port `z` not found"):
         _ = ports.z
     with pytest.raises(AttributeError, match="port `x_0_a` not found"):
         _ = ports.x_0_a
-    with pytest.raises(AttributeError, match="interface `ports.y\\[1\\]\\[2\\]` does not have port `c`"):
-        _ = ports.y[::-1][0][2].c
+    with pytest.raises(AttributeError, match="interface `info_ports.y\\[1\\]\\[2\\]` does not have port `c`"):
+        _ = info.y[::-1][0][2].c
+    with pytest.raises(AttributeError, match="interface `ports.x\\[0\\]` does not have port `c`"):
+        ports.x[0].c = 1
     with pytest.raises(IndexError, match="index 3 out of range for interface array with length 3"):
         _ = ports.x[3]
     with pytest.raises(TypeError, match="must be integers or slices, not `<class 'str'>`"):
         _ = ports.x["0"]
-    with pytest.raises(ValueError, match="use `ports.s.value = value`"):
-        ports.s = 1
-    with pytest.raises(ValueError, match="use `ports.x\\[0\\].a.value = value`"):
-        ports.x[0].a = 1
-    with pytest.raises(ValueError, match="use `ports_flat.x_0_a.value = value`"):
-        inst.ports_flat.x_0_a = 1
+    with pytest.raises(ValueError, match="cannot set interface `ports.x` directly"):
+        ports.x = 1
+    with pytest.raises(ValueError, match="cannot set port info `info_ports.x\\[0\\].a`"):
+        info.x[0].a = 1

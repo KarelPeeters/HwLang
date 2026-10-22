@@ -33,8 +33,8 @@ print("Creating simulator")
 sim = top_verilated.instance(trace_path=build_dir + "/trace.vcd")
 ports = sim.ports
 
-for port_name in sim.ports_flat:
-    port = sim.ports_flat[port_name]
+for port_name in sim.info_ports_flat:
+    port = sim.info_ports_flat[port_name]
     print(" ", port.name, port.direction, port.type)
 
 print("Simulating")
@@ -51,30 +51,30 @@ input_data = [random.randrange(2) != 0 for _ in range(input_length)]
 output_data = []
 
 # reset
-ports.rst.value = True
-ports.clk.value = False
+ports.rst = True
+ports.clk = False
 sim.step(1)
-ports.rst.value = False
-ports.clk.value = True
+ports.rst = False
+ports.clk = True
 sim.step(1)
-ports.clk.value = False
+ports.clk = False
 sim.step(1)
 
 input_data_left = list(input_data)
 
 for i in range(32):
     print(f"  clock cycle {i}")
-    # print(f"  ports: {({p: ports[p].value for p in ports})}")
+    # print(f"  ports: {({p: ports[p] for p in ports})}")
 
     # [posedge]
     # send input
     # TODO all writes should actually happen after the clock edge, while all reads should happen before
-    next_input_valid = ports.input_valid.value
-    next_input_data = ports.input_data.value
-    next_output_ready = ports.output_ready.value
+    next_input_valid = ports.input_valid
+    next_input_data = ports.input_data
+    next_output_ready = ports.output_ready
 
     if i >= 1:
-        if next_input_valid and ports.input_ready.value:
+        if next_input_valid and ports.input_ready:
             print(f"  PY input handshake")
             next_input_valid = False
             next_input_data = [False] * input_width
@@ -85,24 +85,24 @@ for i in range(32):
 
     # read output
     if i >= 5:
-        if ports.output_valid.value and next_output_ready:
+        if ports.output_valid and next_output_ready:
             print(f"  PY output handshake")
-            output_data.extend(ports.output_data.value)
+            output_data.extend(ports.output_data)
         next_output_ready = True
 
     # set clock
-    ports.clk.value = True
+    ports.clk = True
     sim.step(0)
 
     # actually do writes
-    ports.input_valid.value = next_input_valid
-    ports.input_data.value = next_input_data
-    ports.output_ready.value = next_output_ready
+    ports.input_valid = next_input_valid
+    ports.input_data = next_input_data
+    ports.output_ready = next_output_ready
     sim.step(1)
 
     # [negedge]
     # set clock
-    ports.clk.value = False
+    ports.clk = False
     sim.step(1)
 
 sim.save_trace()

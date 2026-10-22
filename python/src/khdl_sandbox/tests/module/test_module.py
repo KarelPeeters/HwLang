@@ -33,9 +33,9 @@ def test_module_instance_simple(tmp_dir: Path):
     parent_inst: khdl.VerilatedInstance = parent_verilated.instance()
 
     for v in [False, True, False, True]:
-        parent_inst.ports.x.value = v
+        parent_inst.ports.x = v
         parent_inst.step(1)
-        assert parent_inst.ports.y.value == v
+        assert parent_inst.ports.y == v
 
 
 def test_module_instance_generic(tmp_dir: Path):
@@ -51,9 +51,9 @@ def test_module_instance_generic(tmp_dir: Path):
     parent_inst: khdl.VerilatedInstance = parent_verilated.instance()
 
     for v in range(2 ** 4):
-        parent_inst.ports.x.value = v
+        parent_inst.ports.x = v
         parent_inst.step(1)
-        assert parent_inst.ports.y.value == v
+        assert parent_inst.ports.y == v
 
 
 def test_wire_driven_by_child(tmp_dir: Path):
@@ -73,7 +73,7 @@ def test_wire_driven_by_child(tmp_dir: Path):
     parent_inst: khdl.VerilatedInstance = parent_verilated.instance()
 
     parent_inst.step(1)
-    assert parent_inst.ports.y.value is True
+    assert parent_inst.ports.y is True
 
 
 def test_instantiate_external_module(tmp_dir: Path):
@@ -92,9 +92,9 @@ def test_instantiate_external_module(tmp_dir: Path):
     top_inst: khdl.VerilatedInstance = top_verilated.instance()
 
     for v in [0, 1, 2, 15]:
-        top_inst.ports.x.value = v
+        top_inst.ports.x = v
         top_inst.step(1)
-        assert top_inst.ports.y.value == v + 1
+        assert top_inst.ports.y == v + 1
 
 
 def test_instantiate_zero_width_ports(tmp_dir: Path):
@@ -133,10 +133,10 @@ def test_instantiate_zero_width_ports(tmp_dir: Path):
     top_verilated: khdl.ModuleVerilated = top.as_verilated(tmp_dir, extra_verilog_files=extra_verilog_files)
     top_inst: khdl.VerilatedInstance = top_verilated.instance()
 
-    top_inst.ports.x.value = 0
+    top_inst.ports.x = 0
     top_inst.step(1)
-    assert top_inst.ports.y0.value == 0
-    assert top_inst.ports.y1.value == 0
+    assert top_inst.ports.y0 == 0
+    assert top_inst.ports.y1 == 0
 
 
 def test_instantiate_external_module_no_ports(tmp_dir: Path):
@@ -302,9 +302,9 @@ def test_module_instance_expand_port_simple(tmp_dir: Path):
     inst = top.as_verilated(tmp_dir).instance()
 
     for v in range(2 ** 2):
-        inst.ports.x.value = v
+        inst.ports.x = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
 
 
 def test_module_instance_expand_port_tuple(tmp_dir: Path):
@@ -325,9 +325,9 @@ def test_module_instance_expand_port_tuple(tmp_dir: Path):
     for v_i in range(2 ** 2):
         for v_b in [False, True]:
             v = (v_i, v_b)
-            inst.ports.x.value = v
+            inst.ports.x = v
             inst.step(1)
-            assert inst.ports.y.value == v
+            assert inst.ports.y == v
 
 
 def test_module_duplicate_port_name_simple():
@@ -399,9 +399,9 @@ def test_module_instance_output_step(tmp_dir: Path):
     for a in [False, True]:
         for b in [False, True]:
             pair = [a, b]
-            inst.ports.x.value = pair
+            inst.ports.x = pair
             inst.step(1)
-            assert inst.ports.y.value == pair
+            assert inst.ports.y == pair
 
 
 def test_module_instance_output_deref(tmp_dir: Path):
@@ -418,9 +418,9 @@ def test_module_instance_output_deref(tmp_dir: Path):
     inst = top.as_verilated(tmp_dir).instance()
 
     for v in [False, True]:
-        inst.ports.x.value = v
+        inst.ports.x = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
 
 
 def test_module_instance_output_step_dyn(tmp_dir: Path):

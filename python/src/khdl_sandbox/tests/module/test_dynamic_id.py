@@ -36,9 +36,9 @@ def test_dynamic_id_pub_wire(tmp_dir: Path):
 
     inst = top.as_verilated(tmp_dir).instance()
 
-    inst.ports.x.value = 4
+    inst.ports.x = 4
     inst.step(1)
-    assert inst.ports.y.value == 4
+    assert inst.ports.y == 4
 
 
 def test_dynamic_id_ports(tmp_dir: Path):
@@ -64,10 +64,10 @@ def test_dynamic_id_ports(tmp_dir: Path):
     inst = top.as_verilated(tmp_dir).instance()
 
     for i in range(8):
-        inst.ports[f"x_{i}"].value = i
+        inst.ports[f"x_{i}"] = i
     inst.step(1)
     for i in range(8):
-        assert inst.ports[f"y_{i}"].value == i
+        assert inst.ports[f"y_{i}"] == i
 
 
 def test_dynamic_id_interface_view_port_dir():

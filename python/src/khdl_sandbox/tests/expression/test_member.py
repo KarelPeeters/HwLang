@@ -200,6 +200,6 @@ def test_member_self_hardware(tmp_dir: Path):
     inst = top.as_verilated(tmp_dir).instance()
 
     for v in [0, 1, 2, 3]:
-        inst.ports.x.value = v
+        inst.ports.x = v
         inst.step(1)
-        assert inst.ports.y.value == v
+        assert inst.ports.y == v
