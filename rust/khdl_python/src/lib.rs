@@ -48,7 +48,6 @@ use pyo3::{
     Bound, IntoPyObject, IntoPyObjectExt, Py, PyAny, PyClassInitializer, PyErr, PyRef, PyResult, Python,
     create_exception, intern, pyclass, pyfunction, pymethods, pymodule, wrap_pyfunction,
 };
-use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -649,7 +648,7 @@ impl CapturePrintsContext {
         // replace the capture destination, keep the previous one to restore later so nesting works properly
         self.prev_capture = Option::replace(&mut compile.capture_prints, self.capture.clone_ref(py));
 
-        // return the capture object for convenient, so the user can bind it
+        // return the capture object for convenience, so the user can bind it
         Ok(self.capture.clone_ref(py))
     }
 
@@ -827,7 +826,7 @@ impl Value {
         compile.finish_collect_prints(py, print_handler);
 
         let result =
-            result.map_err(|_| PyAttributeError::new_err(format!("`value` object has no attribute `{attr}`")))?;
+            result.map_err(|_| PyAttributeError::new_err(format!("`Value` object has no attribute `{attr}`")))?;
         result_diags.transpose()?;
 
         compile_value_to_py(py, &self.compile, &result)
@@ -1003,7 +1002,7 @@ impl Module {
         py.detach::<PyResult<()>, _>(|| {
             // TODO get everything properly incremental
             // TODO make tracing optional
-            // TODO move this compilation process to somewhere else, not in the python create
+            // TODO move this compilation process to somewhere else, not in the python crate
             run_command(
                 Command::new("verilator")
                     .args(compiler.into_iter().flat_map(|(name, ..)| ["--compiler", name]))
@@ -1617,8 +1616,7 @@ fn set_port_value(instance: &Py<VerilatedInstance>, port: IrPort, value: &Bound<
     let compile = instance.borrow(py).module.borrow(py).compile.clone_ref(py);
     let value = compile_value_from_py(value, Some(&compile))?;
 
-    let mut instance = instance.borrow_mut(py);
-    let instance = instance.deref_mut();
+    let instance = &mut *instance.borrow_mut(py);
     let module = instance.module.borrow(py);
     let compile = &mut *module.compile.borrow_mut(py);
     let parsed = compile.parsed.borrow(py);
@@ -1686,7 +1684,7 @@ impl VerilatedInfoPort {
 }
 
 impl VerilatedInfoPort {
-    pub fn map_port_info<T>(&self, py: Python, f: impl FnOnce(&IrPortInfo) -> T) -> T {
+    fn map_port_info<T>(&self, py: Python, f: impl FnOnce(&IrPortInfo) -> T) -> T {
         let instance = self.instance.borrow(py);
         let module = instance.module.borrow(py);
         f(&module.lib.ports()[self.port])
