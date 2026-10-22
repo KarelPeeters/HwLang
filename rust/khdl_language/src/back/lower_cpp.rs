@@ -68,6 +68,7 @@ fn codegen_module(diags: &Diagnostics, modules: &IrModules, module: IrModule) ->
         ports,
         wires,
         ports_named: _,
+        ports_declared: _,
     } = signals;
     let module_index = module.inner().index();
 

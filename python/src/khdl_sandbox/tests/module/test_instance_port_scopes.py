@@ -73,6 +73,6 @@ def test_instance_interface_connection_loop_scope(tmp_dir: Path):
     module: khdl.Module = compile_custom(src).resolve('top.Top')
     inst = module.as_verilated(tmp_dir).instance()
     for i in range(3):
-        inst.ports[f'a_{i}_value'].value = i + 17
+        inst.ports[f'a_{i}'].value.value = i + 17
     inst.step(1)
-    assert [inst.ports[f'b_{i}_value'].value for i in range(3)] == [19, 18, 17]
+    assert [inst.ports[f'b_{i}'].value.value for i in range(3)] == [19, 18, 17]

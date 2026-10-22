@@ -33,8 +33,8 @@ print("Creating simulator")
 sim = top_verilated.instance(trace_path=build_dir + "/trace.vcd")
 ports = sim.ports
 
-for port_name in ports:
-    port = ports[port_name]
+for port_name in sim.ports_flat:
+    port = sim.ports_flat[port_name]
     print(" ", port.name, port.direction, port.type)
 
 print("Simulating")

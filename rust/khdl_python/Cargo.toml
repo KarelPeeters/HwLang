@@ -24,6 +24,7 @@ abi3 = ["pyo3/abi3-py312"]
 khdl_language = { workspace = true, features = ["wrap_verilator"] }
 khdl_util = { workspace = true }
 
+indexmap.workspace = true
 itertools.workspace = true
 num-bigint.workspace = true
 pyo3.workspace = true

@@ -24,11 +24,11 @@ def test_connect_port_port(tmp_dir: Path):
     """
     inst = compile_custom(src).resolve_module("top.top").as_verilated(tmp_dir).instance()
     for v in range(4):
-        inst.ports.x_value.value = v
-        inst.ports.y_ready.value = v % 2 == 1
+        inst.ports.x.value.value = v
+        inst.ports.y.ready.value = v % 2 == 1
         inst.step(1)
-        assert inst.ports.y_value.value == v
-        assert inst.ports.x_ready.value == (v % 2 == 1)
+        assert inst.ports.y.value.value == v
+        assert inst.ports.x.ready.value == (v % 2 == 1)
 
 
 def test_connect_through_wire(tmp_dir: Path):
@@ -41,11 +41,11 @@ def test_connect_through_wire(tmp_dir: Path):
     """
     inst = compile_custom(src).resolve_module("top.top").as_verilated(tmp_dir).instance()
     for v in range(4):
-        inst.ports.x_value.value = v
-        inst.ports.y_ready.value = v % 2 == 0
+        inst.ports.x.value.value = v
+        inst.ports.y.ready.value = v % 2 == 0
         inst.step(1)
-        assert inst.ports.y_value.value == v
-        assert inst.ports.x_ready.value == (v % 2 == 0)
+        assert inst.ports.y.value.value == v
+        assert inst.ports.x.ready.value == (v % 2 == 0)
 
 
 def test_connect_wire_with_instance(tmp_dir: Path):
@@ -63,9 +63,9 @@ def test_connect_wire_with_instance(tmp_dir: Path):
     """
     inst = compile_custom(src).resolve_module("top.top").as_verilated(tmp_dir).instance()
     for v in range(4):
-        inst.ports.x_value.value = v
+        inst.ports.x.value.value = v
         inst.step(1)
-        assert inst.ports.y_value.value == v + 1
+        assert inst.ports.y.value.value == v + 1
 
 
 def test_connect_array(tmp_dir: Path):
@@ -88,15 +88,15 @@ def test_connect_array(tmp_dir: Path):
     inst = compile_custom(src).resolve_module("top.top").as_verilated(tmp_dir).instance()
     for i in range(2):
         for j in range(3):
-            inst.ports[f"x_{i}_{j}_value"].value = 3 * i + j
+            inst.ports.x[i][j].value.value = 3 * i + j
     for i in range(6):
-        inst.ports[f"z_{i}_value"].value = i + 1
+        inst.ports.z[i].value.value = i + 1
     inst.step(1)
     for i in range(2):
         for j in range(3):
-            assert inst.ports[f"y_{i}_{j}_value"].value == 3 * i + j
+            assert inst.ports.y[i][j].value.value == 3 * i + j
     for i in range(4):
-        assert inst.ports[f"u_{i}_value"].value == i + 3
+        assert inst.ports.u[i].value.value == i + 3
 
 
 def test_connect_fanout(tmp_dir: Path):
@@ -121,11 +121,11 @@ def test_connect_fanout(tmp_dir: Path):
     """
     inst = compile_custom(src).resolve_module("top.top").as_verilated(tmp_dir).instance()
     for v in range(4):
-        inst.ports.x_value.value = v
+        inst.ports.x.value.value = v
         inst.step(1)
         for i in range(3):
-            assert inst.ports[f"y_{i}_value"].value == v
-        assert inst.ports.z_value.value == v
+            assert inst.ports.y[i].value.value == v
+        assert inst.ports.z.value.value == v
 
 
 def test_connect_through_wire_reversed():

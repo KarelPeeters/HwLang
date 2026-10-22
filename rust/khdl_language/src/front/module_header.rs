@@ -10,7 +10,7 @@ use crate::front::signal::{Interface, Polarized, Port, PortInfo, PortInterfaceIn
 use crate::front::string::shape_string;
 use crate::front::types::{HardwareType, Type, Typed};
 use crate::front::value::{CompileValue, SimpleCompileValue};
-use crate::mid::ir::{IrModule, IrPort, IrPortInfo, IrPorts};
+use crate::mid::ir::{IrModule, IrPort, IrPortDeclared, IrPortInfo, IrPorts};
 use crate::new_index_type;
 use crate::syntax::ast::{
     DomainKind, Expression, ExtraList, ModulePortDomainBlock, ModulePortInBlock, ModulePortInBlockKind, ModulePortItem,
@@ -67,6 +67,7 @@ pub struct ElaboratedModuleHeader<A> {
     pub port_interfaces: ArenaPortInterfaces,
     pub ir_ports: IrPorts,
     pub ir_ports_named: IndexMap<String, IrPort>,
+    pub ir_ports_declared: IndexMap<String, IrPortDeclared>,
 
     pub scope_params: Arc<FrozenScope>,
     pub scope_ports: ScopeContent,
@@ -112,7 +113,7 @@ impl CompileRefs<'_, '_> {
 
         // elaborate ports
         let scope_params_tmp = &Arc::clone(&scope_params).as_scope();
-        let (connectors, scope_ports, ir_ports, ir_ports_named) =
+        let (connectors, scope_ports, ir_ports, ir_ports_named, ir_ports_declared) =
             self.elaborate_module_ports_impl(&mut ctx, scope_params_tmp, &mut flow, ports, def_span)?;
 
         // create params debug info string
@@ -136,6 +137,7 @@ impl CompileRefs<'_, '_> {
             port_interfaces: ctx.port_interfaces,
             ir_ports,
             ir_ports_named,
+            ir_ports_declared,
 
             scope_params,
             scope_ports,
@@ -152,15 +154,23 @@ impl CompileRefs<'_, '_> {
         flow: &mut FlowCompile,
         ports: &Spanned<ExtraList<ModulePortItem>>,
         module_def_span: Span,
-    ) -> DiagResult<(ArenaConnectors, Scope<'p>, IrPorts, IndexMap<String, IrPort>)> {
+    ) -> DiagResult<(
+        ArenaConnectors,
+        Scope<'p>,
+        IrPorts,
+        IndexMap<String, IrPort>,
+        IndexMap<String, IrPortDeclared>,
+    )> {
         let diags = self.diags;
 
         // build context
         let mut connectors: ArenaConnectors = Arena::new();
         let mut ir_ports = Arena::new();
+        let mut ir_ports_declared = IndexMap::new();
         let mut ctx_ports = ModulePortsContext {
             connectors: &mut connectors,
             ir_ports: &mut ir_ports,
+            ir_ports_declared: &mut ir_ports_declared,
             any_err: Ok(()),
             port_to_single: IndexMap::new(),
             ir_ports_names_used: IndexMap::new(),
@@ -191,7 +201,7 @@ impl CompileRefs<'_, '_> {
             }
         }
 
-        Ok((connectors, scope_ports, ir_ports, ir_ports_named))
+        Ok((connectors, scope_ports, ir_ports, ir_ports_named, ir_ports_declared))
     }
 }
 
@@ -199,6 +209,7 @@ pub struct ModulePortsContext<'a> {
     // results
     connectors: &'a mut ArenaConnectors,
     ir_ports: &'a mut IrPorts,
+    ir_ports_declared: &'a mut IndexMap<String, IrPortDeclared>,
     any_err: DiagResult,
 
     // intermediate state
@@ -355,6 +366,8 @@ impl ModulePortsContext<'_> {
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             };
             let ir_port = self.ir_ports.push(ir_port_info);
+            self.ir_ports_declared
+                .insert(id_str.to_owned(), IrPortDeclared::Single(ir_port));
 
             let port = ctx.ports.push(PortInfo {
                 span: id.span(),
@@ -397,15 +410,21 @@ impl ModulePortsContext<'_> {
 
             let mut intfs = vec![];
             let mut singles = vec![];
+            let mut ir_ports = vec![];
             try_for_each_nd_index(&shape, |index| {
                 let (name, ir_name) = interface_array_element_names(&id_str, index);
-                let (intf, element_singles) = self.push_port_interface(ctx, id, &name, &ir_name, domain, view)?;
+                let (intf, element_singles, element_ir_ports) =
+                    self.push_port_interface(ctx, id, &name, &ir_name, domain, view)?;
                 intfs.push(intf);
                 singles.push(element_singles);
+                ir_ports.push(element_ir_ports);
                 Ok(())
             })?;
             let intf = NdArray::new(shape.clone(), intfs);
-            let singles = NdArray::new(shape, singles);
+            let singles = NdArray::new(shape.clone(), singles);
+            let ir_ports = NdArray::new(shape, ir_ports);
+            self.ir_ports_declared
+                .insert(id_str, IrPortDeclared::Interface(ir_ports));
 
             let kind = ConnectorKind::Interface {
                 domain: self.map_connector_domain(domain),
@@ -434,7 +453,7 @@ impl ModulePortsContext<'_> {
         ir_name: &str,
         domain: Spanned<DomainKind<Polarized<Port>>>,
         view: Spanned<ElaboratedInterfaceView>,
-    ) -> DiagResult<(Interface, Vec<ConnectorSingle>)> {
+    ) -> DiagResult<(Interface, Vec<ConnectorSingle>, IndexMap<String, IrPort>)> {
         let ElaboratedInterfaceView { interface, view_index } = view.inner;
         let interface = ctx.refs.shared.elaboration_arenas.interface_info(interface);
         let view_info = &interface.views[view_index];
@@ -443,6 +462,7 @@ impl ModulePortsContext<'_> {
 
         let mut declared_ports = vec![];
         let mut singles = vec![];
+        let mut ir_ports = IndexMap::new();
 
         // TODO rework interface port names, to ensure unique but still readable names
         for (port_index, (_, port)) in enumerate(&interface.signals) {
@@ -464,6 +484,7 @@ impl ModulePortsContext<'_> {
                 debug_info_domain: domain.inner.diagnostic_string(ctx),
             };
             let ir_port = self.ir_ports.push(ir_port_info);
+            ir_ports.insert(port_id_str.to_owned(), ir_port);
 
             let port = ctx.ports.push(PortInfo {
                 span: id.span(),
@@ -486,7 +507,7 @@ impl ModulePortsContext<'_> {
             domain,
             ports: declared_ports,
         });
-        Ok((Interface::Port(port_interface), singles))
+        Ok((Interface::Port(port_interface), singles, ir_ports))
     }
 
     fn map_connector_domain(

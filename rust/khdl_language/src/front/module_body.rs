@@ -61,6 +61,7 @@ impl CompileRefs<'_, '_> {
             port_interfaces,
             ir_ports,
             ir_ports_named,
+            ir_ports_declared,
             scope_params,
             scope_ports,
             flow_root,
@@ -89,6 +90,7 @@ impl CompileRefs<'_, '_> {
             ir_signals: IrSignals {
                 ports: ir_ports,
                 ports_named: ir_ports_named,
+                ports_declared: ir_ports_declared,
                 wires: Arena::new(),
             },
             children: vec![],

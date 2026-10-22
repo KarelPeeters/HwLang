@@ -17,6 +17,7 @@ use crate::syntax::pos::{Span, Spanned};
 use crate::util::arena::Arena;
 use crate::util::big_int::{BigInt, BigUint};
 use crate::util::int::IntRepresentation;
+use crate::util::nd_array::NdArray;
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use crate::util::range_multi::ClosedNonEmptyMultiRange;
 use derive_more::From;
@@ -251,6 +252,14 @@ pub struct IrSignals {
 
     // port names must be unique, we enforce that here through this extra map
     pub ports_named: IndexMap<String, IrPort>,
+    // ports can be arranged in interfaces, this preserves that information
+    pub ports_declared: IndexMap<String, IrPortDeclared>,
+}
+
+#[derive(Debug, Clone)]
+pub enum IrPortDeclared {
+    Single(IrPort),
+    Interface(NdArray<IndexMap<String, IrPort>>),
 }
 
 #[derive(Debug, Clone)]

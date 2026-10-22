@@ -179,10 +179,10 @@ def test_ref_interface_array(tmp_dir: Path):
 
     for i in range(3):
         for j in range(2):
-            inst.ports[f"x_{i}_{j}_value"].value = 2 * i + j
+            inst.ports.x[i][j].value.value = 2 * i + j
     inst.step(1)
     for j in range(2):
-        assert inst.ports[f"y_{j}_value"].value == 4 + j
+        assert inst.ports.y[j].value.value == 4 + j
 
 
 def test_ref_interface_array_ty_mismatch():

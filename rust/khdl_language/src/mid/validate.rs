@@ -3,8 +3,8 @@ use crate::front::signal::Polarized;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrClockedProcess, IrDatabase, IrEnumType,
     IrExpression, IrExpressionLarge, IrForStatement, IrIfStatement, IrModule, IrModuleChild, IrModuleExternalInstance,
-    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals,
-    IrStatement, IrString, IrStringSubstitution, IrStructType, IrType, IrVariables,
+    IrModuleInfo, IrModuleInternalInstance, IrPortConnection, IrPortDeclared, IrPortInfo, IrSignal, IrSignalOrVariable,
+    IrSignals, IrStatement, IrString, IrStringSubstitution, IrStructType, IrType, IrVariables,
 };
 use crate::mid::steps::{IrTargetStepScalar, IrTargetStepSlice, IrTargetSteps};
 use crate::syntax::ast::{PortDirection, StringPiece};
@@ -46,6 +46,7 @@ impl IrModuleInfo {
             ports,
             wires: _,
             ports_named,
+            ports_declared,
         } = signals;
         if ports.len() != ports_named.len() {
             return Err(diags.report_error_internal(id_span, "ports_named count mismatch"));
@@ -54,6 +55,26 @@ impl IrModuleInfo {
             if ports_named.get(&port_info.name) != Some(&port) {
                 return Err(diags.report_error_internal(id_span, "ports_named value mismatch"));
             }
+        }
+        let mut ports_declared_seen = IndexSet::new();
+        for declared in ports_declared.values() {
+            let declared_ports = match declared {
+                &IrPortDeclared::Single(port) => vec![port],
+                IrPortDeclared::Interface(elements) => elements
+                    .flat_values()
+                    .iter()
+                    .flat_map(|element| element.values().copied())
+                    .collect(),
+            };
+            for port in declared_ports {
+                let _ = ports[port];
+                if !ports_declared_seen.insert(port) {
+                    return Err(diags.report_error_internal(id_span, "ports_declared contains port twice"));
+                }
+            }
+        }
+        if ports_declared_seen.len() != ports.len() {
+            return Err(diags.report_error_internal(id_span, "ports_declared count mismatch"));
         }
 
         // validate children

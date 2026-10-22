@@ -3,7 +3,7 @@ use crate::front::compile::CompileRefs;
 use crate::front::diagnostic::DiagError;
 use crate::front::value::CompileValue;
 use crate::mid::bits::{FromBitsInvalidValue, FromBitsWrongLength, ToBitsWrongType};
-use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortInfo};
+use crate::mid::ir::{IrModule, IrModules, IrPort, IrPortDeclared, IrPortInfo};
 use crate::syntax::ast::PortDirection;
 use crate::syntax::pos::Spanned;
 use crate::util::arena::{Arena, IndexType};
@@ -69,6 +69,7 @@ pub struct VerilatedLib {
 
     ports: Arena<IrPort, IrPortInfo>,
     ports_named: IndexMap<String, IrPort>,
+    ports_declared: Arc<IndexMap<String, IrPortDeclared>>,
 }
 
 /// This struct is intentionally not [Send], see https://verilator.org/guide/latest/verilating.html#multithreading.
@@ -112,6 +113,7 @@ impl VerilatedLib {
             lib: Arc::new(lib),
             ports: top_ports.clone(),
             ports_named,
+            ports_declared: Arc::new(top_info.signals.ports_declared.clone()),
         })
     }
 
@@ -140,6 +142,10 @@ impl VerilatedLib {
 
     pub fn ports_named(&self) -> &IndexMap<String, IrPort> {
         &self.ports_named
+    }
+
+    pub fn ports_declared(&self) -> &Arc<IndexMap<String, IrPortDeclared>> {
+        &self.ports_declared
     }
 }
 
@@ -185,6 +191,10 @@ impl VerilatedInstance {
 
     pub fn ports_named(&self) -> &IndexMap<String, IrPort> {
         self.lib.ports_named()
+    }
+
+    pub fn ports_declared(&self) -> &Arc<IndexMap<String, IrPortDeclared>> {
+        self.lib.ports_declared()
     }
 
     pub fn get_port(&self, port: IrPort) -> Result<CompileValue, VerilatorError> {

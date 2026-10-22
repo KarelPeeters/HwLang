@@ -627,6 +627,7 @@ dependencies = [
 name = "khdl_python"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "itertools 0.13.0",
  "khdl_language",
  "khdl_util",

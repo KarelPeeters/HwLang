@@ -221,3 +221,83 @@ def test_port_interaction_errors(tmp_dir: Path):
     inst.step(1)
     assert inst.ports.y.value is True
     assert inst.ports["y"].value is True
+
+
+def test_port_interaction_structured(tmp_dir: Path):
+    src = """
+    interface Foo { 
+        a: uint(8),
+        b: bool,
+        view In { a: in, b: in }
+        view Out { a: out, b: out }
+    }
+    module top ports(
+        async {
+            s: in uint(8),
+            x: interface [3]Foo.In,
+            y: interface [2][3]Foo.Out,
+            t: out uint(8),
+        }
+    ) {
+        comb {
+            t = s;
+            for (i in 0..2) {
+                for (j in 0..3) {
+                    y[i][j].a = x[j].a;
+                    y[i][j].b = x[j].b;
+                }
+            }
+        }
+    }
+    """
+    inst = compile_custom(src).resolve("top.top").as_verilated(tmp_dir).instance()
+    ports = inst.ports
+
+    # structure and naming
+    assert list(ports) == ["s", "x", "y", "t"]
+    assert isinstance(ports.x[0], khdl.VerilatedInterface)
+    assert isinstance(ports.y, khdl.VerilatedInterfaceArray)
+    assert list(ports.x[0]) == ["a", "b"]
+    assert len(ports.y) == 2
+    assert len(ports.y[0]) == 3
+    assert ports["y"][-1][-1].a.name == "y_1_2_a"
+    assert list(inst.ports_flat)[:3] == ["s", "x_0_a", "x_0_b"]
+    assert ports.y.shape == (2, 3)
+    assert ports.y[1:].shape == (1, 3)
+    assert ports.y[0].shape == (3,)
+
+    # slicing
+    assert [e.a.name for e in ports.y[1][::-2]] == ["y_1_2_a", "y_1_0_a"]
+    assert [e.a.name for e in ports.y[1][::-1][1:]] == ["y_1_1_a", "y_1_0_a"]
+    assert [e.a.name for e in ports.y[1][1:][::-1][:1]] == ["y_1_2_a"]
+    assert len(ports.y[5:]) == 0
+    assert repr(ports.y[::-1][0]) == "VerilatedInterfaceArray([ports.y[1][0], ports.y[1][1], ports.y[1][2]])"
+
+    # values, through structured, flat and sliced access
+    ports.s.value = 3
+    ports.x[1].a.value = 5
+    inst.ports_flat.x_1_b.value = True
+    inst.step(1)
+    assert ports.t.value == 3
+    assert [e.a.value for e in ports.y[0]] == [0, 5, 0]
+    assert ports.y[1][1]["b"].value is True
+    assert inst.ports_flat["y_0_1_a"].value == 5
+    assert ports.y[1:][0][1].a.value == 5
+
+    # errors
+    with pytest.raises(AttributeError, match="port `z` not found"):
+        _ = ports.z
+    with pytest.raises(AttributeError, match="port `x_0_a` not found"):
+        _ = ports.x_0_a
+    with pytest.raises(AttributeError, match="interface `ports.y\\[1\\]\\[2\\]` does not have port `c`"):
+        _ = ports.y[::-1][0][2].c
+    with pytest.raises(IndexError, match="index 3 out of range for interface array with length 3"):
+        _ = ports.x[3]
+    with pytest.raises(TypeError, match="must be integers or slices, not `<class 'str'>`"):
+        _ = ports.x["0"]
+    with pytest.raises(ValueError, match="use `ports.s.value = value`"):
+        ports.s = 1
+    with pytest.raises(ValueError, match="use `ports.x\\[0\\].a.value = value`"):
+        ports.x[0].a = 1
+    with pytest.raises(ValueError, match="use `ports_flat.x_0_a.value = value`"):
+        inst.ports_flat.x_0_a = 1
