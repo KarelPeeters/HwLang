@@ -699,19 +699,10 @@ pre.diagnostic {
 }
 
 .footer-inner {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 12px 24px;
     padding-top: 24px;
     padding-bottom: 32px;
 }
 
 .footer-inner p {
     margin: 0;
-}
-
-.footer-inner nav {
-    display: flex;
-    gap: 20px;
 }
