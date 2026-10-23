@@ -1,7 +1,8 @@
 # KHDL
 
 An experimental new language for hardware design.
-A webdemo is available at https://khdl-lang.org/.
+See https://khdl-lang.org/ for an overview, or try it without installing anything in the
+[web demo](https://khdl-lang.org/demo/).
 
 A short sneak-peak at the language:
 
@@ -188,12 +189,71 @@ This convenient bridge is very convenient during during verification and build f
 
 ## Getting started
 
-[//]: # (TODO)
-TODO document:
+The quickest way to try the language is the [web demo](https://khdl-lang.org/demo/), which runs the compiler in the
+browser. There are no prebuilt compiler binaries yet, building from source needs a Rust toolchain (1.95 or newer).
 
-* how to get compiler binaries
-* how to set up the manifest for a project
-* how to invoke the commandline compiler
+### Command line compiler
+
+```bash
+git clone https://github.com/khdl-lang/khdl.git
+cd khdl/rust
+cargo build --release -p khdl_bin
+```
+
+This builds the compiler as `rust/target/release/khdl_bin`, the commands below assume it's on your `PATH`.
+
+A project is a directory with a `khdl.toml` manifest, which maps source directories to namespaces. With this
+manifest, a file `src/blink.kh` defines the items `blink.<name>`:
+
+```toml
+[source]
+_ = "src"
+```
+
+From the project directory, check all items, or elaborate a top module and write it out as Verilog:
+
+```bash
+khdl_bin build
+mkdir -p build
+khdl_bin build --top blink.Blink --output-verilog build/blink.v
+```
+
+The top module must be public and have no generic parameters. `khdl_bin fmt` formats all source files of the project.
+
+### Python bindings
+
+The Python bindings can elaborate modules, call compile-time functions, export Verilog and simulate designs through
+[Verilator](https://www.veripool.org/verilator/). Install them from the repository root with:
+
+```bash
+pip install ./rust/khdl_python
+```
+
+```python
+import khdl
+
+source = khdl.Source.new_from_manifest_path("khdl.toml")
+compiled = source.compile()
+module = compiled.resolve_module("blink.Blink")
+print(module.as_verilog().source)
+```
+
+`module.as_verilated(build_dir).instance()` builds a simulator, this requires Verilator and a C++ compiler. The tests in
+`python/src/khdl_sandbox/tests` show more uses of the API.
+
+### VS Code extension
+
+The compiler includes a language server, used by the VS Code extension in `lsp_client`:
+
+```bash
+(cd rust && cargo build --release -p khdl_lsp_server)
+cd lsp_client
+npm ci
+npx vsce package
+code --install-extension khdl-lsp-client-0.0.1.vsix
+```
+
+Then set the `khdl.server.path` setting to the absolute path of `rust/target/release/khdl_lsp_server`.
 
 ## Repository structure
 

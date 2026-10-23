@@ -1,0 +1,28 @@
+pub module Sum(inputs: positive) ports(
+    async {
+        for (i in 0..inputs) {
+            ident("value_{i}"): in uint(8),
+        }
+        total: out uint(0..=255 * inputs),
+    }
+) {
+    comb {
+        var sum = 0;
+        for (i in 0..inputs) {
+            sum = sum + ident("value_{i}");
+        }
+        total = sum;
+    }
+}
+// ---- website: hidden below this line ----
+
+pub module Top ports(
+    async {
+        value_0: in uint(8),
+        value_1: in uint(8),
+        value_2: in uint(8),
+        total: out uint(0..=765),
+    }
+) {
+    instance Sum(inputs=3) ports(value_0, value_1, value_2, total);
+}

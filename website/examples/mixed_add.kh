@@ -1,0 +1,9 @@
+pub module MixedAdd ports(
+    a: in async int(0..=7),
+    b: in async int(-8..=7),
+    result: out async int(-8..=14),
+) {
+    comb {
+        result = a + b;
+    }
+}
