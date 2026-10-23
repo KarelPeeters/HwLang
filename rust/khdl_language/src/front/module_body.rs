@@ -1,7 +1,7 @@
 use crate::front::assignment::AssignmentTarget;
 use crate::front::check::{TypeContainsReason, check_type_contains_type, check_type_contains_value};
 use crate::front::compile::{CompileItemContext, CompileRefs};
-use crate::front::diagnostic::{DiagResult, DiagnosticError};
+use crate::front::diagnostic::{DiagError, DiagResult, DiagnosticError};
 use crate::front::domain::{DomainSignal, PortDomain, ValueDomain};
 use crate::front::exit::ExitStack;
 use crate::front::expression::{LeftInterfaceInfo, LrValue};
@@ -11,9 +11,10 @@ use crate::front::interface::ElaboratedInterfaceSignalInfo;
 use crate::front::item::{ElaboratedInterface, ElaboratedModule};
 use crate::front::module_header::{
     ArenaConnectors, Connector, ConnectorInfo, ConnectorKind, ConnectorSingle, ElaboratedModuleExternalInfo,
-    ElaboratedModuleHeader, ElaboratedModuleInternalInfo, interface_array_element_names, interface_array_shape,
+    ElaboratedModuleHeader, ElaboratedModuleInternalInfo, ModuleConnectors, interface_array_element_names,
+    interface_array_shape,
 };
-use crate::front::scope::{FrozenScope, NamedValue, Scope, ScopeParent, ScopedEntry};
+use crate::front::scope::{NamedValue, Scope, ScopeParent, ScopedEntry};
 use crate::front::signal::{
     Interface, Polarized, Signal, SignalOrVariable, WireInfo, WireInfoInInterface, WireInfoSingle, WireInterfaceInfo,
 };
@@ -28,6 +29,7 @@ use crate::mid::ir::{
     IrIfStatement, IrModuleChild, IrModuleExternalInstance, IrModuleInfo, IrModuleInternalInstance, IrPortConnection,
     IrSignal, IrSignalOrVariable, IrSignals, IrStatement, IrVariables, IrWireInfo,
 };
+use crate::mid::steps::IrTargetSteps;
 use crate::syntax::ast;
 use crate::syntax::ast::{
     ClockedProcess, ClockedProcessReset, CombinatorialProcess, ConnectEntry, ConnectStatement, DomainKind,
@@ -41,7 +43,6 @@ use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::intern::Id;
 use crate::util::nd_array::{NdArray, NdArrayShape, try_for_each_nd_index};
 use crate::util::{ResultExt, result_pair};
-use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools, enumerate, zip_eq};
 use std::convert::identity;
@@ -183,10 +184,44 @@ pub struct BodyContext {
     delayed_err: DiagResult,
 }
 
+#[derive(Debug, Copy, Clone)]
 enum ConnectionSignal {
     Signal(DomainSignal),
     Dummy(Span),
     Expression(Span),
+    Error(DiagError),
+}
+
+/// Instance port connection that has been evaluated, but whose domain has not been checked yet.
+/// Domain checking is delayed until all connections are evaluated, since port domains can refer to other ports.
+struct InstanceConnectionEval {
+    span_id: Span,
+    info: DiagResult<InstanceConnectionInfo>,
+}
+
+struct InstanceConnectionInfo {
+    span: Span,
+    singles: Vec<(ConnectorSingle, ConnectionSignal)>,
+    delayed: DelayedConnection,
+}
+
+enum DelayedConnection {
+    PortInput {
+        source_domain: Spanned<ValueDomain>,
+        signal_ir: IrSignal,
+    },
+    PortOutputDummy,
+    PortOutput {
+        target_base: Signal,
+        target_ir: IrSignal,
+        expansion: Option<(HardwareType, IrTargetSteps)>,
+    },
+    Interface {
+        values: Vec<Interface>,
+        any_input: bool,
+        any_output: bool,
+        ir_connections: Vec<IrPortConnection>,
+    },
 }
 
 struct ConnectEntryEval<'a> {
@@ -804,8 +839,8 @@ impl BodyContext {
                         expr.span,
                         "wire interface used here without a view",
                     )
-                    .add_footer_hint("only port interfaces have a declared view, add `view <name>` to select one")
-                    .report(diags);
+                        .add_footer_hint("only port interfaces have a declared view, add `view <name>` to select one")
+                        .report(diags);
                     any_err_entries = Err(e);
                     return Ok(());
                 };
@@ -1053,6 +1088,7 @@ impl BodyContext {
         // eval module
         let elaborated_module = ctx.eval_expression_as_module(scope, flow_parent, span_keyword, module)?;
 
+        // get module info
         let (instance_info, connectors, def_ports_span) = match elaborated_module {
             ElaboratedModule::Internal(module) => {
                 let ElaboratedModuleInternalInfo {
@@ -1082,11 +1118,16 @@ impl BodyContext {
                 )
             }
         };
+        let ModuleConnectors {
+            arena: connectors,
+            id_to_connector,
+        } = connectors;
 
-        // eval port connections
-        let mut port_connections_eval = vec![];
+        // eval port connections (in connection order, so side effects and scopes are correct)
+        let mut connector_to_connections: IndexMap<Connector, Vec<InstanceConnectionEval>> =
+            connectors.keys().map(|connector| (connector, vec![])).collect();
+        let mut any_err = Ok(());
         {
-            // Freeze each extra-list iteration before its loop variables leave scope.
             let mut scope_connections = scope.new_child(port_connections.span);
             ctx.elaborate_extra_list(
                 &mut scope_connections,
@@ -1094,90 +1135,118 @@ impl BodyContext {
                 &port_connections.inner,
                 true,
                 &mut |ctx, scope, flow, connection| {
-                    let id = ctx.eval_id(scope.as_scope(), flow, connection.id)?;
-                    let captured = Arc::new(scope.as_scope().capture_module_connection(flow, connection.span()));
-                    port_connections_eval.push((id, connection, captured));
+                    // eval id
+                    let id = ctx.eval_id(scope.as_scope(), flow, connection.id);
+                    let id = match id {
+                        Ok(id) => id,
+                        Err(e) => {
+                            any_err = Err(e);
+                            return Ok(());
+                        }
+                    };
+
+                    // find corresponding connector
+                    let connector = match id_to_connector.get(&id.inner) {
+                        Some(&connector) => connector,
+                        None => {
+                            let diag = DiagnosticError::new(
+                                "connection does not match any port",
+                                id.span,
+                                "invalid connection here",
+                            )
+                            .add_info(def_ports_span, "ports declared here")
+                            .report(diags);
+
+                            any_err = Err(diag);
+                            return Ok(());
+                        }
+                    };
+
+                    // evaluate connection
+                    let info = self.eval_instance_port_connection(
+                        ctx,
+                        scope.as_scope(),
+                        flow,
+                        connectors,
+                        connector,
+                        connection,
+                    );
+
+                    // store connection
+                    let eval = InstanceConnectionEval { span_id: id.span, info };
+                    connector_to_connections.get_mut(&connector).unwrap().push(eval);
+
                     Ok(())
                 },
             )?;
         }
 
-        // check that connections are unique
-        let mut id_to_connection_and_used: IndexMap<Id, (&PortConnection, Arc<FrozenScope>, bool)> = IndexMap::new();
-        for (connection_id, connection, captured) in port_connections_eval {
-            match id_to_connection_and_used.entry(connection_id.inner) {
-                Entry::Vacant(entry) => {
-                    entry.insert((connection, captured, false));
-                }
-                Entry::Occupied(entry) => {
-                    let (prev_connection, _, _) = entry.get();
-                    let diag = DiagnosticError::new("duplicate connection", connection.span(), "connected again here")
-                        .add_info(prev_connection.span(), "previous connection here")
-                        .report(diags);
-                    return Err(diag);
-                }
-            }
-        }
-
-        // match connectors to connections
-        // TODO it's a bit weird that these are evaluated in declaration instead of connection order,
-        //   but that's much more convenient for domain resolution
-        let mut single_to_signal = IndexMap::new();
+        // visit connectors (in connector declaration order, so domain references work)
+        let mut single_to_signal: IndexMap<ConnectorSingle, ConnectionSignal> = IndexMap::new();
         let mut ir_connections = vec![];
+        for (connector, connections) in connector_to_connections {
+            let connector_info = &connectors[connector];
+            let connector_id_str = connector_info.id.inner.str(interner);
 
-        for (connector, connector_info) in connectors {
-            match id_to_connection_and_used.get_mut(&connector_info.id.inner) {
-                Some((connection, captured, connection_used)) => {
-                    if *connection_used {
-                        // this should have already been caught during module header elaboration
-                        return Err(diags.report_error_internal(connection.span(), "connection used twice"));
-                    }
-                    *connection_used = true;
-
-                    let connection_scope = Arc::clone(captured).as_scope();
-                    let connections = self.elaborate_instance_port_connection(
-                        ctx,
-                        &connection_scope,
-                        flow_parent,
-                        connectors,
-                        &single_to_signal,
-                        connector,
-                        connection,
-                    )?;
-
-                    for (single, signal, ir_connection) in connections {
-                        single_to_signal.insert_first(single, signal);
-                        ir_connections.push(ir_connection);
-                    }
+            // check that there is exactly one connection
+            let mut connections = connections.into_iter();
+            let connection = match (connections.next(), connections.next()) {
+                (Some(single), None) => {
+                    // great
+                    single.info.map(|info| (single.span_id, info))
                 }
-                None => {
-                    let connector_id_str = connector_info.id.inner.str(interner);
+                (None, _) => {
+                    // error, missing connection
                     let diag = DiagnosticError::new(
                         format!("missing connection for port `{connector_id_str}`"),
                         Span::empty_at(port_connections.span.end()),
                         "connections here",
                     )
-                    .add_info(connector_info.id.span(), "port declared here")
+                    .add_info(connector_info.id.span, "port declared here")
                     .report(diags);
-                    return Err(diag);
+                    Err(diag)
                 }
-            }
-        }
+                (Some(first), Some(second)) => {
+                    // error, multiple connections
+                    let mut diag = DiagnosticError::new(
+                        format!("multiple connections for port `{connector_id_str}`"),
+                        second.span_id,
+                        "connected again here",
+                    )
+                    .add_info(first.span_id, "first connected here");
+                    for r in connections {
+                        diag = diag.add_info(r.span_id, "connected again here");
+                    }
+                    Err(diag.report(diags))
+                }
+            };
 
-        let mut any_unused_err = Ok(());
-        for (_, (connection, _, used)) in id_to_connection_and_used.iter() {
-            if !*used {
-                let diag = DiagnosticError::new(
-                    "connection does not match any port",
-                    connection.span(),
-                    "invalid connection here",
-                )
-                .add_info(def_ports_span, "ports declared here")
-                .report(diags);
-                any_unused_err = Err(diag);
+            // record the connected signals, later ports can refer to them in their domains
+            let (span_id, info) = match connection {
+                Ok((span_id, info)) => {
+                    for &(single, signal) in &info.singles {
+                        single_to_signal.insert_first(single, signal);
+                    }
+                    (span_id, info)
+                }
+                Err(e) => {
+                    if let Ok(kind) = &connector_info.kind {
+                        for single in kind.singles() {
+                            single_to_signal.insert_first(single, ConnectionSignal::Error(e));
+                        }
+                    }
+                    any_err = Err(e);
+                    continue;
+                }
+            };
+
+            // check domains and finish the connection
+            match self.finish_instance_port_connection(ctx, connectors, &single_to_signal, connector, span_id, info) {
+                Ok(connections) => ir_connections.extend(connections),
+                Err(e) => any_err = Err(e),
             }
         }
-        any_unused_err?;
+        any_err?;
 
         // build instance
         let name = name.map(|id| id.inner.str(&ctx.refs.shared.interner).to_owned());
@@ -1206,16 +1275,15 @@ impl BodyContext {
         Ok(())
     }
 
-    fn elaborate_instance_port_connection(
+    fn eval_instance_port_connection(
         &mut self,
         ctx: &mut CompileItemContext,
         scope: &Scope,
         flow_parent: &mut FlowCompile,
         connectors: &ArenaConnectors,
-        prev_single_to_signal: &IndexMap<ConnectorSingle, ConnectionSignal>,
         connector: Connector,
         connection: &PortConnection,
-    ) -> DiagResult<Vec<(ConnectorSingle, ConnectionSignal, Spanned<IrPortConnection>)>> {
+    ) -> DiagResult<InstanceConnectionInfo> {
         let refs = ctx.refs;
         let diags = refs.diags;
         let interner = &refs.shared.interner;
@@ -1234,46 +1302,6 @@ impl BodyContext {
         } = &connection;
         let expr = expr.expr();
 
-        // replace signals that are earlier ports with their connected value
-        let map_domain_kind = |domain_span: Span, domain: DomainKind<Polarized<ConnectorSingle>>| {
-            Ok(match domain {
-                DomainKind::Const => DomainKind::Const,
-                DomainKind::Async => DomainKind::Async,
-                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|raw_port| {
-                    let mapped_port = match prev_single_to_signal.get(&raw_port.signal) {
-                        None => {
-                            return Err(
-                                diags.report_error_internal(connection_span, "failed to get signal for previous port")
-                            );
-                        }
-                        Some(&ConnectionSignal::Dummy(dummy_span)) => {
-                            let diag = DiagnosticError::new_todo(
-                                "dummy port connections that are used in the domain of other ports",
-                                dummy_span,
-                            )
-                            .add_info(domain_span, "port used in a domain here")
-                            .report(diags);
-                            return Err(diag);
-                        }
-                        Some(&ConnectionSignal::Expression(expr_span)) => {
-                            let diag = DiagnosticError::new_todo(
-                                "expression port connections that are used in the domain of other ports",
-                                expr_span,
-                            )
-                            .add_info(domain_span, "port used in a domain here")
-                            .report(diags);
-                            return Err(diag);
-                        }
-                        Some(&ConnectionSignal::Signal(signal)) => Ok(signal),
-                    }?;
-                    Ok(Polarized {
-                        signal: mapped_port.signal,
-                        inverted: mapped_port.inverted ^ raw_port.inverted,
-                    })
-                })?),
-            })
-        };
-
         // always try to evaluate as signal for domain replacing purposes
         let signal = match &refs.get_expr(expr) {
             ExpressionKind::Dummy => ConnectionSignal::Dummy(expr.span),
@@ -1291,20 +1319,11 @@ impl BodyContext {
         match connector_kind.as_ref_ok()? {
             &ConnectorKind::Port {
                 direction: port_dir,
-                domain: port_domain,
+                domain: _,
                 ty: ref port_ty,
                 single: connector_single,
             } => {
-                let connector_domain = port_domain
-                    .map_inner(|d| match d {
-                        PortDomain::Clock => Ok(ValueDomain::Clock),
-                        PortDomain::Kind(kind) => {
-                            Ok(ValueDomain::from_domain_kind(map_domain_kind(port_domain.span, kind)?))
-                        }
-                    })
-                    .transpose()?;
-
-                let ir_connection = match port_dir.inner {
+                let delayed = match port_dir.inner {
                     PortDirection::Input => {
                         // better dummy port error message
                         if let ExpressionKind::Dummy = refs.get_expr(expr) {
@@ -1332,28 +1351,7 @@ impl BodyContext {
                             span_connection_port_id: connection_id.span(),
                             span_port_ty: port_ty.span,
                         };
-                        let check_ty = check_type_contains_value(
-                            refs,
-                            reason,
-                            &port_ty.inner.as_type(),
-                            connection_value.as_ref(),
-                        );
-
-                        // check domain
-                        let target_domain = Spanned {
-                            span: connection_id.span(),
-                            inner: connector_domain.inner,
-                        };
-                        let source_domain = connection_value.as_ref().map_inner(|v| v.domain());
-                        let check_domain = ctx.check_valid_domain_crossing(
-                            connection_span,
-                            source_domain,
-                            target_domain,
-                            "input port connection",
-                        );
-
-                        check_ty?;
-                        check_domain?;
+                        check_type_contains_value(refs, reason, &port_ty.inner.as_type(), connection_value.as_ref())?;
 
                         // convert value to ir
                         let connection_value_ir_raw = connection_value
@@ -1399,11 +1397,14 @@ impl BodyContext {
                             IrSignal::Wire(extra_ir_wire)
                         };
 
-                        IrPortConnection::Input(connection_signal_ir)
+                        DelayedConnection::PortInput {
+                            source_domain: connection_value.as_ref().map_inner(|v| v.domain()),
+                            signal_ir: connection_signal_ir,
+                        }
                     }
                     PortDirection::Output => {
                         match refs.get_expr(expr) {
-                            ExpressionKind::Dummy => IrPortConnection::Output(None),
+                            ExpressionKind::Dummy => DelayedConnection::PortOutputDummy,
                             _ => {
                                 let mut flow = flow_parent.new_child_compile(expr.span, "output port target");
                                 let AssignmentTarget {
@@ -1434,23 +1435,15 @@ impl BodyContext {
                                 };
 
                                 // figure out base info
-                                let (base_domain, base_ty, base_ir) = match target_base {
+                                let (base_ty, base_ir) = match target_base {
                                     Signal::Port(base) => {
                                         // port has fixed info, just get it
                                         let port_info = &ctx.ports[base];
-                                        (
-                                            port_info.domain.map_inner(ValueDomain::from_port_domain),
-                                            port_info.ty.clone(),
-                                            IrSignal::Port(port_info.ir),
-                                        )
+                                        (port_info.ty.clone(), IrSignal::Port(port_info.ir))
                                     }
                                     Signal::Wire(base) => {
                                         // wire info can still be suggested
                                         let wire_info = &mut ctx.wires[base];
-
-                                        let wire_domain =
-                                            wire_info.suggest_domain(&mut ctx.wire_interfaces, connector_domain);
-
                                         let wire_typed = if target_steps.is_empty() {
                                             wire_info.suggest_ty(
                                                 refs,
@@ -1460,12 +1453,8 @@ impl BodyContext {
                                             )
                                         } else {
                                             wire_info.expect_typed(refs, &ctx.wire_interfaces, target_base_span)
-                                        };
-
-                                        let wire_domain = wire_domain?;
-                                        let wire_typed = wire_typed?;
-
-                                        (wire_domain, wire_typed.ty.cloned(), IrSignal::Wire(wire_typed.ir))
+                                        }?;
+                                        (wire_typed.ty.cloned(), IrSignal::Wire(wire_typed.ir))
                                     }
                                 };
 
@@ -1484,96 +1473,42 @@ impl BodyContext {
                                     span_target_ty: base_ty.span,
                                     span_port_ty: port_ty.span,
                                 };
-                                let err_ty = check_type_contains_type(
+                                check_type_contains_type(
                                     refs,
                                     reason,
                                     &target_ty.as_type(),
                                     Spanned::new(connection_id.span(), &port_ty.inner.as_type()),
-                                );
+                                )?;
 
-                                // check domain
-                                let err_domain = ctx.check_valid_domain_crossing(
-                                    connection_span,
-                                    connector_domain,
-                                    base_domain,
-                                    "output port connection",
-                                );
-
-                                err_ty?;
-                                err_domain?;
-
-                                // actually create the IR connection
-                                //   if there are any steps or if we need type expansion,
-                                //   create an intermediate combinatorial process
-                                let connection_signal_ir = if steps_ir.is_empty() && base_ty.inner == port_ty.inner {
-                                    base_ir
+                                // if there are any steps or if we need type expansion,
+                                //   we need an intermediate combinatorial process
+                                let expansion = if steps_ir.is_empty() && base_ty.inner == port_ty.inner {
+                                    None
                                 } else {
-                                    // create intermediate wire, with the port type
-                                    let wire_raw = self.ir_signals.wires.push(IrWireInfo {
-                                        ty: port_ty.inner.as_ir(refs),
-                                        debug_info_id: connector_id.map_inner(|id| Some(id.str(interner).to_owned())),
-                                        debug_info_ty: port_ty.inner.value_string(refs),
-                                        debug_info_domain: connector_domain.inner.diagnostic_string(ctx).to_owned(),
-                                    });
-
-                                    // create type expansion expression
-                                    let value_raw = HardwareValue {
-                                        ty: port_ty.inner.clone(),
-                                        domain: connector_domain.inner,
-                                        expr: wire_raw.as_expression(),
-                                    };
-                                    let value_expanded = value_raw.as_ir_expression_unchecked(
-                                        refs,
-                                        &mut ctx.large,
-                                        connection_span,
-                                        &target_ty,
-                                    )?;
-
-                                    // create combinatorial process that assigns the expanded value to the real target signal
-                                    let target_ir = IrAssignmentTarget {
-                                        base: base_ir.into(),
-                                        steps: steps_ir,
-                                    };
-                                    let stmt = IrStatement::Assign(target_ir, value_expanded);
-                                    let process = IrCombinatorialProcess {
-                                        variables: IrVariables::new(),
-                                        block: IrBlock {
-                                            statements: vec![Spanned::new(connection_span, stmt)],
-                                        },
-                                    };
-                                    let child = IrModuleChild::CombinatorialProcess(process);
-                                    self.children.push(Spanned::new(connection_span, child));
-
-                                    // connect the port to the intermediate wire
-                                    IrSignal::Wire(wire_raw)
+                                    Some((target_ty, steps_ir))
                                 };
 
-                                IrPortConnection::Output(Some(connection_signal_ir))
+                                DelayedConnection::PortOutput {
+                                    target_base,
+                                    target_ir: base_ir,
+                                    expansion,
+                                }
                             }
                         }
                     }
                 };
 
-                let spanned_ir_connection = Spanned {
+                Ok(InstanceConnectionInfo {
                     span: connection_span,
-                    inner: ir_connection,
-                };
-                Ok(vec![(connector_single, signal, spanned_ir_connection)])
+                    singles: vec![(connector_single, signal)],
+                    delayed,
+                })
             }
             ConnectorKind::Interface {
-                domain: connector_domain,
+                domain: _,
                 view: connector_view,
                 singles: connector_singles,
             } => {
-                let connector_domain = connector_domain
-                    .map_inner(|d| {
-                        Ok(ValueDomain::from_domain_kind(map_domain_kind(
-                            connector_domain.span,
-                            d,
-                        )?))
-                    })
-                    .transpose()?;
-
                 // eval expr
                 let mut flow_connection = flow_parent.new_child_isolated();
                 let value_eval = ctx.eval_expression_as_lr(scope, &mut flow_connection, &Type::Any, expr)?;
@@ -1638,7 +1573,8 @@ impl BodyContext {
                 let any_output = port_dirs.iter().any(|(_, d)| d.inner.is_output());
 
                 // check directions and build connections
-                let mut result_connections = vec![];
+                let mut singles = vec![];
+                let mut ir_connections = vec![];
                 for (element_singles, &element_intf) in elements {
                     for (port_index, &(_, connector_dir)) in enumerate(port_dirs.iter()) {
                         let value_ir = element_intf.signal_ir(ctx, port_index);
@@ -1685,16 +1621,186 @@ impl BodyContext {
                             inverted: false,
                             signal: value_signal,
                         });
-                        result_connections.push((
-                            element_singles[port_index],
-                            signal,
-                            Spanned::new(connection_span, ir_connection),
-                        ))
+                        singles.push((element_singles[port_index], signal));
+                        ir_connections.push(ir_connection);
                     }
                 }
 
-                // check domains, only after all other checks have passed since this can infer wire domains
-                for &element_intf in value_eval.intf.flat_values() {
+                Ok(InstanceConnectionInfo {
+                    span: connection_span,
+                    singles,
+                    delayed: DelayedConnection::Interface {
+                        values: value_eval.intf.flat_values().to_vec(),
+                        any_input,
+                        any_output,
+                        ir_connections,
+                    },
+                })
+            }
+        }
+    }
+
+    fn finish_instance_port_connection(
+        &mut self,
+        ctx: &mut CompileItemContext,
+        connectors: &ArenaConnectors,
+        single_to_signal: &IndexMap<ConnectorSingle, ConnectionSignal>,
+        connector: Connector,
+        connection_id_span: Span,
+        info: InstanceConnectionInfo,
+    ) -> DiagResult<Vec<Spanned<IrPortConnection>>> {
+        let refs = ctx.refs;
+        let diags = refs.diags;
+        let interner = &refs.shared.interner;
+
+        let ConnectorInfo {
+            id: connector_id,
+            kind: connector_kind,
+        } = &connectors[connector];
+        let InstanceConnectionInfo {
+            span: connection_span,
+            singles: _,
+            delayed,
+        } = info;
+
+        // replace signals that are earlier ports with their connected value
+        let map_domain_kind = |domain_span: Span, domain: DomainKind<Polarized<ConnectorSingle>>| {
+            Ok(match domain {
+                DomainKind::Const => DomainKind::Const,
+                DomainKind::Async => DomainKind::Async,
+                DomainKind::Sync(sync) => DomainKind::Sync(sync.try_map_signal(|raw_port| {
+                    let mapped_port = match single_to_signal.get(&raw_port.signal) {
+                        None => {
+                            return Err(
+                                diags.report_error_internal(connection_span, "failed to get signal for previous port")
+                            );
+                        }
+                        Some(&ConnectionSignal::Error(e)) => Err(e),
+                        Some(&ConnectionSignal::Dummy(dummy_span)) => {
+                            let diag = DiagnosticError::new_todo(
+                                "dummy port connections used in the domain of other ports",
+                                dummy_span,
+                            )
+                            .add_info(domain_span, "port used in a domain here")
+                            .report(diags);
+                            return Err(diag);
+                        }
+                        Some(&ConnectionSignal::Expression(expr_span)) => {
+                            let diag = DiagnosticError::new_todo(
+                                "general expression port connections used in the domain of other ports",
+                                expr_span,
+                            )
+                            .add_info(domain_span, "port used in a domain here")
+                            .report(diags);
+                            return Err(diag);
+                        }
+                        Some(&ConnectionSignal::Signal(signal)) => Ok(signal),
+                    }?;
+                    Ok(Polarized {
+                        signal: mapped_port.signal,
+                        inverted: mapped_port.inverted ^ raw_port.inverted,
+                    })
+                })?),
+            })
+        };
+
+        let connector_domain = match connector_kind.as_ref_ok()? {
+            ConnectorKind::Port { domain, .. } => domain
+                .map_inner(|d| match d {
+                    PortDomain::Clock => Ok(ValueDomain::Clock),
+                    PortDomain::Kind(kind) => Ok(ValueDomain::from_domain_kind(map_domain_kind(domain.span, kind)?)),
+                })
+                .transpose()?,
+            ConnectorKind::Interface { domain, .. } => domain
+                .map_inner(|d| Ok(ValueDomain::from_domain_kind(map_domain_kind(domain.span, d)?)))
+                .transpose()?,
+        };
+
+        let result = match delayed {
+            DelayedConnection::PortInput {
+                source_domain,
+                signal_ir,
+            } => {
+                let target_domain = Spanned::new(connection_id_span, connector_domain.inner);
+                ctx.check_valid_domain_crossing(
+                    connection_span,
+                    source_domain,
+                    target_domain,
+                    "input port connection",
+                )?;
+                vec![IrPortConnection::Input(signal_ir)]
+            }
+            DelayedConnection::PortOutputDummy => vec![IrPortConnection::Output(None)],
+            DelayedConnection::PortOutput {
+                target_base,
+                target_ir,
+                expansion,
+            } => {
+                let base_domain = target_base.suggest_domain(ctx, connector_domain)?;
+                ctx.check_valid_domain_crossing(
+                    connection_span,
+                    connector_domain,
+                    base_domain,
+                    "output port connection",
+                )?;
+
+                let connection_signal_ir = match expansion {
+                    None => target_ir,
+                    Some((target_ty, steps_ir)) => {
+                        let port_ty = match connector_kind.as_ref_ok()? {
+                            ConnectorKind::Port { ty, .. } => ty,
+                            ConnectorKind::Interface { .. } => {
+                                let msg = "expected port connector for port connection";
+                                return Err(diags.report_error_internal(connection_span, msg));
+                            }
+                        };
+
+                        // create intermediate wire, with the port type
+                        let wire_raw = self.ir_signals.wires.push(IrWireInfo {
+                            ty: port_ty.inner.as_ir(refs),
+                            debug_info_id: connector_id.map_inner(|id| Some(id.str(interner).to_owned())),
+                            debug_info_ty: port_ty.inner.value_string(refs),
+                            debug_info_domain: connector_domain.inner.diagnostic_string(ctx).to_owned(),
+                        });
+
+                        // create type expansion expression
+                        let value_raw = HardwareValue {
+                            ty: port_ty.inner.clone(),
+                            domain: connector_domain.inner,
+                            expr: wire_raw.as_expression(),
+                        };
+                        let value_expanded =
+                            value_raw.as_ir_expression_unchecked(refs, &mut ctx.large, connection_span, &target_ty)?;
+
+                        // create combinatorial process that assigns the expanded value to the real target signal
+                        let target_ir = IrAssignmentTarget {
+                            base: target_ir.into(),
+                            steps: steps_ir,
+                        };
+                        let stmt = IrStatement::Assign(target_ir, value_expanded);
+                        let process = IrCombinatorialProcess {
+                            variables: IrVariables::new(),
+                            block: IrBlock {
+                                statements: vec![Spanned::new(connection_span, stmt)],
+                            },
+                        };
+                        let child = IrModuleChild::CombinatorialProcess(process);
+                        self.children.push(Spanned::new(connection_span, child));
+
+                        // connect the port to the intermediate wire
+                        IrSignal::Wire(wire_raw)
+                    }
+                };
+
+                vec![IrPortConnection::Output(Some(connection_signal_ir))]
+            }
+            DelayedConnection::Interface {
+                values,
+                any_input,
+                any_output,
+                ir_connections,
+            } => {
+                for element_intf in values {
                     let value_domain = element_intf.suggest_domain(ctx, connector_domain)?;
 
                     let mut any_err_domain = Ok(());
@@ -1719,9 +1825,11 @@ impl BodyContext {
                     any_err_domain?;
                 }
 
-                Ok(result_connections)
+                ir_connections
             }
-        }
+        };
+
+        Ok(result.into_iter().map(|c| Spanned::new(connection_span, c)).collect())
     }
 }
 

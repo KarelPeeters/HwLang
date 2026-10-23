@@ -25,7 +25,7 @@ use crate::util::intern::Id;
 use crate::util::nd_array::{NdArray, try_for_each_nd_index};
 use crate::util::{ResultExt, result_pair, result_pair_split};
 use indexmap::IndexMap;
-use itertools::{Itertools, enumerate};
+use itertools::{Either, Itertools, enumerate};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -33,6 +33,11 @@ use std::sync::Arc;
 new_index_type!(pub Connector);
 
 pub type ArenaConnectors = Arena<Connector, ConnectorInfo>;
+
+pub struct ModuleConnectors {
+    pub arena: ArenaConnectors,
+    pub id_to_connector: IndexMap<Id, Connector>,
+}
 
 pub struct ConnectorInfo {
     pub id: Spanned<Id>,
@@ -51,6 +56,15 @@ pub enum ConnectorKind {
         view: Spanned<ElaboratedInterfaceView>,
         singles: NdArray<Vec<ConnectorSingle>>,
     },
+}
+
+impl ConnectorKind {
+    pub fn singles(&self) -> impl Iterator<Item = ConnectorSingle> {
+        match self {
+            &ConnectorKind::Port { single, .. } => Either::Left(std::iter::once(single)),
+            ConnectorKind::Interface { singles, .. } => Either::Right(singles.flat_values().iter().flatten().copied()),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -80,7 +94,7 @@ pub struct ElaboratedModuleInternalInfo {
     pub unique: UniqueDeclaration,
 
     pub module_ir: IrModule,
-    pub connectors: ArenaConnectors,
+    pub connectors: ModuleConnectors,
 }
 
 pub struct ElaboratedModuleExternalInfo {
@@ -88,7 +102,7 @@ pub struct ElaboratedModuleExternalInfo {
     pub module_name: String,
     pub generic_args: Option<Vec<(String, BigInt)>>,
     pub ports: Vec<(String, HardwareType)>,
-    pub connectors: ArenaConnectors,
+    pub connectors: ModuleConnectors,
 }
 
 impl CompileRefs<'_, '_> {
@@ -100,7 +114,7 @@ impl CompileRefs<'_, '_> {
         params: ElaboratedItemParams,
         scope_params: Arc<FrozenScope>,
         ports: &Spanned<ExtraList<ModulePortItem>>,
-    ) -> DiagResult<(ArenaConnectors, ElaboratedModuleHeader<A>)> {
+    ) -> DiagResult<(ModuleConnectors, ElaboratedModuleHeader<A>)> {
         let ElaboratedItemParams {
             unique,
             params: debug_info_params,
@@ -144,6 +158,15 @@ impl CompileRefs<'_, '_> {
             flow_root: flow_root.into_content(),
             flow,
         };
+        let id_to_connector = connectors
+            .into_iter()
+            .map(|(connector, info)| (info.id.inner, connector))
+            .collect();
+        let connectors = ModuleConnectors {
+            arena: connectors,
+            id_to_connector,
+        };
+
         Ok((connectors, header))
     }
 
