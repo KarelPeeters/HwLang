@@ -8,10 +8,12 @@ use khdl_language::front::diagnostic::{DiagResult, Diagnostics, diags_to_string}
 use khdl_language::front::item::ElaboratedModule;
 use khdl_language::front::print::CollectPrintHandler;
 use khdl_language::front::value::{CompileValue, SimpleCompileValue};
+use khdl_language::mid::ir::IrModule;
+use khdl_language::syntax::ast;
 use khdl_language::syntax::collect::add_std_sources;
 use khdl_language::syntax::format::{FormatError, FormatSettings, format_file};
 use khdl_language::syntax::hierarchy::SourceHierarchy;
-use khdl_language::syntax::parsed::ParsedDatabase;
+use khdl_language::syntax::parsed::{AstRefItem, ParsedDatabase};
 use khdl_language::syntax::pos::Spanned;
 use khdl_language::syntax::source::{FileId, SourceDatabase};
 use khdl_language::syntax::token::{TokenCategory, Tokenizer};
@@ -87,33 +89,44 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
         refs.run_compile_loop(None);
         let db = shared.finish_ir_database_ref(&diags, dummy_span)?;
 
-        // find top module, use dummy_diags to suppress "path not found" errors
+        // find top modules: the module named `top`, or if there is none, all modules without generic parameters
+        // use dummy_diags to suppress "path not found" errors
         // (we already did the main compilation, so no real errors will be discarded)
         let dummy_diags = Diagnostics::new();
         refs.diags = &dummy_diags;
-        let top_module = if let Ok(ImportValue::Item(top)) =
-            refs.resolve_path(Spanned::new(dummy_span, "top.top"), false)
-            && let Ok(top) = refs.eval_item(top)
-            && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(top))) = top
+        let mut top_modules = vec![];
+        if let Ok(ImportValue::Item(top)) = refs.resolve_path(Spanned::new(dummy_span, "top.top"), false)
+            && let Some(top) = eval_module_ir(refs, top)
         {
-            Some(refs.shared.elaboration_arenas.module_internal_info(top).module_ir)
-        } else {
-            None
-        };
+            top_modules.push(top);
+        } else if let Ok(file) = parsed[top_file].as_ref_ok() {
+            for (item_ref, item) in file.items_with_ref() {
+                if let ast::Item::ModuleInternal(module) = item
+                    && module.params.is_none()
+                    && let Some(top) = eval_module_ir(refs, item_ref)
+                {
+                    top_modules.push(top);
+                }
+            }
+        }
 
-        Ok((db, top_module))
+        Ok((db, top_modules))
     });
 
     let fallback_error = "/* error */";
-    let fallback_empty = "/* empty, no module named `top` */";
+    let fallback_empty = "/* empty, no module without generic parameters */";
 
     // lower
-    let lowered_verilog = compiled
-        .as_ref_ok()
-        .and_then(|(db, top)| top.map(|top| lower_to_verilog(&diags, db, &[top])).transpose());
-    let lowered_cpp = compiled
-        .as_ref_ok()
-        .and_then(|(db, top)| top.map(|top| lower_to_cpp(&diags, &db.modules, &[top])).transpose());
+    let lowered_verilog = compiled.as_ref_ok().and_then(|(db, tops)| {
+        (!tops.is_empty())
+            .then(|| lower_to_verilog(&diags, db, tops))
+            .transpose()
+    });
+    let lowered_cpp = compiled.as_ref_ok().and_then(|(db, tops)| {
+        (!tops.is_empty())
+            .then(|| lower_to_cpp(&diags, &db.modules, tops))
+            .transpose()
+    });
 
     // ir
     let ir_debug_str = if include_ir {
@@ -160,6 +173,16 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
         format_diags_ansi,
         format_debug_str,
         ir_debug_str,
+    }
+}
+
+fn eval_module_ir(refs: CompileRefs, item: AstRefItem) -> Option<IrModule> {
+    if let Ok(value) = refs.eval_item(item)
+        && let &CompileValue::Simple(SimpleCompileValue::Module(ElaboratedModule::Internal(module))) = value
+    {
+        Some(refs.shared.elaboration_arenas.module_internal_info(module).module_ir)
+    } else {
+        None
     }
 }
 
