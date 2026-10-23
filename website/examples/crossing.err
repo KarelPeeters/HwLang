@@ -1,0 +1,15 @@
+[1m[91merror: invalid domain crossing: different clock[0m
+  [1m[94m--> [0mcrossing.kh:14:13
+   [1m[94m|[0m
+[1m[94m12[0m [1m[94m|[0m     clocked(clk_b, sync rst_b) {
+   [1m[94m|[0m            [1m[94m-------------------[0m [1m[94mtarget domain is sync(clk_b)[0m
+[1m[94m13[0m [1m[94m|[0m         reg wire seen = false;
+[1m[94m14[0m [1m[94m|[0m         if (request) {
+   [1m[94m|[0m             [1m[91m^^^^^^^[0m
+   [1m[94m|[0m             [1m[94m|[0m
+   [1m[94m|[0m             [1m[91minvalid domain crossing here[0m
+   [1m[94m|[0m             [1m[94msource domain is sync(clk_a)[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1m[91mnote[0m: crossing due to signal read in clocked block
+   [1m[94m= [0m[1m[91mhelp[0m: to intentionally cross domains, use `unsafe_value_with_domain` or `unsafe_bool_to_clock`
+

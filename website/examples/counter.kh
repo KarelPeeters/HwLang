@@ -1,0 +1,16 @@
+pub module Counter ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        count: out uint(8),
+    }
+) {
+    clocked(clk, sync rst) {
+        reg wire count = 0;
+        if (count == 255) {
+            count = 0;
+        } else {
+            count = count + 1;
+        }
+    }
+}

@@ -4,3 +4,4 @@
 /python/venv/
 __pycache__/
 .venv/
+/website/dist/

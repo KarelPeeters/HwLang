@@ -1,0 +1,41 @@
+pub module AddFive ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        input_data: in uint(8),
+        input_valid: in bool,
+        input_ready: out bool,
+        output_data: out uint(8),
+        output_valid: out bool,
+        output_ready: in bool,
+    }
+) {
+    clocked(clk, sync rst) {
+        reg skid_data: uint(8) = undef;
+        reg skid_valid: bool = false;
+        reg wire input_ready = true;
+        reg wire output_data = undef;
+        reg wire output_valid = false;
+
+        // input handshake: store the new value
+        if (input_valid && input_ready) {
+            skid_data = input_data;
+            skid_valid = true;
+        }
+
+        // output handshake: the output has been taken
+        if (output_valid && output_ready) {
+            output_valid = false;
+        }
+
+        // add 5 and move to the output when it's free
+        if (skid_valid && !output_valid) {
+            output_data = (skid_data + 5) % 256;
+            output_valid = true;
+            skid_valid = false;
+        }
+
+        // ready for new input if skid is empty
+        input_ready = !skid_valid;
+    }
+}

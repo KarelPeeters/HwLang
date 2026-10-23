@@ -1,0 +1,42 @@
+interface Stream(T: type) {
+    data: T,
+    valid: bool,
+    ready: bool,
+    view Source { data: out, valid: out, ready: in }
+    view Sink { data: in, valid: in, ready: out }
+}
+
+pub module TwoStages ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        input: interface Stream(uint(8)).Sink,
+        output: interface Stream(uint(8)).Source,
+    }
+) {
+    wire link: interface Stream(uint(8));
+    instance Register(uint(8)) ports(clk, rst, input, output=link);
+    instance Register(uint(8)) ports(clk, rst, input=link, output);
+}
+// ---- website: hidden below this line ----
+
+module Register(T: type) ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        input: interface Stream(T).Sink,
+        output: interface Stream(T).Source,
+    }
+) {
+    comb {
+        input.ready = output.ready || !output.valid;
+    }
+    clocked(clk, sync rst) {
+        reg wire output.data = undef;
+        reg wire output.valid = false;
+        if (output.ready || !output.valid) {
+            output.data = input.data;
+            output.valid = input.valid;
+        }
+    }
+}

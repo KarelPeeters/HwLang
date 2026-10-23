@@ -1,0 +1,32 @@
+pub module Pwm(period: positive) ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        duty: in uint(0..=period),
+        pin: out bool,
+    }
+) {
+    clocked(clk, sync rst) {
+        reg phase: uint(0..period) = 0;
+        reg wire pin = false;
+
+        pin = phase < duty;
+        if (phase == period - 1) {
+            phase = 0;
+        } else {
+            phase = phase + 1;
+        }
+    }
+}
+// ---- website: hidden below this line ----
+
+pub module Top ports(
+    clk: in clock,
+    sync(clk) {
+        rst: in bool,
+        duty: in uint(0..=100),
+        pin: out bool,
+    }
+) {
+    instance Pwm(period=100) ports(clk, rst, duty, pin);
+}

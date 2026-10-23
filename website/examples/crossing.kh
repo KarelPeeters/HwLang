@@ -1,0 +1,18 @@
+pub module Crossing ports(
+    clk_a: in clock,
+    clk_b: in clock,
+    sync(clk_a) {
+        request: in bool,
+    }
+    sync(clk_b) {
+        rst_b: in bool,
+        seen: out bool,
+    }
+) {
+    clocked(clk_b, sync rst_b) {
+        reg wire seen = false;
+        if (request) {
+            seen = true;
+        }
+    }
+}
