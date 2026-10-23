@@ -54,3 +54,16 @@ def test_tuple_len_compile():
 def test_tuple_len_hardware(tmp_dir: Path):
     e = compare_expression(["Tuple(uint(8), bool)"], "uint(8)", "a0.len", tmp_dir)
     e.eval_assert([(0, False)], 2)
+
+
+def test_tuple_type_elements():
+    src = """
+    const el = (bool, uint(8)); 
+    const ty = Tuple(bool, uint(8));
+    const ty_el = ty.elements;
+    const ty2 = Tuple(bool, bool);
+    const ty2_el = ty2.elements;
+    """
+    c = compile_custom(src)
+    assert c.resolve("top.el") == c.resolve("top.ty_el")
+    assert c.resolve("top.el") != c.resolve("top.ty2_el")

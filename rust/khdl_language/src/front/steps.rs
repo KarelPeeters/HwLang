@@ -783,21 +783,31 @@ fn eval_dot_index_id(
         }
 
         // tuple type attributes
-        if let Type::Tuple(ty_elements) = ty
-            && index_str == "len"
-        {
-            return if let Some(ty_elements) = ty_elements {
-                Ok(Value::new_int(BigInt::from(ty_elements.len())))
-            } else {
-                let diag = DiagnosticError::new(
-                    "cannot get length of tuple type with unknown elements",
+        if let Type::Tuple(ty_elements) = ty {
+            let err_unknown_elements = |get: &str| {
+                DiagnosticError::new(
+                    format!("cannot get {get} of tuple type with unknown elements"),
                     index.span,
-                    "trying to get length here",
+                    format!("trying to get {get} here"),
                 )
                 .add_info(base.span, format!("tuple type is `{}`", ty.value_string(refs)))
-                .report(diags);
-                Err(diag)
+                .report(diags)
             };
+
+            match index_str {
+                "elements" => {
+                    let ty_elements = ty_elements
+                        .as_ref()
+                        .ok_or_else(|| err_unknown_elements("element types"))?;
+                    let ty_elements = ty_elements.iter().cloned().map(Value::new_ty).collect_vec();
+                    return Ok(Value::Compound(MixedCompoundValue::Tuple(ty_elements)));
+                }
+                "len" => {
+                    let ty_elements = ty_elements.as_ref().ok_or_else(|| err_unknown_elements("length"))?;
+                    return Ok(Value::new_int(BigInt::from(ty_elements.len())));
+                }
+                _ => {}
+            }
         }
     }
 
