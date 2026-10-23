@@ -25,6 +25,7 @@ import Cookies from "js-cookie";
 import pako from "pako";
 import type {CompileRequest, CompileResponse, CompileResult, WorkerRequest} from "./worker_protocol";
 import {wasm_module} from "./wasm_module";
+import {new_slot_id, slot_title, SlotStore, STORAGE_KEY} from "./slots";
 
 function build_node_types() {
     const node_types_string = khdl_wasm.codemirror_node_types();
@@ -96,7 +97,10 @@ const element_editor_output_ir = document.getElementById("div-editor-output-ir")
 const element_diags_compile = document.getElementById("div-diags-compile");
 const element_diags_format = document.getElementById("div-diags-format");
 const element_share_link = document.getElementById("button-share") as HTMLAnchorElement;
-const element_clear_button = document.getElementById("button-clear");
+const element_share_label = document.getElementById("share-label");
+const element_tabs = document.getElementById("div-tabs");
+const element_new_tab_button = document.getElementById("button-new-tab");
+const element_format_button = document.getElementById("button-format");
 
 const ansi_to_html_light = new AnsiToHtmlClass();
 const ansi_to_html_dark = new AnsiToHtmlClass({
@@ -149,6 +153,7 @@ function diagnostics_ansi_to_html(ansi: string): string {
 }
 
 const EMPTY_DOC = "/* empty */";
+// The demo used to keep a single source in this cookie, it's moved into the first save slot.
 const COOKIE_SOURCE = "source";
 
 let compile_worker: Worker | null = null;
@@ -272,8 +277,11 @@ function apply_compile_result(result: CompileResult) {
 }
 
 function onDocumentChanged(source: string, format_visible: boolean, ir_visible: boolean) {
-    // store code in cookie
-    Cookies.set(COOKIE_SOURCE, source);
+    // store code in the save slot of the current tab
+    if (slots.get(active_slot_id)?.source !== source) {
+        slots.set_source(active_slot_id, source);
+        render_tabs();
+    }
 
     // store code in share link, as the parameter "source", compressed and base64 encoded
     // https://developer.mozilla.org/en-US/docs/Glossary/Base64#the_unicode_problem
@@ -294,19 +302,21 @@ function color_scheme_extension(): Extension {
 
 const color_scheme_compartment = new Compartment();
 
-let common_extensions = [
-    keymap.of([{key: "Enter", run: insertNewlineKeepIndent}]),
-    keymap.of([indentWithTab]),
-    keymap.of(defaultKeymap),
-    keymap.of(historyKeymap),
-    history(),
+function common_extensions(): Extension[] {
+    return [
+        keymap.of([{key: "Enter", run: insertNewlineKeepIndent}]),
+        keymap.of([indentWithTab]),
+        keymap.of(defaultKeymap),
+        keymap.of(historyKeymap),
+        history(),
 
-    lineNumbers(),
-    bracketMatching(),
+        lineNumbers(),
+        bracketMatching(),
 
-    indentUnit.of(" ".repeat(4)),
-    color_scheme_compartment.of(color_scheme_extension()),
-];
+        indentUnit.of(" ".repeat(4)),
+        color_scheme_compartment.of(color_scheme_extension()),
+    ];
+}
 
 function formatCurrentCode() {
     const currentCode = editor_view_input.state.doc.toString();
@@ -328,7 +338,7 @@ function formatCurrentCode() {
 // TODO compare legacy mode to to https://www.npmjs.com/package/codemirror-lang-verilog
 let editor_state_output_verilog = EditorState.create({
     doc: EMPTY_DOC,
-    extensions: common_extensions.concat([
+    extensions: common_extensions().concat([
         EditorState.readOnly.of(true),
         StreamLanguage.define(mode_verilog)
     ]),
@@ -339,7 +349,7 @@ let editor_view_output_verilog = new EditorView({
 })
 let editor_state_output_cpp = EditorState.create({
     doc: EMPTY_DOC,
-    extensions: common_extensions.concat([
+    extensions: common_extensions().concat([
         EditorState.readOnly.of(true),
         StreamLanguage.define(mode_cpp)
     ]),
@@ -350,7 +360,7 @@ let editor_view_output_cpp = new EditorView({
 })
 let editor_state_output_format = EditorState.create({
     doc: EMPTY_DOC,
-    extensions: common_extensions.concat([
+    extensions: common_extensions().concat([
         EditorState.readOnly.of(true),
         new LanguageSupport(language)
     ]),
@@ -361,7 +371,7 @@ let editor_view_output_format = new EditorView({
 })
 let editor_state_output_ir = EditorState.create({
     doc: EMPTY_DOC,
-    extensions: common_extensions.concat([
+    extensions: common_extensions().concat([
         EditorState.readOnly.of(true),
     ]),
 })
@@ -384,51 +394,180 @@ let updateListenerExtension = EditorView.updateListener.of((update) => {
 })
 
 const wasm_initial_source = khdl_wasm.initial_source();
-let initial_source = wasm_initial_source;
-{
-    let cookie_doc = Cookies.get(COOKIE_SOURCE);
-    // get source from cookie
-    if (cookie_doc != undefined) {
-        initial_source = cookie_doc;
-    }
 
-    // get source from current URL
+// Each tab of the editor is a save slot.
+const slots = new SlotStore(() => {
+    const id = new_slot_id();
+    return {slots: [{id, source: Cookies.get(COOKIE_SOURCE) ?? wasm_initial_source}], active: id};
+});
+Cookies.remove(COOKIE_SOURCE);
+
+// Open the code of a share link in its own tab, so it doesn't overwrite anything.
+{
     const url = new URL(window.location.href);
     const source = url.searchParams.get("source");
-    if (source != null && source.startsWith("cb64-")) {
-        initial_source = pako.inflate(Uint8Array.from(atob(source.slice(5)), c => c.charCodeAt(0)), {to: "string"});
+    if (source != null) {
+        if (source.startsWith("cb64-")) {
+            try {
+                slots.open_source(pako.inflate(Uint8Array.from(atob(source.slice(5)), c => c.charCodeAt(0)), {to: "string"}));
+            } catch (e) {
+                console.error("Failed to decode shared source", e);
+            }
+        }
+        // remove the code from the address bar, so reloading the page doesn't open it again
+        url.searchParams.delete("source");
+        window.history.replaceState(null, "", url);
     }
 }
 
-let editor_state_input = EditorState.create({
-    doc: initial_source,
-    extensions: common_extensions.concat([
-        highlightActiveLineGutter(),
-        new LanguageSupport(language),
-        updateListenerExtension,
-        keymap.of([{
-            key: "Ctrl-Shift-i", run: () => {
-                formatCurrentCode();
-                return true;
-            }
-        }]),
-    ])
-})
+let active_slot_id = slots.active.id;
+
+function create_input_state(source: string): EditorState {
+    return EditorState.create({
+        doc: source,
+        extensions: common_extensions().concat([
+            highlightActiveLineGutter(),
+            new LanguageSupport(language),
+            updateListenerExtension,
+            keymap.of([{
+                key: "Ctrl-Shift-i", run: () => {
+                    formatCurrentCode();
+                    return true;
+                }
+            }]),
+        ])
+    });
+}
+
+// Editor states of the tabs visited in this page, to keep their undo history.
+const input_states = new Map<string, EditorState>();
+
 let editor_view_input = new EditorView({
-    state: editor_state_input,
+    state: create_input_state(slots.active.source),
     parent: element_editor_input,
 })
 
-// add clear event handler
-element_clear_button.addEventListener("click", () => {
-    editor_view_input.dispatch({
-        changes: {
-            from: 0,
-            to: editor_view_input.state.doc.length,
-            insert: wasm_initial_source,
-        }
-    })
+function switch_to_slot(id: string) {
+    slots.reload();
+    const slot = slots.get(id);
+    if (slot === undefined) {
+        return;
+    }
+    if (slots.get(active_slot_id) !== undefined) {
+        input_states.set(active_slot_id, editor_view_input.state);
+    }
+
+    // reuse the state from an earlier visit, unless the code was changed in another page since then
+    const cached = input_states.get(id);
+    const state = cached !== undefined && cached.doc.toString() === slot.source ? cached : create_input_state(slot.source);
+    active_slot_id = id;
+    slots.set_active(id);
+    editor_view_input.setState(state);
+    editor_view_input.dispatch({effects: color_scheme_compartment.reconfigure(color_scheme_extension())});
+    render_tabs();
+    force_update();
+}
+
+function close_slot(id: string) {
+    slots.reload();
+    const slot = slots.get(id);
+    if (slot === undefined) {
+        return;
+    }
+    const source = id === active_slot_id ? editor_view_input.state.doc.toString() : slot.source;
+    const unchanged = source === wasm_initial_source || source.trim() === "";
+    if (!unchanged && !window.confirm(`Close ${slot_title(source)}? Its code will be removed from this browser.`)) {
+        return;
+    }
+
+    const index = slots.slots.findIndex(slot => slot.id === id);
+    slots.remove(id, wasm_initial_source);
+    input_states.delete(id);
+    if (id === active_slot_id) {
+        switch_to_slot(slots.slots[Math.min(index, slots.slots.length - 1)].id);
+    } else {
+        render_tabs();
+    }
+}
+
+let rendered_tabs = "";
+
+function render_tabs() {
+    const items = slots.slots.map(slot => {
+        const source = slot.id === active_slot_id ? editor_view_input.state.doc.toString() : slot.source;
+        return {id: slot.id, title: slot_title(source)};
+    });
+
+    // only rebuild when something changed, this runs on every edit
+    const signature = JSON.stringify([active_slot_id, items]);
+    if (signature === rendered_tabs) {
+        return;
+    }
+    rendered_tabs = signature;
+
+    element_tabs.replaceChildren(...items.map(item => {
+        const tab = document.createElement("div");
+        tab.className = item.id === active_slot_id ? "tab active" : "tab";
+
+        const select = document.createElement("button");
+        select.className = "tab-select";
+        select.textContent = item.title;
+        select.addEventListener("click", () => switch_to_slot(item.id));
+
+        const close = document.createElement("button");
+        close.className = "tab-close";
+        close.textContent = "\u00d7";
+        close.title = "Close tab";
+        close.setAttribute("aria-label", `Close ${item.title}`);
+        close.addEventListener("click", () => close_slot(item.id));
+
+        tab.append(select, close);
+        return tab;
+    }));
+    element_tabs.querySelector(".tab.active")?.scrollIntoView({block: "nearest", inline: "nearest"});
+}
+
+element_new_tab_button.addEventListener("click", () => {
+    const id = new_slot_id();
+    slots.update(state => {
+        state.slots.push({id, source: wasm_initial_source});
+    });
+    switch_to_slot(id);
 });
+
+// keep the tabs in sync with other open demo pages
+window.addEventListener("storage", (event) => {
+    if (event.key !== null && event.key !== STORAGE_KEY) {
+        return;
+    }
+    slots.reload();
+    if (slots.get(active_slot_id) === undefined) {
+        // the current tab was closed in another page
+        switch_to_slot(slots.active.id);
+    } else {
+        render_tabs();
+    }
+});
+
+element_format_button.addEventListener("click", () => formatCurrentCode());
+
+// copy the share link instead of navigating to it
+let share_label_timeout: number | undefined = undefined;
+element_share_link.addEventListener("click", async (event) => {
+    event.preventDefault();
+    let label = "Link copied";
+    try {
+        await navigator.clipboard.writeText(element_share_link.href);
+    } catch {
+        window.prompt("Copy this link to share the code:", element_share_link.href);
+        label = "Share";
+    }
+    element_share_label.textContent = label;
+    window.clearTimeout(share_label_timeout);
+    share_label_timeout = window.setTimeout(() => element_share_label.textContent = "Share", 2000);
+});
+
+render_tabs();
 
 // add tab change event handlers
 function show_output_tab(tab: string) {
@@ -448,6 +587,10 @@ function show_output_tab(tab: string) {
 
     set_element_display("div-editor-output-ir", ["ir"])
 
+    document.querySelectorAll<HTMLButtonElement>(".output-tab").forEach(button => {
+        button.classList.toggle("active", button.dataset.output == tab);
+    });
+
     // update optional tab states and possibly recompute if one of them was not visible before
     let format_was_visible = format_visible;
     let ir_was_visible = ir_visible;
@@ -458,14 +601,9 @@ function show_output_tab(tab: string) {
     }
 }
 
-const svg_verilog = document.getElementById("svg-verilog");
-const svg_cpp = document.getElementById("svg-cpp");
-const svg_format = document.getElementById("svg-format");
-const svg_ir = document.getElementById("svg-ir");
-svg_verilog.addEventListener("click", () => show_output_tab("verilog"));
-svg_cpp.addEventListener("click", () => show_output_tab("cpp"));
-svg_format.addEventListener("click", () => show_output_tab("format"));
-svg_ir.addEventListener("click", () => show_output_tab("ir"));
+document.querySelectorAll<HTMLButtonElement>(".output-tab").forEach(button => {
+    button.addEventListener("click", () => show_output_tab(button.dataset.output));
+});
 
 // react to light/dark mode changes
 dark_mode_query.addEventListener("change", () => {
