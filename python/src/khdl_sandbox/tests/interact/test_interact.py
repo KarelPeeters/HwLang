@@ -290,6 +290,14 @@ def test_port_interaction_structured(tmp_dir: Path):
     assert ports.y[1][1]["b"] is True
     assert ports.y[1:][0][1].a == 5
 
+    # values through port info
+    info.s.value = 2
+    inst.info_ports_flat.x_1_a.value = 6
+    inst.step(1)
+    assert info.t.value == 2
+    assert inst.info_ports_flat["y_0_1_a"].value == 6
+    assert info.y[1:][0][1].a.value == 6
+
     # errors
     with pytest.raises(AttributeError, match="port `z` not found"):
         _ = ports.z

@@ -1676,6 +1676,16 @@ impl VerilatedInfoPort {
         self.map_port_info(py, |info| info.direction.diagnostic_string())
     }
 
+    #[getter]
+    fn value(&self, py: Python) -> PyResult<Py<PyAny>> {
+        get_port_value(py, &self.instance, self.port)
+    }
+
+    #[setter]
+    fn set_value(&self, value: &Bound<PyAny>) -> PyResult<()> {
+        set_port_value(&self.instance, self.port, value)
+    }
+
     fn __bool__(&self) -> PyResult<bool> {
         Err(PyValueError::new_err(
             "port info cannot be used as a boolean, read port values through `ports` instead",
