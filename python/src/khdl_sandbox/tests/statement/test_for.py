@@ -17,6 +17,63 @@ def test_for_int(tmp_dir: Path):
         c.eval_assert([i], i * 8)
 
 
+def test_for_tuple_compile(tmp_dir: Path):
+    src = """
+    var i = 0;
+    var r = a0;
+    for (v in (2, true, 5, uint(4))) {
+        if (i == 0 || i == 2) { r += v; }
+        if (i == 1) { if (v) { r += 1; } }
+        if (i == 3) { var x: v = 7; r += x; }
+        i += 1;
+    }
+    return r;
+    """
+    c = compare_body(["uint(4)"], "uint(8)", src, tmp_dir)
+    c.eval_assert([0], 15)
+    c.eval_assert([3], 18)
+    c.eval_assert([15], 30)
+
+
+def test_for_tuple_mixed(tmp_dir: Path):
+    src = """
+    var i = 0;
+    var r = 0;
+    for (v in (a0, true, 7, a1, bool)) {
+        if (i == 0) { if (v) { r += 1; } }
+        if (i == 1) { if (v) { r += 1; } }
+        if (i == 2 || i == 3) { r += v; }
+        if (i == 4) { var _: v = false; }
+        i += 1;
+        r += 1;
+    }
+    return r;
+    """
+    c = compare_body(["bool", "uint(4)"], "uint(8)", src, tmp_dir)
+    c.eval_assert([False, 2], 15)
+    c.eval_assert([False, 3], 16)
+    c.eval_assert([True, 2], 16)
+    c.eval_assert([True, 15], 29)
+
+
+def test_for_tuple_hardware(tmp_dir: Path):
+    src = """
+    var i = 0;
+    var r = 0;
+    for (v in a0) {
+        if (i == 0) { if (v) { r += 1; } }
+        if (i == 1) { r += v; }
+        i += 1;
+    }
+    return r;
+    """
+    c = compare_body(["Tuple(bool, uint(4))"], "uint(8)", src, tmp_dir)
+    c.eval_assert([(False, 2)], 2)
+    c.eval_assert([(False, 3)], 3)
+    c.eval_assert([(True, 2)], 3)
+    c.eval_assert([(True, 15)], 16)
+
+
 def test_for_compile_array(tmp_dir: Path):
     src = """
     var s = 0;

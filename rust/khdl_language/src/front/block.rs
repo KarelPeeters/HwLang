@@ -902,7 +902,7 @@ impl CompileItemContext<'_, '_> {
         let refs = self.refs;
 
         // convert index to actual value
-        let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
+        let index_value = index_value.map_hardware(|h| h.map_expression(|h| h.into_expr(&mut self.large)));
 
         // typecheck index (if specified)
         if let Some(index_ty) = &index_ty {

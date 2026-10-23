@@ -33,6 +33,7 @@ use crate::syntax::ast::{
 use crate::syntax::pos::{HasSpan, Span, Spanned};
 use crate::util::big_int::{AnyInt, BigInt, BigUint, IsZero};
 use crate::util::data::{VecExt, vec_concat};
+use std::collections::VecDeque;
 
 use crate::front::exit::ExitStack;
 use crate::front::flow::Flow;
@@ -571,7 +572,7 @@ impl<'a> CompileItemContext<'a, '_> {
                 for index_value in iter {
                     self.refs.check_should_stop(expr.span)?;
 
-                    let index_value = index_value.map_hardware(|h| h.map_expression(|h| self.large.push_expr(h)));
+                    let index_value = index_value.map_hardware(|h| h.map_expression(|h| h.into_expr(&mut self.large)));
                     let index_var =
                         flow.var_new_immutable_init(refs, index, span_keyword, Ok(Value::simple(index_value)))?;
 
@@ -1516,6 +1517,7 @@ impl<'a> CompileItemContext<'a, '_> {
         let iter_span = iter.span;
 
         let result = match iter.inner {
+            // range
             Value::Compound(MixedCompoundValue::Range(iter)) => {
                 // TODO allow hardware-length range?
                 fn expect_compile<C, H>(diags: &Diagnostics, iter_span: Span, v: MaybeCompile<C, H>) -> DiagResult<C> {
@@ -1548,7 +1550,7 @@ impl<'a> CompileItemContext<'a, '_> {
                             )
                         })?;
 
-                        ForIterator::Int { next: start, end }
+                        ForIterator::Range { next: start, end }
                     }
                     RangeValue::HardwareStartLength { start, length: _ } => {
                         let _: HardwareInt = start;
@@ -1560,6 +1562,26 @@ impl<'a> CompileItemContext<'a, '_> {
                     }
                 }
             }
+
+            // tuple
+            Value::Compound(MixedCompoundValue::Tuple(values)) => ForIterator::MixedTuple {
+                left: VecDeque::from(values),
+            },
+
+            Value::Hardware(HardwareValue {
+                ty: HardwareType::Tuple(ty_elements),
+                domain,
+                expr: tuple_expr,
+            }) => ForIterator::HardwareTuple {
+                next: 0,
+                base: HardwareValue {
+                    ty: ty_elements,
+                    domain,
+                    expr: tuple_expr,
+                },
+            },
+
+            // array
             Value::Simple(SimpleCompileValue::Array(array)) => ForIterator::CompileArray { next: 0, array },
             Value::Hardware(HardwareValue {
                 ty: HardwareType::Array(ty_inner, len),
@@ -1578,7 +1600,7 @@ impl<'a> CompileItemContext<'a, '_> {
             }
             _ => {
                 return Err(diags.report_error_simple(
-                    "invalid for loop iterator type, must be range or array",
+                    "invalid for loop iterator type, must be range, tuple or array",
                     iter.span,
                     format!("iterator has type `{}`", iter.inner.ty().value_string(refs)),
                 ));
@@ -1777,10 +1799,17 @@ fn eval_tuple_ty_call(refs: CompileRefs, args: EvaluatedArgs) -> DiagResult<Type
 }
 
 pub enum ForIterator {
-    Int {
+    Range {
         next: BigInt,
         // exclusive
         end: Option<BigInt>,
+    },
+    MixedTuple {
+        left: VecDeque<Value>,
+    },
+    HardwareTuple {
+        next: usize,
+        base: HardwareValue<Arc<Vec<HardwareType>>>,
     },
     CompileArray {
         next: usize,
@@ -1795,7 +1824,9 @@ pub enum ForIterator {
 impl ForIterator {
     pub fn len(&self) -> Option<BigUint> {
         match self {
-            ForIterator::Int { next, end } => end.as_ref().map(|end| BigUint::try_from(end - next).unwrap()),
+            ForIterator::Range { next, end } => end.as_ref().map(|end| BigUint::try_from(end - next).unwrap()),
+            ForIterator::MixedTuple { left } => Some(left.len().into()),
+            ForIterator::HardwareTuple { next, base } => Some(BigUint::from(base.ty.len() - *next)),
             ForIterator::CompileArray { next, array } => Some(BigUint::from(array.len() - *next)),
             ForIterator::HardwareArray { next, base } => {
                 let (_, len) = &base.ty;
@@ -1805,12 +1836,28 @@ impl ForIterator {
     }
 }
 
+/// Temporary type to allow delaying construction of the large expression,
+/// because we don't have access to [IrLargeArena] in the iterator.
+pub enum ForIteratorIrExpression {
+    Ir(IrExpression),
+    Large(IrExpressionLarge),
+}
+
+impl ForIteratorIrExpression {
+    pub fn into_expr(self, large: &mut IrLargeArena) -> IrExpression {
+        match self {
+            ForIteratorIrExpression::Ir(expr) => expr,
+            ForIteratorIrExpression::Large(expr) => large.push_expr(expr),
+        }
+    }
+}
+
 impl Iterator for ForIterator {
-    type Item = Value<SimpleCompileValue, MixedCompoundValue, HardwareValue<HardwareType, IrExpressionLarge>>;
+    type Item = Value<SimpleCompileValue, MixedCompoundValue, HardwareValue<HardwareType, ForIteratorIrExpression>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            ForIterator::Int { next, end } => {
+            ForIterator::Range { next, end } => {
                 if end.as_ref().is_none_or(|end| &*next < end) {
                     let curr = Value::new_int(next.clone());
                     *next += 1;
@@ -1818,6 +1865,25 @@ impl Iterator for ForIterator {
                 } else {
                     None
                 }
+            }
+            ForIterator::MixedTuple { left } => left
+                .pop_front()
+                .map(|v| v.map_hardware(|v| v.map_expression(ForIteratorIrExpression::Ir))),
+            ForIterator::HardwareTuple { next, base } => {
+                let index = *next;
+                let ty_element = base.ty.get(index)?;
+                *next += 1;
+
+                let step = IrTargetStepScalar::TupleIndex(index);
+                let element_expr = IrExpressionLarge::Steps {
+                    base: base.expr.clone(),
+                    steps: IrTargetSteps::single(step),
+                };
+                Some(Value::Hardware(HardwareValue {
+                    ty: ty_element.clone(),
+                    domain: base.domain,
+                    expr: ForIteratorIrExpression::Large(element_expr),
+                }))
             }
             ForIterator::CompileArray { next, array } => {
                 if *next < array.len() {
@@ -1847,7 +1913,7 @@ impl Iterator for ForIterator {
                     Some(Value::Hardware(HardwareValue {
                         ty: (*ty_inner).clone(),
                         domain: *domain,
-                        expr: element_expr,
+                        expr: ForIteratorIrExpression::Large(element_expr),
                     }))
                 } else {
                     None

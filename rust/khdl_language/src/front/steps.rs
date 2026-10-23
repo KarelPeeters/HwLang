@@ -676,7 +676,7 @@ fn eval_dot_index_id(
     base: Spanned<ValueWithImplications>,
     index: Spanned<Id>,
 ) -> DiagResult<ValueWithImplications> {
-    // TODO add array.len, type.int_start, type.int_end, type.int_ranges, type.tuple_items, type.struct_fields?
+    // TODO add type.int_start, type.int_end, type.int_ranges, type.tuple_items, type.struct_fields?
     let refs = ctx.refs;
     let diags = refs.diags;
 
@@ -780,6 +780,24 @@ fn eval_dot_index_id(
                 }
                 _ => {}
             }
+        }
+
+        // tuple type attributes
+        if let Type::Tuple(ty_elements) = ty
+            && index_str == "len"
+        {
+            return if let Some(ty_elements) = ty_elements {
+                Ok(Value::new_int(BigInt::from(ty_elements.len())))
+            } else {
+                let diag = DiagnosticError::new(
+                    "cannot get length of tuple type with unknown elements",
+                    index.span,
+                    "trying to get length here",
+                )
+                .add_info(base.span, format!("tuple type is `{}`", ty.value_string(refs)))
+                .report(diags);
+                Err(diag)
+            };
         }
     }
 
@@ -943,6 +961,17 @@ fn eval_dot_index_id(
             Ok(Value::new_int(BigInt::from(value_len)))
         } else {
             Err(diags.report_error_internal(expr_span, "value has type with unknown array length"))
+        };
+    }
+
+    // tuple length
+    if let Type::Tuple(value_elements) = &base_ty
+        && index_str == "len"
+    {
+        return if let Some(value_elements) = value_elements {
+            Ok(Value::new_int(BigInt::from(value_elements.len())))
+        } else {
+            Err(diags.report_error_internal(expr_span, "value has tuple type with unknown elements"))
         };
     }
 
