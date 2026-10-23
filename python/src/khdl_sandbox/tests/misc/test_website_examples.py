@@ -67,16 +67,16 @@ def test_website_example_add_five(tmp_dir: Path, p_valid: float, p_ready: float)
     ports = inst.ports
 
     def clock():
-        ports.clk.value = True
+        ports.clk = True
         inst.step(1)
-        ports.clk.value = False
+        ports.clk = False
         inst.step(1)
 
-    ports.rst.value = True
-    ports.input_valid.value = False
-    ports.output_ready.value = False
+    ports.rst = True
+    ports.input_valid = False
+    ports.output_ready = False
     clock()
-    ports.rst.value = False
+    ports.rst = False
 
     rng = random.Random(0)
     sent = []
@@ -86,19 +86,19 @@ def test_website_example_add_five(tmp_dir: Path, p_valid: float, p_ready: float)
     for _ in range(2000):
         if presenting is None and rng.random() < p_valid:
             presenting = rng.randrange(256)
-        ports.input_valid.value = presenting is not None
-        ports.input_data.value = presenting if presenting is not None else 0
+        ports.input_valid = presenting is not None
+        ports.input_data = presenting if presenting is not None else 0
         output_ready = rng.random() < p_ready
-        ports.output_ready.value = output_ready
+        ports.output_ready = output_ready
         inst.step(1)
 
         # the output must hold its value until it is taken
-        output = (ports.output_valid.value, ports.output_data.value)
+        output = (ports.output_valid, ports.output_data)
         if previous_output is not None and previous_output[0] and not previous_output[2]:
             assert output == previous_output[:2]
         previous_output = (*output, output_ready)
 
-        if presenting is not None and ports.input_ready.value:
+        if presenting is not None and ports.input_ready:
             sent.append(presenting)
             presenting = None
         if output[0] and output_ready:
