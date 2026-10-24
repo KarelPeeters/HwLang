@@ -29,6 +29,7 @@ worker_scope.onmessage = (event) => {
         result.free();
         worker_scope.postMessage({type: "result", result: output});
     } catch (error) {
+        console.error(error);
         const message = error instanceof Error ? error.message : String(error);
         worker_scope.postMessage({type: "error", message});
     }
