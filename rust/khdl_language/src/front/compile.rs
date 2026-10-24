@@ -10,8 +10,7 @@ use crate::front::signal::{
     WireInterfaceInfo,
 };
 use crate::front::value::{CompileValue, SimpleCompileValue, Value};
-use crate::mid::graph::ir_modules_check_no_instance_cycles;
-use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrSignal};
+use crate::mid::ir::{IrDatabase, IrLargeArena, IrModule, IrModuleInfo, IrModules, IrSignal};
 use crate::syntax::ast::{
     self, Expression, ExpressionKind, Identifier, ImportFinalKind, MaybeIdentifier, SimpleIdentifier, Visibility,
 };
@@ -26,7 +25,7 @@ use crate::util::intern::{Id, Interner};
 use crate::util::pool::ThreadPool;
 use crate::util::sync::{ComputeOnceArena, SharedQueue};
 use crate::util::{ResultDoubleExt, ResultExt};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use itertools::{Itertools, zip_eq};
 use khdl_util::constants::{MAX_IMPORT_SUGGESTIONS, STACK_OVERFLOW_ERROR_ENTRIES_SHOWN, STACK_OVERFLOW_STACK_LIMIT};
 use rand::seq::SliceRandom;
@@ -219,10 +218,16 @@ pub struct CompileShared {
     pub elaboration_arenas: ElaborationArenas,
     // TODO make this a non-blocking collection thing, could be thread-local collection and merging or a channel
     //   or maybe just another sharded DashMap
-    pub ir_database: Mutex<IrDatabase<Option<DiagResult<IrModuleInfo>>>>,
+    pub ir_database: Mutex<IrDatabasePartial>,
     pub next_flow_root_id: NextFlowRootId,
     // interrupted by any thread
     pub interrupted: OnceLock<DiagError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrDatabasePartial {
+    pub modules: IrModules<Option<DiagResult<IrModuleInfo>>>,
+    pub external_modules: IndexSet<String>,
 }
 
 pub type FileScopes<S> = IndexMap<FileId, DiagResult<FileScope<S>>>;
@@ -835,7 +840,7 @@ impl CompileShared {
             item_values,
             elaboration_arenas: ElaborationArenas::new(),
             interner,
-            ir_database: Mutex::new(IrDatabase {
+            ir_database: Mutex::new(IrDatabasePartial {
                 modules: Arena::new(),
                 external_modules,
             }),
@@ -848,7 +853,7 @@ impl CompileShared {
         self.file_scopes.get(&file).unwrap().as_ref_ok()
     }
 
-    pub fn finish_ir_database(self, diags: &Diagnostics, dummy_span: Span) -> DiagResult<IrDatabase<IrModuleInfo>> {
+    pub fn finish_ir_database(self, diags: &Diagnostics, dummy_span: Span) -> DiagResult<IrDatabase> {
         finish_ir_database_impl(
             diags,
             dummy_span,
@@ -858,11 +863,7 @@ impl CompileShared {
         )
     }
 
-    pub fn finish_ir_database_ref(
-        &self,
-        diags: &Diagnostics,
-        dummy_span: Span,
-    ) -> DiagResult<IrDatabase<IrModuleInfo>> {
+    pub fn finish_ir_database_ref(&self, diags: &Diagnostics, dummy_span: Span) -> DiagResult<IrDatabase> {
         let ir_database = self.ir_database.lock().unwrap().clone();
         finish_ir_database_impl(diags, dummy_span, &self.work_queue, &self.interrupted, ir_database)
     }
@@ -873,8 +874,8 @@ fn finish_ir_database_impl(
     dummy_span: Span,
     work_queue: &SharedQueue<WorkItem>,
     interrupted: &OnceLock<DiagError>,
-    ir_database: IrDatabase<Option<DiagResult<IrModuleInfo>>>,
-) -> DiagResult<IrDatabase<IrModuleInfo>> {
+    ir_database: IrDatabasePartial,
+) -> DiagResult<IrDatabase> {
     if let Some(&e) = interrupted.get() {
         return Err(e);
     }
@@ -885,7 +886,7 @@ fn finish_ir_database_impl(
     }
 
     // check that all modules have been elaborated
-    let IrDatabase {
+    let IrDatabasePartial {
         modules,
         external_modules,
     } = ir_database;
@@ -896,12 +897,7 @@ fn finish_ir_database_impl(
     })?;
 
     // check that there are no cycles
-    ir_modules_check_no_instance_cycles(diags, &modules)?;
-
-    Ok(IrDatabase {
-        modules,
-        external_modules,
-    })
+    IrDatabase::new_check_cycles(diags, modules, external_modules)
 }
 
 // TODO move somewhere else

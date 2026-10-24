@@ -1,9 +1,8 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::signal::Polarized;
-use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrBoolCompareOp,
-    IrClockedProcess, IrCombinatorialProcess, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement,
+    IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrEnumType, IrExpression, IrExpressionLarge, IrForStatement,
     IrIfStatement, IrIntArithmeticOp, IrIntCompareOp, IrIntegerRadix, IrModule, IrModuleChild, IrModuleInfo,
     IrModuleInternalInstance, IrModules, IrPort, IrPortConnection, IrPortInfo, IrSignal, IrSignalOrVariable, IrSignals,
     IrStatement, IrStringPiece, IrStringSubstitution, IrStructType, IrType, IrVariable, IrVariableInfo, IrVariables,
@@ -26,7 +25,7 @@ use unwrap_match::unwrap_match;
 //   only one for each signal, maybe also a separate one for each array element?
 //   aggressively propagate it, eg. if (undef) => write undefined for all writes in both branches
 //   skip operations on undefined values, we don't want to cause undefined C++ behavior!
-pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_modules: &[IrModule]) -> DiagResult<String> {
+pub fn lower_to_cpp(diags: &Diagnostics, db: &IrDatabase, top_modules: &[IrModule]) -> DiagResult<String> {
     // TODO split into separate files:
     //   maybe one shared with all structs,
     //   but functions should be split for the compilation speedup
@@ -43,12 +42,12 @@ pub fn lower_to_cpp(diags: &Diagnostics, modules: &IrModules, top_modules: &[IrM
     swriteln!(f, "#include <stdexcept>");
     swriteln!(f);
 
-    for (i, module) in enumerate(ir_modules_topological_sort(modules, top_modules.iter().copied())) {
+    for (i, module) in enumerate(db.modules_sorted_reachable_from(top_modules.iter().copied())) {
         if i != 0 {
             swriteln!(f);
         }
 
-        swrite!(f, "{}", codegen_module(diags, modules, module)?);
+        swrite!(f, "{}", codegen_module(diags, &db.modules, module)?);
     }
 
     Ok(f)

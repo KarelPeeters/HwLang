@@ -211,7 +211,7 @@ pub fn main_build(args: ArgsBuild) -> ExitCode {
         // output c++
         if let Some(output_cpp) = output_cpp {
             let start_lower_cpp = Instant::now();
-            match lower_to_cpp(&diags, &ir_db.modules, &top_modules) {
+            match lower_to_cpp(&diags, &ir_db, &top_modules) {
                 Ok(lowered_cpp) => {
                     // TODO expose module mapping?
                     outputs.push((output_cpp, lowered_cpp));

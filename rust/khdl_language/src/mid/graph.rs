@@ -1,68 +1,79 @@
 use crate::front::diagnostic::{DiagResult, DiagnosticError, Diagnostics};
-use crate::mid::ir::{IrModule, IrModuleChild, IrModules};
+use crate::mid::ir::{IrDatabase, IrModule, IrModuleChild, IrModules};
 use crate::util::connected_components::find_strongly_connected_components;
 use crate::util::data::NonEmptyVec;
 use crate::util::iter::IterExt;
 use indexmap::IndexSet;
 use itertools::Itertools;
-use std::collections::VecDeque;
 
-pub fn ir_modules_topological_sort(modules: &IrModules, top: impl IntoIterator<Item = IrModule>) -> Vec<IrModule> {
-    let mut seen = IndexSet::new();
-    let mut todo: VecDeque<IrModule> = top.into_iter().collect();
+impl IrDatabase {
+    pub fn new_check_cycles(
+        diags: &Diagnostics,
+        modules: IrModules,
+        external_modules: IndexSet<String>,
+    ) -> DiagResult<Self> {
+        let modules_sorted = ir_modules_sort_check_cycles(diags, &modules)?;
+        Ok(IrDatabase {
+            modules,
+            external_modules,
+            modules_sorted,
+        })
+    }
 
-    while let Some(module) = todo.pop_front() {
-        if !seen.insert(module) {
-            continue;
+    /// Returns all modules reachable from `top`, sorted in reverse topological order.
+    /// Child modules will appear before they are instantiated.
+    pub fn modules_sorted_reachable_from(
+        &self,
+        top: impl IntoIterator<Item = IrModule>,
+    ) -> impl Iterator<Item = IrModule> {
+        let mut reachable = IndexSet::new();
+        let mut todo = top.into_iter().collect_vec();
+        while let Some(module) = todo.pop() {
+            if reachable.insert(module) {
+                todo.extend(module_child_modules(&self.modules, module));
+            }
         }
 
-        for child in &modules[module].children {
-            match &child.inner {
-                IrModuleChild::ModuleInternalInstance(inst) => {
-                    todo.push_back(inst.module);
-                }
-                IrModuleChild::ModuleExternalInstance(_)
-                | IrModuleChild::ClockedProcess(_)
-                | IrModuleChild::CombinatorialProcess(_) => {}
-            }
+        self.modules_sorted
+            .iter()
+            .copied()
+            .filter(move |module| reachable.contains(module))
+    }
+}
+
+fn ir_modules_sort_check_cycles(diags: &Diagnostics, modules: &IrModules) -> DiagResult<Vec<IrModule>> {
+    // find connected components
+    let components = find_strongly_connected_components(modules.keys(), |module| module_child_modules(modules, module));
+
+    // split into properly sorted modules and cycles
+    let mut sorted = vec![];
+    let mut cycles = vec![];
+    for c in components {
+        if let Some(&m) = c.iter().single()
+            && !module_child_modules(modules, m).contains(&m)
+        {
+            sorted.push(m);
+        } else {
+            cycles.push(c);
         }
     }
 
-    seen.into_iter().rev().collect_vec()
-}
-
-pub fn ir_modules_check_no_instance_cycles(diags: &Diagnostics, modules: &IrModules) -> DiagResult {
-    // find connected components
-    let mut components =
-        find_strongly_connected_components(modules.keys(), |module| module_child_modules(modules, module));
-
-    // keep only non-trivial components and self-loops
-    components.retain(|c| {
-        if c.len() > 1 {
-            return true;
-        }
-
-        if let Some(&c) = c.iter().single() {
-            if module_child_modules(modules, c).contains(&c) {
-                return true;
-            }
-        }
-
-        false
-    });
-
     // sort to ensure deterministic diagnostics
-    components
+    // TODO might not be enough in case of generic modules, which get the same span
+    cycles
         .iter_mut()
         .for_each(|c| c.sort_by_key(|&m| modules[m].debug_info_id.span));
-    components.sort_by_key(|c| modules[*c.first()].debug_info_id.span);
+    cycles.sort_by_key(|c| modules[*c.first()].debug_info_id.span);
 
     // report diagnostics
     let mut any_err = Ok(());
-    for c in components {
+    for c in cycles {
         any_err = Err(component_to_diagnostic(modules, c).report(diags));
     }
-    any_err
+    any_err?;
+
+    // success
+    Ok(sorted)
 }
 
 fn module_child_modules(modules: &IrModules, module: IrModule) -> impl Iterator<Item = IrModule> + '_ {

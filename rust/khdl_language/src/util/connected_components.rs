@@ -5,10 +5,11 @@ use std::hash::Hash;
 /// Find the set of strongly connected components (SCCs) on the given graph.
 ///
 /// The graph is represented by the two parameters:
-/// * `nodes` is a complete list of nodes without any duplicates.
+/// * `nodes` is the complete set of nodes without any duplicates.
 /// * `children` should be a deterministic function that for each node returns all direct children.
 ///
 /// Returns a vector where each item is a SCC.
+/// The SCCs are in reverse topological order: each SCC comes after all SCCs reachable from it.
 ///
 /// To match the definition of SCC:
 /// * Nodes that point to themselves don't affect the result in any way.

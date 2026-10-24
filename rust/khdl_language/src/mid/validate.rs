@@ -15,16 +15,25 @@ use crate::util::data::{IndexMapExt, VecExt};
 use crate::util::range::{ClosedNonEmptyRange, ClosedRange};
 use indexmap::IndexSet;
 use itertools::zip_eq;
+use std::collections::HashSet;
 
 impl IrDatabase {
     pub fn validate(&self, diags: &Diagnostics) -> DiagResult {
         let IrDatabase {
             modules,
             external_modules,
+            modules_sorted,
         } = self;
+
         for (_, info) in self.modules.iter() {
             info.validate(diags, modules, external_modules)?;
         }
+
+        assert_eq!(
+            modules.keys().collect::<HashSet<_>>(),
+            modules_sorted.iter().copied().collect::<HashSet<_>>()
+        );
+
         Ok(())
     }
 }

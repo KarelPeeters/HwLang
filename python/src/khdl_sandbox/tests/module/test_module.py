@@ -226,7 +226,7 @@ def test_reference_escape_function():
         compile_custom(src).resolve("top.top")
 
 
-def test_diamond_instantiation():
+def test_diamond_instantiation_0(tmp_dir: Path):
     src = """
     module a ports() { instance b ports(); instance c ports(); }
     module b ports() { instance c ports(); }
@@ -234,6 +234,18 @@ def test_diamond_instantiation():
     """
     m = compile_custom(src).resolve("top.a")
     print(m.as_verilog().source)
+    _ = m.as_verilated(tmp_dir).instance()
+
+
+def test_diamond_instantiation_1(tmp_dir: Path):
+    src = """
+    module a ports() { }
+    module b ports() { instance a ports(); }
+    module c ports() { instance a ports(); instance b ports(); }
+    """
+    m = compile_custom(src).resolve("top.c")
+    print(m.as_verilog().source)
+    _ = m.as_verilated(tmp_dir).instance()
 
 
 def test_self_instance():

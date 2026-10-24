@@ -31,9 +31,13 @@ use unwrap_match::unwrap_match;
 // TODO dropping this type takes a long time (maybe due to the web of vecs caused by blocks/statements/...?)
 // TODO add some way to share Strings, especially for debug info there are lots of duplicates
 #[derive(Debug, Clone)]
-pub struct IrDatabase<M = IrModuleInfo> {
-    pub modules: IrModules<M>,
+pub struct IrDatabase {
+    pub modules: IrModules,
     pub external_modules: IndexSet<String>,
+
+    // All modules, in reverse topological sort:
+    //   parent modules will only appear after their children.
+    pub modules_sorted: Vec<IrModule>,
 }
 
 pub type IrModules<M = IrModuleInfo> = Arena<IrModule, M>;

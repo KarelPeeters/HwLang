@@ -1,7 +1,6 @@
 use crate::front::diagnostic::{DiagResult, Diagnostics};
 use crate::front::range_arithmetic::{range_binary_add, range_binary_sub};
 use crate::front::signal::Polarized;
-use crate::mid::graph::ir_modules_topological_sort;
 use crate::mid::ir::{
     IrArrayLiteralElement, IrAssignmentTarget, IrAsyncResetInfo, IrBlock, IrBoolBinaryOp, IrBoolCompareOp,
     IrClockedProcess, IrCombinatorialProcess, IrDatabase, IrExpression, IrExpressionLarge, IrForStatement,
@@ -49,6 +48,7 @@ pub fn lower_to_verilog(diags: &Diagnostics, db: &IrDatabase, top_modules: &[IrM
     let IrDatabase {
         modules,
         external_modules,
+        modules_sorted: _,
     } = db;
 
     let mut ctx = LowerContext {
@@ -59,8 +59,7 @@ pub fn lower_to_verilog(diags: &Diagnostics, db: &IrDatabase, top_modules: &[IrM
         result_source: vec![],
     };
 
-    let modules = ir_modules_topological_sort(modules, top_modules.iter().copied());
-    for module in modules {
+    for module in db.modules_sorted_reachable_from(top_modules.iter().copied()) {
         let result = lower_module(&mut ctx, module)?;
         ctx.module_map.insert_first(module, result);
     }

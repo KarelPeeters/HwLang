@@ -122,11 +122,9 @@ pub fn run_all(top_src: String, include_format: bool, include_ir: bool) -> RunAl
             .then(|| lower_to_verilog(&diags, db, tops))
             .transpose()
     });
-    let lowered_cpp = compiled.as_ref_ok().and_then(|(db, tops)| {
-        (!tops.is_empty())
-            .then(|| lower_to_cpp(&diags, &db.modules, tops))
-            .transpose()
-    });
+    let lowered_cpp = compiled
+        .as_ref_ok()
+        .and_then(|(db, tops)| (!tops.is_empty()).then(|| lower_to_cpp(&diags, db, tops)).transpose());
 
     // ir
     let ir_debug_str = if include_ir {
